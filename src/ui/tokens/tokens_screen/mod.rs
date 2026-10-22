@@ -3444,7 +3444,9 @@ mod tests {
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
         assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
 
-        let TokenConfiguration::V0(token_v0) = token_config;
+        let TokenConfiguration::V0(token_v0) = token_config else {
+            panic!("existing builder uses V0");
+        };
         let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
 
         assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
@@ -3647,7 +3649,9 @@ mod tests {
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
+            panic!("existing builder uses V0");
+        };
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
             panic!("rules without a once-per-identity distribution stay V0");
         };

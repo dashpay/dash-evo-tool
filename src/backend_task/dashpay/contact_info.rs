@@ -722,6 +722,8 @@ pub async fn create_or_update_contact_info(
         );
 
         let document = DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: document_id,
             owner_id: identity_id,
             creator_id: None,
@@ -843,6 +845,8 @@ mod tests {
             properties.insert("privateData".to_string(), private_data);
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(1),
             owner_id: id(2),
             creator_id: None,
@@ -878,6 +882,8 @@ mod tests {
             ),
         ]);
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(document_id),
             owner_id: id(254),
             creator_id: None,

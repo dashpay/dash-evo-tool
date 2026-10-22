@@ -490,14 +490,14 @@ pub enum TaskError {
     )]
     WalletStorage {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// Another process currently owns the wallet database write lock.
     #[error("{}", WALLET_DATA_IN_USE)]
     WalletStorageInUse {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A wallet database migration failed because the app is not allowed to
@@ -508,7 +508,7 @@ pub enum TaskError {
     )]
     WalletStorageAccessDenied {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A pinned-PR wallet database could not be upgraded without losing data.
@@ -569,7 +569,7 @@ pub enum TaskError {
     )]
     WalletDataIncompatible {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// The wallet database refused to open because a folder on its path can be
@@ -586,7 +586,7 @@ pub enum TaskError {
     )]
     WalletDataFolderInsecure {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A vault passphrase or a Tier-2 object password was longer than the
@@ -1545,6 +1545,42 @@ pub enum TaskError {
     #[error("Wallet not found. Please check your wallet list and try again.")]
     WalletNotFound,
 
+    #[error("Full resync is unavailable. Connect to the network and wait for the current sync to finish, then try again.")]
+    WalletResyncUnavailable,
+
+    #[error("The wallet scan stopped before finishing. Reconnect and run Full resync again.")]
+    WalletResyncInterrupted,
+
+    #[error("This wallet lists already-spent funds as available. Use another wallet to send this payment.")]
+    WalletConfirmedInputConflict {
+        outpoint: dash_sdk::dpp::dashcore::OutPoint,
+        confirmed_txid: dash_sdk::dpp::dashcore::Txid,
+    },
+
+    #[error("The payment was not sent because its funding history could not be checked. Restart the application and try again.")]
+    WalletSpendHistoryCheck {
+        #[source]
+        source: WalletTransactionHistoryError,
+    },
+
+    #[error("The payment was not sent because its funding check stopped. Try again.")]
+    WalletSpendHistoryWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error("The wallet history could not be reset. Retry Full resync.")]
+    WalletHistoryReset {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    #[error("The wallet scan could not be requested. Retry Full resync.")]
+    WalletResyncWorker {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     /// The wallet is locked and must be unlocked before this operation can proceed.
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
@@ -2395,6 +2431,9 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
+    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
@@ -3401,25 +3440,37 @@ impl TaskError {
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_in_use(&other) =>
             {
-                Self::WalletStorageInUse { source: other }
+                Self::WalletStorageInUse {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_resource_exhausted(&other) =>
             {
-                Self::WalletStorage { source: other }
+                Self::WalletStorage {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_access_denied(&other) =>
             {
-                Self::WalletStorageAccessDenied { source: other }
+                Self::WalletStorageAccessDenied {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
-                Self::WalletDataIncompatible { source: other }
+                Self::WalletDataIncompatible {
+                    source: other.into(),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
-                Self::WalletDataFolderInsecure { source: other }
+                Self::WalletDataFolderInsecure {
+                    source: other.into(),
+                }
             }
-            other => Self::WalletStorage { source: other },
+            other => Self::WalletStorage {
+                source: other.into(),
+            },
         }
     }
 
@@ -6804,11 +6855,8 @@ mod tests {
                 matches!(
                     &err,
                     TaskError::WalletDataFolderInsecure {
-                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                            ancestor: a,
-                            ..
-                        },
-                    } if *a == ancestor
+                        source,
+                    } if matches!(source.as_ref(), platform_wallet_storage::WalletStorageError::InsecureParentDir { ancestor: a, .. } if *a == ancestor)
                 ),
                 "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
             );

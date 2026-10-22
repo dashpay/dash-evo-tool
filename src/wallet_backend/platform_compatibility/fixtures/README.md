@@ -14,13 +14,23 @@ stored in table/index/trigger order. Refinery history uses its SipHasher13
 hash over migration name, i32 version and rendered SQL. Timestamps and the
 store-generation token are deterministic fixture values.
 
-The production bridge compares these exact histories and materialized
-schemas before translating data. The destination itself is created by the
-current public `SqlitePersister::open`, not by the fixture SQL. Updating
-either schema revision requires reviewing and regenerating these guards.
-The selected dependency pin `63cf57f40d0000bf3b2b26026c8fa1c71162852d`
-has identical migration code and schema to `e3cd7cf`, so it uses the same
-destination guard.
+The production bridge recognizes only the exact `67d4ef3` history and schema.
+It reconstructs the `e3cd7cf` V018 intermediate schema from the fixture,
+copies and verifies the recognized legacy rows, then opens that populated
+staging database with the current public `SqlitePersister::open`. This runs
+upstream migrations on the data rather than copying old rows into an already
+migrated empty database. The final schema and history must match an independent
+fresh current persister before publication; both fixtures remain historical
+recognition guards and must not be replaced with the latest schema.
+
+At Platform `f7500221fa2020de16a7402d664d7abd2b8a78a2`, V019 adds nullable
+asset-lock operation IDs and V021 resets Core transactions, UTXOs and InstantLocks,
+rewinding each filter checkpoint to at most birth height minus one (minimum zero).
+There is no V020 migration. The bridge checks this reset and preservation of
+non-Core rows after upstream migration. The original backup retains the pre-reset
+Core data; the app rebuilds confirmed Core history through SPV. Unconfirmed
+transactions return only if relayed again. A different V019 migration history,
+such as the unmerged `c0425f7` accounting schema, is not recognized by this bridge.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

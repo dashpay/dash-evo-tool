@@ -177,6 +177,27 @@ fn target_reference() -> Result<Connection, UpgradeError> {
     Ok(conn)
 }
 
+/// Build the historical intermediate schema before copying any legacy rows.
+pub(super) fn initialize_stage(path: &Path) -> Result<(), UpgradeError> {
+    Connection::open(path)?.execute_batch(TARGET_SCHEMA)?;
+    Ok(())
+}
+
+/// Require the migrated stage to match an independently opened current persister.
+pub(super) fn verify_current_schema(path: &Path, reference: &Path) -> Result<(), UpgradeError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let target = Connection::open_with_flags(path, flags)?;
+    let reference = Connection::open_with_flags(reference, flags)?;
+    if objects(&target)? != objects(&reference)?
+        || history(&target)? != history(&reference)?
+        || target.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+            != reference.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+    {
+        return Err(UpgradeError::Unrecognized);
+    }
+    verify(&target)
+}
+
 fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeError> {
     let value: Option<Vec<u8>> = conn
         .query_row(
@@ -705,15 +726,31 @@ fn equal_rows(
     let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
     let sql = format!("SELECT {names} FROM {}", quote(table));
     let order = format!(" ORDER BY {names}");
-    let mut a = source.prepare(&format!("{sql}{filter}{order}"))?;
-    let mut b = target.prepare(&format!("{sql}{order}"))?;
+    equal_queries(
+        source,
+        target,
+        &format!("{sql}{filter}{order}"),
+        &format!("{sql}{order}"),
+        cols.len(),
+    )
+}
+
+fn equal_queries(
+    source: &Connection,
+    target: &Connection,
+    source_sql: &str,
+    target_sql: &str,
+    column_count: usize,
+) -> Result<(), UpgradeError> {
+    let mut a = source.prepare(source_sql)?;
+    let mut b = target.prepare(target_sql)?;
     let mut a = a.query([])?;
     let mut b = b.query([])?;
     loop {
         match (a.next()?, b.next()?) {
             (None, None) => return Ok(()),
             (Some(a), Some(b)) => {
-                for i in 0..cols.len() {
+                for i in 0..column_count {
                     if a.get_ref(i)? != b.get_ref(i)? {
                         return Err(UpgradeError::Verification);
                     }
@@ -871,6 +908,7 @@ fn upgrade_with_hook_locked(
             return Err(UpgradeError::Unrecognized);
         }
     }
+    let mut copied = Vec::new();
     for table in old_tables.iter().filter(|t| **t != HISTORY) {
         let cols = allowed_columns(
             table,
@@ -880,6 +918,7 @@ fn upgrade_with_hook_locked(
         let filter = selected_rows(table);
         copy_rows(&source, &target_tx, table, &cols, &filter)?;
         equal_rows(&source, &target_tx, table, &cols, &filter)?;
+        copied.push((*table, cols, filter));
     }
     for (old_domain, new_domain) in [
         ("wallet_metadata", "wallets"),
@@ -897,13 +936,59 @@ fn upgrade_with_hook_locked(
     target_tx.commit()?;
     drop(target);
     validate(target_path)?;
-    // The source transaction has written only temp tables, so a separate reader still
-    // sees the committed original; earlier failures roll back and need no backup.
-    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     let target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    verify(&target)?;
+    let resets_core = history(&target)?
+        .iter()
+        .any(|(version, _, _)| *version == 21);
+    for (table, mut cols, filter) in copied {
+        match table {
+            "meta_data_versions" => {
+                equal_queries(&source, &target,
+                    "SELECT wallet_id, domain, MAX(seq) FROM (
+                        SELECT wallet_id, domain, seq FROM meta_data_versions
+                        UNION ALL SELECT wallet_id, 'wallets', seq FROM meta_data_versions WHERE domain = 'wallet_metadata'
+                        UNION ALL SELECT wallet_id, 'core_address_pool', seq FROM meta_data_versions WHERE domain = 'account_address_pools'
+                    ) GROUP BY wallet_id, domain ORDER BY wallet_id, domain",
+                    "SELECT wallet_id, domain, seq FROM meta_data_versions ORDER BY wallet_id, domain", 3)?;
+                continue;
+            }
+            "core_transactions" | "core_utxos" | "core_instant_locks" if resets_core => {
+                if target
+                    .prepare(&format!("SELECT 1 FROM {}", quote(table)))?
+                    .exists([])?
+                {
+                    return Err(UpgradeError::Verification);
+                }
+                continue;
+            }
+            "core_sync_state" if resets_core => {
+                equal_queries(
+                    &source,
+                    &target,
+                    "SELECT s.wallet_id, MIN(COALESCE(s.synced_height, MAX(w.birth_height - 1, 0)), MAX(w.birth_height - 1, 0)) FROM core_sync_state s JOIN wallets w USING(wallet_id) ORDER BY s.wallet_id",
+                    "SELECT wallet_id, synced_height FROM core_sync_state ORDER BY wallet_id",
+                    2,
+                )?;
+                cols.retain(|c| c != "synced_height");
+            }
+            _ => {}
+        }
+        equal_rows(&source, &target, table, &cols, &filter)?;
+    }
+    // Upstream migrations may add tables and triggers; publish their final schema.
+    let target_objects = objects(&target)?;
+    let new_tables = target_objects
+        .iter()
+        .filter(|o| o.kind == "table")
+        .map(|o| o.name.as_str())
+        .collect::<BTreeSet<_>>();
+    // The source transaction has written only temp tables, so a separate reader still
+    // sees the committed original; earlier failures roll back and need no backup.
+    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     // Rebuild under one SQLite transaction; power loss exposes either complete schema.
     for o in existing.iter().filter(|o| o.kind == "trigger") {
         source.execute_batch(&format!("DROP TRIGGER {}", quote(&o.name)))?;

@@ -191,6 +191,8 @@ pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
 pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value) -> Document {
     let text = |value: &str| Value::Text(value.to_string());
     Document::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: Identifier::from([0x5D; 32]),
         owner_id: owner,
         creator_id: None,

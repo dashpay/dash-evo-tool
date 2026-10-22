@@ -2373,12 +2373,34 @@ impl AppState {
     //
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
+    fn prepare_backend_task_context(
+        &mut self,
+        task: &BackendTask,
+        context: BackendTaskContext,
+    ) -> BackendTaskContext {
+        if matches!(
+            task,
+            BackendTask::CoreTask(crate::backend_task::core::CoreTask::FullResyncWallet { .. })
+        ) {
+            let context = if context.dispatch_id().is_some() {
+                context
+            } else {
+                BackendTaskContext::for_dispatch_on(task, self.current_app_context().network)
+            };
+            self.spv_block.arm_resync(context.clone());
+            context
+        } else {
+            context
+        }
+    }
+
     fn handle_backend_task(&mut self, task: BackendTask) {
         let context = BackendTaskContext::for_task_on(&task, self.current_app_context().network);
         self.handle_backend_task_with_context(task, context);
     }
 
     fn handle_backend_task_with_context(&mut self, task: BackendTask, context: BackendTaskContext) {
+        let context = self.prepare_backend_task_context(&task, context);
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.push((task, context));
@@ -2415,14 +2437,32 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel
-    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    fn handle_backend_tasks(&mut self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let contexts = tasks
             .iter()
-            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
+            .map(|task| {
+                self.prepare_backend_task_context(
+                    task,
+                    BackendTaskContext::for_task_on(task, app_context.network),
+                )
+            })
             .collect::<Vec<_>>();
+        let watcher_context = tasks
+            .iter()
+            .zip(&contexts)
+            .find_map(|(task, context)| {
+                matches!(
+                    task,
+                    BackendTask::CoreTask(
+                        crate::backend_task::core::CoreTask::FullResyncWallet { .. }
+                    )
+                )
+                .then(|| context.clone())
+            })
+            .unwrap_or(BackendTaskContext::Unknown);
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -2453,12 +2493,7 @@ impl AppState {
                 });
             },
             move |join_result| {
-                forward_backend_task_join_error(
-                    join_result,
-                    watcher_sender,
-                    None,
-                    BackendTaskContext::Unknown,
-                )
+                forward_backend_task_join_error(join_result, watcher_sender, None, watcher_context)
             },
         );
     }
@@ -2912,6 +2947,17 @@ impl AppState {
     #[doc(hidden)]
     pub fn test_capture_dispatches(&mut self) {
         self.captured_dispatches.get_or_insert_with(Vec::new);
+    }
+
+    /// Prepare a maintenance dispatch without starting backend work.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_prepare_backend_task_context(
+        &mut self,
+        task: &BackendTask,
+        context: BackendTaskContext,
+    ) -> BackendTaskContext {
+        self.prepare_backend_task_context(task, context)
     }
 
     /// Test seam: the tasks captured since [`Self::test_capture_dispatches`].
@@ -3491,6 +3537,11 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            if let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
+                &task_result
+            {
+                self.spv_block.finish_resync(context);
+            }
             // The open screen that dispatched this task, if any. Its result is
             // delivered there, in view or not. A closed sender's result reaches
             // no screen; undispatched results go to the screen in view.
@@ -3902,6 +3953,16 @@ impl App for AppState {
                         handle.with_details(&err);
                         self.visible_screen_mut()
                             .display_message(&msg, MessageType::Error);
+                    }
+                }
+                TaskResult::Error { context, error }
+                    if context.platform_transfer_assessment().is_some() =>
+                {
+                    if let Some(screen) = self
+                        .main_screens
+                        .get_mut(&RootScreenType::RootScreenWalletsBalances)
+                    {
+                        screen.display_backend_task_error(&context, &error);
                     }
                 }
                 TaskResult::Error {

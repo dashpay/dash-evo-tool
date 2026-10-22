@@ -5141,7 +5141,7 @@ mod tests {
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
     use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -5158,10 +5158,9 @@ mod tests {
     }
 
     fn testnet_core_address(key_byte: u8) -> Address {
-        let secp = Secp256k1::new();
-        let secret_key = SecretKey::from_slice(&[key_byte; 32]).expect("valid secret key");
+        let secret_key = SecretKey::from_bytes(&[key_byte; 32]).expect("valid secret key");
         let private_key = PrivateKey::new(secret_key, Network::Testnet);
-        let public_key = PublicKey::from_private_key(&secp, &private_key);
+        let public_key = PublicKey::from_private_key(&private_key);
         Address::p2pkh(&public_key, Network::Testnet)
     }
 

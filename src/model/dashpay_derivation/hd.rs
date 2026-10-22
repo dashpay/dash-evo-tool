@@ -38,10 +38,8 @@ pub fn derive_payment_address(
     contact_xpub: &ExtendedPubKey,
     index: u32,
 ) -> Result<dash_sdk::dpp::dashcore::Address, DerivationError> {
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-
     // Derive the specific address key
-    let address_key = contact_xpub.derive_pub(&secp, &[ChildNumber::from_normal_idx(index)?])?;
+    let address_key = contact_xpub.derive_pub(&[ChildNumber::from_normal_idx(index)?])?;
 
     // Convert to Dash address
     // The ExtendedPubKey's public_key is a secp256k1::PublicKey
@@ -72,7 +70,7 @@ pub fn generate_contact_xpub_data(
     let chain_code = xpub.chain_code.to_bytes();
 
     // Get the public key bytes (33 bytes compressed)
-    let public_key_bytes = xpub.public_key.serialize();
+    let public_key_bytes = xpub.public_key.to_compressed();
 
     Ok((parent_fingerprint, chain_code, public_key_bytes))
 }
@@ -96,8 +94,7 @@ pub fn derive_auto_accept_key(
     ))?;
 
     // Derive the key
-    let auto_accept_key =
-        master_xprv.derive_priv(&dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(), &path)?;
+    let auto_accept_key = master_xprv.derive_priv(&path)?;
 
     Ok(auto_accept_key)
 }
@@ -151,10 +148,7 @@ mod tests {
         let master_seed = [2u8; 64];
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
-        let xpub = ExtendedPubKey::from_priv(
-            &dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(),
-            &master_xprv,
-        );
+        let xpub = ExtendedPubKey::from_priv(&master_xprv);
 
         let account_ref = calculate_account_reference(&secret_key, &xpub, 0, 0);
 
@@ -255,8 +249,8 @@ mod tests {
 
         // Different timestamps should produce different keys
         assert_ne!(
-            key1.private_key.secret_bytes(),
-            key2.private_key.secret_bytes(),
+            *key1.private_key.to_bytes(),
+            *key2.private_key.to_bytes(),
             "Different timestamps should produce different keys"
         );
     }
@@ -300,8 +294,8 @@ mod tests {
         let master_seed = [2u8; 64];
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
-        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-        let xpub = ExtendedPubKey::from_priv(&secp, &master_xprv);
+
+        let xpub = ExtendedPubKey::from_priv(&master_xprv);
 
         // Test version 0
         let ref_v0 = calculate_account_reference(&secret_key, &xpub, 0, 0);
@@ -335,8 +329,8 @@ mod tests {
                 .expect("Should derive xpub for account 1");
 
         assert_ne!(
-            xpub_account0.public_key.serialize(),
-            xpub_account1.public_key.serialize(),
+            xpub_account0.public_key.to_compressed(),
+            xpub_account1.public_key.to_compressed(),
             "Different accounts should produce different xpubs"
         );
     }
@@ -373,8 +367,8 @@ mod tests {
         assert_eq!(xpub_testnet.network, Network::Testnet);
         assert_eq!(xpub_mainnet.network, Network::Mainnet);
         assert_ne!(
-            xpub_testnet.public_key.serialize(),
-            xpub_mainnet.public_key.serialize(),
+            xpub_testnet.public_key.to_compressed(),
+            xpub_mainnet.public_key.to_compressed(),
             "different coin types must produce different keys"
         );
     }

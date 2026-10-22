@@ -1483,15 +1483,14 @@ fn row_accessible_label(entry: &AddressEntry, address_display: &str, balance_str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dashcore_rpc::dashcore::{PrivateKey, PublicKey};
 
     /// Generate a valid testnet P2PKH address for testing.
     fn testnet_core_address() -> (String, Address) {
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let sk = SecretKey::from_bytes(&[1u8; 32]).unwrap();
         let privkey = PrivateKey::new(sk, Network::Testnet);
-        let pubkey = PublicKey::from_private_key(&secp, &privkey);
+        let pubkey = PublicKey::from_private_key(&privkey);
         let addr = Address::p2pkh(&pubkey, Network::Testnet);
         (addr.to_string(), addr)
     }
@@ -1513,10 +1512,9 @@ mod tests {
 
     /// Generate a valid mainnet P2PKH address for testing.
     fn mainnet_core_address() -> (String, Address) {
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[2u8; 32]).unwrap();
+        let sk = SecretKey::from_bytes(&[2u8; 32]).unwrap();
         let privkey = PrivateKey::new(sk, Network::Mainnet);
-        let pubkey = PublicKey::from_private_key(&secp, &privkey);
+        let pubkey = PublicKey::from_private_key(&privkey);
         let addr = Address::p2pkh(&pubkey, Network::Mainnet);
         (addr.to_string(), addr)
     }

@@ -195,6 +195,24 @@ impl EventHandler for EventBridge {
 
     fn on_sync_event(&self, event: &SyncEvent) {
         match event {
+            SyncEvent::BlockProcessed {
+                block_hash,
+                height,
+                wallets,
+                confirmed_txids,
+                ..
+            } => {
+                for wallet_id in wallets {
+                    self.snapshots.restore_scanned_history(
+                        wallet_id,
+                        confirmed_txids,
+                        *height,
+                        *block_hash,
+                    );
+                    self.snapshots.recompute(wallet_id);
+                }
+                self.nudge_refresh();
+            }
             SyncEvent::SyncComplete { .. } => {
                 self.apply_status(SpvStatus::Running);
                 self.nudge_refresh();
@@ -211,9 +229,7 @@ impl EventHandler for EventBridge {
                 self.apply_status(SpvStatus::Error);
                 self.nudge_refresh();
             }
-            SyncEvent::BlockProcessed { .. }
-            | SyncEvent::ChainLockReceived { .. }
-            | SyncEvent::InstantLockReceived { .. } => {
+            SyncEvent::ChainLockReceived { .. } | SyncEvent::InstantLockReceived { .. } => {
                 // Wallet-relevant chain progress — re-read state next frame.
                 self.nudge_refresh();
             }
@@ -286,6 +302,17 @@ impl EventHandler for EventBridge {
                 *wallet_id
             }
             WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::ChainTruncated {
+                wallet_id,
+                txids,
+                unconfirmed_txids,
+                ..
+            } => {
+                self.snapshots.remove_transactions(wallet_id, txids);
+                self.snapshots
+                    .unconfirm_instant_locked(wallet_id, unconfirmed_txids);
+                *wallet_id
+            }
             WalletEvent::TransactionsSwept {
                 wallet_id, txids, ..
             } => {

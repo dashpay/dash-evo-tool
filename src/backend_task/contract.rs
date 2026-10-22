@@ -78,6 +78,7 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    integer_range_clauses: vec![],
                                     sub_queries: Vec::new(),
                                     select: SelectProjection::documents(),
                                     data_contract: search_contract.clone(),

@@ -459,3 +459,31 @@ fn a_closed_send_form_result_leaves_a_running_query_alone() {
         );
     });
 }
+
+/// Starting a rescan must not replace the dispatch recorded for its screen.
+#[test]
+fn full_resync_preserves_its_recorded_owner_context() {
+    use dash_evo_tool::backend_task::{BackendTask, core::CoreTask};
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let task = BackendTask::CoreTask(CoreTask::FullResyncWallet { seed_hash: [0; 32] });
+        let dispatch = BackendTaskContext::for_dispatch_for_test(&task);
+        harness.state_mut().test_record_visible_dispatch(&dispatch);
+        let prepared = harness
+            .state_mut()
+            .test_prepare_backend_task_context(&task, dispatch.clone());
+        assert_eq!(prepared, dispatch, "rescan must keep the screen's dispatch");
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: prepared,
+                error: TaskError::NoIdentitiesFound,
+            },
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            0,
+            "completion must retire the recorded owner"
+        );
+    });
+}

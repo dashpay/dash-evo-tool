@@ -1055,3 +1055,39 @@ fn platform_compatibility_lock_survives_concurrent_process_spawns() {
         outcome.expect("a released lock must be re-acquirable while processes spawn");
     });
 }
+
+#[test]
+fn platform_compatibility_refuses_non_core_loss_during_upstream_migration() {
+    let (dir, path, target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO meta_global VALUES ('opaque', X'00ff80', 1)",
+            [],
+        )
+        .unwrap();
+    let before = snapshot(&path);
+    let result = upgrade(&path, &target, |stage| {
+        Connection::open(stage)?.execute("DELETE FROM meta_global WHERE key = 'opaque'", [])?;
+        Ok(())
+    });
+    assert!(matches!(result, Err(UpgradeError::Verification)));
+    assert_eq!(snapshot(&path), before);
+    assert!(backup_files(dir.path()).is_empty());
+}
+
+#[test]
+fn platform_compatibility_refuses_unrecognized_version_19_without_changes() {
+    let (dir, path, target) = fixture();
+    Connection::open(&path).unwrap().execute("INSERT INTO refinery_schema_history VALUES (19, 'core_transaction_accounting', '2026-01-01T00:00:00Z', '1')", []).unwrap();
+    let before = snapshot(&path);
+    assert!(
+        upgrade(&path, &target, |_| panic!(
+            "unrecognized history must not reach migration"
+        ))
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(snapshot(&path), before);
+    assert!(backup_files(dir.path()).is_empty());
+}

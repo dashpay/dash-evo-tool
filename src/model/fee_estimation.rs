@@ -33,6 +33,23 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
+/// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
+pub fn document_create_contest_fund_cap(
+    document_type: dash_sdk::dpp::data_contract::document_type::DocumentTypeRef<'_>,
+    document: &dash_sdk::dpp::document::Document,
+    platform_version: &PlatformVersion,
+) -> Result<Option<Credits>, Box<dash_sdk::dpp::ProtocolError>> {
+    use dash_sdk::dpp::data_contract::document_type::methods::{
+        DocumentTypeBasicMethods, DocumentTypeV0Methods,
+    };
+    use dash_sdk::dpp::document::DocumentV0Getters;
+    let mut document = document.clone();
+    document_type.regenerate_generated_properties(document.properties_mut(), platform_version)?;
+    Ok(document_type
+        .contested_vote_poll_for_document(&document, platform_version)?
+        .map(|_| contest_fee_credits(platform_version)))
+}
+
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
     balance.saturating_sub(estimated_fee)
@@ -1338,6 +1355,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn document_contest_cap_preserves_ordinary_creates_and_caps_contested_names() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::platform::Identifier;
+        for version in [13, 14] {
+            let pv = PlatformVersion::get(version).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+            let owner = Identifier::from([1; 32]);
+            let document = crate::context::test_support::dpns_name_document(
+                owner,
+                "alice",
+                Value::Identifier(owner.to_buffer()),
+            );
+            let domain = contract.document_type_for_name("domain").unwrap();
+            assert_eq!(
+                document_create_contest_fund_cap(domain, &document, pv).unwrap(),
+                Some(contest_fee_credits(pv))
+            );
+            let preorder = contract.document_type_for_name("preorder").unwrap();
+            assert_eq!(
+                document_create_contest_fund_cap(preorder, &document, pv).unwrap(),
+                None
+            );
+            let ordinary = crate::context::test_support::dpns_name_document(
+                owner,
+                "alice-123",
+                Value::Identifier(owner.to_buffer()),
+            );
+            assert_eq!(
+                document_create_contest_fund_cap(domain, &ordinary, pv).unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn contest_fee_follows_protocol_version() {
         // USR-TC-005
         let pv13 = PlatformVersion::get(13).expect("PV13");
@@ -2080,13 +2134,10 @@ mod tests {
     fn any_core_address() -> Address {
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::secp256k1::{
-            PublicKey as SecpPublicKey, Secp256k1, SecretKey,
-        };
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid secret key");
-        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&secp, &sk).serialize())
-            .expect("valid pubkey");
+        use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+
+        let sk = SecretKey::from_bytes(&[1u8; 32]).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&sk.public_key().to_compressed()).expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

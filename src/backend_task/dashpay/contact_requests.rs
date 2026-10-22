@@ -530,6 +530,8 @@ pub async fn send_contact_request_with_proof(
 
     // Create the document
     let document = DppDocument::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: document_id,
         owner_id: identity.identity.id(),
         creator_id: None,
@@ -1289,6 +1291,8 @@ mod tests {
             properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(99),
             owner_id: owner,
             creator_id: None,

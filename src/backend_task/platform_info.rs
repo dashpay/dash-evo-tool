@@ -1009,7 +1009,9 @@ mod tests {
 
     /// The limit is whatever the network's own protocol version says it is,
     /// never a version fixed in this build: protocol 13 reports a flat 2000
-    /// Dash whatever the total, protocol 14 derives it from that total.
+    /// Dash whatever the total, protocol 14 derives it from that total (15% of
+    /// it, `SYSTEM_LIMITS_V4.daily_withdrawal_limit_percent`, never below the
+    /// 500 Dash maximum withdrawal).
     #[test]
     fn daily_withdrawal_limit_follows_the_given_platform_version() {
         // `dash_to_credits!` stringifies its argument and parses the digits, so
@@ -1024,7 +1026,12 @@ mod tests {
         );
         assert_eq!(
             network_daily_withdrawal_limit(total, v14).expect("limit"),
-            dash_to_credits!(4000)
+            dash_to_credits!(150000)
+        );
+        // A small total falls back to the maximum single withdrawal.
+        assert_eq!(
+            network_daily_withdrawal_limit(dash_to_credits!(1000), v14).expect("limit"),
+            dash_to_credits!(500)
         );
     }
 

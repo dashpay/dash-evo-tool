@@ -2321,6 +2321,7 @@ mod tests {
             BackendTaskSuccessResult::DashPayContactInfoUpdated {
                 identity: owner,
                 contact_id: contact,
+                published: true,
             },
         );
         let load_b = contacts_load(&mut screen);

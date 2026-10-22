@@ -45,8 +45,9 @@ It is never silently downgraded (`backend_task/protocol_13_transitions.rs`).
   scope changes. The manual chooser leaves out keys bound to another contract
   or document type, but keeps expired and limited keys with a warning.
 - **What is confirmed is what is sent.** The confirmations for document action
-  fees, token claims and key limit raises build the action when they open and
-  block the form behind them. Confirm sends exactly that action.
+  fees and token claims build the action when they open, block the form behind
+  them, and send exactly that action on confirm. A key limit raise sends the
+  quoted raise it showed; `check_against` refuses it if the key changed.
 - **Only proved data gates an action.** Fee pot claims are not blocked on the
   response metadata's epoch, because the proof does not sign it. Platform
   refuses a second claim in the same epoch, with a typed error.

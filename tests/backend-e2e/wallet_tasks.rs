@@ -774,6 +774,13 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     tracing::info!(%credit_address, known_locally, proof_present = tracked.proof.is_some(),
         "TC-018: credit-output signing lookup");
 
+    // Exercise signing without the legacy DET credit-address cache entry.
+    wallet_arc
+        .write()
+        .unwrap()
+        .known_addresses
+        .remove(&credit_address);
+
     // Step 3: Derive a fresh platform address for funding
     let platform_addr = crate::framework::funding::derive_platform_receive_address(
         &ctx.app_context,

@@ -890,7 +890,7 @@ impl ScreenLike for IdentityHubScreen {
             let syncing = matches!(error, TaskError::MasternodeListNotReady { .. });
             let delay = if syncing && !self.app_context.connection_status().masternodes_ready() {
                 Some(std::time::Duration::ZERO)
-            } else if syncing || error.contains_dapi_reachability_failure() {
+            } else if syncing || contact_read_failure_is_transient(error) {
                 Some(std::time::Duration::from_secs(5))
             } else {
                 None
@@ -941,6 +941,15 @@ impl ScreenLike for IdentityHubScreen {
         // other special-case error handling of its own yet.
         false
     }
+}
+
+/// Whether a failed contact read may succeed on its own after the endpoint delay.
+/// Extends the DAPI reachability check with a per-call deadline, which the
+/// network client also treats as retryable. Kept local to contact reads: the
+/// shared reachability check also decides all-addresses-exhausted reporting.
+fn contact_read_failure_is_transient(error: &TaskError) -> bool {
+    matches!(error, TaskError::DapiDeadlineExceeded { .. })
+        || error.contains_dapi_reachability_failure()
 }
 
 /// Release the request-card guard a failed contact action names. Both a task-level
@@ -1467,6 +1476,44 @@ mod tests {
                 assert!(!hub.contacts_state.begin_request(request_id));
             }
         }
+    }
+
+    /// A contact read that ran past its per-call deadline is a temporary
+    /// failure the network client itself retries, so Home retries it too
+    /// after the endpoint delay instead of leaving the load stranded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_contacts_retry_a_read_that_hit_the_call_deadline() {
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+        let (_dir, context) = wired_test_context().await;
+        context.connection_status().set_masternodes_ready(true);
+        let owner = seed_user_identity(&context, 0x5E);
+        let identity = context.get_identity_by_id(&owner).unwrap().unwrap();
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+            identity: identity.clone(),
+        }));
+        let mut hub = IdentityHubScreen::new(&context);
+        hub.contacts_state.reconcile_owner(&identity);
+        assert!(hub.contacts_state.claim_reads().is_some());
+        let error = TaskError::from(dash_sdk::Error::DapiClientError(
+            DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::deadline_exceeded("deadline"),
+            )),
+        ));
+        assert!(matches!(error, TaskError::DapiDeadlineExceeded { .. }));
+        let before = std::time::Instant::now();
+        hub.display_backend_task_error(&BackendTaskContext::for_dispatch(&task), &error);
+        hub.contacts_state.retry_load_if_due(before);
+        assert!(!hub.contacts_state.load_is_due(), "wait the endpoint delay");
+        hub.contacts_state
+            .retry_load_if_due(before + std::time::Duration::from_secs(6));
+        assert_eq!(
+            hub.contacts_state.claim_reads(),
+            Some(std::collections::BTreeSet::from([
+                crate::model::dashpay::ContactsLoadKind::Contacts
+            ])),
+            "a deadline failure must be retried"
+        );
     }
 
     /// On an updated install the hub sends the Usernames card's check of the

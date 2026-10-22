@@ -1506,6 +1506,12 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// [`Self::BackendTasks`] with the context each task's result comes back
+    /// under, so a screen can tell one dispatch of a task from another.
+    BackendTasksWithContexts(
+        Vec<(BackendTask, BackendTaskContext)>,
+        BackendTasksExecutionMode,
+    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2406,13 +2412,23 @@ impl AppState {
 
     /// Handle the backend tasks and send the results through the channel
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+        let network = self.current_app_context().network;
+        let contexts = tasks
+            .iter()
+            .map(|task| BackendTaskContext::for_task_on(task, network))
+            .collect();
+        self.run_backend_tasks(tasks, contexts, mode);
+    }
+
+    fn run_backend_tasks(
+        &self,
+        tasks: Vec<BackendTask>,
+        contexts: Vec<BackendTaskContext>,
+        mode: BackendTasksExecutionMode,
+    ) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
-        let contexts = tasks
-            .iter()
-            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
-            .collect::<Vec<_>>();
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -4331,6 +4347,10 @@ impl App for AppState {
                 }
                 AppAction::BackendTasks(tasks, mode) => {
                     self.handle_backend_tasks(tasks, mode);
+                }
+                AppAction::BackendTasksWithContexts(tasks, mode) => {
+                    let (tasks, contexts) = tasks.into_iter().unzip();
+                    self.run_backend_tasks(tasks, contexts, mode);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

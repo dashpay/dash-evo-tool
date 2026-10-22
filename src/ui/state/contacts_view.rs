@@ -78,6 +78,10 @@ pub struct ContactsState {
     owner: Option<(Network, Identifier)>,
     /// The selected contact and its private-note editor.
     detail: ContactDetailState,
+    /// The dispatch of the newest contact-list load. A reload re-arms without
+    /// cancelling, so an older load can answer after a newer one; its list is
+    /// stale and would undo a confirmed note.
+    latest_contacts_load: Option<u64>,
 }
 
 impl ContactsState {
@@ -89,6 +93,21 @@ impl ContactsState {
         }
         self.load_requested = true;
         true
+    }
+
+    /// Record `dispatch_id` as the newest contact-list load.
+    pub fn record_contacts_load(&mut self, dispatch_id: u64) {
+        self.latest_contacts_load = Some(dispatch_id);
+    }
+
+    /// Whether a contact list from load `dispatch_id` may be shown: not when a
+    /// newer load was dispatched since. A list no load of this state asked for
+    /// carries no dispatch and is judged as before.
+    pub fn accepts_contacts_from(&self, dispatch_id: Option<u64>) -> bool {
+        match (self.latest_contacts_load, dispatch_id) {
+            (Some(latest), Some(dispatch_id)) => dispatch_id >= latest,
+            _ => true,
+        }
     }
 
     /// Clear cached view data while retaining guards for backend work still running.

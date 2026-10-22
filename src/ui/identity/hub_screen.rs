@@ -757,6 +757,17 @@ impl ScreenLike for IdentityHubScreen {
             );
             return;
         }
+        // A reload re-arms without cancelling the load before it, so lists
+        // can answer out of order; an older one would undo a confirmed note.
+        if matches!(
+            result,
+            BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
+        ) && !self
+            .contacts_state
+            .accepts_contacts_from(context.dispatch_id())
+        {
+            return;
+        }
         if matches!(
             result,
             BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
@@ -2224,6 +2235,119 @@ mod tests {
                 "{outcome}: the dispatch record retires with its guard"
             );
         }
+    }
+
+    /// r4316990948: load A reads the old note and is still running when the
+    /// save lands and load B starts. B answers first with the saved note; A
+    /// answering afterwards must not put the old note back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_contacts_load_does_not_undo_a_confirmed_note() {
+        use crate::backend_task::dashpay::ContactData;
+        use crate::model::dashpay::ContactInfoUpdate;
+
+        let (_temp_dir, app_context) = wired_test_context().await;
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            id(0x31),
+            Network::Testnet,
+            false,
+        );
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        app_context.set_selected_identity(Some(identity.identity.id()));
+        let (owner, contact) = (identity.identity.id(), id(4));
+        let listed = |note: Option<&str>| {
+            vec![ContactData {
+                identity_id: contact,
+                nickname: None,
+                note: note.map(Into::into),
+                is_hidden: false,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }]
+        };
+        let contacts_load = |screen: &mut IdentityHubScreen| {
+            let AppAction::BackendTasksWithContexts(tasks, _) =
+                super::super::contacts::load_action(&identity, &mut screen.contacts_state)
+            else {
+                panic!("the contact loads are dispatched");
+            };
+            tasks
+                .into_iter()
+                .find_map(|(task, context)| {
+                    matches!(&task, BackendTask::DashPayTask(t)
+                        if matches!(**t, DashPayTask::LoadContacts { .. }))
+                    .then_some(context)
+                })
+                .expect("a contact list load")
+        };
+
+        let mut screen = IdentityHubScreen::new(&app_context);
+        screen.contacts_state.reconcile_owner(&identity);
+        screen.contacts_state.record_contacts(listed(None));
+        screen.contacts_state.select_contact(&contact);
+        let load_a = contacts_load(&mut screen);
+
+        *screen
+            .contacts_state
+            .detail_mut()
+            .note_mut(&contact)
+            .expect("draft") = "Bao".into();
+        assert!(
+            screen
+                .contacts_state
+                .detail_mut()
+                .begin_save(owner, contact)
+                .is_some()
+        );
+        let action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::UpdateContactInfo {
+                identity: identity.clone(),
+                contact_id: contact,
+                update: ContactInfoUpdate::note(Some("Bao".into())),
+            },
+        )));
+        screen.capture_contact_info_update(&action);
+        let AppAction::BackendTaskWithContext { context: write, .. } =
+            screen.bind_contact_info_dispatch(action)
+        else {
+            panic!("the write is sent under its own dispatch");
+        };
+        screen.display_backend_task_result(
+            &write,
+            BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                identity: owner,
+                contact_id: contact,
+            },
+        );
+        let load_b = contacts_load(&mut screen);
+
+        let contacts_result = |note| BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity: owner,
+            contacts: listed(note),
+        };
+        screen.display_backend_task_result(&load_b, contacts_result(Some("Bao")));
+        screen.display_backend_task_result(&load_a, contacts_result(None));
+
+        assert_eq!(
+            screen
+                .contacts_state
+                .selected_contact()
+                .and_then(|c| c.note.as_deref()),
+            Some("Bao"),
+            "the older load must not put the old note back"
+        );
+        assert_eq!(
+            screen
+                .contacts_state
+                .detail_mut()
+                .note_mut(&contact)
+                .map(|draft| draft.clone()),
+            Some("Bao".into())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

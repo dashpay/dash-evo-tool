@@ -202,7 +202,7 @@ fn contacts_tab_load_is_for_a_populated_tab_and_goes_out_once() {
         );
         let load = contacts::tab_load_action(&app_context, &mut state, &mut profiles);
         assert!(
-            matches!(&load, AppAction::BackendTasks(tasks, _) if tasks.len() == 2),
+            matches!(&load, AppAction::BackendTasksWithContexts(tasks, _) if tasks.len() == 2),
             "the populated tab loads its contacts and its requests, got {load:?}"
         );
         assert!(

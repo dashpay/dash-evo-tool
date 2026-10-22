@@ -115,12 +115,12 @@ pub(crate) mod loads {
     }
 
     fn contacts_load(action: &AppAction) -> Option<()> {
-        let AppAction::BackendTasks(tasks, _) = action else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
             return None;
         };
         tasks
             .iter()
-            .any(|task| {
+            .any(|(task, _)| {
                 matches!(task, BackendTask::DashPayTask(task)
                     if matches!(**task, DashPayTask::LoadContacts { .. }))
             })
@@ -275,15 +275,17 @@ pub(crate) mod loads {
             step_until(&mut hub, "the first payment history load", payments_load);
 
             let load = |action: &AppAction| match action {
-                AppAction::BackendTasks(tasks, _) => tasks.iter().find_map(|task| match task {
-                    BackendTask::DashPayTask(task) => match &**task {
-                        DashPayTask::LoadContacts { identity } => {
-                            Some(("contacts", identity.identity.id()))
-                        }
+                AppAction::BackendTasksWithContexts(tasks, _) => {
+                    tasks.iter().find_map(|(task, _)| match task {
+                        BackendTask::DashPayTask(task) => match &**task {
+                            DashPayTask::LoadContacts { identity } => {
+                                Some(("contacts", identity.identity.id()))
+                            }
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
-                }),
+                    })
+                }
                 AppAction::BackendTaskWithContext {
                     task: BackendTask::DashPayTask(task),
                     ..

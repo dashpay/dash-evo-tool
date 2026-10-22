@@ -18,27 +18,38 @@ use tracing::error;
 
 use serde_json;
 
+use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
+use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
+use crate::ui::theme::{DashColors, ResponseExt};
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::{TokenAmount};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
+    TokenConfigurationPresetFeatures, TokenConfigurationV0,
+};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::{
+    distribution_function::{
+        DistributionFunction, evaluate_interval::IntervalEvaluationExplanation,
+    },
+    distribution_recipient::TokenDistributionRecipient,
+    reward_distribution_type::RewardDistributionType,
+};
 use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -47,15 +58,9 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Ui};
-use crate::ui::theme::{DashColors, ResponseExt};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use enum_iterator::Sequence;
 use image::ImageReader;
-use crate::app::BackendTasksExecutionMode;
-use crate::backend_task::contract::ContractTask;
-use crate::backend_task::error::TaskError;
-use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskContext};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
@@ -3121,11 +3126,13 @@ mod tests {
 
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
-    use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
-    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::{
+        token_configuration_convention::TokenConfigurationConvention,
+        token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters,
+        token_keeps_history_rules::TokenKeepsHistoryRules,
+    };
+    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
 

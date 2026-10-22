@@ -5168,10 +5168,12 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
-    use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
-    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::consensus::state::identity::{
+        IdentityInsufficientBalanceError,
+        duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError,
+        duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError,
+        identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError,
+    };
     use dash_sdk::dpp::consensus::state::voting::masternode_voted_too_many_times::MasternodeVotedTooManyTimesError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
@@ -7429,7 +7431,12 @@ mod tests {
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
+        use dash_sdk::dpp::consensus::basic::identity::{
+            IdentityKeyLimitsUpdateEmptyError, IdentityPublicKeyLimitsNotAllowedError,
+            InvalidIdentityPublicKeyBudgetError,
+        };
         use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
+        use dash_sdk::dpp::consensus::signature::PublicKeyWithLimitsCannotUpdateKeyLimitsError;
         use dash_sdk::dpp::consensus::signature::{
             ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
             PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
@@ -7438,36 +7445,35 @@ mod tests {
             ContractFeeClaimNotAllowedError, ContractFeesAlreadyClaimedThisEpochError,
             ContractFeesNothingToClaimError, ContractUserBannedError, ContractUserSuspendedError,
         };
-        use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
-        use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError;
-        use dash_sdk::dpp::consensus::state::document::document_action_fee_agreement_not_set_error::DocumentActionFeeAgreementNotSetError;
-        use dash_sdk::dpp::consensus::state::document::document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError;
-        use dash_sdk::dpp::consensus::state::document::document_immutable_property_changed_error::DocumentImmutablePropertyChangedError;
-        use dash_sdk::dpp::consensus::state::document::referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError;
-        use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
+        use dash_sdk::dpp::consensus::state::document::{
+            document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError,
+            document_action_fee_agreement_not_set_error::DocumentActionFeeAgreementNotSetError,
+            document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError,
+            document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
+            referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
+        };
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_expired_error::IdentityPublicKeyAlreadyExpiredError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_is_disabled_error::IdentityPublicKeyIsDisabledError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_raised_error::IdentityPublicKeyLimitNotRaisedError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_set_error::{
+            IdentityPublicKeyLimitNotSetError, KeyLimit,
+        };
+        use dash_sdk::dpp::consensus::state::identity::{
+            gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError,
+            identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError,
+        };
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
         use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
             AgreedFeeMultiplier, DocumentActionFeeAgreement,
         };
         use dash_sdk::dpp::data_contract::document_type::action_fees::{
             ActionFeePricing, DocumentActionFee,
         };
-        use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
-        use dash_sdk::dpp::consensus::basic::identity::{
-            IdentityKeyLimitsUpdateEmptyError, IdentityPublicKeyLimitsNotAllowedError,
-            InvalidIdentityPublicKeyBudgetError,
-        };
-        use dash_sdk::dpp::consensus::signature::PublicKeyWithLimitsCannotUpdateKeyLimitsError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_is_disabled_error::IdentityPublicKeyIsDisabledError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_expired_error::IdentityPublicKeyAlreadyExpiredError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_raised_error::IdentityPublicKeyLimitNotRaisedError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_set_error::{
-            IdentityPublicKeyLimitNotSetError, KeyLimit,
-        };
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         let fee = DocumentActionFee {

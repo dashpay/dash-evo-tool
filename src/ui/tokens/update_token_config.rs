@@ -1015,7 +1015,9 @@ impl ScreenLike for UpdateTokenConfigScreen {
                         &self.identity,
                         &mut self.signing_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide { contract_id: self.identity_token_info.data_contract.contract.id() },
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_info.data_contract.contract.id(),
+                        },
                     );
                     ui.add_space(10.0);
                     ui.separator();

@@ -461,7 +461,12 @@ impl ScreenLike for RegisterDataContractScreen {
                 if response.changed() {
                     if let Some(identity) = &self.selected_qualified_identity {
                         // Auto-select a suitable key for contract registration
-                        self.selected_key = identity.signing_key_now( KeyRequirements::new(Purpose::AUTHENTICATION, &[SecurityLevel::HIGH, SecurityLevel::CRITICAL], SigningScope::NonBatch))
+                        self.selected_key = identity
+                            .signing_key_now(KeyRequirements::new(
+                                Purpose::AUTHENTICATION,
+                                &[SecurityLevel::HIGH, SecurityLevel::CRITICAL],
+                                SigningScope::NonBatch,
+                            ))
                             .cloned();
 
                         // Update wallet

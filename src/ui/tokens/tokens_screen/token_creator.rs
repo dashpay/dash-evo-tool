@@ -1,39 +1,46 @@
-use dash_sdk::dpp::balances::credits::TokenAmount;
+use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::token::{distribution_rules_with_once_per_identity, parse_once_per_identity_amount};
 use crate::model::identity_key_usability::SigningScope;
-use std::collections::{BTreeMap, HashSet};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
+use crate::model::token::validate_contract_keyword;
+use crate::model::token::{
+    distribution_rules_with_once_per_identity, parse_once_per_identity_amount,
+};
+use crate::ui::MessageType;
+use crate::ui::ScreenType;
+use crate::ui::components::Component;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::styled::StyledCheckbox;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::tokens::tokens_screen::{
+    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
+    TokenNameLanguage, TokensScreen,
+};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
+    TokenConfigurationPreset,
+    TokenConfigurationPresetFeatures::{
+        self, MostRestrictive, WithAllAdvancedActions, WithExtremeActions,
+        WithMintingAndBurningActions, WithOnlyEmergencyAction,
+    },
+};
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
-use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::ScreenType;
-use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
-use crate::backend_task::tokens::TokenTask;
-use crate::model::token::validate_contract_keyword;
-use crate::ui::components::styled::{StyledCheckbox};
-use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::Component;
-use crate::ui::components::identity_selector::IdentitySelector;
-use crate::ui::components::MessageBanner;
-use crate::ui::MessageType;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{
-    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
-    TokenNameLanguage, TokensScreen,
-};
+use std::collections::{BTreeMap, HashSet};
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {

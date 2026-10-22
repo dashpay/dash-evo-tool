@@ -6,8 +6,10 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v1::TokenDistributionRulesV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v1::TokenDistributionRulesV1;
-use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_distribution::TokenOncePerIdentityDistribution;
-use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_distribution::v0::TokenOncePerIdentityDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_distribution::{
+    TokenOncePerIdentityDistribution, accessors::v0::TokenOncePerIdentityDistributionV0Methods,
+    v0::TokenOncePerIdentityDistributionV0,
+};
 
 /// Minimum number of characters in a searchable contract keyword.
 pub const MIN_CONTRACT_KEYWORD_CHARS: usize = 3;
@@ -65,7 +67,6 @@ pub fn parse_once_per_identity_amount(
 /// The amount every identity may claim once from `config`, when the token has
 /// a once-per-identity distribution (protocol version 14).
 pub fn once_per_identity_amount(config: &TokenConfiguration) -> Option<TokenAmount> {
-    use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_distribution::accessors::v0::TokenOncePerIdentityDistributionV0Methods;
     config
         .distribution_rules()
         .once_per_identity_distribution()
@@ -162,7 +163,6 @@ mod tests {
             v1.pre_programmed_distribution,
             base.pre_programmed_distribution
         );
-        use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_distribution::accessors::v0::TokenOncePerIdentityDistributionV0Methods;
         assert_eq!(
             rules.once_per_identity_distribution().map(|d| d.amount()),
             Some(40)

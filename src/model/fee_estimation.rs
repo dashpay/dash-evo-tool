@@ -19,7 +19,6 @@ use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress}
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
-use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
@@ -60,7 +59,10 @@ use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
     AgreedFeeMultiplier, DocumentActionFeeAgreement,
 };
 use dash_sdk::dpp::prelude::FeeMultiplier;
-use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
+use dash_sdk::dpp::state_transition::{
+    StateTransitionEstimatedFeeValidation,
+    batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType,
+};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use std::collections::BTreeMap;

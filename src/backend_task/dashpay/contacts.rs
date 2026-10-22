@@ -148,7 +148,7 @@ where
     DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
 {
     let documents = fetch_contact_info_documents(query, fetch_page).await?;
-    Ok(legacy_details_from(&documents, derive_keys).await)
+    legacy_details_from(&documents, derive_keys).await
 }
 
 /// Every page of the owner's `contactInfo` documents, oldest first by
@@ -171,11 +171,17 @@ where
 }
 
 /// The details `documents` (oldest first) hold under the legacy key root;
-/// a later document for a contact replaces an earlier one.
+/// a later document for a contact replaces an earlier one. A document that
+/// does not open is skipped.
+///
+/// # Errors
+///
+/// The keys could not be derived for a reason that holds for every
+/// document, such as a cancelled password prompt.
 async fn legacy_details_from<D, DF>(
     documents: &[Document],
     mut derive_keys: D,
-) -> HashMap<Identifier, ContactData>
+) -> Result<HashMap<Identifier, ContactData>, TaskError>
 where
     D: FnMut(u32) -> DF,
     DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
@@ -189,8 +195,11 @@ where
         else {
             continue;
         };
-        let Ok((enc_user_id_key, private_data_key)) = derive_keys(deriv_idx).await else {
-            continue;
+        let (enc_user_id_key, private_data_key) = match derive_keys(deriv_idx).await {
+            Ok(keys) => keys,
+            // The document's own index cannot be derived.
+            Err(TaskError::ContactKeyDerivationFailed { .. }) => continue,
+            Err(error) => return Err(error),
         };
         let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") else {
             continue;
@@ -231,7 +240,7 @@ where
         );
     }
 
-    contact_info_map
+    Ok(contact_info_map)
 }
 
 /// The details the owner's stored `contactInfo` documents hold.
@@ -241,8 +250,8 @@ pub(super) struct StoredContactDetails {
     /// guess past that error; the contacts list may.
     pub(super) published: Result<BTreeMap<Identifier, ContactDetails>, TaskError>,
     /// From documents older versions of this app wrote under the legacy
-    /// key root, newest per contact.
-    pub(super) legacy: HashMap<Identifier, ContactData>,
+    /// key root, newest per contact; an error as for `published`.
+    pub(super) legacy: Result<HashMap<Identifier, ContactData>, TaskError>,
 }
 
 /// Read every `contactInfo` document the owner stored, both as DIP-0015
@@ -280,10 +289,15 @@ pub(super) async fn stored_contact_details(
         }
         Err(_) => Ok(BTreeMap::new()),
     };
-    let legacy = legacy_details_from(&documents, |derivation_index| {
-        derive_contact_info_keys(app_context, identity, derivation_index)
-    })
-    .await;
+    // Without a wallet seed no legacy key exists, so no document opens.
+    let legacy = if identity.dashpay_wallet_seed_hash().is_some() {
+        legacy_details_from(&documents, |derivation_index| {
+            derive_contact_info_keys(app_context, identity, derivation_index)
+        })
+        .await
+    } else {
+        Ok(HashMap::new())
+    };
     Ok(StoredContactDetails { published, legacy })
 }
 
@@ -454,6 +468,10 @@ pub async fn load_contacts(
     let mut published = published.unwrap_or_else(|error| {
         tracing::debug!(?error, "LoadContacts: published contact details not read");
         BTreeMap::new()
+    });
+    let legacy = legacy.unwrap_or_else(|error| {
+        tracing::debug!(?error, "LoadContacts: legacy contact details not read");
+        HashMap::new()
     });
 
     // Build enriched contact list with basic data

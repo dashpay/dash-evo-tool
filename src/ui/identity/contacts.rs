@@ -80,17 +80,15 @@ pub const UNHIDE_TOOLTIP: &str = "Show this contact in your contact list again."
 /// count tells the user there is something to recover.
 pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 
-/// Why a contact the user never hid by hand can still be in this section:
-/// declining or cancelling a request hides that person, and a contact that is
-/// later established with them stays hidden until it is unhidden here.
-pub const HIDDEN_EXPLAINER: &str = "Hidden contacts are kept out of your list. Declining or cancelling a request also hides that \
-     person. Unhide anyone you want back.";
+/// Hidden-section caption. Only an explicit hide puts a contact here;
+/// declining or cancelling a request writes no contact details.
+pub const HIDDEN_EXPLAINER: &str =
+    "Hidden contacts are kept out of your list. Unhide anyone you want back.";
 
 /// Sent-section caption. A DashPay contact request cannot be deleted from the
-/// network once sent, so the copy states plainly what Cancel really does
-/// instead of promising a withdrawal the protocol cannot deliver.
-pub const CANCEL_EXPLAINER: &str = "Cancelling a request hides it and tells the other person you are no longer waiting. The \
-     original request stays on the network.";
+/// network once sent, and Cancel publishes nothing, so the copy states plainly
+/// that it only hides the request on this device.
+pub const CANCEL_EXPLAINER: &str = "Cancelling a request hides it on this device only. The other person is not notified, and the original request stays on the network.";
 
 /// Below this tab width the detail pane stacks under the contact list. Home
 /// and Profile switch to one column at the same width.

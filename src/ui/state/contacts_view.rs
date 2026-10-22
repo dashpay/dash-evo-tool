@@ -59,9 +59,8 @@ pub struct ContactsState {
     /// Confirmed notes override lagging reads until the network returns them.
     confirmed_notes: HashMap<(Identifier, Identifier), Option<String>>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
-    /// offer a way back. Declining or cancelling a request hides that person,
-    /// so without this list a contact could only be recovered from the legacy
-    /// DashPay screen.
+    /// offer a way back; without this list a hidden contact could only be
+    /// recovered from the legacy DashPay screen.
     hidden: Vec<ContactData>,
     /// Whether the hidden-contacts section is expanded.
     show_hidden: bool,

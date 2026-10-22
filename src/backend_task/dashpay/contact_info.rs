@@ -165,12 +165,12 @@ impl SaveOps for PlatformSaveOps<'_> {
             super::contacts::stored_contact_details(self.app_context, self.sdk, self.identity)
                 .await?;
         let published = stored.published?.remove(&self.contact_id);
+        let legacy = stored.legacy?;
         let synced_before = self
             .backend
             .dashpay_details_synced(&owner, &self.contact_id)
             || super::contacts::holds_details(published.as_ref(), local.as_ref());
-        let legacy = stored
-            .legacy
+        let legacy = legacy
             .get(&self.contact_id)
             .map(super::contacts::ContactData::details);
         Ok(super::contacts::shown_contact_details(
@@ -439,6 +439,69 @@ mod tests {
         let private_data = platform_encryption::encrypt_private_data(&KEY, &[5; 16], &plaintext);
         document.set("privateData", Value::Bytes(private_data));
         document
+    }
+
+    /// The legacy details read from `documents` with keys from `derive_keys`.
+    async fn legacy_load<D, DF>(
+        documents: Vec<Document>,
+        derive_keys: D,
+    ) -> Result<std::collections::HashMap<Identifier, super::super::contacts::ContactData>, TaskError>
+    where
+        D: FnMut(u32) -> DF,
+        DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
+    {
+        let contract =
+            load_system_data_contract(SystemDataContract::Dashpay, PlatformVersion::latest())
+                .expect("DashPay contract fixture");
+        let query = DocumentQuery::new(contract, "contactInfo").expect("contactInfo query");
+        let mut page = Some(contact_details_page(documents));
+        super::super::contacts::load_contact_details(
+            query,
+            |_| ready(Ok::<_, TaskError>(page.take().unwrap_or_default())),
+            derive_keys,
+        )
+        .await
+    }
+
+    /// A cancelled password prompt for the legacy keys fails the read, so a
+    /// save does not keep a legacy-only nickname or hidden flag as empty.
+    #[tokio::test]
+    async fn a_cancelled_legacy_key_prompt_fails_the_read() {
+        let result = legacy_load(vec![saved_note_document(1, id(201), "n")], |_| {
+            ready(Err(TaskError::SecretPromptCancelled))
+        })
+        .await;
+
+        assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
+    }
+
+    /// A document whose own key index cannot be derived is skipped; the rest
+    /// still load.
+    #[tokio::test]
+    async fn an_underivable_legacy_document_is_skipped() {
+        let (readable, unreadable) = (id(201), id(202));
+        let mut bad = saved_note_document(2, unreadable, "x");
+        bad.set("derivationEncryptionKeyIndex", Value::U32(u32::MAX));
+        let details = legacy_load(vec![saved_note_document(1, readable, "n"), bad], |index| {
+            ready(if index == u32::MAX {
+                Err(TaskError::ContactKeyDerivationFailed {
+                    source: Box::new(
+                        dash_sdk::dpp::key_wallet::bip32::ChildNumber::from_hardened_idx(index)
+                            .expect_err("out of range"),
+                    ),
+                })
+            } else {
+                Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))
+            })
+        })
+        .await
+        .expect("loaded");
+
+        assert_eq!(
+            details.get(&readable).and_then(|c| c.note.as_deref()),
+            Some("n")
+        );
+        assert!(!details.contains_key(&unreadable));
     }
 
     /// The details loaded from `pages`, and whether every page was asked for

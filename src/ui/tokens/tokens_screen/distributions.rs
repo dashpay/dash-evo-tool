@@ -1115,14 +1115,20 @@ impl TokensScreen {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label("Amount each identity can claim (base tokens):");
-                ui.text_edit_singleline(&mut self.once_per_identity_amount_input);
+                let response = ui.text_edit_singleline(&mut self.once_per_identity_amount_input);
+                if response.changed() {
+                    sanitize_u64(&mut self.once_per_identity_amount_input);
+                    self.once_per_identity_amount_error = None;
+                }
+                if response.lost_focus() && !self.once_per_identity_amount_input.trim().is_empty() {
+                    self.once_per_identity_amount_error =
+                        parse_once_per_identity_amount(&self.once_per_identity_amount_input)
+                            .err()
+                            .map(|error| error.to_string());
+                }
             });
-            if !self.once_per_identity_amount_input.trim().is_empty()
-                && let Err(error) =
-                    parse_once_per_identity_amount(&self.once_per_identity_amount_input)
-            {
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.colored_label(DashColors::error_color(dark_mode), error.to_string());
+            if let Some(error) = &self.once_per_identity_amount_error {
+                ui.colored_label(DashColors::VALIDATION_WARNING, error);
             }
         }
     }

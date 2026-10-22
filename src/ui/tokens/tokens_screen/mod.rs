@@ -1198,6 +1198,8 @@ pub struct TokensScreen {
     pub enable_once_per_identity_distribution: bool,
     /// The amount, in base token units, every identity may claim once.
     pub once_per_identity_amount_input: String,
+    /// Why the once-per-identity amount is not valid, shown under the field.
+    once_per_identity_amount_error: Option<String>,
 
     // New Tokens Destination Identity
     pub new_tokens_destination_identity_should_default_to_contract_owner: bool,
@@ -1627,6 +1629,7 @@ impl TokensScreen {
             enable_pre_programmed_distribution: false,
             enable_once_per_identity_distribution: false,
             once_per_identity_amount_input: String::new(),
+            once_per_identity_amount_error: None,
             // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
             // For an example, we'll keep it simple:
             pre_programmed_distributions: Vec::new(),
@@ -2402,6 +2405,7 @@ impl TokensScreen {
         self.pre_programmed_distributions = Vec::new();
         self.enable_once_per_identity_distribution = false;
         self.once_per_identity_amount_input = String::new();
+        self.once_per_identity_amount_error = None;
         self.new_tokens_destination_other_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
         self.new_tokens_destination_other_identity = "".to_string();

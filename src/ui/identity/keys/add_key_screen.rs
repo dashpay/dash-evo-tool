@@ -148,6 +148,8 @@ pub struct AddKeyScreen {
     /// Give the key an expiry, this many days from now.
     enable_expiry: bool,
     validity_days_input: String,
+    /// Why the number of days is not valid, shown under the field.
+    validity_days_error: Option<String>,
 }
 
 impl AddKeyScreen {
@@ -193,6 +195,7 @@ impl AddKeyScreen {
             budget: None,
             enable_expiry: false,
             validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -248,6 +251,7 @@ impl AddKeyScreen {
             budget: None,
             enable_expiry: false,
             validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -303,6 +307,7 @@ impl AddKeyScreen {
             budget: None,
             enable_expiry: false,
             validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -335,6 +340,16 @@ impl AddKeyScreen {
         } else {
             None
         };
+
+        // A mistyped number of days is a note under its field, not an error
+        // for the whole screen.
+        if self.limits_offered()
+            && self.enable_expiry
+            && let Err(error) = parse_key_validity_days(&self.validity_days_input)
+        {
+            self.validity_days_error = Some(error.to_string());
+            return app_action;
+        }
 
         let limits = match self.requested_limits() {
             Ok(limits) => limits,
@@ -537,14 +552,29 @@ impl AddKeyScreen {
                 checkbox.on_disabled_hover_text(unavailable_hint);
             }
             if available && self.enable_expiry {
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(&mut self.validity_days_input)
                         .hint_text("30")
                         .desired_width(80.0),
                 );
+                if response.changed() {
+                    self.validity_days_error = None;
+                }
+                if response.lost_focus() {
+                    self.validity_days_error = parse_key_validity_days(&self.validity_days_input)
+                        .err()
+                        .map(|error| error.to_string());
+                }
             }
         });
         ui.end_row();
+        if let Some(error) = &self.validity_days_error
+            && self.enable_expiry
+        {
+            ui.label("");
+            ui.colored_label(DashColors::VALIDATION_WARNING, error);
+            ui.end_row();
+        }
 
         if !available {
             self.enable_budget = false;
@@ -2134,6 +2164,56 @@ mod derived_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a mistyped number of days surfaced as a global error banner
+    /// that put the whole screen into its error state, instead of a note
+    /// under the field like the app's other form fields.
+    #[test]
+    fn a_mistyped_expiry_is_reported_under_its_field() {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_platform_protocol_version(14);
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                dash_sdk::platform::Identifier::new([0xA1; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+        let mut screen = AddKeyScreen::new(identity, &context);
+        screen.purpose = Purpose::AUTHENTICATION;
+        screen.security_level = SecurityLevel::HIGH;
+        screen.enable_expiry = true;
+        screen.validity_days_input = "thirty".to_string();
+
+        let action = screen.validate_and_add_key();
+        assert!(matches!(action, AppAction::None));
+        assert!(
+            !matches!(screen.add_key_status, AddKeyStatus::Error),
+            "a typo must not put the screen into its error state"
+        );
+        assert_eq!(
+            screen.validity_days_error.as_deref(),
+            Some(KeyLimitsError::DaysNotANumber.to_string().as_str())
+        );
+    }
 
     /// SEC-104: both "on the network, not saved here" outcomes switch the
     /// screen to keeping the private key on hand; the derived-key ones switch

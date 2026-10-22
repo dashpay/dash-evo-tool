@@ -1193,20 +1193,29 @@ impl KeyInfoScreen {
                             .strong()
                             .color(text_primary),
                     );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.raise_days_input)
-                            .hint_text("30")
-                            .desired_width(80.0),
-                    )
-                    .on_hover_text(
-                        "Counted from the current expiry, or from today if the key has already expired.",
-                    );
+                    let response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.raise_days_input)
+                                .hint_text("30")
+                                .desired_width(80.0),
+                        )
+                        .on_hover_text(
+                            "Counted from the current expiry, or from today if the key has already expired.",
+                        );
+                    if response.changed() {
+                        self.raise_form_error = None;
+                    }
+                    if response.lost_focus() && !self.raise_days_input.trim().is_empty() {
+                        self.raise_form_error = parse_key_validity_days(&self.raise_days_input)
+                            .err()
+                            .map(|error| error.to_string());
+                    }
                     ui.end_row();
                 }
             });
 
         if let Some(error) = &self.raise_form_error {
-            ui.label(RichText::new(error).color(DashColors::error_color(dark_mode)));
+            ui.colored_label(DashColors::VALIDATION_WARNING, error);
         }
 
         ui.add_space(6.0);

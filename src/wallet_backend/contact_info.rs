@@ -160,8 +160,10 @@ impl WalletBackend {
     ///
     /// # Errors
     ///
-    /// The seed could not be used, for example because the password prompt
-    /// was cancelled.
+    /// The identity's wallet is not loaded or not registered
+    /// ([`TaskError::WalletNotLoaded`], [`TaskError::WalletLockedNotLoaded`],
+    /// [`TaskError::WalletStateInconsistent`]), or the seed could not be used,
+    /// for example because the password prompt was cancelled.
     pub(crate) async fn dashpay_open_contact_infos(
         &self,
         identity: &QualifiedIdentity,
@@ -173,9 +175,10 @@ impl WalletBackend {
         let Some(seed_hash) = identity.dashpay_wallet_seed_hash() else {
             return Ok(BTreeMap::new());
         };
-        let Ok(wallet) = self.resolve_wallet(&seed_hash).await else {
-            return Ok(BTreeMap::new());
-        };
+        // A wallet that cannot be resolved is an error: a save keeps every
+        // field it does not replace from this read, so an empty result here
+        // would publish empty fields. Display callers degrade explicitly.
+        let wallet = self.resolve_wallet(&seed_hash).await?;
         let owner = identity.identity.id();
         let identity_index = {
             let state = wallet.state().await;
@@ -662,6 +665,37 @@ mod tests {
             Err(TaskError::ContactInfoContactNotEstablished)
         ));
         assert_eq!(contact_info_write_index(Some(3), true).expect("index"), 3);
+    }
+
+    /// PRRT_kwDOM8GK3c6vvZQ5: an identity whose wallet cannot be resolved is
+    /// an error, not "no details published". A save reads this baseline for
+    /// every field it keeps, so an empty one would publish empty fields.
+    #[tokio::test]
+    async fn an_unresolved_wallet_is_an_error_not_an_empty_baseline() {
+        use crate::model::wallet::Wallet as DetWallet;
+        use std::sync::RwLock;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let wallet = DetWallet::new_from_seed(SEED, NETWORK, None, None).expect("wallet");
+        let mut identity =
+            crate::context::test_support::bare_user_identity(Identifier::from([5; 32]), NETWORK);
+        identity.associated_wallets =
+            BTreeMap::from([(wallet.seed_hash(), Arc::new(RwLock::new(wallet)))]);
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let sealed = crypto
+            .contact_info_seal(&root(IDENTITY_INDEX, 2), 0, &[7; 32], b"", &[0; 16])
+            .await
+            .expect("seal");
+
+        let result = backend
+            .dashpay_open_contact_infos(&identity, &[stored_document(1, 2, 0, &sealed)])
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::WalletNotLoaded { .. })),
+            "{result:?}"
+        );
     }
 
     /// Everything other than contactInfo is refused rather than served.

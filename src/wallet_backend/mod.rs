@@ -3289,6 +3289,34 @@ fn bip44_account0_xpub<'a>(
         .map(|a| a.account_xpub)
 }
 
+/// Classify upstream's refusal to shield more than the Platform addresses can
+/// fund, stating the planner's own maximum from `preflight` — a plan taken
+/// after the refusal, since the refusal's `available` is the usable balance
+/// with the fee reserve still in it, or the whole account balance when no
+/// address can keep the reserve back. Without a plan there is no trustworthy
+/// maximum, so the refusal keeps the generic envelope. Pure — unit-testable.
+fn shield_capacity_exceeded_error(
+    source: platform_wallet::error::PlatformWalletError,
+    preflight: Result<
+        platform_wallet::ShieldedShieldPreflight,
+        platform_wallet::error::PlatformWalletError,
+    >,
+) -> TaskError {
+    match preflight {
+        Ok(preflight) => TaskError::ShieldFromPlatformCapacityExceeded {
+            max_shieldable: if preflight.can_shield {
+                preflight.max_shieldable_credits
+            } else {
+                0
+            },
+            source: Box::new(source),
+        },
+        Err(_) => TaskError::WalletBackend {
+            source: Arc::new(source),
+        },
+    }
+}
+
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
 /// [`TaskError`] variant.
 ///
@@ -3336,13 +3364,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
 
-        P::PlatformShieldCapacityExceeded {
-            available,
-            required,
-        } => TaskError::ShieldFromPlatformCapacityExceeded {
-            available,
-            required,
-            source: Box::new(e),
+        // Only shielding from Platform raises this, and
+        // `WalletBackend::shield_from_balance` intercepts it first through
+        // [`shield_capacity_exceeded_error`]: its `available` is a gross
+        // balance, not a maximum the user can act on.
+        other @ P::PlatformShieldCapacityExceeded { .. } => TaskError::WalletBackend {
+            source: Arc::new(other),
         },
 
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
@@ -4668,25 +4695,85 @@ mod tests {
         );
     }
 
-    /// `map_shielded_op_error` must route an ambiguous post-broadcast
-    /// `ShieldedSpendUnconfirmed` to the per-operation `*ConfirmationUnknown`
-    /// variant keyed off `operation`, so the UI surfaces the correct
-    /// "do not re-submit" message and never falsely reports success. A wrong
-    /// route here is a funds-safety bug (the user re-spends thinking it failed),
-    /// so this guards the exact string keys upstream emits.
+    fn shield_preflight(
+        usable_balance_credits: u64,
+        fee_reserve_credits: u64,
+    ) -> platform_wallet::ShieldedShieldPreflight {
+        let max_shieldable_credits = usable_balance_credits.saturating_sub(fee_reserve_credits);
+        platform_wallet::ShieldedShieldPreflight {
+            can_shield: max_shieldable_credits > 0,
+            account_balance_credits: usable_balance_credits,
+            usable_balance_credits,
+            fee_reserve_credits,
+            max_shieldable_credits,
+            reason: None,
+        }
+    }
+
+    /// Upstream's capacity refusal reports the usable balance, which still
+    /// holds the fee reserve. The user is shown the planner's own maximum.
     #[test]
-    fn map_shielded_op_error_types_a_shield_above_the_planner_capacity() {
+    fn a_shield_above_capacity_states_the_planner_maximum() {
         use platform_wallet::error::PlatformWalletError as P;
-        let mapped = map_shielded_op_error(P::PlatformShieldCapacityExceeded {
-            available: 7,
-            required: 9,
-        });
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: USABLE,
+                required: USABLE + RESERVE,
+            },
+            Ok(shield_preflight(USABLE, RESERVE)),
+        );
+
         assert!(
             matches!(
                 mapped,
                 TaskError::ShieldFromPlatformCapacityExceeded {
-                    available: 7,
-                    required: 9,
+                    max_shieldable,
+                    ..
+                } if max_shieldable == USABLE - RESERVE
+            ),
+            "{mapped:?}"
+        );
+        let message = mapped.to_string();
+        assert!(
+            message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE - RESERVE
+            )),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE
+            )),
+            "{message}"
+        );
+    }
+
+    /// When no address can keep the fee reserve back, upstream reports the
+    /// whole account balance, but nothing at all can be shielded.
+    #[test]
+    fn a_shield_with_no_fee_bearing_address_states_a_zero_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const BALANCE: u64 = 50_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        let mut preflight = shield_preflight(0, RESERVE);
+        preflight.account_balance_credits = BALANCE;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: BALANCE,
+                required: 1 + RESERVE,
+            },
+            Ok(preflight),
+        );
+
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable: 0,
                     ..
                 }
             ),
@@ -4694,6 +4781,32 @@ mod tests {
         );
     }
 
+    /// Without a fresh plan there is no trustworthy maximum to state, so the
+    /// refusal falls back to the generic wallet envelope rather than a guess.
+    #[test]
+    fn a_shield_capacity_refusal_without_a_plan_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: 7,
+                required: 9,
+            },
+            Err(P::ShieldedNotBound),
+        );
+
+        assert!(
+            matches!(mapped, TaskError::WalletBackend { .. }),
+            "{mapped:?}"
+        );
+    }
+
+    /// `map_shielded_op_error` must route an ambiguous post-broadcast
+    /// `ShieldedSpendUnconfirmed` to the per-operation `*ConfirmationUnknown`
+    /// variant keyed off `operation`, so the UI surfaces the correct
+    /// "do not re-submit" message and never falsely reports success. A wrong
+    /// route here is a funds-safety bug (the user re-spends thinking it failed),
+    /// so this guards the exact string keys upstream emits.
     #[test]
     fn map_shielded_op_error_routes_spend_unconfirmed_by_operation() {
         use platform_wallet::error::PlatformWalletError as P;

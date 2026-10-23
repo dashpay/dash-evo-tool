@@ -165,6 +165,28 @@ impl ContactInfoUpdate {
         }
     }
 
+    /// Replace only the fields that differ between `opened`, the details an
+    /// editor started from, and `edited`, what the user left in it; every
+    /// other field keeps the latest saved value.
+    ///
+    /// An editor that starts from a local copy must save this way: replacing
+    /// a field the user did not touch would overwrite a newer value saved
+    /// from another device with the local copy's older one.
+    pub fn edits(opened: &ContactDetails, edited: ContactDetails) -> Self {
+        fn field<T: PartialEq>(opened: &T, edited: T) -> ContactInfoField<T> {
+            if *opened == edited {
+                ContactInfoField::Preserve
+            } else {
+                ContactInfoField::Replace(edited)
+            }
+        }
+        Self {
+            nickname: field(&opened.nickname, edited.nickname),
+            note: field(&opened.note, edited.note),
+            display_hidden: field(&opened.hidden, edited.hidden),
+        }
+    }
+
     /// The details to save: `current` with this update's replacements.
     pub fn apply_to(&self, current: ContactDetails) -> ContactDetails {
         fn pick<T: Clone>(field: &ContactInfoField<T>, current: T) -> T {
@@ -549,6 +571,39 @@ mod tests {
         assert_eq!(
             ContactInfoUpdate::replace_all(None, None, false).apply_to(current),
             ContactDetails::default()
+        );
+    }
+
+    /// Only the fields an editor changed are replaced.
+    #[test]
+    fn edits_replace_only_the_changed_fields() {
+        let opened = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: false,
+        };
+        assert_eq!(
+            ContactInfoUpdate::edits(&opened, opened.clone()),
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Preserve,
+                note: ContactInfoField::Preserve,
+                display_hidden: ContactInfoField::Preserve,
+            }
+        );
+        assert_eq!(
+            ContactInfoUpdate::edits(
+                &opened,
+                ContactDetails {
+                    nickname: None,
+                    note: Some("n".into()),
+                    hidden: false,
+                }
+            ),
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Replace(None),
+                note: ContactInfoField::Replace(Some("n".into())),
+                display_hidden: ContactInfoField::Preserve,
+            }
         );
     }
 

@@ -4,7 +4,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactInfoField, ContactInfoUpdate};
+use crate::model::dashpay::{ContactDetails, ContactInfoField, ContactInfoUpdate};
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
@@ -63,6 +63,9 @@ pub struct ContactDetailsScreen {
     edit_nickname: String,
     edit_note: String,
     edit_hidden: bool,
+    /// The details the editor opened with, so a save replaces only the
+    /// fields the user changed.
+    edit_opened: ContactDetails,
     loading: bool,
     show_info_popup: bool,
     needs_backend_fetch: bool,
@@ -85,6 +88,7 @@ impl ContactDetailsScreen {
             edit_nickname: String::new(),
             edit_note: String::new(),
             edit_hidden: false,
+            edit_opened: ContactDetails::default(),
             loading: false,
             show_info_popup: false,
             needs_backend_fetch: true,
@@ -167,24 +171,27 @@ impl ContactDetailsScreen {
             self.edit_nickname = info.nickname.clone().unwrap_or_default();
             self.edit_note = info.note.clone().unwrap_or_default();
             self.edit_hidden = info.is_hidden;
+            self.edit_opened = ContactDetails {
+                nickname: info.nickname.clone(),
+                note: info.note.clone(),
+                hidden: info.is_hidden,
+            };
             self.editing_info = true;
         }
     }
 
     fn save_contact_info(&mut self) -> AppAction {
-        let update = ContactInfoUpdate {
-            nickname: ContactInfoField::Replace(if self.edit_nickname.is_empty() {
-                None
-            } else {
-                Some(self.edit_nickname.clone())
-            }),
-            note: ContactInfoField::Replace(if self.edit_note.is_empty() {
-                None
-            } else {
-                Some(self.edit_note.clone())
-            }),
-            display_hidden: ContactInfoField::Replace(self.edit_hidden),
-        };
+        let non_empty = |text: &str| (!text.is_empty()).then(|| text.to_string());
+        // The editor opens from this device's copy, which can be older than
+        // the published details; untouched fields keep the published ones.
+        let update = ContactInfoUpdate::edits(
+            &self.edit_opened,
+            ContactDetails {
+                nickname: non_empty(&self.edit_nickname),
+                note: non_empty(&self.edit_note),
+                hidden: self.edit_hidden,
+            },
+        );
         self.pending_update = Some(update.clone());
 
         self.loading = true;
@@ -719,5 +726,74 @@ impl ScreenLike for ContactDetailsScreen {
             self.pending_update = None;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{bare_user_identity, test_app_context};
+    use dash_sdk::dpp::dashcore::Network;
+
+    fn dispatched_update(action: AppAction) -> ContactInfoUpdate {
+        match action {
+            AppAction::BackendTask(BackendTask::DashPayTask(task)) => match *task {
+                DashPayTask::UpdateContactInfo { update, .. } => update,
+                other => panic!("expected UpdateContactInfo, got {other:?}"),
+            },
+            _ => panic!("expected a DashPay backend task"),
+        }
+    }
+
+    /// This screen opens from this device's copy of the details, which can be
+    /// older than what another device or the Identity Hub published. Saving
+    /// an edited note must keep the published nickname and visibility rather
+    /// than republish the stale local ones.
+    #[test]
+    fn saving_one_edited_field_keeps_the_published_others() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+
+        screen.start_editing();
+        screen.edit_note = "Met at the meetup".to_string();
+        let update = dispatched_update(screen.save_contact_info());
+
+        assert_eq!(
+            update,
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Preserve,
+                note: ContactInfoField::Replace(Some("Met at the meetup".into())),
+                display_hidden: ContactInfoField::Preserve,
+            }
+        );
+    }
+
+    /// Clearing a field is an edit too: it is sent as a replacement with no
+    /// value, not dropped.
+    #[test]
+    fn clearing_and_hiding_are_sent_as_edits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+        if let Some(info) = &mut screen.contact_info {
+            info.nickname = Some("Bao".into());
+        }
+
+        screen.start_editing();
+        screen.edit_nickname.clear();
+        screen.edit_hidden = true;
+        let update = dispatched_update(screen.save_contact_info());
+
+        assert_eq!(
+            update,
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Replace(None),
+                note: ContactInfoField::Preserve,
+                display_hidden: ContactInfoField::Replace(true),
+            }
+        );
     }
 }

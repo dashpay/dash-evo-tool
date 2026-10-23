@@ -222,7 +222,7 @@ impl std::fmt::Display for AddressKind {
 ///
 /// This is the domain type produced by `AddressInput` via `ComponentResponse`.
 /// Each variant carries the parsed representation for its address type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidatedAddress {
     /// A validated Core L1 address.
     Core(Address),

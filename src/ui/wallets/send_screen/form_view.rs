@@ -756,26 +756,39 @@ impl WalletSendScreen {
         };
         let wallet = self.wallet_name(&to_wallet);
         let auto = self.form.receive_into() == ReceiveInto::Auto;
-        let prefix = if auto { "Auto: to" } else { "To" };
         match self.route.destination_status.clone() {
             DestinationStatus::Ready => {
                 match (&self.validated_destination, self.route.receive_kind) {
                     (Some(ValidatedAddress::Shielded(address)), _) if address.is_empty() => {
-                        status_line(ui, format!("{prefix} your private balance in {wallet}"))
+                        status_line(
+                            ui,
+                            if auto {
+                                format!("Auto: to your private balance in {wallet}")
+                            } else {
+                                format!("To your private balance in {wallet}")
+                            },
+                        )
                     }
-                    (Some(ValidatedAddress::Shielded(_)), _) => {
-                        status_line(ui, format!("{prefix} the private balance of {wallet}"))
-                    }
+                    (Some(ValidatedAddress::Shielded(_)), _) => status_line(
+                        ui,
+                        if auto {
+                            format!("Auto: to the private balance of {wallet}")
+                        } else {
+                            format!("To the private balance of {wallet}")
+                        },
+                    ),
                     (Some(ValidatedAddress::Identity { .. }), _) => {}
                     (Some(destination), Some(kind)) => {
                         let address = destination.to_address_string();
+                        let kind = kind_label(kind);
+                        let short = short_address(&address);
                         status_label(
                             ui,
-                            format!(
-                                "{prefix} a new {kind} address in {wallet} · {address}",
-                                kind = kind_label(kind),
-                                address = short_address(&address)
-                            ),
+                            if auto {
+                                format!("Auto: to a new {kind} address in {wallet} · {short}")
+                            } else {
+                                format!("To a new {kind} address in {wallet} · {short}")
+                            },
                         )
                         .info_tooltip(address.as_str());
                     }

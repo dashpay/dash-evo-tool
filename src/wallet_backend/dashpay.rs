@@ -1267,6 +1267,17 @@ impl WalletBackend {
         kv_contains(&self.kv(), owner, KV_PREFIX_DECLINED, counterparty_id)
     }
 
+    /// [`Self::dashpay_is_declined`] for a decision that changes state: a
+    /// failed read is an error, not "not declined".
+    pub(crate) fn dashpay_decline_recorded(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_DECLINED, counterparty_id)
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
+    }
+
     /// Clear `owner`'s decline marker for `counterparty_id`. Idempotent —
     /// clearing an absent marker is `Ok(())`.
     ///

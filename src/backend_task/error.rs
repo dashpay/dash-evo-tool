@@ -1365,6 +1365,17 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A contact request was published, but this device could not stop
+    /// hiding the person it was sent to (an earlier decline or withdrawal).
+    /// Sending the request again finishes the update without publishing.
+    #[error(
+        "Your contact request was sent, but this device could not update your contacts. Send the request to this person again to finish."
+    )]
+    DashPayContactRequestSentNotUpdated {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A private contact note exceeds the application's byte limit.
     #[error("This note is too long. Shorten it to save it.")]
     DashPayContactNoteTooLong {

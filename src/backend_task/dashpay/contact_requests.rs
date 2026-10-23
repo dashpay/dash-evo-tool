@@ -304,7 +304,8 @@ pub async fn send_contact_request_with_proof(
 
     if !existing.is_empty() {
         // A withdrawn request still stands on Platform: sending again restores
-        // it instead of publishing a duplicate.
+        // it instead of publishing a duplicate. This also finishes a send whose
+        // re-engagement failed after it was published.
         if let Ok(backend) = app_context.wallet_backend()
             && restore_withdrawn_request(&PlatformReEngage {
                 backend: &backend,
@@ -631,20 +632,12 @@ pub async fn send_contact_request_with_proof(
         // Sending to someone retires an earlier decline of their request and an
         // earlier withdrawal of ours: the user has deliberately re-engaged, so
         // neither direction may stay filtered out of the list.
-        // Both markers are cleared unconditionally — a failure on one must not
-        // leave the other standing.
-        let declined = backend.dashpay_unmark_declined(&owner_id, &to_identity_id);
-        let withdrawn = backend.dashpay_unmark_withdrawn(&owner_id, &to_identity_id);
-        let ignored = backend
-            .dashpay_unignore_contact_sender(&owner_id, &to_identity_id)
-            .await;
-        if let Err(err) = declined.and(withdrawn).and(ignored) {
-            tracing::debug!(
-                %err,
-                "Clearing the stale resolution markers failed; an earlier declined or \
-                 withdrawn request involving this person may stay hidden",
-            );
-        }
+        re_engage_after_send(&PlatformReEngage {
+            backend: &backend,
+            owner: owner_id,
+            peer: to_identity_id,
+        })
+        .await?;
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
@@ -829,18 +822,42 @@ trait ReEngageOps {
     ///
     /// The withdrawal record could not be read.
     fn is_withdrawn(&self) -> Result<bool, TaskError>;
+    /// # Errors
+    ///
+    /// The decline record could not be read.
+    fn is_declined(&self) -> Result<bool, TaskError>;
     /// Lift the ignore and clear the withdrawal and decline markers.
     fn re_engage(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
 }
 
-/// Restore a withdrawn request the owner sent earlier, which still stands on
-/// Platform; returns whether there was one. Nothing is published.
+/// Restore a request the owner sent earlier, which still stands on Platform,
+/// when this device still hides the person; returns whether it did. Nothing
+/// is published.
+///
+/// The person is hidden after a withdrawal, or after a decline that a send
+/// could not clear (see [`re_engage_after_send`]), so sending again retries.
 async fn restore_withdrawn_request<O: ReEngageOps>(ops: &O) -> Result<bool, TaskError> {
-    if !ops.is_withdrawn()? {
+    if !(ops.is_withdrawn()? || ops.is_declined()?) {
         return Ok(false);
     }
     ops.re_engage().await?;
     Ok(true)
+}
+
+/// Re-engage the recipient of a request that was just published.
+///
+/// # Errors
+///
+/// [`TaskError::DashPayContactRequestSentNotUpdated`] when this device could
+/// not be updated. The ignore is lifted before the markers are cleared, so a
+/// failure leaves a marker standing and sending again finishes the update
+/// through [`restore_withdrawn_request`].
+async fn re_engage_after_send<O: ReEngageOps>(ops: &O) -> Result<(), TaskError> {
+    ops.re_engage()
+        .await
+        .map_err(|source| TaskError::DashPayContactRequestSentNotUpdated {
+            source: Box::new(source),
+        })
 }
 
 struct PlatformReEngage<'a> {
@@ -853,6 +870,11 @@ impl ReEngageOps for PlatformReEngage<'_> {
     fn is_withdrawn(&self) -> Result<bool, TaskError> {
         self.backend
             .dashpay_withdrawal_recorded(&self.owner, &self.peer)
+    }
+
+    fn is_declined(&self) -> Result<bool, TaskError> {
+        self.backend
+            .dashpay_decline_recorded(&self.owner, &self.peer)
     }
 
     async fn re_engage(&self) -> Result<(), TaskError> {
@@ -1366,7 +1388,9 @@ mod tests {
     #[derive(Default)]
     struct ScriptedReEngage {
         withdrawn: bool,
+        declined: bool,
         unreadable: bool,
+        re_engage_fails: bool,
         re_engaged: std::sync::Mutex<bool>,
     }
 
@@ -1380,10 +1404,52 @@ mod tests {
             Ok(self.withdrawn)
         }
 
+        fn is_declined(&self) -> Result<bool, TaskError> {
+            Ok(self.declined)
+        }
+
         async fn re_engage(&self) -> Result<(), TaskError> {
+            if self.re_engage_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
             *self.re_engaged.lock().unwrap() = true;
             Ok(())
         }
+    }
+
+    /// A send that reached Platform but could not update this device is
+    /// reported, not shown as complete: the person could stay hidden here.
+    #[tokio::test]
+    async fn a_failed_re_engagement_after_a_send_is_reported() {
+        let ops = ScriptedReEngage {
+            re_engage_fails: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            re_engage_after_send(&ops).await,
+            Err(TaskError::DashPayContactRequestSentNotUpdated { .. })
+        ));
+        assert!(
+            re_engage_after_send(&ScriptedReEngage::default())
+                .await
+                .is_ok()
+        );
+    }
+
+    /// Sending again retries a re-engagement a failed send left unfinished:
+    /// the decline it did not clear is cleared now, with nothing published.
+    #[tokio::test]
+    async fn a_decline_left_by_a_failed_send_is_retried_on_the_next_send() {
+        let ops = ScriptedReEngage {
+            declined: true,
+            ..Default::default()
+        };
+
+        assert!(restore_withdrawn_request(&ops).await.expect("restored"));
+        assert!(*ops.re_engaged.lock().unwrap());
     }
 
     /// PRRT_kwDOM8GK3c6vWRKe: accepting (or sending again) where the owner's

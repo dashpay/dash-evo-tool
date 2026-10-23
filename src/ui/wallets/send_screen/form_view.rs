@@ -447,7 +447,7 @@ impl WalletSendScreen {
                     format!(
                         "Auto: paying from {source} · {available} available",
                         source = kind_label(kind),
-                        available = format_credits_as_dash(available)
+                        available = format_selector_balance(available / CREDITS_PER_DUFF)
                     ),
                 ),
             },

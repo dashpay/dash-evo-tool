@@ -625,3 +625,25 @@ fn w3_choosing_an_explicit_source_does_not_shift_the_form() {
         );
     });
 }
+
+#[test]
+fn w2_the_auto_status_shows_the_balance_like_the_chips() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(&mut fixture.screen, platform_destination(), 1.0);
+        let (harness, _) = harness(fixture.screen, 900.0);
+
+        let status = harness
+            .get_by_label_contains("Auto: paying from Platform ·")
+            .accesskit_node()
+            .value()
+            .expect("status text");
+        let amount = status
+            .split(" · ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .expect("an amount");
+        let decimals = amount.split('.').nth(1).map_or(0, str::len);
+        assert_eq!(decimals, 4, "4 decimals like the chips: {status}");
+    });
+}

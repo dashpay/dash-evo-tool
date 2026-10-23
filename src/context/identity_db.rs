@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+mod balance_watermark;
 mod import_keys;
 mod migration;
 #[cfg(test)]
@@ -499,7 +500,36 @@ fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), Ta
     let scope = DetScope::Identity(id);
     kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
     kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
+    kv.delete(scope, balance_watermark::BALANCE_WATERMARK_KEY)
+        .map_err(identity_err)?;
     Ok(())
+}
+
+/// `qualified_identity` as its record write may store it: carrying the newer
+/// stored balance when its own is only a copy read earlier (see
+/// [`balance_watermark`]). A write that observed a balance adopts it first,
+/// through [`AppContext::adopt_balance_observation_locked`].
+fn with_reconciled_balance<'a>(
+    kv: &DetKv,
+    id: &[u8; 32],
+    record_exists: bool,
+    qualified_identity: &'a QualifiedIdentity,
+) -> std::result::Result<std::borrow::Cow<'a, QualifiedIdentity>, TaskError> {
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    let carried = qualified_identity.identity.balance();
+    let kept = balance_watermark::reconcile_stored_balance(
+        kv,
+        id,
+        record_exists,
+        carried,
+        crate::model::identity_balance::BalanceProvenance::Unobserved,
+    )?;
+    if kept == carried {
+        return Ok(std::borrow::Cow::Borrowed(qualified_identity));
+    }
+    let mut pinned = qualified_identity.clone();
+    pinned.identity.set_balance(kept);
+    Ok(std::borrow::Cow::Owned(pinned))
 }
 
 #[cfg(feature = "testing")]
@@ -760,6 +790,11 @@ impl AppContext {
                 }
             }
         }
+        let record_exists = kv
+            .contains(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?;
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, record_exists, qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
@@ -981,6 +1016,8 @@ impl AppContext {
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
             .unwrap_or((None, None));
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, existing.is_some(), qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
         let qi_bytes = encode_identity_blob_vault_first(

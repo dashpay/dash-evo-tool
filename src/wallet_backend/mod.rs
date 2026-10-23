@@ -594,6 +594,14 @@ impl WalletBackend {
         self.inner.pwm.sdk()
     }
 
+    /// Whether upstream refused to save wallet sync data during this run.
+    /// Once set it stays set until the backend is rebuilt: the saved sync
+    /// height is held back and the missing range is scanned again on the next
+    /// start.
+    pub(crate) fn sync_fault_detected(&self) -> bool {
+        self.inner.pwm.sync_fault_detected()
+    }
+
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
     /// persisted wallet via [`Self::load_from_persistor_seedless`] (per

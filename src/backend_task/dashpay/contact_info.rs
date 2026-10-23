@@ -700,6 +700,11 @@ pub async fn create_or_update_contact_info(
         let mut rng = StdRng::from_entropy();
         let entropy = Bytes32::random_with_rng(&mut rng);
 
+        // Before protocol version 14 this entropy-only id is the document's id,
+        // which Platform recomputes from the entropy. From protocol version 14
+        // (`Document::document_id_depends_on_nonce`) the id also commits to the
+        // identity contract nonce, so this one is only a placeholder that building
+        // the create transition replaces. Read the id from the confirmed document.
         let document_id = Document::generate_document_id_v0(
             &dashpay_contract.id(),
             &identity_id,

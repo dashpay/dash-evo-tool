@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 mod max_transfer;
 
+// TODO(shielded-identity-transfers): moving credits between identities and the
+// shielded pool (protocol version 14), and shielding to another wallet, are not
+// offered yet. See https://github.com/dashpay/dash-evo-tool/issues/1105
 /// The shielded-pool operations DET dispatches into the upstream
 /// `platform-wallet` coordinator.
 ///

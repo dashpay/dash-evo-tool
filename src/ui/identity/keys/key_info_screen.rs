@@ -943,11 +943,10 @@ impl KeyInfoScreen {
     /// raise, legacy recovery) to `action`, the frame's action so far.
     fn queued_requests(&mut self, mut action: AppAction) -> AppAction {
         if let Some(raise) = self.pending_raise.take() {
-            action |=
-                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
-                    identity: Box::new(self.identity.clone()),
-                    raise,
-                }));
+            action |= self.owned_request(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
+                identity: Box::new(self.identity.clone()),
+                raise,
+            }));
         }
 
         // Legacy recovery: the passive check goes out once per opened screen,
@@ -971,7 +970,7 @@ impl KeyInfoScreen {
         {
             if matches!(action, AppAction::None) {
                 self.remaining_budget = RemainingBudget::Loading;
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                action = self.owned_request(BackendTask::IdentityTask(
                     IdentityTask::FetchKeyRemainingBudgets {
                         identity_id: self.identity.identity.id(),
                         key_ids: vec![self.key.id()],
@@ -983,6 +982,13 @@ impl KeyInfoScreen {
         }
 
         action
+    }
+
+    /// Dispatch `task` with a context, so its result comes back to this
+    /// screen even if another screen covers it before the task finishes.
+    fn owned_request(&self, task: BackendTask) -> AppAction {
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     pub fn new(
@@ -3014,14 +3020,56 @@ mod tests {
             .await;
     }
 
-    /// Whether `action` asks Platform for the remaining budget of a key.
+    /// Whether `action` asks Platform for the remaining budget of a key, with
+    /// a dispatch context so the result comes back to this screen.
     fn requests_budget(action: &AppAction) -> bool {
         matches!(
             action,
-            AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::FetchKeyRemainingBudgets { .. }
-            ))
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::IdentityTask(IdentityTask::FetchKeyRemainingBudgets { .. }),
+                ..
+            }
         )
+    }
+
+    /// The budget read and a limits raise carry a dispatch context, so their
+    /// results reach Key Info even if another screen covers it meanwhile.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn key_limit_requests_come_back_to_this_screen() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let budgeted = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xB7, &[(budgeted.clone(), [0x12; 32])]);
+        let mut screen = KeyInfoScreen::new(identity, budgeted.clone(), None, &app_context);
+
+        let read = screen.queued_requests(AppAction::None);
+        assert!(requests_budget(&read), "got {read:?}");
+
+        screen.pending_raise = Some(KeyLimitsRaise {
+            key_id: budgeted.id(),
+            seen_total_budget: Some(5_000),
+            seen_expires_at: None,
+            total_budget: Some(10_000),
+            expires_at: None,
+            signing_key_id: 0,
+        });
+        let raise = screen.queued_requests(AppAction::None);
+        assert!(
+            matches!(
+                raise,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits { .. }),
+                    ..
+                }
+            ),
+            "got {raise:?}"
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
     }
 
     /// Regression: on an install with the previous version's identities, the

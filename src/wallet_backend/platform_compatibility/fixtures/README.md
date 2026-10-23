@@ -29,6 +29,8 @@ A different migration occupying version 19 is not an accepted source history.
 Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
+Revision `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8) leaves the
+migrations untouched.
 
 The bridge translates into this V019 reference, not into the newest schema.
 Its staged destination is created from `033ecae.sql`, and the public

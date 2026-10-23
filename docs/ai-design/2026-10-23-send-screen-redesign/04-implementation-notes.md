@@ -16,7 +16,10 @@ as the design places them, so the Everyday view stays simple.
 | Model | `src/model/send_route.rs` | Pure Auto resolution (source and destination), default receive kind, route refusals. Unit tested against the §4 tables |
 | UI state | `src/ui/state/send_form.rs` | The form's choices: Pay from, To mode, Receive into, Auto pinning, Max intent, recipients, Advanced selection, fee strategy, preset locks |
 | Component | `src/ui/components/choice_chips.rs` | Generic single-select chip row |
-| Screen | `src/ui/wallets/send_screen.rs` | Renders the form. Each frame it resolves the form into one concrete source and destination, and the unchanged route functions validate and dispatch them |
+| UI state | `src/ui/state/own_receive_addresses.rs` | Own receiving addresses fetched for My wallets, asked once per wallet and kind |
+| Screen | `src/ui/wallets/send_screen/mod.rs` | Screen state, route validation and dispatch (the route functions are unchanged), confirmation, task results |
+| Screen | `src/ui/wallets/send_screen/resolve.rs` | Each frame resolves the form into one concrete source and destination, and lists the quotes and addresses it still needs |
+| Screen | `src/ui/wallets/send_screen/form_view.rs` | Renders From, To, Amount, Summary and Send, and builds the payment Send confirms |
 
 Backend tasks are unchanged. Destination Auto reuses `WalletTask::GenerateReceiveAddress`
 (Core, public keys only), `WalletTask::GeneratePlatformReceiveAddress` (needs the To wallet unlocked)
@@ -68,6 +71,8 @@ and the cached shielded receive address.
 | A11 | §4.2: unused addresses | Platform: the first watched Platform address with no balance and no history, otherwise a new one, which needs the To wallet unlocked ("Unlock Savings to get a receiving address."). Core: the next unused receive address (public keys only) | Matches the Receive dialog |
 | A12 | §3.2: a single-key wallet as a destination | Deferred | Out of scope |
 | A13 | §3.1: Identity enabled when it has a usable transfer key | A transfer key for Platform and identity recipients, a withdrawal key for Core addresses | Withdrawals sign with a different key |
+| A14 | §10: confirmation title | "Send {amount}?", confirm button "Send" | — |
+| A15 | §2: wallet names in status lines | A wallet without a name reads "Unnamed wallet" | Sentences stay complete |
 
 ## 5. Issues found in the old screen
 
@@ -79,3 +84,25 @@ and the cached shielded receive address.
   Repro: Wallet › Send › Core Wallet, paste another wallet's shielded address, enter an amount, then Send and
   confirm. The funds land in the sender's own private balance. The redesign refuses this route before dispatch.
 - A5 and A6 above: Core coin control is only a cap, and fee strategies only affect Core→Platform.
+
+## 6. Tests
+
+| Area | Tests |
+|---|---|
+| Auto rules | `src/model/send_route.rs` unit tests (24) |
+| Form state | `src/ui/state/send_form.rs` (16), `src/ui/state/own_receive_addresses.rs` (3) |
+| Chips | `src/ui/components/choice_chips.rs` kittests (4) |
+| A1 regression | `core_and_platform_never_route_to_someone_elses_private_address` and `the_form_refuses_core_to_someone_elses_private_address` (`send_screen/mod.rs`), `w10_core_cannot_pay_someone_elses_private_address` (`tests/kittest/send_form.rs`) |
+| UX-001 | `the_typed_recipient_survives_switching_to_my_wallets_and_back` |
+| Flows | `tests/kittest/send_form.rs`: W1–W3, W5, W6, W8–W11, W13, W14. Each settles the harness before asserting; none counts frames |
+
+W4 (destination options), W7 (identity source) and W12 (confirmation) are covered by the existing
+identity and routing tests and by W2/W6, which open the confirmation and the My wallets options.
+
+## 7. Follow-ups
+
+- The shared `ComponentStyles::add_primary_button_enabled` draws a disabled button that only takes
+  hover, so accessibility tools see it as enabled. The hint line above Send names the missing step, so
+  the state stays visible. This affects every screen that uses the helper.
+- A6: fee strategies for Platform-source sends.
+- A12: single-key wallets as destinations.

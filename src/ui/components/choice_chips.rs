@@ -16,7 +16,7 @@
 //! ```
 
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::theme::{DashColors, ResponseExt, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use egui::{InnerResponse, RichText, Stroke, Ui, Vec2};
 
 /// Minimum chip size, in points (WCAG 2.5.8 target size).
@@ -141,7 +141,7 @@ impl<T: Clone + PartialEq> ChoiceChips<T> {
         let color = if chip.is_enabled() {
             DashColors::text_primary(dark_mode)
         } else {
-            DashColors::disabled(dark_mode)
+            ComponentStyles::button_disabled_text(dark_mode)
         };
         let text = RichText::new(text).color(color);
         if selected { text.strong() } else { text }
@@ -159,12 +159,20 @@ impl<T: Clone + PartialEq> Component for ChoiceChips<T> {
             .push_id(&self.id_salt, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    // Disabled chips carry their own readable colours, so
+                    // egui's disabled fade must not dim them further.
+                    ui.visuals_mut().disabled_alpha = 1.0;
                     for chip in &self.chips {
                         let selected = self.selected.as_ref() == Some(&chip.value);
                         let (fill, stroke) = if selected {
                             (
                                 DashColors::DASH_BLUE.gamma_multiply(0.15),
                                 Stroke::new(Shape::BORDER_WIDTH_THICK, DashColors::DASH_BLUE),
+                            )
+                        } else if !chip.is_enabled() {
+                            (
+                                ComponentStyles::button_disabled_fill(dark_mode),
+                                Stroke::NONE,
                             )
                         } else {
                             (
@@ -277,6 +285,82 @@ mod tests {
         harness.get_by_label("Gamma").click();
         harness.run();
         assert_eq!(harness.state().selected, Pick::A);
+    }
+
+    /// WCAG contrast ratio of two opaque colors.
+    fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32 {
+        fn luminance(color: egui::Color32) -> f32 {
+            let linear = |channel: u8| {
+                let value = f32::from(channel) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        }
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn flatten(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+
+    /// The painted glyph color of the chip labelled `label`, and the fill of
+    /// the chip behind it.
+    fn painted(harness: &Harness<'_, State>, label: &str) -> (egui::Color32, egui::Color32) {
+        let mut shapes = Vec::new();
+        for clipped in &harness.output().shapes {
+            flatten(&clipped.shape, &mut shapes);
+        }
+        let (index, text) = shapes
+            .iter()
+            .enumerate()
+            .find_map(|(index, shape)| match shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some((index, text)),
+                _ => None,
+            })
+            .expect("the chip's text is painted");
+        let glyph = text
+            .galley
+            .rows
+            .iter()
+            .flat_map(|row| row.visuals.mesh.vertices.iter())
+            .map(|vertex| vertex.color)
+            .next()
+            .expect("the text has glyphs");
+        // The chip's frame is the last shape under the text painted before it.
+        let fill = shapes[..index]
+            .iter()
+            .rev()
+            .find_map(|shape| match shape {
+                egui::Shape::Rect(rect) if rect.rect.contains(text.pos) => Some(rect.fill),
+                _ => None,
+            })
+            .expect("the chip's frame is painted");
+        (glyph, fill)
+    }
+
+    #[test]
+    fn a_disabled_chip_stays_readable_in_both_themes() {
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let mut harness = harness(false);
+            harness.ctx.set_theme(theme);
+            harness.run();
+            let (glyph, fill) = painted(&harness, "Gamma");
+            assert_eq!(glyph.a(), 255, "{theme:?}: the label is not faded");
+            assert_eq!(fill.a(), 255, "{theme:?}: the chip is not faded");
+            let ratio = contrast_ratio(glyph, fill);
+            assert!(
+                ratio >= 4.5,
+                "{theme:?}: contrast {ratio:.2} is below 4.5:1"
+            );
+        }
     }
 
     #[test]

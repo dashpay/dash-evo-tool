@@ -1,7 +1,7 @@
 //! Rendering of the Send form: From, To, Amount, Summary and the Send button
 //! (spec `docs/ai-design/2026-10-23-send-screen-redesign/02-ux-spec.md` §2).
 
-use super::resolve::DestinationStatus;
+use super::resolve::{DestinationStatus, QuoteState};
 use super::*;
 use crate::model::send_route::{AutoMax, AutoSource, PayFromKind, RouteRefusal};
 use crate::model::wallet::balance_summary::{WalletChoice, format_selector_balance};
@@ -76,6 +76,15 @@ fn status_line(ui: &mut Ui, text: impl Into<String>) {
     status_label(ui, text);
 }
 
+/// The room of one status line, kept while there is nothing to say so the
+/// form below does not jump when a line comes and goes.
+fn reserved_status_line(ui: &mut Ui) {
+    let height = ui
+        .ctx()
+        .fonts_mut(|fonts| fonts.row_height(&egui::FontId::proportional(13.0)));
+    ui.allocate_exact_size(egui::vec2(0.0, height), egui::Sense::hover());
+}
+
 /// A status line whose response the caller decorates.
 fn status_label(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     let dark_mode = ui.style().visuals.dark_mode;
@@ -102,6 +111,23 @@ fn info_line(ui: &mut Ui, text: impl Into<String>) {
             .color(DashColors::INFO)
             .size(13.0),
     );
+}
+
+/// What is wrong with the requested amount, shown under the Amount field
+/// (spec §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AmountProblem {
+    /// Auto found no single balance that covers it; `best` is the most one
+    /// payment can send.
+    NothingCovers { kind: PayFromKind, best: u64 },
+    /// Auto found no funds at all.
+    NoFunds,
+    /// The explicit source can send at most `max`.
+    OverMax { kind: PayFromKind, max: u64 },
+    /// The ticked Advanced addresses hold at most `max`.
+    OverTicked { max: u64 },
+    /// No amount the source can fund covers the network fee.
+    FeeNotCovered,
 }
 
 /// Short name of a balance kind (spec D-14).
@@ -376,6 +402,7 @@ impl WalletSendScreen {
             return;
         }
         if self.form.pay_from() != PayFrom::Auto {
+            reserved_status_line(ui);
             return;
         }
         let wallet = self.paying_wallet_name();
@@ -496,10 +523,10 @@ impl WalletSendScreen {
         picked
     }
 
-    fn render_advanced_panel(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.style().visuals.dark_mode;
+    /// The Advanced panel's addresses with their balances, in credits.
+    fn advanced_rows(&self) -> Vec<(String, u64)> {
         let network = self.app_context.network;
-        let rows: Vec<(String, u64)> = match self.form.advanced_type() {
+        match self.form.advanced_type() {
             AdvancedSourceType::Core => self
                 .get_core_addresses()
                 .into_iter()
@@ -512,7 +539,12 @@ impl WalletSendScreen {
                 .into_iter()
                 .map(|(platform, _, credits)| (platform.to_bech32m_string(network), credits))
                 .collect(),
-        };
+        }
+    }
+
+    fn render_advanced_panel(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let rows = self.advanced_rows();
         let offered: Vec<String> = rows.iter().map(|(address, _)| address.clone()).collect();
         self.form.retain_advanced(&offered);
         Frame::group(ui.style())
@@ -887,27 +919,52 @@ impl WalletSendScreen {
             .collect();
         let first_kind = kinds.iter().flatten().next().copied();
         let mut remove = None;
+        // Every row shares one column grid: the kind tag keeps its slot even
+        // when empty, so the remove buttons line up.
+        const AMOUNT_WIDTH: f32 = 90.0;
+        const KIND_TAG_WIDTH: f32 = 64.0;
+        const REMOVE_WIDTH: f32 = 32.0;
+        const MIN_ADDRESS_WIDTH: f32 = 200.0;
+        const UNIT_WIDTH: f32 = 40.0;
+        let spacing = ui.spacing().item_spacing.x;
+        let address_width = (ui.available_width()
+            - AMOUNT_WIDTH
+            - UNIT_WIDTH
+            - KIND_TAG_WIDTH
+            - REMOVE_WIDTH
+            - 5.0 * spacing)
+            .max(MIN_ADDRESS_WIDTH);
         for (index, kind) in kinds.iter().enumerate() {
             ui.horizontal(|ui| {
                 let row = &mut self.form.recipients_mut()[index];
                 ui.add(
                     egui::TextEdit::singleline(&mut row.address)
                         .hint_text("Address")
-                        .desired_width(260.0),
+                        .desired_width(address_width),
                 );
                 ui.add(
                     egui::TextEdit::singleline(&mut row.amount)
                         .hint_text(RichText::new("0.0").color(Color32::GRAY))
-                        .desired_width(90.0),
+                        .desired_width(AMOUNT_WIDTH),
                 );
-                ui.label(RichText::new("DASH").color(DashColors::text_secondary(dark_mode)));
-                if let Some(kind) = kind {
-                    ui.label(
-                        RichText::new(kind.short_label())
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(12.0),
-                    );
-                }
+                ui.add_sized(
+                    [UNIT_WIDTH, ui.spacing().interact_size.y],
+                    egui::Label::new(
+                        RichText::new("DASH").color(DashColors::text_secondary(dark_mode)),
+                    ),
+                );
+                ui.add_sized(
+                    [KIND_TAG_WIDTH, ui.spacing().interact_size.y],
+                    egui::Label::new(
+                        RichText::new(
+                            kind.as_ref()
+                                .map(AddressKind::short_label)
+                                .unwrap_or_default(),
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .size(12.0),
+                    ),
+                );
                 if ui
                     .button("✕")
                     .on_hover_text("Remove this recipient")
@@ -967,6 +1024,7 @@ impl WalletSendScreen {
     fn render_someone_else(&mut self, ui: &mut Ui) {
         if self.form.has_several_recipients() {
             self.render_recipient_rows(ui);
+            self.render_amount_problem(ui);
         } else {
             let kinds = self.someone_else_kinds();
             self.render_destination_input_with_kinds(ui, &kinds);
@@ -1092,10 +1150,13 @@ impl WalletSendScreen {
     }
 
     pub(super) fn new_amount_input() -> AmountInput {
+        // The form reports an amount above the source's maximum itself, with
+        // a one-click fix (spec §8), so the field keeps what was typed.
         AmountInput::new(Amount::new_dash(0.0))
             .with_label("Amount")
             .with_hint_text("0.00")
             .with_max_button(true)
+            .with_max_validation(false)
             .with_desired_width(150.0)
     }
 
@@ -1106,13 +1167,16 @@ impl WalletSendScreen {
             .clone()
             .map(|source| self.amount_limits_for(&source, self.validated_destination.as_ref()));
 
-        if limits.as_ref().is_some_and(|limits| limits.fee_not_covered) {
-            self.amount = None;
-            self.amount_input = None;
-            ui.colored_label(DashColors::WARNING, FUNDING_FEE_NOT_COVERED);
-            return;
-        }
-        let max_credits = limits.as_ref().and_then(|limits| limits.max_credits);
+        let fee_not_covered = limits.as_ref().is_some_and(|limits| limits.fee_not_covered);
+        // Max offers nothing the network would refuse.
+        let max_credits = limits
+            .as_ref()
+            .filter(|limits| !limits.fee_not_covered)
+            .and_then(|limits| limits.max_credits);
+        let quote_pending = limits
+            .as_ref()
+            .is_some_and(|limits| limits.quote == QuoteState::Pending)
+            || matches!(self.route.auto_max, Some(AutoMax::Checking { .. }));
         let amount_input = self.amount_input.get_or_insert_with(Self::new_amount_input);
         amount_input.set_max_amount(max_credits);
         amount_input.set_caption(limits.as_ref().and_then(|limits| limits.hint.clone()));
@@ -1127,7 +1191,9 @@ impl WalletSendScreen {
                     amount_input.set_value(amount);
                 }
                 Some(_) => {}
-                None => self.amount = None,
+                None if quote_pending => self.amount = None,
+                // Nothing to offer and nothing coming: the typed amount stays.
+                None => self.form.amount_edited(),
             }
         }
 
@@ -1138,6 +1204,9 @@ impl WalletSendScreen {
             self.form.amount_edited();
         }
         response.inner.update(&mut self.amount);
+        if fee_not_covered {
+            inline_warning(ui, FUNDING_FEE_NOT_COVERED);
+        }
         if self.form.max_intent()
             && let (Some(source), Some(max)) = (&self.selected_source, max_credits)
         {
@@ -1159,10 +1228,59 @@ impl WalletSendScreen {
             self.render_asset_lock_balance_status(ui);
             self.render_spend_limit_status(ui);
             self.render_amount_input(ui);
-            if let Some(AutoSource::NothingCovers {
-                best: Some((kind, best)),
-            }) = self.route.auto.clone()
-            {
+            self.render_amount_problem(ui);
+        });
+    }
+
+    /// What is wrong with the requested amount, if anything.
+    pub(super) fn amount_problem(&self) -> Option<AmountProblem> {
+        let requested = self.requested_credits().filter(|v| *v > 0)?;
+        if self.form.pay_from() == PayFrom::Auto {
+            return match self.route.auto {
+                Some(AutoSource::NothingCovers {
+                    best: Some((kind, best)),
+                }) => Some(AmountProblem::NothingCovers { kind, best }),
+                Some(AutoSource::NoFunds) => Some(AmountProblem::NoFunds),
+                _ => None,
+            };
+        }
+        let source = self.selected_source.as_ref()?;
+        let limits = self.amount_limits_for(source, self.validated_destination.as_ref());
+        if limits.fee_not_covered {
+            return Some(AmountProblem::FeeNotCovered);
+        }
+        if self.form.pay_from() == PayFrom::Advanced {
+            let ticked: Vec<String> = self
+                .form
+                .ticked_advanced()
+                .into_iter()
+                .map(|(address, _)| address)
+                .collect();
+            let held: u64 = self
+                .advanced_rows()
+                .into_iter()
+                .filter(|(address, _)| ticked.contains(address))
+                .map(|(_, balance)| balance)
+                .fold(0, u64::saturating_add);
+            if !ticked.is_empty() && requested > held {
+                return Some(AmountProblem::OverTicked { max: held });
+            }
+        }
+        match limits.max_credits {
+            Some(max) if requested > max => Some(AmountProblem::OverMax {
+                kind: Self::source_kind(source),
+                max,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The inline problem under the Amount field (or under the recipient
+    /// rows, which have no Amount field), with its one-click fix.
+    fn render_amount_problem(&mut self, ui: &mut Ui) {
+        let several = self.form.has_several_recipients();
+        let fix = match self.amount_problem() {
+            Some(AmountProblem::NothingCovers { kind, best }) => {
                 inline_warning(
                     ui,
                     format!(
@@ -1171,40 +1289,58 @@ impl WalletSendScreen {
                         source = kind_label(kind)
                     ),
                 );
-                if ui
-                    .button(format!(
-                        "Send {best} instead",
-                        best = format_credits_as_dash(best)
-                    ))
-                    .clicked()
-                {
-                    self.apply_amount(best);
-                }
-            } else if let (Some(amount), Some(source)) = (
-                self.amount.as_ref().map(Amount::value),
-                self.selected_source.clone(),
-            ) && self.form.pay_from() != PayFrom::Auto
-                && let Some(max) = self
-                    .amount_limits_for(&source, self.validated_destination.as_ref())
-                    .max_credits
-                && amount > max
-            {
+                Some((
+                    best,
+                    format!("Send {best} instead", best = format_credits_as_dash(best)),
+                ))
+            }
+            Some(AmountProblem::OverMax { kind, max }) => {
                 inline_warning(
                     ui,
                     format!(
                         "{source} can send at most {max} after the fee.",
-                        source = kind_label(Self::source_kind(&source)),
+                        source = kind_label(kind),
                         max = format_credits_as_dash(max)
                     ),
                 );
-                if ui
-                    .button(format!("Use {max}", max = format_credits_as_dash(max)))
-                    .clicked()
-                {
-                    self.apply_amount(max);
-                }
+                Some((max, format!("Use {max}", max = format_credits_as_dash(max))))
             }
-        });
+            Some(AmountProblem::OverTicked { max }) => {
+                inline_warning(
+                    ui,
+                    format!(
+                        "The ticked addresses hold {max}. Tick more addresses or lower the amount.",
+                        max = format_credits_as_dash(max)
+                    ),
+                );
+                None
+            }
+            Some(AmountProblem::NoFunds) if self.paying_identities().is_empty() => {
+                inline_warning(
+                    ui,
+                    format!(
+                        "There are no funds in {wallet} to send. Add funds first.",
+                        wallet = self.paying_wallet_name()
+                    ),
+                );
+                None
+            }
+            Some(AmountProblem::NoFunds) => {
+                inline_warning(
+                    ui,
+                    "Only your identities hold funds. Choose Identity under Pay from.",
+                );
+                None
+            }
+            // Shown with the Amount field itself.
+            Some(AmountProblem::FeeNotCovered) | None => None,
+        };
+        // Recipient rows carry their own amounts, so no single fix applies.
+        if let Some((credits, label)) = fix.filter(|_| !several)
+            && ui.button(label).clicked()
+        {
+            self.apply_amount(credits);
+        }
     }
 
     /// Put `credits` in the Amount field as an exact amount.
@@ -1220,8 +1356,17 @@ impl WalletSendScreen {
     /// How the destination reads in sentences.
     pub(super) fn destination_label(&self) -> String {
         if self.form.has_several_recipients() {
-            let count = self.form.recipients().len();
-            return format!("{count} recipients");
+            let filled: Vec<&str> = self
+                .form
+                .recipients()
+                .iter()
+                .map(|row| row.address.trim())
+                .filter(|address| !address.is_empty())
+                .collect();
+            return match filled.as_slice() {
+                [only] => short_address(only),
+                _ => format!("{count} recipients", count = filled.len()),
+            };
         }
         match &self.validated_destination {
             Some(ValidatedAddress::Shielded(address)) if address.is_empty() => format!(
@@ -1504,12 +1649,18 @@ impl WalletSendScreen {
                 _ => "Enter an amount.",
             });
         }
+        if self.form.pay_from() == PayFrom::Advanced && self.form.ticked_advanced().is_empty() {
+            return Some("Choose the addresses to pay from.");
+        }
         if self.route.refusal.is_some() || self.selected_source.is_none() {
             return Some(match self.route.auto {
                 Some(AutoSource::Checking { .. }) => "Checking the available amount…",
                 Some(AutoSource::NoFunds) => "Add funds to this wallet first.",
                 _ => "Fix the highlighted field.",
             });
+        }
+        if self.amount_problem().is_some() {
+            return Some("Fix the highlighted field.");
         }
         None
     }

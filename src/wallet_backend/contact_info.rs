@@ -206,8 +206,10 @@ impl WalletBackend {
 
 /// Open `documents` (oldest first) through `crypto`; the newest readable
 /// document per contact wins.
-// TODO: replace with a platform-wallet contactInfo-only read for seedless
-// wallets once one exists (upstream issue drafted, not yet filed).
+// TODO(upstream): dip15-contactinfo-reader — replace with a platform-wallet
+// contactInfo-only, provider-backed read for seedless wallets once one exists;
+// platform-wallet's own drain is crate-private and runs unrelated contact work.
+// Upstream request drafted, not yet filed.
 async fn open_contact_info_documents(
     crypto: &ContactInfoCrypto<'_>,
     documents: &[Document],

@@ -809,7 +809,9 @@ impl AppContext {
         token_config_v0.distribution_rules = distribution_rules;
         token_config_v0.description = token_description;
 
-        // All tokens are created NotTradeable; a future SDK will add more modes.
+        // Tokens are created NotTradeable. Tradeable needs protocol version 15
+        // (TOKEN_MARKETPLACE_INITIAL_PROTOCOL_VERSION) and a transferable token,
+        // and DET has no way to list a token or make an offer for it yet.
         token_config_v0.marketplace_rules = TokenMarketplaceRules::V0(TokenMarketplaceRulesV0 {
             trade_mode: TokenTradeMode::NotTradeable,
             trade_mode_change_rules: marketplace_rules,

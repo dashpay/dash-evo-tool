@@ -14,11 +14,10 @@ use dash_sdk::dpp::data_contract::document_type::ContestedIndexFieldMatch;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
-use dash_sdk::dpp::document::{Document, DocumentV0};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
-use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::version::{FeatureVersion, PlatformVersion};
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
 
 /// The immediate result of submitting a DPNS registration document.
@@ -67,13 +66,23 @@ fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
     ])
 }
 
-/// A `domain` document for `label` carrying only its name fields, enough to
-/// find the contest registering `label` would join. Not a document to submit.
-pub fn dpns_name_contest_document(label: &str) -> Document {
-    Document::V0(DocumentV0 {
-        properties: dpns_name_fields(label),
-        ..Default::default()
-    })
+/// The most requests a username vote accepts at `platform_version`, or
+/// `None` while the network accepts any number.
+///
+/// Platform counts a contest's requests from the document-create state
+/// validation that introduced the cap (protocol 14); earlier validation never
+/// reads it, though the limit tables carry it.
+pub fn username_contest_max_contenders(platform_version: &PlatformVersion) -> Option<u16> {
+    /// The document-create state validation that counts a contest's requests.
+    const CONTENDER_COUNTING_CREATE_VALIDATION: FeatureVersion = 2;
+    let create_validation = platform_version
+        .drive_abci
+        .validation_and_processing
+        .state_transitions
+        .batch_state_transition
+        .document_create_transition_state_validation;
+    (create_validation >= CONTENDER_COUNTING_CREATE_VALIDATION)
+        .then_some(platform_version.system_limits.max_contenders_per_contest)
 }
 
 /// How long a DPNS name contest runs and how long others may join it.
@@ -353,6 +362,23 @@ mod tests {
                 outcome_for(label) == DpnsRegistrationOutcome::PendingCommunityVote,
                 is_contested_label(label),
                 "{label}"
+            );
+        }
+    }
+
+    /// The cap follows the network's own validation: none before protocol
+    /// 14, whose validation never counts requests; the limit table's value
+    /// from then on.
+    #[test]
+    fn username_contest_cap_follows_the_create_validation() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(username_contest_max_contenders(pv13), None);
+        for version in [14, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("version");
+            assert_eq!(
+                username_contest_max_contenders(pv),
+                Some(pv.system_limits.max_contenders_per_contest),
+                "protocol {version}"
             );
         }
     }

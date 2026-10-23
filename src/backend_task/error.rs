@@ -2335,6 +2335,13 @@ pub enum TaskError {
     #[error("The username payment terms changed. Nothing was spent. Review the name and fees again.")]
     UsernameRegistrationTermsChanged,
 
+    /// The name's community vote already holds the most requests the network
+    /// accepts; refused before anything is sent.
+    #[error(
+        "The vote for this username already has {max_contenders} requests, the most it accepts. Nothing was spent. Choose another username."
+    )]
+    UsernameContestFull { max_contenders: u16 },
+
     /// The identity cannot cover both registration documents (and the community
     /// vote fee, when the name needs one); refused before anything is sent.
     #[error(

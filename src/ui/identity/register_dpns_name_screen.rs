@@ -847,11 +847,16 @@ impl ScreenLike for RegisterDpnsNameScreen {
             return;
         }
         self.op_overlay.take_and_clear();
-        if let TaskError::UsernameNoLongerAvailable { availability } = error {
+        let refused_as = match error {
+            TaskError::UsernameNoLongerAvailable { availability } => Some(*availability),
+            TaskError::UsernameContestFull { .. } => Some(UsernameAvailability::ContestFull),
+            _ => None,
+        };
+        if let Some(availability) = refused_as {
             self.step = Step::Choose;
             self.availability = Availability::Row {
                 label: self.label().to_owned(),
-                row: AvailabilityRow::Known(*availability),
+                row: AvailabilityRow::Known(availability),
             };
             self.registration_error_handled = true;
         } else if matches!(
@@ -1054,6 +1059,33 @@ mod tests {
         screen.display_backend_task_error(&context, &error);
         assert!(screen.display_task_error(&error));
         assert_eq!(screen.step, Step::Choose);
+        assert!(screen.op_overlay.is_none());
+    }
+
+    /// A vote that filled up before Pay landed sends the screen back to the
+    /// name, showing it as full instead of a separate error banner.
+    #[test]
+    fn a_vote_full_at_pay_time_is_shown_on_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let context = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            crate::backend_task::contested_names::ContestedResourceTask::QueryDPNSContests,
+        ));
+        screen.registration_context.track(context.clone());
+        screen.name_input = "alice".to_owned();
+        screen.step = Step::Submitting;
+        screen.raise_progress_overlay(ctx.egui_ctx());
+        let error = TaskError::UsernameContestFull {
+            max_contenders: 1_000,
+        };
+        screen.display_backend_task_error(&context, &error);
+        assert!(screen.display_task_error(&error), "no separate banner");
+        assert_eq!(screen.step, Step::Choose);
+        assert_eq!(
+            screen.current_availability(),
+            Some(UsernameAvailability::ContestFull)
+        );
         assert!(screen.op_overlay.is_none());
     }
 

@@ -126,6 +126,12 @@ pub fn availability_line(name: &str, row: &AvailabilityRow) -> (Tone, String) {
                 Tone::Negative,
                 format!("Others can no longer join the vote for @{name}. Try another name."),
             ),
+            UsernameAvailability::ContestFull => (
+                Tone::Negative,
+                format!(
+                    "The vote for @{name} already has the most requests it accepts. Try another name."
+                ),
+            ),
             UsernameAvailability::AlreadyRequested => (
                 Tone::Caution,
                 format!(
@@ -144,6 +150,7 @@ pub fn offers_suggestions(row: &AvailabilityRow) -> bool {
             UsernameAvailability::NeedsVote
                 | UsernameAvailability::Joinable { .. }
                 | UsernameAvailability::Taken
+                | UsernameAvailability::ContestFull
         )
     )
 }
@@ -544,6 +551,10 @@ mod tests {
             (
                 AvailabilityRow::Known(UsernameAvailability::JoinClosed),
                 "Others can no longer join the vote for @nova. Try another name.",
+            ),
+            (
+                AvailabilityRow::Known(UsernameAvailability::ContestFull),
+                "The vote for @nova already has the most requests it accepts. Try another name.",
             ),
             (
                 AvailabilityRow::CantCheck,

@@ -100,7 +100,8 @@ Problems found (`UX-NNN`, severity per the `severity` skill):
 - **SR-18** A locked wallet does not hide the form. Balances stay visible, and **Send** asks to unlock, then continues to the confirmation (D-10).
 - **SR-19** The presets (Shield, Send (Private), Unshield, identity Send / Top up / Move to wallet) open this same form pre-filled. The fields the preset fixes are shown read-only.
 - **SR-20** Unsupported routes (Identity→Shielded, Shielded→Identity) cannot be chosen. Their options are disabled with a reason; they are not refused after clicking Send.
-- **SR-21** Advanced (source) = "spend only from these addresses": one checklist of Core *or* Platform addresses with balances, plus "Who pays the fee: Sender | Recipient" when Platform is involved (D-11, D-12). Visible in Expert/Developer view only (D-13).
+- **SR-21** Advanced (source) = "spend only from these addresses": one checklist of Core *or* Platform addresses with balances (D-11). Visible in Expert/Developer view only (D-13).
+- **SR-22** All 4 existing fee strategies are kept. They sit in a collapsed **Fee options ▸** row inside the Summary card. The row is shown only in Expert/Developer view, only while Advanced source or several recipients is active, and only when Platform is involved (today's condition). The default stays "Deduct from first input" (D-12).
 
 ### Acceptance criteria (key)
 
@@ -130,7 +131,7 @@ Problems found (`UX-NNN`, severity per the `severity` skill):
 | D-09 | (gap) | The button always says "Send"; the route verb moves to the summary and confirmation | UX-006. With Auto, a label that changes as you type is unsettling |
 | D-10 | (gap) | Unlock when Send is pressed, not up front | UX-007. Matches the sign-time unlock pattern already used elsewhere |
 | D-11 | U2 Advanced = today's hidden contents | Per-address amounts are dropped. The user ticks the addresses to spend from; the amount comes from the one Amount field | Per-address amounts are the most error-prone part of the screen. Coin control means "which addresses", not "how much from each" |
-| D-12 | (today) 4 fee strategies | 2 choices: Sender pays (= deduct from first input) / Recipient pays (= reduce first output) | "First/last input/output" means nothing to users. The everyday difference is who pays |
+| D-12 | (today) 4 fee strategies in the Advanced form | **All 4 kept**, moved into a collapsed "Fee options ▸" row in the Summary card (Expert view, Advanced/several recipients, Platform involved). The default is unchanged | The Advanced form no longer exists, so the choice needs a new home. Fees belong next to the fee read-out, and collapsing keeps every other view free of it. *User decision: keep all 4.* |
 | D-13 | U2 lists Advanced for everyone | Advanced and "+ Add another recipient" show only in Expert/Developer view | Progressive disclosure: used by fewer than 20% of users |
 | D-14 | U2 labels "Core Wallet", "Platform Addresses", "Shielded Balance" | Short labels **Core**, **Platform**, **Shielded**, **Identity**, plus info tooltips | Match the wallet screen's pills; they fit narrow widths |
 
@@ -143,6 +144,6 @@ Problems found (`UX-NNN`, severity per the `severity` skill):
 - `WalletSendScreen::new_with_wallet()` hard-codes `SourceSelection::CoreWallet`. The new default (Auto) and the presets (SR-19) need a constructor that takes an initial From/To instead. (The DashPay `SendPaymentScreen` has the same Core hard-code. It is out of scope, but should be aligned later.)
 - Today the general form shows the wallet read-only; only identity Top up has a `WalletSelector`. A From wallet picker is new and reuses `WalletSelector` (shared label format from user story UX-006, `set_unavailable` for single-key wallets per SND-002).
 
-## 7. Open questions
+## 7. Decisions
 
-Q1–Q5 with recommendations are in [README.md](README.md#open-questions).
+Q1–Q5 are resolved. See [README.md](README.md#decisions-resolved-open-questions).

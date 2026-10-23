@@ -61,8 +61,9 @@ Spend from   (●) Core addresses   ( ) Platform addresses
 [✓] yXa1…9f   0.5000 DASH
 [ ] yQb7…2c   0.3123 DASH
 Selected: 0.5000 DASH
-Who pays the fee   (●) Sender   ( ) Recipient      ← only when Platform is involved
 ```
+
+The fee strategy is not part of this panel. It lives in Summary › Fee options (§7.1).
 
 - The checklist shows only addresses with a balance. Everything is unticked when first opened. The amount still comes from the single Amount field (D-11).
 - Max = everything in the ticked addresses minus the fee.
@@ -139,10 +140,28 @@ Shown once there is a destination and an amount (or Max).
 | Route sentence, e.g. "Pay from Main · Core to yX12…ab" | always (replaces "Transaction type" and the button verb) |
 | You send | always |
 | Network fee ≈ | the fee is estimable; otherwise "Network fee: calculated when you send" |
-| Recipient gets ≈ | the fee is taken from the amount (Core→Platform funding, Recipient pays) |
+| Recipient gets ≈ | the fee is taken from the amount (Core→Platform funding, or a "Reduce … output" strategy) |
 | Total from Core ≈ | always; names the source |
 | Note | route-specific, at most one line (below) |
+| Fee options ▸ | §7.1 |
 | Details ▸ | Expert view: the addresses used and the amount from each (today's breakdown) |
+
+### 7.1 Fee options (SR-22)
+
+All 4 existing strategies are kept, with today's labels and default. They appear in a collapsed row inside the Summary card. The header shows the current choice, so the row is useful even while collapsed:
+
+```
+Fee options: Deduct from first input ▸
+  (●) Deduct from first input     ← default
+  ( ) Deduct from last input
+  ( ) Reduce first output
+  ( ) Reduce last output
+```
+
+- **Shown when all three hold:** Expert/Developer view, Advanced source or several recipients is active, and Platform is involved (a Platform source or a Platform recipient; today's condition). Otherwise the row is absent: Everyday users never see it, and simple sends keep today's per-route fee behaviour.
+- It starts collapsed on every visit. The choice survives collapsing and section changes (SR-16), and resets with the form.
+- Choosing a "Reduce … output" strategy adds the "Recipient gets ≈" row and the confirmation sentence "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount." (today's copy).
+- Each option has an `info_tooltip` in plain words, e.g. "Reduce first output: the first recipient receives the amount minus the fee."
 
 Route notes:
 - Platform/Identity → Core: "Withdrawals to a Dash address can take a while to arrive."
@@ -213,7 +232,7 @@ A fixed section shows its value as text with the label "Set by Shield". It has n
 | View | Sees |
 |---|---|
 | Everyday (Alex) | Auto, Core, Platform, Identity (only if the wallet has identities); Someone else / My wallets; Summary without Details |
-| Expert (Priya) | + Advanced, + Add another recipient, + Summary Details, + Shielded (if gate) |
+| Expert (Priya) | + Advanced, + Add another recipient, + Summary Details, + Summary Fee options (§7.1), + Shielded (if gate) |
 | Developer (Jordan) | same as Expert; amounts may also show credits where the app already does so elsewhere |
 
 ## 13. Responsive layout
@@ -261,4 +280,5 @@ The form scrolls in the existing `ScrollArea`. The status lines wrap and are nev
 
 - The Auto resolver and the default-kind rule go in a pure `model/` function, unit tested against the §4 tables. The UI only renders the result.
 - Reuse: `WalletSelector` (both wallet pickers), `AddressInput` (Someone else; keep its kind detection, DPNS lookup and `wallet:` search), `AmountInput`, `IdentitySelector`, `ConfirmationDialog`, `WalletUnlockPopup`, `ResponseExt` tooltips. The chip row is the only new widget. If it is reused elsewhere (Shield source toggle), it belongs in `ui/components/` as a generic `ChoiceChips`.
-- Delete: the `show_advanced_options` form, `render_advanced_send`, the per-input amount fields, the 4-way `PlatformFeeStrategy` UI (keep the enum and map Sender/Recipient to the `…FirstInput` / `…FirstOutput` variants), the "Transaction type" hint and the verb-per-route button label.
+- Keep: `PlatformFeeStrategy` (all 4 variants, same default). Only its combo box moves into Summary › Fee options.
+- Delete: the `show_advanced_options` form, `render_advanced_send`, the per-input amount fields, the "Transaction type" hint and the verb-per-route button label.

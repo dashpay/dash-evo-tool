@@ -159,8 +159,27 @@ Clicking Auto under Pay from again pins Receive into to Platform and shows the m
 │ │ [✓] yXa1…9f02   0.5000 DASH                                      │  │
 │ │ [ ] yQb7…2c1d   0.3123 DASH                                      │  │
 │ │ Selected: 0.5000 DASH                                            │  │
-│ │ Who pays the fee   (● Sender )  ( Recipient )   ← Platform only  │  │
 │ └──────────────────────────────────────────────────────────────────┘  │
+```
+**Summary with Fee options** (Expert view + Advanced/several recipients + Platform involved; collapsed by default)
+```
+│ ┌ Summary ───────────────────────────────────────────────────────┐    │
+│ │ Pay from Main · Platform to tdash1qz8…m4ve                     │    │
+│ │ You send                      0.2000 DASH                      │    │
+│ │ Network fee                 ≈ 0.0001 DASH                      │    │
+│ │ Total from Platform         ≈ 0.2001 DASH                      │    │
+│ │ Fee options: Deduct from first input ▸                         │    │
+│ │ Details ▸                                                      │    │
+│ └────────────────────────────────────────────────────────────────┘    │
+```
+Expanded:
+```
+│ │ Fee options: Reduce first output ▾                             │    │
+│ │   ( ) Deduct from first input                                  │    │
+│ │   ( ) Deduct from last input                                   │    │
+│ │   (●) Reduce first output                                      │    │
+│ │   ( ) Reduce last output                                       │    │
+│ │ Recipient gets              ≈ 0.1999 DASH     ← added by Reduce │    │
 ```
 **Several recipients**
 ```

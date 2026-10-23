@@ -12,12 +12,12 @@ User stories: SND-019 … SND-022 in [`docs/user-stories.md`](../../user-stories
 
 Related open PRs: #1107 (quote-based Max, pooled Core accounts) and #1106 (Core→Shielded Max drain, "Finish now").
 
-## Open questions
+## Decisions (resolved open questions)
 
-| # | Question | Recommendation |
+| # | Question | User decision |
 |---|---|---|
-| Q1 | Should To open on **Someone else** (empty address field) rather than "current wallet + Core/Platform"? (D-07) | **Yes.** With the literal default plus Auto, the form starts as a send to yourself, and Send is enabled as soon as an amount is typed |
-| Q2 | Should Advanced drop per-address amounts and keep only "tick the addresses to spend from"? (D-11) | **Yes.** It is the most error-prone part of today's screen; one Amount field is enough |
-| Q3 | Should Auto never spend identity credits, and spend private (shielded) funds only for private destinations? (D-05) | **Yes.** Both would surprise users: identities pay for usernames, and unshielding reveals amounts |
-| Q4 | When no single balance covers the amount, should Auto offer the largest single-source amount rather than splitting across Core and Platform? (D-06) | **Yes, no split.** A split is two payments that can partly fail |
-| Q5 | Should Advanced and "+ Add another recipient" show only in Expert/Developer view, with the fee choice reduced to Sender / Recipient? (D-12, D-13) | **Yes.** They are used by few people, and "first/last input/output" means nothing to most users |
+| Q1 | Should To open on **Someone else** rather than "current wallet + Core/Platform"? (D-02, D-07) | **Yes.** Someone else / My wallets switch; the default is Someone else |
+| Q2 | Should Advanced drop per-address amounts and use one Amount field? (D-11) | **Yes** |
+| Q3 | Should Auto never spend identity credits, and spend shielded funds only for shielded destinations? (D-05) | **Yes** |
+| Q4 | Should Auto never split a payment across sources and offer the largest single-source amount instead? (D-06) | **Yes** |
+| Q5 | Should Advanced and multiple recipients be Expert/Developer only, and should fee strategies be reduced? (D-12, D-13) | **Expert-only: yes. Fee strategies: keep all 4.** They sit in a collapsed "Fee options ▸" row in the Summary card, with the default unchanged (SR-22) |

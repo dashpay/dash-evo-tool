@@ -647,3 +647,21 @@ fn w2_the_auto_status_shows_the_balance_like_the_chips() {
         assert_eq!(decimals, 4, "4 decimals like the chips: {status}");
     });
 }
+
+#[test]
+fn w8_summary_details_say_the_addresses_are_paid_from() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        enter(&mut fixture.screen, platform_destination(), 1.0);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        harness.get_by_label_contains("Details").click();
+        harness.run();
+
+        assert!(
+            has(&harness, "Paid from these addresses"),
+            "the source addresses are labelled as such"
+        );
+    });
+}

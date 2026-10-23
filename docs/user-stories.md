@@ -1901,6 +1901,7 @@ As a masternode operator, I want to withdraw a node's Platform credits from its 
 
 - The detail view's actions row opens the existing Withdraw screen scoped to the selected node (Masternode or Evonode).
 - Withdrawing with the owner key forces the destination to the node's registered Core payout address; withdrawing with the transfer/payout key allows any address.
+- When a wallet on this device holds the signing key, the withdrawal is signed by that wallet, with the same payout-address rules.
 - The Top Up and Transfer actions were removed from this screen; those flows remain available for User identities on the Identities pages.
 
 ### MN-008: Manage a node's keys [Implemented]
@@ -1945,3 +1946,20 @@ As a masternode operator, I want the same page-scoped switcher on the Masternode
 - The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
 - The third segment is a page-scoped node pill listing every loaded masternode/evonode, two-way bound with the page: opening a card names that node on the pill, and picking a node from the pill opens its detail view. It reads `(no masternode yet)` when none is loaded and `(choose a masternode)` while the grid is open.
 - Picking a node there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter) — the node selection is page-scoped, never the app-global identity.
+
+### MN-013: Use node keys my wallet already holds [Implemented]
+**Persona:** Priya
+
+As a masternode operator who registered my node from a wallet I loaded here, I want the app to find the node's owner, voting and payout keys in that wallet, so that I don't have to export and paste them.
+
+- When I load a node and leave a key field blank, the key is taken from any wallet on this device that holds it; a key I type always wins.
+- The app keeps only a reference to the wallet key, never a copy of the private key.
+- Nodes registered from another wallet still load with pasted keys, as before.
+
+### MN-014: Revive a PoSe-banned node [Gap]
+**Persona:** Priya
+
+As a masternode operator, I want to unban my PoSe-banned node from its detail view, so that it can earn rewards again without using Dash Core.
+
+- An "Unban node" action appears only when the synced masternode list shows the node as banned.
+- The fee is paid from a wallet I choose, and the operator key is taken from that wallet when it holds it.

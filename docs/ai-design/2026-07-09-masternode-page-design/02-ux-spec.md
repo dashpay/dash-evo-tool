@@ -171,7 +171,25 @@ pill. This is the canonical shape for any page that consumes a selection — on 
 
 **Confirmed Q1:** leftmost crumb is **page-aware** (`Masternodes › …`), linking to the active tab's root.
 
-## 4c. Auto-derive finding — corrected (investigation, 2026-07-09)
+## 4c. Wallet-held node keys — corrected again (2026-10-23)
+
+**The 2026-07-09 finding below is wrong for wallets that hold the node's keys.** A wallet that registered a node
+keeps its owner and voting keys in its DIP-3 provider accounts (`m/9'/coin'/3'/2'/index` owner,
+`m/9'/coin'/3'/1'/index` voting, non-hardened `index`) and its payout key in its funding accounts. The upstream
+`platform-wallet` finds them seedlessly (`PlatformWallet::masternode_withdrawal_keys`,
+`derive_provider_key_at_index`), so:
+- **Load form:** a key field left blank is filled from any wallet on this device that holds the matching key
+  (owner/payout hashes from the node's Platform identity, voting hash from the synced masternode list). The key is
+  stored as a wallet derivation reference — no private key is copied. Typed keys still win, and nodes registered
+  from another wallet still need their keys pasted.
+- **Withdraw:** a wallet-held owner or payout key withdraws through `PlatformWallet::masternode_withdraw`, which
+  re-checks the key against the node and enforces the owner-key payout-address rule. Pasted keys keep the
+  identity's own signer.
+- Still no "derive from wallet" checkbox: discovery is automatic and silent when no wallet holds a key.
+- The earlier conclusion came from DET's own legacy provider-address bootstrap, which derives these keys at
+  *hardened* indices and so never matches a standard DIP-3 registration.
+
+### 4c (superseded). Auto-derive finding — corrected (investigation, 2026-07-09)
 
 **Auto-deriving Voting/Owner/Payout private keys from a loaded wallet does NOT work and was never wired for
 Masternode/Evonode identities.** Verified against code: `backend_task/identity/load_identity.rs` gates

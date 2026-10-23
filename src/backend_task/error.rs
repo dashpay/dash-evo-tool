@@ -1709,6 +1709,27 @@ pub enum TaskError {
     )]
     OwnerKeyWithdrawalNotAllowed,
 
+    /// A masternode credit withdrawal signed with a wallet-held key was
+    /// refused before or by the network. Nothing was withdrawn.
+    #[error(
+        "Your masternode withdrawal did not go through and nothing was withdrawn. Check the amount and the destination address, then try again."
+    )]
+    MasternodeWithdrawalFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A masternode credit withdrawal was sent, but its result could not be
+    /// confirmed. It may already have gone through, so retrying blindly could
+    /// withdraw twice.
+    #[error(
+        "Your masternode withdrawal was sent, but the app could not confirm it. Do not try again yet. Wait a few minutes, then refresh the node and check its balance before withdrawing again."
+    )]
+    MasternodeWithdrawalUnconfirmed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// No active key this app can sign with was available for the withdrawal —
     /// the chosen key may have been disabled, or no suitable transfer key is
     /// loaded for this identity.

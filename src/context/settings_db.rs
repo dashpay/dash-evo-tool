@@ -7,6 +7,7 @@
 //! stale value.
 
 use super::{AppContext, SettingsCacheGuard};
+use crate::model::backup_retention::BackupRetention;
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
@@ -225,6 +226,25 @@ impl AppContext {
         Ok(with_default_user_role(settings))
     }
 
+    /// The persisted upgrade-backup retention policy.
+    ///
+    /// An absent or out-of-range value resolves to the default. An unreadable
+    /// value is an error, never the default: pruning with a guessed policy could
+    /// delete backups a user chose to keep forever.
+    pub fn backup_retention(&self) -> Result<BackupRetention, KvAdapterError> {
+        Ok(self
+            .app_kv
+            .get::<BackupRetention>(DetScope::Global, BackupRetention::KV_KEY)?
+            .unwrap_or_default()
+            .sanitized())
+    }
+
+    /// Persist the upgrade-backup retention policy.
+    pub fn set_backup_retention(&self, retention: BackupRetention) -> Result<(), KvAdapterError> {
+        self.app_kv
+            .put(DetScope::Global, BackupRetention::KV_KEY, &retention)
+    }
+
     /// Write the [`AppSettings`] blob to the shared app k/v store.
     ///
     /// The blob is stored verbatim — a `user_role` of `None` stays `None` on disk
@@ -271,6 +291,34 @@ mod tests {
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    #[test]
+    fn backup_retention_round_trips_and_defaults_when_absent_or_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        assert_eq!(ctx.backup_retention().unwrap(), BackupRetention::default());
+        for retention in [
+            BackupRetention::KeepForever,
+            BackupRetention::DeleteAfterDays(7),
+        ] {
+            ctx.set_backup_retention(retention).unwrap();
+            assert_eq!(ctx.backup_retention().unwrap(), retention);
+        }
+        ctx.set_backup_retention(BackupRetention::DeleteAfterDays(0))
+            .unwrap();
+        assert_eq!(ctx.backup_retention().unwrap(), BackupRetention::default());
+    }
+
+    #[test]
+    fn unreadable_backup_retention_is_an_error_not_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+        ctx.set_backup_retention(BackupRetention::KeepForever)
+            .unwrap();
+        store.fail_all_reads(true);
+        assert!(ctx.backup_retention().is_err());
     }
 
     /// F69 — the `AppSettings` blob survives a put/get round-trip through the
@@ -493,7 +541,7 @@ mod tests {
         let puts_before = store.put_count();
 
         // Every read now fails. Bypass the cache so the load actually hits it.
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let got = ctx.get_app_settings();
 
@@ -508,7 +556,7 @@ mod tests {
         );
 
         // The store recovers: the stored settings must be exactly as they were.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         let recovered = ctx.get_app_settings();
         assert_eq!(
@@ -545,7 +593,7 @@ mod tests {
         ctx.set_app_settings(&stored).unwrap();
 
         // One failing read, with the cache cold so the load actually hits the store.
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         assert_eq!(
             ctx.get_app_settings().network,
@@ -554,7 +602,7 @@ mod tests {
         );
 
         // The store recovers on its own; nothing invalidates the cache in between.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         let recovered = ctx.get_app_settings();
 
         assert_eq!(
@@ -628,7 +676,7 @@ mod tests {
         .unwrap();
         let puts_before = store.put_count();
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let result = ctx.update_app_settings(|s| s.auto_start_spv = true);
 
@@ -639,7 +687,7 @@ mod tests {
             "a failed read-modify-write must not commit anything"
         );
 
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         let recovered = ctx.get_app_settings();
         assert_eq!(recovered.user_role, Some(UserRole::Developer));
@@ -663,7 +711,7 @@ mod tests {
             .expect("a healthy store persists the role");
         assert_eq!(ctx.user_role(), UserRole::Everyday);
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         let result = ctx.set_and_persist_user_role(UserRole::Developer);
 
@@ -736,7 +784,7 @@ mod tests {
         // nothing would be indistinguishable from neither fallback firing.
         ctx.set_user_role(UserRole::Developer);
 
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         drop(ctx.invalidate_settings_cache());
         ctx.seed_user_role_from_settings();
 
@@ -753,7 +801,7 @@ mod tests {
 
         // The store recovers. The user's real role is still Everyday — a restart
         // (or re-picking the mode) seeds it, and the failed read left nothing behind.
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         drop(ctx.invalidate_settings_cache());
         ctx.seed_user_role_from_settings();
 

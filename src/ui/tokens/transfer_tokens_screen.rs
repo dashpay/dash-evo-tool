@@ -186,6 +186,7 @@ impl TransferTokensScreen {
                 &mut self.receiver_identity_id,
                 &self.known_identities,
             )
+            .with_context(&self.app_context)
             .width(300.0)
             .label("Recipient:")
             .exclude(&exclude),

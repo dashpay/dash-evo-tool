@@ -189,8 +189,11 @@ enum RegistrationPersistFailure {
 impl RegistrationPersistFailure {
     fn into_task_error(self) -> TaskError {
         let (Self::Staged(source) | Self::Discarded(source)) = self;
-        TaskError::IdentityFundingAccountPersistFailed {
-            source: Box::new(source),
+        let source = Box::new(source);
+        if source.is_transient() {
+            TaskError::IdentityFundingAccountPersistBusy { source }
+        } else {
+            TaskError::IdentityFundingAccountPersistFailed { source }
         }
     }
 }
@@ -602,7 +605,9 @@ impl WalletBackend {
         self.inner
             .wallet_persister
             .load_unowned_identities()
-            .map_err(|source| TaskError::WalletStorage { source })
+            .map_err(|source| TaskError::WalletStorage {
+                source: source.into(),
+            })
     }
 
     /// The unowned identities as a manager, so a mutation keeps the bucket and

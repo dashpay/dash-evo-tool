@@ -360,7 +360,6 @@ pub async fn load_contacts(
             .iter()
             .map(|contact| {
                 let dashpay_contract = dashpay_contract.clone();
-                let dpns_contract = app_context.dpns_contract.clone();
                 let contact_id = contact.identity_id;
 
                 async move {
@@ -398,22 +397,11 @@ pub async fn load_contacts(
                     }
 
                     // Fetch DPNS username
-                    if let Ok(mut dpns_query) = DocumentQuery::new(dpns_contract, "domain") {
-                        dpns_query = dpns_query.with_where(WhereClause {
-                            field: "records.identity".to_string(),
-                            operator: WhereOperator::Equal,
-                            value: Value::Identifier(contact_id.to_buffer()),
-                        });
-                        dpns_query.limit = 1;
-
-                        if let Ok(results) = Document::fetch_many(sdk, dpns_query).await
-                            && let Some((_, Some(doc))) = results.into_iter().next()
-                        {
-                            let props = doc.properties();
-                            if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
-                                username = Some(label.to_string());
-                            }
-                        }
+                    if let Ok(names) = sdk
+                        .get_dpns_usernames_by_identity(contact_id, Some(1))
+                        .await
+                    {
+                        username = names.into_iter().next().map(|name| name.label);
                     }
 
                     (contact_id, display_name, avatar_url, bio, username)

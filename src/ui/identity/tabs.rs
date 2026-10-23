@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// One of the four tabs inside `IdentityHubScreen`.
+/// A hub destination; `ALL` lists the visible tabs.
 ///
 /// Order matters: the tab bar renders these left to right in variant order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,18 +12,17 @@ pub enum IdentityHubTab {
     Home,
     /// Contacts: requests, active contacts, sent requests. Gated on social profile.
     Contacts,
-    /// Unified activity timeline (payments · funding · platform ops).
+    /// Unfinished activity shell, retained for existing internal links.
     Activity,
-    /// Identity settings: social profile, username + aliases, advanced, danger zone.
+    /// Profile: social profile, usernames, advanced settings, and danger zone.
     Settings,
 }
 
 impl IdentityHubTab {
     /// All tabs in display order.
-    pub const ALL: [IdentityHubTab; 4] = [
+    pub const ALL: [IdentityHubTab; 3] = [
         IdentityHubTab::Home,
         IdentityHubTab::Contacts,
-        IdentityHubTab::Activity,
         IdentityHubTab::Settings,
     ];
 
@@ -33,7 +32,7 @@ impl IdentityHubTab {
             IdentityHubTab::Home => "Home",
             IdentityHubTab::Contacts => "Contacts",
             IdentityHubTab::Activity => "Activity",
-            IdentityHubTab::Settings => "Settings",
+            IdentityHubTab::Settings => "Profile",
         }
     }
 
@@ -48,7 +47,7 @@ impl IdentityHubTab {
                 "Activity. A unified timeline of payments, funding, and platform actions."
             }
             IdentityHubTab::Settings => {
-                "Settings. Social profile, usernames, keys, and advanced options."
+                "Profile. Social profile, usernames, keys, and advanced options."
             }
         }
     }
@@ -68,8 +67,7 @@ mod tests {
     fn all_in_display_order() {
         assert_eq!(IdentityHubTab::ALL[0], IdentityHubTab::Home);
         assert_eq!(IdentityHubTab::ALL[1], IdentityHubTab::Contacts);
-        assert_eq!(IdentityHubTab::ALL[2], IdentityHubTab::Activity);
-        assert_eq!(IdentityHubTab::ALL[3], IdentityHubTab::Settings);
+        assert_eq!(IdentityHubTab::ALL[2], IdentityHubTab::Settings);
     }
 
     #[test]
@@ -104,7 +102,7 @@ mod tests {
     #[test]
     fn labels_in_display_order() {
         let labels: Vec<&str> = IdentityHubTab::ALL.iter().map(|t| t.label()).collect();
-        assert_eq!(labels, ["Home", "Contacts", "Activity", "Settings"]);
+        assert_eq!(labels, ["Home", "Contacts", "Profile"]);
     }
 
     #[test]

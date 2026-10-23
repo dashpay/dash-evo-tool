@@ -128,12 +128,9 @@ pub fn format_key_label_dev(key: &IdentityPublicKey) -> String {
     )
 }
 
-/// Returns the display label for a QualifiedIdentity (alias or Base58 ID).
-pub fn identity_display_label(identity: &QualifiedIdentity) -> String {
-    identity
-        .alias
-        .clone()
-        .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58))
+/// Returns the profile, username, or shortened identifier label.
+pub fn identity_display_label(app_context: &AppContext, identity: &QualifiedIdentity) -> String {
+    app_context.identity_display_label(identity)
 }
 
 /// Returns the display label for a QualifiedContract (alias or Base58 ID).
@@ -680,12 +677,12 @@ where
                     .selected_text(
                         selected_identity
                             .as_ref()
-                            .map(identity_display_label)
+                            .map(|qi| identity_display_label(app_context, qi))
                             .unwrap_or_else(|| "Select Identity…".into()),
                     )
                     .show_ui(ui, |iui| {
                         for qi in identities {
-                            let label = identity_display_label(qi);
+                            let label = identity_display_label(app_context, qi);
                             if iui
                                 .selectable_label(selected_identity.as_ref() == Some(qi), label)
                                 .clicked()

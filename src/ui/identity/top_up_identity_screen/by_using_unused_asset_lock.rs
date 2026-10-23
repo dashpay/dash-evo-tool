@@ -4,7 +4,7 @@ use crate::ui::MessageType;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identity::funding_common::{
     FundingAssetLockPicker, FundingMethod, actionable_asset_locks, asset_lock_address,
-    asset_lock_status_label,
+    asset_lock_status_label, existing_funding_refusal, show_no_funding_large_enough,
 };
 use crate::ui::identity::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
@@ -20,8 +20,10 @@ impl TopUpIdentityScreen {
 
         ui.heading("Select the unfinished funding to use:");
 
+        let minimum_duffs = self.minimum_top_up_duffs();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for lock in &tracked {
+                let refusal = existing_funding_refusal(lock.amount, minimum_duffs);
                 ui.horizontal(|ui| {
                     let selected_text = if self.funding_asset_lock == Some(lock.out_point) {
                         " (Selected)"
@@ -41,7 +43,9 @@ impl TopUpIdentityScreen {
                         asset_lock_status_label(&lock.status),
                         selected_text,
                     ));
-                    if lock.proof.is_some() {
+                    if refusal.is_some() {
+                        ui.add_enabled(false, egui::Button::new("Select"));
+                    } else if lock.proof.is_some() {
                         if ui.button("Select").clicked() {
                             self.funding_asset_lock = Some(lock.out_point);
                             self.set_step(WalletFundedScreenStep::ReadyToCreate);
@@ -54,8 +58,12 @@ impl TopUpIdentityScreen {
                         );
                     }
                 });
+                if let Some(reason) = refusal {
+                    ui.colored_label(DashColors::warning_color(ui.visuals().dark_mode), reason);
+                }
                 ui.add_space(5.0);
             }
+            show_no_funding_large_enough(ui, &tracked, minimum_duffs);
         });
     }
 
@@ -65,7 +73,6 @@ impl TopUpIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let step = self.current_step();
 
         ui.heading(
             format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
@@ -109,18 +116,6 @@ impl TopUpIdentityScreen {
         if ui.add(button).clicked() {
             action |= self.top_up_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
-
-        ui.add_space(20.0);
-
-        ui.vertical_centered(|ui| match step {
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform to add the funds to the identity.");
-            }
-            WalletFundedScreenStep::Success => {
-                ui.heading("...Success...");
-            }
-            _ => {}
-        });
 
         ui.add_space(40.0);
         action

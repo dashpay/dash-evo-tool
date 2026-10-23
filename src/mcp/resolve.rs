@@ -385,7 +385,7 @@ async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), 
 /// Reject a zero send amount. `unit_label` names the JSON parameter's unit
 /// (e.g. `"duffs"` or `"credits"`) so the message points at the right field.
 pub(crate) fn validate_positive_amount(amount: u64, unit_label: &str) -> Result<(), McpToolError> {
-    if amount == 0 {
+    if crate::model::amount::validate_nonzero_amount(amount).is_err() {
         return Err(McpToolError::InvalidParam {
             message: format!("amount_{unit_label} must be greater than zero"),
         });

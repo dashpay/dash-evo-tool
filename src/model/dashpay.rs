@@ -35,6 +35,16 @@ pub fn contact_request_recipient(document: &Document) -> Option<Identifier> {
         .and_then(|value| value.to_identifier().ok())
 }
 
+/// A completed profile operation, tied to its owner and shared cache revision.
+#[derive(Debug, Clone)]
+pub struct ProfileSnapshot {
+    pub network: dash_sdk::dpp::dashcore::Network,
+    pub owner: Identifier,
+    pub revision: u64,
+    /// Display name, biography, and avatar URL; `None` is authoritative absence.
+    pub profile: Option<(String, String, String)>,
+}
+
 /// DashPay profile data — the local snapshot of an identity's published profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredProfile {
@@ -426,6 +436,8 @@ mod tests {
             properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(99),
             owner_id: id(1),
             creator_id: None,

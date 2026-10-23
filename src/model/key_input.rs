@@ -60,7 +60,7 @@ pub fn verify_key_input(
                 key_name: key_name.to_owned(),
             }),
         51 | 52 => PrivateKey::from_wif(private_key)
-            .map(|key| Some(key.inner.secret_bytes()))
+            .map(|key| Some(*key.inner.to_bytes()))
             .map_err(|_| KeyInputError::BadWif {
                 key_name: key_name.to_owned(),
             }),

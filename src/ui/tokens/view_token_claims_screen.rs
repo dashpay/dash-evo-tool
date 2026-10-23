@@ -3,11 +3,13 @@ use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::datetime;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::ComponentStyles;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
@@ -46,7 +48,7 @@ pub struct ViewTokenClaimsScreen {
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
     claims: Vec<Document>,
-    pending_fetch_context: Option<BackendTaskContext>,
+    pending_fetch_context: PendingRequest,
 }
 
 impl ViewTokenClaimsScreen {
@@ -57,6 +59,7 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                integer_range_clauses: vec![],
                 sub_queries: Vec::new(),
                 select: SelectProjection::documents(),
                 data_contract: app_context.token_history_contract.clone(),
@@ -84,7 +87,7 @@ impl ViewTokenClaimsScreen {
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
             claims: vec![],
-            pending_fetch_context: None,
+            pending_fetch_context: PendingRequest::default(),
         }
     }
 
@@ -99,10 +102,8 @@ impl ViewTokenClaimsScreen {
             return AppAction::BackendTask(task);
         }
 
-        let context = BackendTaskContext::for_dispatch(&task);
-        self.pending_fetch_context = Some(context.clone());
         self.fetch_status = FetchStatus::Fetching(Utc::now());
-        AppAction::BackendTaskWithContext { task, context }
+        self.pending_fetch_context.dispatch(task)
     }
 }
 
@@ -110,9 +111,9 @@ impl ScreenLike for ViewTokenClaimsScreen {
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if self
             .fetch_status
-            .stop_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
+            .stop_if_fetch_in_flight(self.pending_fetch_context.context(), context)
         {
-            self.pending_fetch_context = None;
+            self.pending_fetch_context.clear();
         }
     }
 
@@ -121,7 +122,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
         context: &BackendTaskContext,
         _error: &TaskError,
     ) -> bool {
-        context.dispatched_document_fetch() && self.pending_fetch_context.as_ref() != Some(context)
+        context.dispatched_document_fetch() && !self.pending_fetch_context.owns(context)
     }
 
     fn display_backend_task_result(
@@ -135,12 +136,12 @@ impl ScreenLike for ViewTokenClaimsScreen {
         if !context.is_fetch_documents()
             || !self
                 .fetch_status
-                .stop_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
+                .stop_if_fetch_in_flight(self.pending_fetch_context.context(), context)
         {
             return;
         }
 
-        self.pending_fetch_context = None;
+        self.pending_fetch_context.clear();
         self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 
         if self.claims.is_empty() {
@@ -238,20 +239,11 @@ impl ScreenLike for ViewTokenClaimsScreen {
                                     };
 
                                     // Timestamp
-                                    let timestamp = match claim.created_at() {
-                                        Some(ts) => {
-                                            let dt =
-                                                chrono::DateTime::from_timestamp_millis(ts as i64)
-                                                    .map(|d| d.naive_utc())
-                                                    .unwrap_or_else(|| {
-                                                        chrono::DateTime::from_timestamp(0, 0)
-                                                            .unwrap()
-                                                            .naive_utc()
-                                                    });
-                                            dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                                        }
-                                        None => "Unknown".to_string(),
-                                    };
+                                    let timestamp = claim
+                                        .created_at()
+                                        .and_then(datetime::instant_from_unix_millis)
+                                        .map(datetime::local_date_time_seconds)
+                                        .unwrap_or_else(|| "Unknown".to_string());
 
                                     // Block Height
                                     let block_height = claim
@@ -341,14 +333,14 @@ mod tests {
         let different_context = BackendTaskContext::FetchDocuments(Box::new(different_query));
 
         screen.fetch_status = FetchStatus::Fetching(Utc::now());
-        screen.pending_fetch_context = Some(expected.clone());
+        screen.pending_fetch_context.track(expected.clone());
         screen.display_backend_task_result(
             &different_context,
             BackendTaskSuccessResult::Documents(Default::default()),
         );
 
         assert!(matches!(screen.fetch_status, FetchStatus::Fetching(_)));
-        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&expected));
+        assert_eq!(screen.pending_fetch_context.context(), Some(&expected));
 
         screen.display_backend_task_result(
             &expected,
@@ -356,7 +348,7 @@ mod tests {
         );
 
         assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
-        assert_eq!(screen.pending_fetch_context, None);
+        assert!(!screen.pending_fetch_context.is_pending());
 
         screen.display_backend_task_result(
             &expected,
@@ -364,7 +356,7 @@ mod tests {
         );
 
         assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
-        assert_eq!(screen.pending_fetch_context, None);
+        assert!(!screen.pending_fetch_context.is_pending());
     }
 
     #[test]
@@ -409,7 +401,10 @@ mod tests {
         );
         screen.display_backend_task_error(&first_context, &TaskError::NoIdentitiesFound);
         assert!(matches!(screen.fetch_status, FetchStatus::Fetching(_)));
-        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&second_context));
+        assert_eq!(
+            screen.pending_fetch_context.context(),
+            Some(&second_context)
+        );
 
         screen.display_backend_task_result(
             &second_context,
@@ -417,6 +412,6 @@ mod tests {
         );
 
         assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
-        assert_eq!(screen.pending_fetch_context, None);
+        assert!(!screen.pending_fetch_context.is_pending());
     }
 }

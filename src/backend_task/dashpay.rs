@@ -151,6 +151,9 @@ impl AppContext {
         task: DashPayTask,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // DashPay resolves identities through their wallet; one stored after
+        // that wallet bootstrapped is not registered with it yet.
+        self.reconcile_managed_identities_for_loaded_wallets().await;
         match task {
             DashPayTask::LoadProfile { identity } => {
                 Ok(profile::load_profile(self, sdk, identity).await?)

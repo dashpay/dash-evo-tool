@@ -24,6 +24,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::cli::CliRun;
+use crate::identity_storage::IDENTITY_KEY;
 use crate::manifest::{ExpectedWallet, WalletOutcome};
 
 /// Legacy DET database carrying the `settings.database_version` ladder.
@@ -31,10 +32,6 @@ pub const DATA_DB: &str = "data.db";
 
 /// Cross-network app store holding the migration sentinels.
 pub const APP_DB: &str = "det-app.sqlite";
-
-/// Key every stored identity lives under in the per-network store
-/// (`IDENTITY_KEY` in `src/context/identity_db.rs`).
-const IDENTITY_KEY: &str = "det:identity:v1";
 
 /// Namespace shared by every migration sentinel. Discovering keys by prefix
 /// picks up the ones whose constants are private (the legacy-settings import)
@@ -535,7 +532,7 @@ pub fn legacy_wallet_registrations(
                     "SELECT EXISTS (SELECT 1 FROM account_registrations \
                      WHERE account_type = 'standard_bip44' AND account_index = 0 \
                      AND instr(account_xpub_bytes, CAST(?1 AS BLOB)) > 0)",
-                    [base58::encode_check(&account_xpub)],
+                    [base58::Base58CkString::encode_unbounded(&account_xpub).to_string()],
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(|e| {
@@ -1065,7 +1062,7 @@ mod tests {
         )
         .expect("test vector hex");
         assert_eq!(
-            base58::encode_check(&serialized),
+            base58::Base58CkString::encode_unbounded(&serialized).to_string(),
             "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
         );
     }
@@ -1103,7 +1100,7 @@ mod tests {
                  account_xpub_bytes BLOB NOT NULL);",
             )
             .expect("create registrations");
-        let text = base58::encode_check(&plain_xpub);
+        let text = base58::Base58CkString::encode_unbounded(&plain_xpub).to_string();
         let mut stored = (text.len() as u32).to_be_bytes().to_vec();
         stored.extend_from_slice(text.as_bytes());
         store
@@ -1307,9 +1304,11 @@ mod tests {
 
         let network_db = dir.path().join(network_db_name(Network::Testnet));
         let conn = Connection::open(&network_db).expect("create network db");
-        conn.execute_batch(
-            "CREATE TABLE meta_identity (identity_id BLOB, key TEXT, value BLOB);
-             INSERT INTO meta_identity (identity_id, key, value) VALUES (X'AABB', 'det:identity:v1', X'00');",
+        conn.execute_batch("CREATE TABLE meta_identity (identity_id BLOB, key TEXT, value BLOB);")
+            .expect("create identity table");
+        conn.execute(
+            "INSERT INTO meta_identity (identity_id, key, value) VALUES (X'AABB', ?1, X'00')",
+            [IDENTITY_KEY],
         )
         .expect("seed identity");
         drop(conn);

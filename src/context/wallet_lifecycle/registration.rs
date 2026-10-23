@@ -53,6 +53,23 @@ impl AppContext {
         Ok((imported, wallet))
     }
 
+    /// Add-only import of `wif` for recovery paths. Existing secrets are never
+    /// overwritten; missing public metadata can be repaired. Returns `Ok(None)`
+    /// when both secret and metadata are present. See
+    /// [`SingleKeyView::import_wif_if_absent`](crate::wallet_backend::single_key::SingleKeyView::import_wif_if_absent).
+    pub(crate) fn import_single_key_wif_if_absent(
+        &self,
+        wif: &str,
+        alias: crate::model::wallet::alias::AliasSource,
+    ) -> Result<Option<crate::model::single_key::ImportedKey>, TaskError> {
+        let backend = self.wallet_backend()?;
+        let imported = backend.single_key().import_wif_if_absent(wif, alias)?;
+        if imported.is_some() {
+            self.has_wallet.store(true, Ordering::Relaxed);
+        }
+        Ok(imported)
+    }
+
     /// Confirm that `passphrase` unlocks the protected imported key at
     /// `address` against the encrypted vault, without leaving any plaintext in
     /// the long-lived `single_key_wallets` map. Used by the wallets-screen

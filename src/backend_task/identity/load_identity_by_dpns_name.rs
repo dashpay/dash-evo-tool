@@ -1,15 +1,10 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
+use dash_sdk::platform::{Fetch, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -19,48 +14,12 @@ impl AppContext {
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
-
-        // Query the DPNS contract for the domain document
-        let domain_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![
-                WhereClause {
-                    field: "normalizedParentDomainName".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text("dash".to_string()),
-                },
-                WhereClause {
-                    field: "normalizedLabel".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text(normalized_name.clone()),
-                },
-            ],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 1,
-            offset: None,
-            start: None,
-        };
-
-        let documents = Document::fetch_many(sdk, domain_query)
+        // The name's own record names its identity, which after a transfer is
+        // not the document's owner.
+        let identity_id = sdk
+            .resolve_dpns_name(dpns_name.trim())
             .await
-            .map_err(TaskError::from)?;
-
-        // Get the first (and should be only) document
-        let domain_doc = documents
-            .values()
-            .filter_map(|maybe_doc| maybe_doc.as_ref())
-            .next()
-            .ok_or(TaskError::IdentityNotFound)?;
-
-        // Extract the identity ID from the records.identity field
-        let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(domain_doc)
+            .map_err(TaskError::from)?
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity
@@ -70,59 +29,7 @@ impl AppContext {
             Err(e) => return Err(TaskError::from(e)),
         };
 
-        // Get the label from the document for display
-        let label = domain_doc
-            .get("label")
-            .and_then(|l| l.to_str().ok())
-            .unwrap_or(&dpns_name)
-            .to_string();
-
-        // Fetch all DPNS names owned by this identity
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
-        let owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
-            .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc.get("label").map(|l| l.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
-                    })
-                    .collect::<Vec<DPNSNameInfo>>()
-            })
-            .map_err(TaskError::from)?;
+        let owned_dpns_names = self.fetch_owned_dpns_names(sdk, identity_id).await?;
 
         let wallets = self.wallet_context().wallets();
 
@@ -142,7 +49,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: Some(format!("{}.dash", label)),
+            alias: None,
             private_keys: encrypted_private_keys.into(),
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
@@ -166,5 +73,69 @@ impl AppContext {
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::document::DocumentV0Getters;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::platform_value::Value;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Document, Identifier};
+    use dash_sdk::query_types::Documents;
+
+    fn documents(found: Document) -> Documents {
+        Documents::from_iter([(found.id(), Some(found))])
+    }
+
+    /// The name's record, not its document owner, says whose identity to load;
+    /// the network may hand that record back as plain bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loading_by_name_follows_the_identity_the_name_points_at() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32])
+                .await;
+        let ctx = &staged.ctx;
+        let target = Identifier::from([7; 32]);
+        let name = crate::context::test_support::dpns_name_document(
+            Identifier::from([0x5E; 32]),
+            "Alice",
+            Value::Bytes32(target.to_buffer()),
+        );
+        let mut sdk = crate::context::test_support::mock_sdk_for(ctx);
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.dpns_domain_query("a11ce"),
+                Some(documents(name.clone())),
+            )
+            .await
+            .expect("name lookup expectation");
+        let identity =
+            Identity::create_basic_identity(target, PlatformVersion::latest()).expect("identity");
+        sdk.mock()
+            .expect_fetch(target, Some(identity))
+            .await
+            .expect("identity expectation");
+        sdk.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(
+                ctx.owned_dpns_names_query(target),
+                Some(documents(name)),
+            )
+            .await
+            .expect("owned names expectation");
+
+        let loaded = ctx
+            .load_identity_by_dpns_name(&sdk, " Alice.dash ".to_string(), None)
+            .await
+            .expect("the identity loads");
+
+        let BackendTaskSuccessResult::LoadedIdentity(loaded) = loaded else {
+            panic!("expected a loaded identity, got {loaded:?}");
+        };
+        assert_eq!(loaded.identity.id(), target);
+        let names: Vec<&str> = loaded.dpns_names.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["Alice"]);
     }
 }

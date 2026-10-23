@@ -134,6 +134,92 @@
       },
       "notes": "Derived from a verified copy of the September 8 fixture by the original September 15 released det-cli. Both releases booted twice on persisted testnet and listed the same wallet identity and alias. The source archive is unchanged. RPC credentials were cleared only in the capture copy before packing. Direct upgrade with the current v1.0-dev CI binary also lists the same wallet. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
       "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. Offline capture does not exercise network discovery or address derivation. Empty mainnet databases from the original source remain present; all wallet data is testnet."
+    },
+    {
+      "id": "v1.0.0-weekly.20260929-wallet-only",
+      "git_tag": "v1.0.0-weekly.20260929",
+      "det_version": "1.0.0-weekly.20260929+4c61c047a",
+      "capture_method": "release-chain",
+      "profile": "wallet-only",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-linux-x86_64.zip",
+      "platform_rev": "9f7ed16935bd540e4c2a542688800d2953f9f67a",
+      "captured_at": "2026-10-13",
+      "provenance": {
+        "source": {
+          "git_tag": "v1.0.0-weekly.20260915",
+          "archive": "v1.0.0-weekly.20260915-wallet-only.tar.zst",
+          "sha256": "c0bb5430a15835de9c2e77547f87de2785cd1fb6ae801dc65cf65320ead1e30b"
+        },
+        "binary_sha256": "9de4cd59643a92eece9587d13c9423939766fcd318a98f82f40be2765dc19934"
+      },
+      "artifact": {
+        "workflow_name": "migration-fixture-bootstrap.yml",
+        "workflow_run_id": 38359167767,
+        "artifact_name": "migration-fixture-v1.0.0-weekly.20260929-wallet-only",
+        "archive_filename": "v1.0.0-weekly.20260929-wallet-only.tar.zst",
+        "sha256": "25b141aa57187ca64dbd45ff0040d8cb0be97ccd78077188ae438ecb0a2fd644",
+        "bytes": 267239,
+        "retention_days": 90,
+        "expires_at": "2027-01-11T06:52:03Z"
+      },
+      "expect": {
+        "wallet_aliases": [
+          "weekly-fixture"
+        ],
+        "starting_db_version": 38,
+        "derive_address": false
+      },
+      "contents": {
+        "wallets": [],
+        "identity": null
+      },
+      "notes": "Derived from a verified copy of the September 15 fixture by the original September 29 released det-cli. This hop crosses the Platform pin change from 63cf57f4 to 9f7ed169. Both releases started on persisted testnet, hydrated the wallet twice and listed the same wallet identity and alias. The source archive is unchanged. RPC credentials were cleared only in the capture copy before packing. The release asset matched its published digest and build attestation. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
+      "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. The capture ran only network-info and core-wallets-list, so it does not exercise network discovery or address derivation. The hop applied no new wallet-storage migrations: both stores stay at 18 applied migrations, and data.db, the vault and .env are byte-identical to the source. Empty mainnet databases from the original source remain present; all wallet data is testnet."
+    },
+    {
+      "id": "v1.0.0-weekly.20261006-wallet-only",
+      "git_tag": "v1.0.0-weekly.20261006",
+      "det_version": "1.0.0-weekly.20261006+63fd09a68",
+      "capture_method": "release-chain",
+      "profile": "wallet-only",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-linux-x86_64.zip",
+      "platform_rev": "9f7ed16935bd540e4c2a542688800d2953f9f67a",
+      "captured_at": "2026-10-13",
+      "provenance": {
+        "source": {
+          "git_tag": "v1.0.0-weekly.20260929",
+          "archive": "v1.0.0-weekly.20260929-wallet-only.tar.zst",
+          "sha256": "25b141aa57187ca64dbd45ff0040d8cb0be97ccd78077188ae438ecb0a2fd644"
+        },
+        "binary_sha256": "e0e92202e0395d24de7bd69f6a97a2d538a1e709d1caeafe56bda56b6a921d64"
+      },
+      "artifact": {
+        "workflow_name": "migration-fixture-bootstrap.yml",
+        "workflow_run_id": 38359179297,
+        "artifact_name": "migration-fixture-v1.0.0-weekly.20261006-wallet-only",
+        "archive_filename": "v1.0.0-weekly.20261006-wallet-only.tar.zst",
+        "sha256": "08ee4723a3409393e97cafde56f946483d21c0e5b748a3c144329ebada818493",
+        "bytes": 267550,
+        "retention_days": 90,
+        "expires_at": "2027-01-11T06:52:10Z"
+      },
+      "expect": {
+        "wallet_aliases": [
+          "weekly-fixture"
+        ],
+        "starting_db_version": 38,
+        "derive_address": false
+      },
+      "contents": {
+        "wallets": [],
+        "identity": null
+      },
+      "notes": "Derived from the September 29 snapshot above by the original October 6 released det-cli, in the same chain run that started from the verified September 15 fixture. The release started on persisted testnet, hydrated the wallet twice and listed the same wallet identity and alias. The source archive is unchanged. RPC credentials were cleared only in the capture copy before packing. The release asset matched its published digest and build attestation. This release pins the same Platform revision as the September 29 release. Wallet seed hash: 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929.",
+      "known_limitations": "Inherits the September 8 single unprotected wallet profile: no protected wallet, identity or DPNS name. This is an upgrade-derived snapshot, not a fresh import. The capture ran only network-info and core-wallets-list, so it does not exercise network discovery or address derivation. The hop applied no new wallet-storage migrations: both stores stay at 18 applied migrations, and data.db, the vault and .env are byte-identical to the source. Empty mainnet databases from the original source remain present; all wallet data is testnet."
     }
   ]
 }

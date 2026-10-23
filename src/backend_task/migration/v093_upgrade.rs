@@ -32,7 +32,6 @@ use dash_sdk::dpp::identity::{
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::BinaryData;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use rusqlite::{Connection, params};
 
@@ -41,6 +40,7 @@ use crate::backend_task::migration::finish_unwire::{
 };
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
+use crate::context::migration_status::MigrationState;
 use crate::database::Database;
 use crate::database::test_helpers::{LegacyIdentityFixture, legacy_master_epk_bytes};
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -113,7 +113,7 @@ fn secrets() -> &'static TestSecrets {
 fn random_private_key() -> [u8; 32] {
     loop {
         let bytes = rand::random::<[u8; 32]>();
-        if dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&bytes).is_ok() {
+        if dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&bytes).is_ok() {
             return bytes;
         }
     }
@@ -132,14 +132,12 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 /// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::{
-        hashes::{Hash, hash160},
-        secp256k1::{PublicKey, Secp256k1, SecretKey},
-    };
+    use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
     let public_hash = |key: &[u8; 32]| {
-        let key = SecretKey::from_slice(key).expect("generated valid key");
-        let public = PublicKey::from_secret_key(&Secp256k1::new(), &key);
-        hex::encode(hash160::Hash::hash(&public.serialize()).to_byte_array())
+        let key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(key)
+            .expect("generated valid key");
+        let public = key.public_key();
+        hex::encode(hash160::Hash::hash(&public.to_compressed()).to_byte_array())
     };
     let encoded = V093_MASTERNODE_BLOB_HEX
         .replace("{owner}", &hex::encode(secrets().owner_key))
@@ -169,6 +167,7 @@ fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
 /// bincode config. Used for the fixture rows whose exact bytes do not matter;
 /// row A uses the captured v0.9.3 template to pin the wire format.
 fn legacy_identity_blob(
+    network: Network,
     id: [u8; 32],
     identity_type: IdentityType,
     alias: &str,
@@ -206,7 +205,7 @@ fn legacy_identity_blob(
         // Never encoded — the legacy `status` column is the only source, which is
         // exactly what the import has to restore.
         status: IdentityStatus::Unknown,
-        network: USER_NETWORK,
+        network,
     }
     .to_bytes()
 }
@@ -229,6 +228,7 @@ struct Fixture {
 #[allow(clippy::too_many_arguments)]
 fn insert_identity(
     conn: &Connection,
+    network: Network,
     id: [u8; 32],
     data: Option<Vec<u8>>,
     status: IdentityStatus,
@@ -237,7 +237,7 @@ fn insert_identity(
     wallet: Option<(WalletSeedHash, u32)>,
     identity_type: &str,
 ) {
-    let mut row = LegacyIdentityFixture::new(id, data, USER_NETWORK.to_string())
+    let mut row = LegacyIdentityFixture::new(id, data, v093_network_label(network))
         .with_status(status)
         .with_is_local(is_local)
         .with_alias(alias)
@@ -248,8 +248,24 @@ fn insert_identity(
     row.insert(conn).expect("insert identity row");
 }
 
-/// Write a `data.db` in the exact shape v0.9.3 left on disk, then hand back the
-/// keys the assertions need.
+/// The `network` column value v0.9.3 wrote: its dashcore (v0.40) displayed
+/// mainnet as `dash`, and v0.9.3 bound `network.to_string()` everywhere.
+fn v093_network_label(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "dash",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
+
+/// [`write_v093_database_on`] for the default fixture network.
+fn write_v093_database(dir: &std::path::Path) -> Fixture {
+    write_v093_database_on(dir, USER_NETWORK)
+}
+
+/// Write a `data.db` in the exact shape v0.9.3 left on disk for a user on
+/// `network`, then hand back the keys the assertions need.
 ///
 /// The DDL is copied from `git show v0.9.3:src/database/{initialization,
 /// scheduled_votes,top_ups,tokens,proof_log}.rs` — a v0.9.3 `create_tables()`
@@ -257,7 +273,7 @@ fn insert_identity(
 /// walked a migration. Deliberately absent: `single_key_wallet` (introduced by
 /// ladder arm 18 — the feature did not exist in v0.9.3) and
 /// `wallet.core_wallet_name` (arm 33).
-fn write_v093_database(dir: &std::path::Path) -> Fixture {
+fn write_v093_database_on(dir: &std::path::Path, network: Network) -> Fixture {
     let conn = Connection::open(dir.join("data.db")).expect("create legacy data.db");
     conn.execute_batch(
         "CREATE TABLE settings (
@@ -442,7 +458,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     )
     .expect("create v0.9.3 schema");
 
-    // A testnet user with a dark theme who parked on the scheduled-votes screen.
+    // A user with a dark theme who parked on the scheduled-votes screen.
     // `start_root_screen = 10` means the same screen in v0.9.3 and today, so it
     // is a value that genuinely round-trips rather than a coincidence.
     conn.execute(
@@ -451,7 +467,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
              theme_preference, database_version)
          VALUES (1, ?1, ?2, '/opt/dash-qt', 0, 'Dark', ?3)",
         params![
-            USER_NETWORK.to_string(),
+            v093_network_label(network),
             RootScreenType::RootScreenDPNSScheduledVotes.to_int(),
             V093_DB_VERSION,
         ],
@@ -471,8 +487,8 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             secrets().unprotected_seed.as_slice(),
             Vec::<u8>::new(),
             Vec::<u8>::new(),
-            legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
-            USER_NETWORK.to_string(),
+            legacy_master_epk_bytes(&secrets().unprotected_seed, network),
+            v093_network_label(network),
         ],
     )
     .expect("insert unprotected wallet row");
@@ -492,8 +508,8 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             envelope.ciphertext.as_slice(),
             envelope.salt.as_slice(),
             envelope.nonce.as_slice(),
-            legacy_master_epk_bytes(&secrets().protected_seed, USER_NETWORK),
-            USER_NETWORK.to_string(),
+            legacy_master_epk_bytes(&secrets().protected_seed, network),
+            v093_network_label(network),
         ],
     )
     .expect("insert protected wallet row");
@@ -503,6 +519,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // this row also pins the cross-version bincode wire format.
     insert_identity(
         &conn,
+        network,
         IDENTITY_ID,
         Some(v093_masternode_blob()),
         IdentityStatus::Active,
@@ -516,8 +533,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // the blob, but the wallet link must survive or the key cannot be derived.
     insert_identity(
         &conn,
+        network,
         USER_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             USER_IDENTITY_ID,
             IdentityType::User,
             "my-username",
@@ -539,8 +558,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // holding a `Clear` key. A wallet-less identity must still import.
     insert_identity(
         &conn,
+        network,
         EVONODE_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             EVONODE_IDENTITY_ID,
             IdentityType::Evonode,
             "my-evonode",
@@ -562,8 +583,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // Importing it would put a stranger's identity on the Identities screen.
     insert_identity(
         &conn,
+        network,
         OBSERVED_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             OBSERVED_IDENTITY_ID,
             IdentityType::User,
             "someone-else",
@@ -581,8 +604,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // wallet does not cost the user the identity, nor its link to that wallet.
     insert_identity(
         &conn,
+        network,
         PROTECTED_IDENTITY_ID,
         Some(legacy_identity_blob(
+            network,
             PROTECTED_IDENTITY_ID,
             IdentityType::User,
             "cold-username",
@@ -604,6 +629,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     // be skipped silently, not counted as a failure.
     insert_identity(
         &conn,
+        network,
         NULL_BLOB_IDENTITY_ID,
         None,
         IdentityStatus::Active,
@@ -620,7 +646,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
         params![
             IDENTITY_ID.as_slice(),
             CONTESTED_NAME,
-            USER_NETWORK.to_string()
+            v093_network_label(network)
         ],
     )
     .expect("insert scheduled vote row");
@@ -637,15 +663,20 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     }
 }
 
+/// [`boot_on`] for a fixture written on the default network.
+fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
+    boot_on(dir, USER_NETWORK)
+}
+
 /// Boot over `dir` exactly as `AppState` does: open the pre-update database
 /// read-only, import its preferences, then build the `AppContext` **on the
 /// network those preferences named**. Returns the context and imported settings.
 ///
 /// Taking the network from the import (rather than hard-coding testnet) is the
 /// point: it is what makes this a composition test. If the import lost the
-/// network, every downstream `WHERE network = ?1` filter in the wallet drain
+/// network, every downstream network filter in the wallet drain
 /// would silently target mainnet and find nothing.
-fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
+fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSettings) {
     crate::app_dir::ensure_env_file(dir);
     let db_file = dir.join("data.db");
 
@@ -655,9 +686,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
     let outcome = import_legacy_settings(&app_kv, &db).expect("import legacy settings");
     assert_eq!(
         outcome,
-        SettingsImport::Imported {
-            network: USER_NETWORK
-        },
+        SettingsImport::Imported { network },
         "the boot import must report the network it restored",
     );
 
@@ -813,8 +842,19 @@ fn top_up_history(ctx: &Arc<AppContext>) -> Option<std::collections::BTreeMap<u3
 /// its top-up history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() {
+    assert_v093_install_upgrades(USER_NETWORK).await;
+}
+
+/// The same upgrade for a mainnet user, whose v0.9.3 rows all say `dash`: every
+/// legacy reader must accept that spelling, or the wallets never come across.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v093_mainnet_install_with_dash_network_rows_upgrades_intact() {
+    assert_v093_install_upgrades(Network::Mainnet).await;
+}
+
+async fn assert_v093_install_upgrades(network: Network) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let fixture = write_v093_database(tmp.path());
+    let fixture = write_v093_database_on(tmp.path(), network);
     assert_eq!(
         schema_version(tmp.path()),
         V093_DB_VERSION,
@@ -823,7 +863,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     let legacy_before = std::fs::read(tmp.path().join("data.db"))
         .expect("snapshot the v0.9.3 database before boot");
 
-    let (ctx, settings) = boot(tmp.path());
+    let (ctx, settings) = boot_on(tmp.path(), network);
     let backend = wire_backend(&ctx).await;
 
     assert!(
@@ -848,9 +888,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
     // ── Settings: the safety-critical field ──────────────────────────
     assert_eq!(
-        settings.network,
-        Network::Testnet,
-        "a v0.9.3 testnet user must not be silently relaunched on mainnet",
+        settings.network, network,
+        "a v0.9.3 user must be relaunched on the network they used",
     );
     assert_eq!(
         settings.theme_mode,
@@ -927,7 +966,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     // ── Wallet metadata + registration ───────────────────────────────
     let meta_view = backend.wallet_meta();
     let meta = meta_view
-        .get(USER_NETWORK, &fixture.unprotected)
+        .get(network, &fixture.unprotected)
         .expect("the migrated wallet must have a metadata entry");
     assert_eq!(
         meta.alias, "Masternode Owner Wallet",
@@ -937,7 +976,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     assert!(!meta.uses_password);
     assert_eq!(
         meta.xpub_encoded,
-        legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
+        legacy_master_epk_bytes(&secrets().unprotected_seed, network),
         "the master xpub must survive — the cold-boot picker renders addresses from it",
     );
     assert!(
@@ -946,7 +985,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     );
 
     let protected_meta = meta_view
-        .get(USER_NETWORK, &fixture.protected)
+        .get(network, &fixture.protected)
         .expect("the protected wallet must have a metadata entry");
     assert_eq!(protected_meta.alias, "Cold Storage");
     assert!(
@@ -965,15 +1004,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     );
 
     // ── Scheduled votes ──────────────────────────────────────────────
-    let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
-    assert_eq!(votes.len(), 1, "the queued vote must come across");
-    assert_eq!(votes[0].contested_name, CONTESTED_NAME);
-    assert_eq!(votes[0].choice, ResourceVoteChoice::Lock);
-    assert_eq!(votes[0].voter_id, Identifier::from(IDENTITY_ID));
-    assert!(
-        !votes[0].executed_successfully,
-        "an uncast vote must not arrive marked as cast — that would skip the vote window",
-    );
+    assert!(ctx.has_legacy_scheduled_votes().unwrap());
+    assert!(ctx.dpns_vote_operations().unwrap().is_empty());
 
     // ── Top-up history ───────────────────────────────────────────────
     assert_eq!(
@@ -986,7 +1018,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     // The precondition the import consumes: the ladder must not drop or orphan
     // the row it reads from.
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-    let (alias, wallet, wallet_index, identity_type, network): (
+    let (alias, wallet, wallet_index, identity_type, stored_network): (
         String,
         Vec<u8>,
         u32,
@@ -1009,8 +1041,9 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     assert_eq!(wallet_index, 0);
     assert_eq!(identity_type, "Masternode");
     assert_eq!(
-        network, "testnet",
-        "a testnet identity must not be swept into mainnet by the v33 network rename",
+        stored_network,
+        v093_network_label(network),
+        "the read-only legacy row keeps the spelling v0.9.3 wrote",
     );
 
     // ── Identity import: the user's identities and their keys ────────
@@ -1266,8 +1299,6 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
     app_kv
         .put(DetScope::Global, AppSettings::KV_KEY, &chosen)
         .expect("user switches network");
-    ctx.clear_all_scheduled_votes()
-        .expect("user casts the vote");
 
     // …and renames the imported masternode identity. The identity sentinel is what
     // must protect the edit; the same guarantee under an undecodable row is covered
@@ -1298,7 +1329,7 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         "a re-import must not resurrect the legacy network over the user's choice",
     );
     assert!(
-        ctx.get_scheduled_votes().expect("read votes").is_empty(),
+        ctx.dpns_vote_operations().unwrap().is_empty(),
         "a re-run must not requeue a vote the user has already cast",
     );
     assert_eq!(
@@ -1428,28 +1459,15 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
     backend.shutdown().await;
 }
 
-/// A corrupt vote queue must never cost the user their identity keys.
-///
-/// The app-data pass (scheduled votes, top-up history) can fail hard — one
-/// malformed `det:scheduled_vote_voters:v1` blob is enough. That failure is
-/// deterministic: it recurs on every launch, and the app-data sentinel is never
-/// written. So if the identity import waited on the app-data result, a masternode
-/// owner's owner/voting keys would never reach the vault — not on this launch,
-/// not on any retry — because of a broken vote queue they cannot even see.
-///
-/// The two DET-owned passes are independent; neither may gate the other.
+/// An unused vote index cannot block startup or the import of identity keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
+async fn an_unused_vote_index_does_not_block_startup_or_identity_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
     write_v093_database(tmp.path());
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
 
-    // Poison the scheduled-vote roster with a blob that cannot decode into the
-    // voter list, so the app-data pass fails hard the way a corrupted entry would.
-    // (`det:scheduled_vote_voters:v1` is private to `context::identity_db`; a key
-    // rename surfaces here as an un-poisoned index, not a silent pass.)
     ctx.det_kv()
         .expect("per-network k/v")
         .put(
@@ -1459,13 +1477,9 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
         )
         .expect("poison the vote index");
 
-    // The failure still reaches the user — it is not swallowed…
-    assert!(
-        run_migration_with_wallet_passwords(&ctx).await.is_err(),
-        "a hard app-data failure must still surface, so the user gets a retry",
-    );
-
-    // …but it must not have taken the identities down with it.
+    run_migration_with_wallet_passwords(&ctx).await.unwrap();
+    assert!(ctx.dpns_vote_operations().unwrap().is_empty());
+    assert!(ctx.has_legacy_scheduled_votes().unwrap());
     assert_eq!(
         ctx.load_local_qualified_identities()
             .expect("load identities")
@@ -1483,8 +1497,7 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
             .expect("the owner key must be in the vault")
             .as_slice(),
         secrets().owner_key.as_slice(),
-        "the masternode owner key must reach the vault even when the vote import fails — \
-         otherwise a broken vote queue permanently costs the user control of their node",
+        "the masternode owner key must reach the vault",
     );
 
     backend.shutdown().await;
@@ -1510,6 +1523,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
     insert_identity(
         &conn,
+        USER_NETWORK,
         corrupt_id,
         Some(vec![0xFF; 16]),
         IdentityStatus::Active,
@@ -1539,7 +1553,6 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
         *ctx.migration_status().state(),
         crate::context::migration_status::MigrationState::SucceededWithUnreadableData {
             identities: 1,
-            votes: 0,
             top_ups: 0,
         },
         "the user must learn that an identity did not come across",
@@ -1614,4 +1627,243 @@ fn the_identity_sentinel_is_per_network_and_distinct_from_the_wallet_sentinel() 
     let testnet = identities_sentinel_key_for(USER_NETWORK);
     assert_ne!(testnet, identities_sentinel_key_for(Network::Mainnet));
     assert_ne!(testnet, sentinel_key_for(USER_NETWORK));
+}
+
+// ── Rows an earlier drain skipped ───────────────────────────────────────
+
+/// A raw single key the fixture stores under mainnet's `dash` spelling.
+const SKIPPED_SINGLE_KEY: [u8; 32] = [0x2A; 32];
+
+/// Address of the password-protected single key the fixture stores beside
+/// [`SKIPPED_SINGLE_KEY`]. Only its address and alias are ever read.
+const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
+
+/// The P2PKH address of [`SKIPPED_SINGLE_KEY`] on mainnet.
+fn skipped_single_key_address() -> String {
+    use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+    let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
+    let public = PublicKey {
+        compressed: true,
+        inner: key.inner.public_key(),
+    };
+    Address::p2pkh(&public, Network::Mainnet).to_string()
+}
+
+/// A mainnet profile an earlier build already "migrated": its v0.9.3 rows say
+/// `dash`, two single keys (one unprotected, one password-protected) were
+/// saved under `dash` too, and the wallet-drain sentinel is recorded although
+/// the drain read none of them.
+async fn affected_mainnet_profile(
+    dir: &std::path::Path,
+) -> (Arc<AppContext>, Arc<WalletBackend>, Fixture) {
+    let fixture = write_v093_database_on(dir, Network::Mainnet);
+    let conn = Connection::open(dir.join("data.db")).expect("open data.db");
+    add_skipped_single_keys(&conn);
+    drop(conn);
+
+    let (ctx, _) = boot_on(dir, Network::Mainnet);
+    let backend = wire_backend(&ctx).await;
+    ctx.app_kv()
+        .put(
+            DetScope::Global,
+            &sentinel_key_for(Network::Mainnet),
+            &MigrationCompletion {
+                completed_at: 1,
+                sha: "1.0.0-weekly.20260717".to_string(),
+                network_count: 1,
+            },
+        )
+        .expect("record the earlier, row-less drain");
+    (ctx, backend, fixture)
+}
+
+/// Save [`SKIPPED_SINGLE_KEY`] (unprotected) and a password-protected key at
+/// [`SKIPPED_PROTECTED_ADDRESS`] under mainnet's `dash` spelling.
+fn add_skipped_single_keys(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TABLE single_key_wallet (
+            key_hash BLOB NOT NULL PRIMARY KEY,
+            encrypted_private_key BLOB NOT NULL,
+            salt BLOB NOT NULL,
+            nonce BLOB NOT NULL,
+            public_key BLOB NOT NULL,
+            address TEXT NOT NULL,
+            alias TEXT,
+            uses_password INTEGER NOT NULL,
+            network TEXT NOT NULL
+        );",
+    )
+    .expect("create single_key_wallet");
+    conn.execute(
+        "INSERT INTO single_key_wallet (key_hash, encrypted_private_key, salt, nonce,
+            public_key, address, alias, uses_password, network)
+         VALUES (?1, ?2, x'', x'', x'', ?3, 'Paper key', 0, 'dash')",
+        params![
+            [0x2Bu8; 32].as_slice(),
+            SKIPPED_SINGLE_KEY.as_slice(),
+            skipped_single_key_address()
+        ],
+    )
+    .expect("insert single key");
+    conn.execute(
+        "INSERT INTO single_key_wallet (key_hash, encrypted_private_key, salt, nonce,
+            public_key, address, alias, uses_password, network)
+         VALUES (?1, x'00', x'00', x'00', x'', ?2, 'Locked key', 1, 'dash')",
+        params![[0x2Cu8; 32].as_slice(), SKIPPED_PROTECTED_ADDRESS],
+    )
+    .expect("insert protected single key");
+}
+
+/// One launch of the storage update. No password is ever supplied, so a
+/// launch that waits for one fails here.
+async fn launch(ctx: &Arc<AppContext>) {
+    ctx.install_secret_prompt(Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(60), finish_unwire::run(ctx))
+        .await
+        .expect("the launch must not wait for a password")
+        .expect("launch");
+    // The launch leaves a DAPI refresh queued on the gate; let it finish so the
+    // next launch runs instead of yielding to it.
+    finish_unwire::wait_for_dapi_refresh(ctx).await;
+}
+
+/// Run "Restore from Previous Version". The launch's detached DAPI refresh
+/// may still hold the storage gate, which Restore only try-locks; wait it out
+/// instead of racing it.
+async fn restore(ctx: &Arc<AppContext>) -> crate::model::legacy_restore::LegacyRestoreSummary {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match super::legacy_restore::run(ctx).await {
+            Err(crate::backend_task::error::TaskError::WalletStorageNotReady)
+                if std::time::Instant::now() < deadline =>
+            {
+                finish_unwire::wait_for_dapi_refresh(ctx).await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => break result.expect("restore"),
+        }
+    }
+}
+
+/// Whether the fixture's unprotected imported key is in this install's list.
+fn has_skipped_single_key(backend: &WalletBackend) -> bool {
+    backend
+        .single_key()
+        .list()
+        .iter()
+        .any(|key| key.address == skipped_single_key_address())
+}
+
+/// A profile an earlier build already drained is never re-read on a later
+/// launch — by then the user may have removed wallets on purpose, and those
+/// must not come back on their own. "Restore from Previous Version" brings
+/// the skipped rows back on request, add-only, keeps the protected wallet
+/// protected, and reports the protected imported key it could not restore.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_drain_is_never_redone_and_restore_brings_skipped_rows_back() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, fixture) = affected_mainnet_profile(tmp.path()).await;
+
+    launch(&ctx).await;
+    launch(&ctx).await;
+
+    assert_eq!(*ctx.migration_status().state(), MigrationState::Ready);
+    let seeds = backend.wallet_seeds();
+    assert!(!seeds.contains(&fixture.unprotected).expect("probe"));
+    assert!(!seeds.contains(&fixture.protected).expect("probe"));
+    assert!(
+        !has_skipped_single_key(&backend),
+        "no later launch imports automatically",
+    );
+
+    let summary = restore(&ctx).await;
+
+    assert_eq!(summary.wallets_restored, 2, "{summary:?}");
+    assert_eq!(summary.imported_keys_restored, 1, "{summary:?}");
+    assert_eq!(summary.imported_keys_need_password, 1, "{summary:?}");
+    assert!(
+        summary.has_problems(),
+        "a protected key left behind is not an all-clear"
+    );
+    assert_eq!(
+        seeds
+            .get_raw(&fixture.unprotected)
+            .expect("read seed")
+            .expect("the skipped seed is restored")
+            .as_slice(),
+        secrets().unprotected_seed.as_slice(),
+    );
+    assert!(
+        seeds
+            .legacy_envelope_get(&fixture.protected)
+            .expect("read envelope")
+            .is_some_and(|envelope| envelope.uses_password),
+        "the protected wallet comes back still protected",
+    );
+    assert!(has_skipped_single_key(&backend));
+    backend.shutdown().await;
+}
+
+/// A key whose secret is in the vault but missing from the key list (its
+/// details lost) regains its metadata without replacing its protected secret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
+    use crate::wallet_backend::secret_seam::SecretSeam;
+    use crate::wallet_backend::single_key::{label_for_address, single_key_namespace_id};
+    use platform_wallet_storage::secrets::{SecretBytes, SecretString};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ctx, backend, _fixture) = affected_mainnet_profile(tmp.path()).await;
+    let store = ctx.secret_store();
+    let address = skipped_single_key_address();
+    let label = label_for_address(&address);
+    let password = SecretString::new(format!("test-password-{}", tmp.path().display()));
+    SecretSeam::new(&store)
+        .put_secret_protected(
+            &single_key_namespace_id(),
+            &label,
+            &SecretBytes::from_slice(&SKIPPED_SINGLE_KEY),
+            &password,
+        )
+        .expect("a protected secret without details");
+    launch(&ctx).await;
+
+    let summary = restore(&ctx).await;
+
+    assert_eq!(
+        SecretSeam::new(&store)
+            .scheme(&single_key_namespace_id(), &label)
+            .expect("scheme"),
+        SecretScheme::Protected,
+        "the protected secret is untouched",
+    );
+    assert_eq!(summary.imported_keys_restored, 1, "{summary:?}");
+    assert_eq!(summary.imported_keys_failed, 0, "{summary:?}");
+    let secret = SecretSeam::new(&store)
+        .get_secret_protected(&single_key_namespace_id(), &label, &password)
+        .expect("the original password still opens the secret")
+        .expect("the original secret is retained");
+    assert!(
+        secret.expose_secret() == SKIPPED_SINGLE_KEY,
+        "metadata recovery must preserve the original key material",
+    );
+    let keys = backend.single_key().list();
+    let key = keys
+        .iter()
+        .find(|key| key.address == address)
+        .expect("the repaired key is listed");
+    assert!(key.has_passphrase, "recovered metadata keeps protection");
+    let wallets = backend.single_key().hydrate_wallets();
+    let (_, wallet) = wallets
+        .iter()
+        .find(|(_, wallet)| wallet.address.to_string() == address)
+        .expect("persisted metadata makes the key available at cold boot");
+    assert!(wallet.uses_password && !wallet.is_open());
+
+    let repeated = restore(&ctx).await;
+    assert_eq!(repeated.imported_keys_restored, 0, "{repeated:?}");
+    assert_eq!(repeated.imported_keys_failed, 0, "{repeated:?}");
+    backend.shutdown().await;
 }

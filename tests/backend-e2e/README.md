@@ -42,6 +42,21 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
 
+### What the DPNS registration tests cost
+
+The tests in `register_dpns` that fund an identity from platform addresses, and
+every test in `measure_dpns_registration`, spend platform address credits on
+each run: about 190 million to create the identity, 75 to 80 million for the
+registration, and about 13.5 million that cannot be sent back from the identity
+afterwards. The rest returns to the funding address.
+`measure_dpns_registration_balance_the_network_requires` pays for a registration
+step that is refused on purpose.
+
+`test_register_contested_dpns_name_funded_from_platform_addresses` and
+`measure_dpns_registration_contested` request a name that needs a community
+vote. Each also spends the community vote fee (0.1 or 0.2 tDASH, by protocol
+version), which the network never returns, and opens a public vote on testnet.
+
 ### Masternode tests
 
 `identity_masternode_withdraw` needs a testnet masternode or evonode with funded
@@ -246,7 +261,8 @@ list; keep this table in sync when adding or removing a module.
 | `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
 | `platform_info` | Read-only `PlatformInfo` queries: live current-epoch fetch, completed/queued withdrawal queries |
-| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
+| `measure_dpns_registration` | Measurements, not checks: what each DPNS registration document costs and what balance the network wants, logged on `MEASURE` lines |
+| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification; also from platform address credits, which are returned afterwards except for about 13.5 million credits per identity that the network does not let a transfer take |
 | `send_funds` | Core payment between two wallets (send and return) |
 | `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
 | `tx_is_ours` | `is_ours` flag correctness for SPV transactions |

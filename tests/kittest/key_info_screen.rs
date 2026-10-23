@@ -76,15 +76,13 @@ fn identity_with(id_byte: u8, purposes: &[Purpose], alias: &str) -> QualifiedIde
     }
 }
 
-/// Walk the route a user takes to one key's own page: Identities → Settings →
+/// Walk the route a user takes to one key's own page: Identities → Profile →
 /// Advanced → Manage keys → the key.
 fn open_key_info(harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>) {
-    // The left nav carries its own "Settings" entry. Both are buttons; only the
-    // nav one is a toggle, so that is what tells the hub tab apart.
     harness
-        .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+        .query_all_by_role_and_label(egui::accesskit::Role::Button, "Profile")
         .find(|node| node.accesskit_node().toggled().is_none())
-        .expect("the hub must render a Settings tab")
+        .expect("the hub must render a Profile tab")
         .click();
     harness.run_steps(3);
     harness.get_by_label("Advanced").click();
@@ -113,7 +111,7 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
         let _guard = rt.enter();
 
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
-        // The Settings tab stacks two columns above the Advanced expander; a
+        // The Profile tab stacks two columns above the Advanced expander; a
         // short window puts the keys controls below the fold, where a simulated
         // click lands outside the widget.
         harness.set_size(egui::vec2(1280.0, 1800.0));

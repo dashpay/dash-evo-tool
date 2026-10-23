@@ -122,3 +122,26 @@ fn onboarding_island_fills_panel_width() {
         );
     });
 }
+
+/// The "create" screen must report its own `ScreenType`, not the "load
+/// existing" one — `Screen`'s `PartialEq` compares by `ScreenType`, so a
+/// mismatch makes the two identity entry screens indistinguishable.
+#[test]
+fn add_identity_screens_report_their_own_screen_type() {
+    use dash_evo_tool::ui::ScreenType;
+
+    with_isolated_data_dir(|| {
+        let harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+
+        let create = ScreenType::AddNewIdentity.create_screen(&app_context);
+        let load = ScreenType::AddExistingIdentity.create_screen(&app_context);
+
+        assert_eq!(create.screen_type(), ScreenType::AddNewIdentity);
+        assert_eq!(load.screen_type(), ScreenType::AddExistingIdentity);
+        assert!(
+            create != load,
+            "create and load screens must not compare equal"
+        );
+    });
+}

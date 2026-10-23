@@ -382,6 +382,10 @@ pub(crate) fn theme_mode_from_str(s: &str) -> ThemeMode {
     }
 }
 
+/// Mainnet as DET wrote it before migration 29: the `Display` of dashcore
+/// up to v0.40 (`Network::Dash`), which every v0.9.x build stored.
+const PRE_V29_MAINNET_NAME: &str = "dash";
+
 /// Parse a network name as written by DET, accepting the pre-v29 spelling.
 ///
 /// `data.db` (and therefore every stored settings blob) wrote mainnet as
@@ -391,8 +395,24 @@ pub(crate) fn theme_mode_from_str(s: &str) -> ThemeMode {
 /// fallback.
 pub(crate) fn network_from_legacy_str(s: &str) -> Option<Network> {
     match s.to_lowercase().as_str() {
-        "dash" => Some(Network::Mainnet),
+        PRE_V29_MAINNET_NAME => Some(Network::Mainnet),
         other => Network::from_str(other).ok(),
+    }
+}
+
+/// Every value a legacy `data.db` `network` column can hold for `network`:
+/// `[current spelling, pre-v29 spelling]`, equal for all but mainnet.
+///
+/// Readers of the read-only legacy database filter with `network IN (?1, ?2)`
+/// bound to both, because a `data.db` last written below schema 29 (every
+/// v0.9.x install) still says `dash`. The older `devnet:<name>` and `local`
+/// spellings were rewritten by schema 9, below the oldest supported version.
+pub(crate) fn legacy_network_names(network: Network) -> [&'static str; 2] {
+    match network {
+        Network::Mainnet => ["mainnet", PRE_V29_MAINNET_NAME],
+        Network::Testnet => ["testnet", "testnet"],
+        Network::Devnet => ["devnet", "devnet"],
+        Network::Regtest => ["regtest", "regtest"],
     }
 }
 
@@ -434,6 +454,25 @@ mod tests {
     /// Captured from the pre-change wire struct with live `core_backend_mode = 0`.
     const PRE_CHANGE_APP_SETTINGS_WIRE: &[u8] =
         b"\x07testnet\x03\x01\x0c/opt/dash-qt\x00\x01\x04Dark\x00\x01\x01\x08Beginner\x00\x01";
+
+    /// Every network accepts the spelling DET writes today plus the one v0.9.x
+    /// wrote, and each spelling parses back to the network it was read for.
+    #[test]
+    fn legacy_network_names_cover_current_and_pre_v29_spellings() {
+        assert_eq!(legacy_network_names(Network::Mainnet), ["mainnet", "dash"]);
+        for network in [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ] {
+            let names = legacy_network_names(network);
+            assert_eq!(names[0], network.to_string(), "current spelling first");
+            for name in names {
+                assert_eq!(network_from_legacy_str(name), Some(network), "{name}");
+            }
+        }
+    }
 
     /// S1: verify the `AppSettings` defaults for a fresh install (no blob in
     /// k/v yet). `auto_start_spv` intentionally differs from the old DB column

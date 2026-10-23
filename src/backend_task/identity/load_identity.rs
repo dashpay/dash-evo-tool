@@ -14,25 +14,21 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
-};
+use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+
+use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::transition::masternode_vote_keys::{select_voting_key, voter_identity_id};
+use dash_sdk::platform::{Fetch, Identity};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -68,6 +64,15 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
     if new.associated_owner_key_id.is_none() {
         new.associated_owner_key_id = existing.associated_owner_key_id;
     }
+}
+
+/// How a load writes the identity record once its keys are settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentityRecordWrite {
+    /// Deliberate import: lists the identity and retires an unload marker.
+    Import,
+    /// Scoped update of a listed identity; never restores a removed one.
+    UpdateListed,
 }
 
 impl AppContext {
@@ -152,6 +157,9 @@ impl AppContext {
         match load_mode {
             IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
                 return Err(TaskError::DuplicateProTxHash { identity_id });
+            }
+            IdentityLoadMode::MergeIntoExisting if existing_stored.is_none() => {
+                return Err(TaskError::IdentityNotFoundLocally);
             }
             _ => {}
         }
@@ -260,11 +268,10 @@ impl AppContext {
                 if let Ok(private_key) =
                     PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
                 {
-                    // Make the vote identifier
-                    let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
-                    let voter_identifier = Identifier::create_voter_identifier(
-                        identity_id.as_bytes(),
-                        address.as_ref(),
+                    let voting_address = private_key.public_key().pubkey_hash().to_byte_array();
+                    let voter_identifier = voter_identity_id(
+                        ProTxHash::from_byte_array(identity_id.to_buffer()),
+                        &voting_address,
                     );
 
                     // Fetch the voter identifier
@@ -276,14 +283,12 @@ impl AppContext {
                     .await?
                     {
                         Ok(Some(identity)) => identity,
-                        Ok(None) => return Err(TaskError::IdentityNotFound),
+                        Ok(None) => return Err(TaskError::MasternodeVotingKeyNotFound),
                         Err(e) => return Err(TaskError::from(e)),
                     };
 
-                    let key = self.verify_voting_key_exists_on_identity(
-                        &voter_identity,
-                        &voting_private_key_bytes,
-                    )?;
+                    let key = select_voting_key(&voter_identity, &voting_address)
+                        .ok_or(TaskError::MasternodeVotingKeyNotUsable)?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),
@@ -326,7 +331,6 @@ impl AppContext {
                 })
                 .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
 
-            let secp = Secp256k1::new();
             #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
                 HashMap<Vec<u8>, [u8; 32]>,
@@ -334,12 +338,12 @@ impl AppContext {
             ) = input_private_keys
                 .into_iter()
                 .map(|private_key| {
-                    let public_key = private_key.public_key(&secp);
+                    let public_key = private_key.public_key();
                     let public_key_bytes = public_key.to_bytes();
                     let pub_key_hash = public_key.pubkey_hash().to_byte_array();
                     (
-                        (public_key_bytes, private_key.inner.secret_bytes()),
-                        (pub_key_hash, private_key.inner.secret_bytes()),
+                        (public_key_bytes, *private_key.inner.to_bytes()),
+                        (pub_key_hash, *private_key.inner.to_bytes()),
                     )
                 })
                 .unzip();
@@ -394,69 +398,12 @@ impl AppContext {
             }
         }
 
-        // Fetch DPNS names using SDK
-        let dpns_names_document_query = DocumentQuery {
-            sub_queries: Vec::new(),
-            select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            time_range_clauses: Vec::new(),
-            group_by: Vec::new(),
-            having: Vec::new(),
-            order_by_clauses: vec![],
-            limit: 100,
-            offset: None,
-            start: None,
-        };
-
         let maybe_owned_dpns_names = await_network_request_with_timeout(
             NETWORK_REQUEST_TIMEOUT,
-            Document::fetch_many(sdk, dpns_names_document_query),
+            self.fetch_owned_dpns_names(sdk, identity_id),
             |source| TaskError::IdentityLoadTimeout { source },
         )
-        .await?
-        .map(|document_map| {
-            document_map
-                .values()
-                .filter_map(|maybe_doc| {
-                    maybe_doc.as_ref().and_then(|doc| {
-                        let name = doc
-                            .get("label")
-                            .map(|label| label.to_str().unwrap_or_default());
-                        let acquired_at = doc
-                            .created_at()
-                            .into_iter()
-                            .chain(doc.transferred_at())
-                            .max();
-
-                        match (name, acquired_at) {
-                            (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                name: name.to_string(),
-                                acquired_at,
-                            }),
-                            _ => None,
-                        }
-                    })
-                })
-                .collect::<Vec<DPNSNameInfo>>()
-        })
-        .map_err(|e| TaskError::DpnsFetchError {
-            source: Box::new(e),
-        })?;
-
-        // Determine alias: use user input, or fall back to first DPNS name if available
-        let alias = if !alias_input.is_empty() {
-            Some(alias_input)
-        } else if !maybe_owned_dpns_names.is_empty() {
-            Some(format!("{}.dash", maybe_owned_dpns_names[0].name))
-        } else {
-            None
-        };
+        .await??;
 
         let mut qualified_identity = QualifiedIdentity {
             identity,
@@ -464,7 +411,7 @@ impl AppContext {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type,
-            alias,
+            alias: None,
             private_keys: encrypted_private_keys.into(),
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
@@ -480,16 +427,19 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info =
-            if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
-                self.persist_merged_identity(&mut qualified_identity, merge_seal_password.as_ref())?
-            } else {
-                self.persist_loaded_identity(
-                    &mut qualified_identity,
-                    encryption_password.as_ref(),
-                    load_mode,
-                )?
-            };
+        // Name an unnamed node after its main username, never an arbitrary one.
+        let main_username = self.main_username(&qualified_identity);
+        qualified_identity.initialize_node_alias(Some(&alias_input), main_username.as_deref());
+        // Recheck the scoped load and merge the current stored keys under the
+        // record guard before any seal or write: removal and protection changes
+        // may have happened while the network requests were in flight.
+        let wallet_info = self.finish_identity_load_storage(
+            &mut qualified_identity,
+            load_mode,
+            merge_seal_password.as_ref(),
+            &load_guard,
+            encryption_password.as_ref(),
+        )?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
@@ -500,12 +450,94 @@ impl AppContext {
                 .insert(identity_index, qualified_identity.identity.clone());
         }
 
-        // Keys and identity storage are complete before the load reports success.
+        // Past the last fallible step: the node is stored with its keys as
+        // requested. Anything that failed before this — including a key seal that
+        // left the insert behind — reported `Failed` when the guard dropped.
         load_guard.loaded();
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
+    /// Store a fetched identity under its record lock, after confirming that
+    /// this load is still current: removal, a fresh import and protection
+    /// changes may have happened while the network requests were in flight.
+    fn finish_identity_load_storage(
+        &self,
+        qualified_identity: &mut QualifiedIdentity,
+        load_mode: IdentityLoadMode,
+        merge_password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
+        load_guard: &crate::context::identity_load_registry::IdentityLoadGuard,
+        encryption_password: Option<&crate::model::secret::Secret>,
+    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        if let Some(password) = encryption_password {
+            validate_protection_password(password)?;
+        }
+        let identity_id = qualified_identity.identity.id();
+        let lock = self.identity_record_lock(identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        load_guard.ensure_current()?;
+        if load_mode != IdentityLoadMode::MergeIntoExisting {
+            let existing = self.get_local_qualified_identity(&identity_id)?;
+            return self.persist_loaded_identity_locked(
+                qualified_identity,
+                existing,
+                encryption_password,
+                load_mode,
+                IdentityRecordWrite::Import,
+            );
+        }
+        // A scoped merge is a key fix-up of a listed identity; it must never
+        // restore an identity removed while the network requests were in flight.
+        if !self.is_identity_listed(&identity_id)? {
+            return Err(TaskError::IdentityNotFoundLocally);
+        }
+        let existing = self
+            .get_identity_by_id(&identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        if encryption_password.is_none() {
+            // A verified password belongs to the protection state observed before
+            // the fetch. Never seal a new key using it after that state changes.
+            match (
+                self.protected_identity_verify_scope(&existing)?,
+                merge_password,
+            ) {
+                (None, None) => {}
+                (Some(scope), Some(password))
+                    if self
+                        .wallet_backend()?
+                        .secret_access()
+                        .identity_object_password_still_opens(&scope, password)? => {}
+                _ => return Err(TaskError::IdentityLoadSuperseded { identity_id }),
+            }
+        }
+        // The form may carry metadata captured before the fetch; preserve edits
+        // made to the current local record.
+        qualified_identity.alias = existing.alias.clone();
+        qualified_identity.associated_wallets = existing.associated_wallets.clone();
+        qualified_identity.wallet_index = existing.wallet_index;
+        qualified_identity.top_ups = existing.top_ups.clone();
+        qualified_identity.status = existing.status;
+        match encryption_password {
+            None => self.persist_merged_identity_locked(
+                qualified_identity,
+                Some(existing),
+                merge_password,
+                IdentityRecordWrite::UpdateListed,
+            ),
+            Some(password) => self.persist_loaded_identity_locked(
+                qualified_identity,
+                Some(existing),
+                Some(password),
+                load_mode,
+                IdentityRecordWrite::UpdateListed,
+            ),
+        }
+    }
+
+    /// Merge `qi` into its stored record, taking the record lock itself.
+    #[cfg(test)]
     fn persist_merged_identity(
         &self,
         qi: &mut QualifiedIdentity,
@@ -517,6 +549,19 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let existing = self.get_local_qualified_identity(&identity_id)?;
+        self.persist_merged_identity_locked(qi, existing, password, IdentityRecordWrite::Import)
+    }
+
+    /// Merge the newly supplied keys of `qi` into `existing` and seal them under
+    /// the revalidated identity password. The caller holds the record lock.
+    fn persist_merged_identity_locked(
+        &self,
+        qi: &mut QualifiedIdentity,
+        existing: Option<QualifiedIdentity>,
+        password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
+        write: IdentityRecordWrite,
+    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        let identity_id = qi.identity.id();
         let published = existing.is_some();
         if let Some(existing) = existing {
             merge_existing_keys_into(qi, existing);
@@ -560,10 +605,12 @@ impl AppContext {
         let wallet_info = qi
             .determine_wallet_info()
             .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-        self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+        self.write_loaded_identity_locked(qi, &wallet_info, write)?;
         Ok(wallet_info)
     }
 
+    /// Store a loaded identity, taking the record lock itself.
+    #[cfg(test)]
     fn persist_loaded_identity(
         &self,
         qi: &mut QualifiedIdentity,
@@ -579,6 +626,27 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let existing = self.get_local_qualified_identity(&identity_id)?;
+        self.persist_loaded_identity_locked(
+            qi,
+            existing,
+            password,
+            load_mode,
+            IdentityRecordWrite::Import,
+        )
+    }
+
+    /// Store a loaded identity, sealing every key under `password` before the
+    /// record is written. The caller holds the record lock and has validated
+    /// `password`.
+    fn persist_loaded_identity_locked(
+        &self,
+        qi: &mut QualifiedIdentity,
+        existing: Option<QualifiedIdentity>,
+        password: Option<&crate::model::secret::Secret>,
+        load_mode: IdentityLoadMode,
+        write: IdentityRecordWrite,
+    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        let identity_id = qi.identity.id();
         if load_mode == IdentityLoadMode::RejectIfExists && existing.is_some() {
             return Err(TaskError::DuplicateProTxHash { identity_id });
         }
@@ -592,7 +660,7 @@ impl AppContext {
             let wallet_info = qi
                 .determine_wallet_info()
                 .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-            self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+            self.write_loaded_identity_locked(qi, &wallet_info, write)?;
             return Ok(wallet_info);
         };
         let mut relevant_keys = qi.private_keys.keys_set();
@@ -673,8 +741,22 @@ impl AppContext {
         let wallet_info = qi
             .determine_wallet_info()
             .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
-        self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+        self.write_loaded_identity_locked(qi, &wallet_info, write)?;
         Ok(wallet_info)
+    }
+
+    fn write_loaded_identity_locked(
+        &self,
+        qi: &QualifiedIdentity,
+        wallet_info: &Option<(WalletSeedHash, u32)>,
+        write: IdentityRecordWrite,
+    ) -> Result<(), TaskError> {
+        match write {
+            IdentityRecordWrite::Import => {
+                self.insert_local_qualified_identity_under_lock(qi, wallet_info)
+            }
+            IdentityRecordWrite::UpdateListed => self.write_local_qualified_identity_locked(qi),
+        }
     }
 
     /// Record placements and seal plaintext under the caller-held record lock and revalidated password.
@@ -932,15 +1014,384 @@ mod tests {
     use crate::wallet_backend::IdentityKeyView;
     use crate::wallet_backend::secret_seam::SecretScheme;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identifier::MasternodeIdentifiers;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
     use platform_wallet_storage::secrets::SecretString;
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn additional_scenarios_wrong_node_voting_key_is_rejected_without_merge() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let before = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
+        let address = private_key.public_key().pubkey_hash();
+        let other_node = Identifier::from([0x75; 32]);
+        let other_voter =
+            Identifier::create_voter_identifier(other_node.as_bytes(), address.as_ref());
+        let selected_voter =
+            Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
+        assert_ne!(selected_voter, other_voter);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(staged.id, Some(before.identity.clone()))
+            .await
+            .unwrap();
+        let mut other_identity =
+            Identity::create_basic_identity(other_voter, PlatformVersion::latest()).unwrap();
+        other_identity.add_public_keys([IdentityPublicKey::V0(
+            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                id: 0,
+                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_HASH160,
+                read_only: false,
+                data: address.to_byte_array().to_vec().into(),
+                disabled_at: None,
+            },
+        )]);
+        select_voting_key(&other_identity, &address.to_byte_array())
+            .expect("the key is a usable voting key of the other node");
+        sdk.mock()
+            .expect_fetch(other_voter, Some(other_identity))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(selected_voter, None::<Identity>)
+            .await
+            .unwrap();
+        let input = IdentityInputToLoad {
+            identity_id_input: staged.id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(private_key.to_wif()),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
+        };
+        let error = staged.ctx.load_identity(&sdk, input).await.unwrap_err();
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.associated_voter_identity,
+            before.associated_voter_identity
+        );
+        assert!(
+            after.private_keys == before.private_keys,
+            "a rejected key must preserve all stored key placements and values"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This voting key could not be matched to the selected node. Check that node's voting private key and try again."
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_voting_key_disabled_on_the_network_is_refused() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let before = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
+        let address = private_key.public_key().pubkey_hash();
+        let voter = Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
+        let mut voter_identity =
+            Identity::create_basic_identity(voter, PlatformVersion::latest()).unwrap();
+        voter_identity.add_public_keys([IdentityPublicKey::V0(
+            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                id: 0,
+                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_HASH160,
+                read_only: false,
+                data: address.to_byte_array().to_vec().into(),
+                disabled_at: Some(1),
+            },
+        )]);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(staged.id, Some(before.identity.clone()))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(voter, Some(voter_identity))
+            .await
+            .unwrap();
+        let input = IdentityInputToLoad {
+            identity_id_input: staged.id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(private_key.to_wif()),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
+        };
+
+        let error = staged.ctx.load_identity(&sdk, input).await.unwrap_err();
+
+        assert!(
+            matches!(error, TaskError::MasternodeVotingKeyNotUsable),
+            "a voting key the network disabled must be refused as such, got {error:?}"
+        );
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.associated_voter_identity,
+            before.associated_voter_identity
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_merge_cannot_restore_an_identity_removed_during_loading() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32])
+                .await;
+        let mut loaded = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        let result = staged.ctx.finish_identity_load_storage(
+            &mut loaded,
+            IdentityLoadMode::MergeIntoExisting,
+            None,
+            &claim,
+            None,
+        );
+        assert!(result.is_err(), "a scoped merge must not undo a removal");
+        assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
+        assert!(
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_merge_cannot_modify_a_reimported_identity() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x79; 32], [0x89; 32])
+                .await;
+        let mut loaded = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        let mut reimported = loaded.clone();
+        reimported.alias = Some("explicit reimport".into());
+        staged
+            .ctx
+            .insert_local_qualified_identity(&reimported, &None)
+            .unwrap();
+        assert!(matches!(
+            staged.ctx.finish_identity_load_storage(
+                &mut loaded,
+                IdentityLoadMode::MergeIntoExisting,
+                None,
+                &claim,
+                None
+            ),
+            Err(TaskError::IdentityLoadSuperseded { .. })
+        ));
+        claim.loaded();
+        assert_eq!(
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+                .alias,
+            reimported.alias
+        );
+        assert_eq!(
+            staged.ctx.last_identity_load_phase(&staged.id),
+            Some(crate::context::identity_load_registry::IdentityLoadPhase::Failed)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removal_cancels_older_imports_but_allows_a_fresh_explicit_import() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7c; 32], [0x8c; 32])
+                .await;
+        let mut loaded = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let old_claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        for mode in [
+            IdentityLoadMode::Overwrite,
+            IdentityLoadMode::RejectIfExists,
+        ] {
+            assert!(
+                matches!(
+                    staged.ctx.finish_identity_load_storage(
+                        &mut loaded,
+                        mode,
+                        None,
+                        &old_claim,
+                        None
+                    ),
+                    Err(TaskError::IdentityLoadSuperseded { .. })
+                ),
+                "a removed load must not store after its claim was invalidated"
+            );
+        }
+        let fresh_claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        loaded.alias = Some("fresh explicit import".into());
+        staged
+            .ctx
+            .finish_identity_load_storage(
+                &mut loaded,
+                IdentityLoadMode::Overwrite,
+                None,
+                &fresh_claim,
+                None,
+            )
+            .unwrap();
+        fresh_claim.loaded();
+        drop(old_claim);
+        assert!(staged.ctx.is_identity_listed(&staged.id).unwrap());
+        assert_eq!(
+            staged.ctx.last_identity_load_phase(&staged.id),
+            Some(crate::context::identity_load_registry::IdentityLoadPhase::Loaded)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_merge_preserves_changes_made_while_loading() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7a; 32], [0x8a; 32])
+                .await;
+        let mut loaded = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        let claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        let mut current = loaded.clone();
+        current.alias = Some("renamed during load".into());
+        current.top_ups.insert(9, 77);
+        staged
+            .ctx
+            .save_top_ups(&staged.id, &current.top_ups)
+            .unwrap();
+        current.status = IdentityStatus::NotFound;
+        loaded.alias = Some("stale form alias".into());
+        loaded.private_keys = Default::default();
+        staged
+            .ctx
+            .insert_local_qualified_identity(&current, &None)
+            .unwrap();
+        staged
+            .ctx
+            .finish_identity_load_storage(
+                &mut loaded,
+                IdentityLoadMode::MergeIntoExisting,
+                None,
+                &claim,
+                None,
+            )
+            .unwrap();
+        let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
+        assert_eq!(stored.alias, current.alias);
+        assert_eq!(stored.top_ups, current.top_ups);
+        assert_eq!(stored.status, current.status);
+        assert_eq!(
+            stored.private_keys.keys_set(),
+            current.private_keys.keys_set()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_merge_rejects_protection_changed_while_loading() {
+        let staged =
+            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7b; 32], [0x8b; 32])
+                .await;
+        let mut loaded = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
+        staged
+            .ctx
+            .protect_identity_keys(staged.id, Secret::new("new-identity-password"), None)
+            .unwrap();
+        assert!(matches!(
+            staged.ctx.finish_identity_load_storage(
+                &mut loaded,
+                IdentityLoadMode::MergeIntoExisting,
+                None,
+                &claim,
+                None
+            ),
+            Err(TaskError::IdentityLoadSuperseded { .. })
+        ));
+        let backend = staged.ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), staged.id.to_buffer());
+        for (target, key_id) in [(M, 1), (M, 2)] {
+            assert_eq!(
+                view.scheme(&target, key_id).unwrap(),
+                SecretScheme::Protected
+            );
+            assert!(
+                view.get_protected(&target, key_id, &SecretString::new("new-identity-password"))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn identity_network_timeout_is_typed_and_actionable() {
@@ -2171,8 +2622,38 @@ mod tests {
             .verify_identity_object_password(&verify_scope)
             .await
             .expect("scripted password verifies");
-        ctx.persist_merged_identity(&mut existing, Some(&password))
-            .expect("persist merged protected key");
+        let claim = ctx.begin_identity_load(identity_id, None).unwrap();
+        // A password rotation during the fetch must reject the old verified
+        // password before writing even one new key into the vault.
+        ctx.unprotect_identity_keys(identity_id, Secret::new(PW))
+            .unwrap();
+        ctx.protect_identity_keys(identity_id, Secret::new("rotated-identity-password"), None)
+            .unwrap();
+        assert!(matches!(
+            ctx.finish_identity_load_storage(
+                &mut existing,
+                IdentityLoadMode::MergeIntoExisting,
+                Some(&password),
+                &claim,
+                None
+            ),
+            Err(TaskError::IdentityLoadSuperseded { .. })
+        ));
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert_eq!(view.scheme(&V, new_voter_id).unwrap(), SecretScheme::Absent);
+        ctx.unprotect_identity_keys(identity_id, Secret::new("rotated-identity-password"))
+            .unwrap();
+        ctx.protect_identity_keys(identity_id, Secret::new(PW), None)
+            .unwrap();
+        ctx.finish_identity_load_storage(
+            &mut existing,
+            IdentityLoadMode::MergeIntoExisting,
+            Some(&password),
+            &claim,
+            None,
+        )
+        .expect("seal and persist a merged key under the current password");
 
         // The new key flipped to InVault in the in-memory identity...
         assert!(
@@ -2199,6 +2680,88 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_merge_seals_resident_plaintext_alongside_new_key() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        const PW: &str = "synthetic-resident-merge-password";
+        for always_clear in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = open_import_context(
+                dir.path(),
+                Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]))),
+            )
+            .await;
+            let (qi, _) = masternode_shaped_qi();
+            let id = qi.identity.id();
+            ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+            ctx.protect_identity_keys(id, Secret::new(PW), None)
+                .unwrap();
+            let mut resident = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            let mut incoming = resident.clone();
+            let pv = PlatformVersion::latest();
+            let resident_key = IdentityPublicKey::random_key(10, Some(10), pv);
+            let new_key = IdentityPublicKey::random_key(11, Some(11), pv);
+            let resident_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+            let new_bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+            // An incomplete migration can leave a resident key absent from the vault.
+            resident.private_keys.insert_at(
+                (V, 10),
+                (
+                    QualifiedIdentityPublicKey::from(resident_key),
+                    if always_clear {
+                        PrivateKeyData::AlwaysClear(*resident_bytes)
+                    } else {
+                        PrivateKeyData::Clear(*resident_bytes)
+                    },
+                ),
+            );
+            incoming.private_keys.insert_at(
+                (V, 11),
+                (
+                    QualifiedIdentityPublicKey::from(new_key),
+                    PrivateKeyData::Clear(*new_bytes),
+                ),
+            );
+            let backend = ctx.wallet_backend().unwrap();
+            let scope = ctx
+                .protected_identity_verify_scope(&incoming)
+                .unwrap()
+                .unwrap();
+            let verified = backend
+                .secret_access()
+                .verify_identity_object_password(&scope)
+                .await
+                .unwrap();
+            {
+                let lock = ctx.identity_record_lock(id);
+                let _guard = lock.lock().unwrap();
+                ctx.persist_merged_identity_locked(
+                    &mut incoming,
+                    Some(resident),
+                    Some(&verified),
+                    IdentityRecordWrite::UpdateListed,
+                )
+                .unwrap();
+            }
+            let reread = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+            assert!(!reread.private_keys.has_plaintext_for_vault());
+            let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+            for (key_id, expected) in [(10, &resident_bytes), (11, &new_bytes)] {
+                assert!(matches!(
+                    reread.private_keys.entry_at(&(V, key_id)),
+                    Some((_, PrivateKeyData::InVault))
+                ));
+                assert_eq!(view.scheme(&V, key_id).unwrap(), SecretScheme::Protected);
+                let actual = view
+                    .get_protected(&V, key_id, &SecretString::new(PW))
+                    .unwrap()
+                    .unwrap();
+                assert!(actual.as_slice() == expected.as_slice());
+            }
+            backend.shutdown().await;
+        }
     }
 
     /// Merge×Tier-2 with a stored legacy `Encrypted` key: sealing skips that key

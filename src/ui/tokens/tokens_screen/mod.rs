@@ -268,7 +268,7 @@ pub enum TokenCreatorStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
     OwnerIdentity,
-    OwnerIdentityAlias,
+    OwnerIdentityName,
     Balance,
 }
 
@@ -1464,7 +1464,7 @@ impl TokensScreen {
             next_cursors: vec![],
             previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
-            sort_column: SortColumn::OwnerIdentityAlias,
+            sort_column: SortColumn::OwnerIdentityName,
             sort_order: SortOrder::Ascending,
             use_custom_order: false,
             pending_backend_task: None,
@@ -3245,6 +3245,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_token_creator_ui_builds_correct_contract() {
         let db_file_path = "test_db_token_creator";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3440,7 +3444,9 @@ mod tests {
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
         assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
 
-        let TokenConfiguration::V0(token_v0) = token_config;
+        let TokenConfiguration::V0(token_v0) = token_config else {
+            panic!("existing builder uses V0");
+        };
         let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
 
         assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
@@ -3547,6 +3553,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_distribution_function_random() {
         let db_file_path = "test_db_distribution_random";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
@@ -3639,7 +3649,9 @@ mod tests {
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
+            panic!("existing builder uses V0");
+        };
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
             panic!("rules without a once-per-identity distribution stay V0");
         };
@@ -3663,6 +3675,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
         let db_file_path = "test_db_empty_token_name";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs

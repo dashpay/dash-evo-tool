@@ -9,10 +9,10 @@ Promote a widget to `src/ui/components/` only if a second, non-hub consumer appe
 | Module | Responsibility |
 |---|---|
 | `hub_screen.rs` | Root screen, tab selection, landing resolution |
-| `home.rs` | Home tab (hero · quick actions · onboarding · recent activity · advanced) |
+| `home.rs` | Shared summary and Home (send · receive · top up · setup · payments · contacts) |
 | `contacts.rs` | Contacts tab (gated / populated shell) |
-| `activity.rs` | Activity tab (filter chips + legacy-payments link) |
-| `settings.rs` | Settings tab (social profile · username · advanced) |
+| `activity.rs` | Hidden activity shell (retained for internal links) |
+| `settings.rs` | Profile tab (social profile · usernames · advanced) |
 | `onboarding.rs` | Onboarding empty state |
 | `picker.rs` | Identity picker grid (≥ 2 identities) |
 | `landing.rs` | `HubLanding` state enum |
@@ -26,6 +26,7 @@ Pushed onto the screen stack from the hub (or the left nav), not tabs.
 |---|---|
 | `add_existing_identity_screen.rs` | Search a wallet for identities already registered from it |
 | `add_new_identity_screen/` | Register a new identity (funded by address, deposit, asset lock, or balance) |
+| `../wallets/send_screen.rs` | Shared Send, Top up, and Move to wallet forms with a fixed identity |
 | `top_up_identity_screen/` | Top up an identity's credit balance, same four funding sources |
 | `register_dpns_name_screen.rs` | Claim a DPNS username for an identity |
 | `transfer_screen.rs` | Transfer credits to another identity |
@@ -37,10 +38,10 @@ Pushed onto the screen stack from the hub (or the left nav), not tabs.
 
 | Module | Used by | Notes |
 |---|---|---|
-| `identity_hub_tab_bar.rs` | `hub_screen` | Horizontal tab strip (Home · Contacts · Activity · Settings) |
-| `identity_hero_card.rs` | `home` | Gradient hero card (Dash-Blue → Platform-Purple) |
+| `identity_hub_tab_bar.rs` | `hub_screen` | Horizontal tab strip (Home · Contacts · Profile) |
+| `identity_hero_card.rs` | legacy component tests | Standalone identity hero |
 | `onboarding_checklist.rs` | `home` | Pick username · set display name · add first contact |
-| `identity_pill.rs` | `identity_picker_card` | Thin wrapper over `components::breadcrumb_pill::BreadcrumbPill` with the identity label priority rule (nickname → DPNS → shortened ID) |
+| `identity_pill.rs` | `identity_picker_card` | Thin wrapper over `components::breadcrumb_pill::BreadcrumbPill` with the identity label priority rule (Display name → DPNS → shortened ID) |
 | `identity_picker_card.rs` | `picker` | Per-identity card in the picker grid |
 | `identity_picker_add_card.rs` | `picker` | Trailing "Add a new identity" CTA in the picker grid |
 | `social_profile_gate_card.rs` | `contacts` | Gate shown when the active identity has no DashPay profile |
@@ -48,7 +49,7 @@ Pushed onto the screen stack from the hub (or the left nav), not tabs.
 
 ## Button dispatcher pattern
 
-Home, Contacts, and Activity each expose a pure `*_button_kind()` function
+Contacts and the legacy Activity renderer expose a pure `*_button_kind()` function
 that maps a `*Button` enum variant to its `*ButtonKind` result (screen to
 open, tab to switch, outcome to emit). The renderer calls through the
 dispatcher at every click site; unit tests iterate every enum variant and

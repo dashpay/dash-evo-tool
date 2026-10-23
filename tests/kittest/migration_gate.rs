@@ -23,8 +23,11 @@ use std::time::{Duration, Instant};
 
 use dash_evo_tool::app::{AppState, BootPhase, STORAGE_PREP_PASSWORD_DESCRIPTION};
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::context::AppContext;
+use dash_evo_tool::context::connection_status::OverallConnectionState;
 use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
+use dash_evo_tool::model::spv_status::SpvStatus;
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::ui::components::ProgressOverlay;
@@ -96,6 +99,27 @@ fn step_until_painted(
     for _ in 0..MAX_GATE_FRAMES {
         if predicate(harness) {
             return;
+        }
+        harness.step();
+    }
+    panic!("{what} did not happen within {MAX_GATE_FRAMES} frames");
+}
+
+/// Click `label` on every frame until `done` holds, panicking with `what` after
+/// [`MAX_GATE_FRAMES`]. For a click whose effect can be observed: a simulated
+/// click does not always land on the frame after the widget first appears.
+fn click_until(
+    harness: &mut Harness<'static, AppState>,
+    label: &str,
+    what: &str,
+    mut done: impl FnMut(&Harness<'static, AppState>) -> bool,
+) {
+    for _ in 0..MAX_GATE_FRAMES {
+        if done(harness) {
+            return;
+        }
+        if let Some(target) = harness.query_by_label(label) {
+            target.click();
         }
         harness.step();
     }
@@ -871,6 +895,510 @@ fn first_network_switch_does_not_arm_the_startup_spv_block() {
             !harness.state().test_spv_block_armed(),
             "a first network visit must not arm a startup-only blocking overlay",
         );
+    });
+}
+
+/// Pump frames for about a second, failing if chain sync starts on the active
+/// network. An auto-start is spawned work, so its absence needs a settle window.
+fn assert_chain_sync_stays_off(harness: &mut Harness<'static, AppState>, when: &str) {
+    for _ in 0..50 {
+        harness.step();
+        let app_context = harness.state().current_app_context();
+        let started = app_context
+            .wallet_backend()
+            .is_ok_and(|backend| backend.is_started());
+        let status = app_context.connection_status().spv_status();
+        assert!(
+            !started && matches!(status, SpvStatus::Idle | SpvStatus::Stopped),
+            "chain sync must stay off {when} (started: {started}, status: {status:?})",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Mount the app on the network chooser with every network configured and
+/// auto-start enabled. Returns the network it booted on and another one to
+/// switch to. Call inside an isolated data dir with a tokio runtime entered.
+fn mount_on_chooser_with_auto_start() -> (Harness<'static, AppState>, Network, Network) {
+    let data_dir = std::env::var("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/.env.example"),
+        std::path::Path::new(&data_dir).join(".env"),
+    )
+    .expect("seed the isolated data dir with a full network config");
+
+    let mut harness = mount_prepared_app();
+    harness.set_size(egui::vec2(1280.0, 800.0));
+    harness.state_mut().selected_main_screen = RootScreenType::RootScreenNetworkChooser;
+    let first_context = harness.state().current_app_context().clone();
+    let first = first_context.network();
+    let second = if first == Network::Testnet {
+        Network::Mainnet
+    } else {
+        Network::Testnet
+    };
+    first_context
+        .update_auto_start_spv(true)
+        .expect("enable auto-start");
+    (harness, first, second)
+}
+
+/// Stand in for a connection so the chooser offers Disconnect. A failed one,
+/// because offline the indicator reads Disconnected for every healthier status —
+/// and a failed connection is also the one state that leaves the network
+/// selector usable without disconnecting first.
+fn offer_disconnect(harness: &mut Harness<'static, AppState>) {
+    let app_context = harness.state().current_app_context().clone();
+    let connection_status = app_context.connection_status();
+    connection_status.set_spv_status(SpvStatus::Error);
+    connection_status.refresh_state();
+    step_until_painted(harness, "the Disconnect button to appear", |h| {
+        h.query_by_label("Disconnect").is_some()
+    });
+}
+
+/// Disconnect is the user's last word on connectivity for the session. The
+/// auto-start setting covers app launch, so a network switch after a manual
+/// Disconnect must not bring chain sync back — only Connect does.
+///
+/// Drives the real Disconnect and Connect buttons: the frame loop's handling of
+/// those clicks is what records and lifts the choice.
+#[test]
+fn a_manual_disconnect_holds_across_network_switches_until_connect() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+
+        // The click is what matters here, not what it tears down.
+        offer_disconnect(&mut harness);
+        harness.get_by_label("Disconnect").click();
+        poll_until(&mut harness, "the manual disconnect to finish", |state| {
+            state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+        });
+
+        // First visit: the gate's continuation honors the disconnect.
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "the switch after a manual disconnect to finish preparation",
+            |state| {
+                state.current_app_context().network() == second
+                    && state.boot_phase() == BootPhase::Ready
+            },
+        );
+        assert_chain_sync_stays_off(&mut harness, "on a first visit after a manual disconnect");
+
+        // Return to an already prepared network: the cached-context path too.
+        harness.state_mut().change_network(first);
+        assert_chain_sync_stays_off(&mut harness, "on a return after a manual disconnect");
+
+        // Connect lifts the hold, so the next switch auto-starts again. Only the
+        // switched-to network's own start latch proves that: the indicator is
+        // shared, and the Connect is still starting the network left behind.
+        step_until_painted(&mut harness, "the Connect button to appear", |h| {
+            h.query_by_label("Connect").is_some()
+        });
+        harness.get_by_label("Connect").click();
+        harness.run_steps(3);
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "the switch after a manual connect to auto-start chain sync",
+            |state| {
+                let app_context = state.current_app_context();
+                app_context.network() == second
+                    && app_context
+                        .wallet_backend()
+                        .is_ok_and(|backend| backend.is_started())
+            },
+        );
+    });
+}
+
+/// A Disconnect pressed while a first-visit switch is still building the new
+/// network's context is honored: the app arrives on the new network offline.
+/// Reachable from a failed connection, which leaves both controls enabled.
+#[test]
+fn a_disconnect_during_a_first_visit_switch_is_honored() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+        offer_disconnect(&mut harness);
+
+        // Pin the switch before it builds the new network's context, so the
+        // click is handled while the outgoing network is still the active one.
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        // One frame first: the switch's progress banner shifts the layout, and
+        // a click simulated on that very frame misses the button.
+        harness.step();
+        harness.get_by_label("Disconnect").click();
+        poll_until(
+            &mut harness,
+            "the disconnect to finish while the switch is pending",
+            |state| {
+                state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+            },
+        );
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "the disconnect must be handled while the outgoing network is still active",
+        );
+
+        drop(pending_switch);
+        poll_until(&mut harness, "the pending switch to finish", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        assert_chain_sync_stays_off(
+            &mut harness,
+            "on the destination after a disconnect during a pending switch",
+        );
+    });
+}
+
+/// Pump frames until every chain-sync start the app dispatched has finished,
+/// failing if chain sync comes up on `context` on the way or once they have.
+/// For a start that was already dispatched when the user disconnected. Only its
+/// finishing proves it stood down: a start that has not run yet looks the same
+/// as one that will never connect.
+fn assert_overruled_start_stands_down(
+    harness: &mut Harness<'static, AppState>,
+    context: &AppContext,
+    when: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        harness.step();
+        let finished = !harness.state().test_spv_start_in_flight();
+        let started = context
+            .wallet_backend()
+            .is_ok_and(|backend| backend.is_started());
+        let status = context.connection_status().spv_status();
+        assert!(
+            !started
+                && matches!(
+                    status,
+                    SpvStatus::Idle | SpvStatus::Stopping | SpvStatus::Stopped
+                ),
+            "a start overruled by a disconnect must not bring chain sync up {when} \
+             (started: {started}, status: {status:?})",
+        );
+        if finished {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the overruled start did not finish in time {when}",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Cancelling the startup sync screen is a disconnect, and it holds even when
+/// the start it cancels has not brought chain sync up yet. That start is still
+/// on its way, and must not finish the job after the user said stop.
+#[test]
+fn cancelling_the_startup_block_overrules_a_start_still_on_its_way() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, _second) = mount_on_chooser_with_auto_start();
+        let app_context = harness.state().current_app_context().clone();
+
+        // Pin the start at storage preparation, its first step, so the cancel
+        // lands while the start is provably unfinished.
+        let parked_start = rt.block_on(app_context.test_hold_prepare_gate());
+        harness.state_mut().test_run_auto_start_spv();
+        step_until_painted(&mut harness, "the startup block to offer Cancel", |h| {
+            h.query_by_label("Cancel").is_some()
+        });
+        harness.get_by_label("Cancel").click();
+        step_until_painted(&mut harness, "the cancel confirmation to appear", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        harness.get_by_label("Stop syncing").click();
+        step_until(
+            &mut harness,
+            "the confirmed cancel to reach the frame loop",
+            |state| !state.test_spv_block_armed(),
+        );
+
+        drop(parked_start);
+        assert_overruled_start_stands_down(
+            &mut harness,
+            &app_context,
+            "after cancelling the startup block",
+        );
+        poll_until(
+            &mut harness,
+            "the cancel to settle the indicator on disconnected",
+            |state| {
+                state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+            },
+        );
+    });
+}
+
+/// A stop with nothing to stop is harmless. Stopping the startup sync screen
+/// when no connection is on its way reports no failure and leaves the app
+/// disconnected, and the next Connect brings chain sync up as usual.
+#[test]
+fn stopping_with_nothing_starting_is_harmless_and_connect_still_works() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, _second) = mount_on_chooser_with_auto_start();
+        let app_context = harness.state().current_app_context().clone();
+
+        // The startup block is up, but no start was dispatched behind it.
+        harness.state_mut().test_arm_spv_block();
+        step_until_painted(&mut harness, "the startup block to offer Cancel", |h| {
+            h.query_by_label("Cancel").is_some()
+        });
+        harness.get_by_label("Cancel").click();
+        step_until_painted(&mut harness, "the cancel confirmation to appear", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        harness.get_by_label("Stop syncing").click();
+        poll_until(
+            &mut harness,
+            "the stop to leave the app disconnected",
+            |_| {
+                let connection_status = app_context.connection_status();
+                connection_status.spv_status() == SpvStatus::Stopped
+                    && connection_status.overall_state() == OverallConnectionState::Disconnected
+            },
+        );
+
+        for _ in 0..10 {
+            harness.step();
+            let connection_status = app_context.connection_status();
+            assert_eq!(
+                (
+                    connection_status.spv_status(),
+                    connection_status.spv_last_error()
+                ),
+                (SpvStatus::Stopped, None),
+                "a stop with nothing to stop must not report a failure",
+            );
+            for failure in ["SPV sync failed", "Could not start network sync"] {
+                assert!(
+                    harness.query_by_label_contains(failure).is_none(),
+                    "a stop with nothing to stop must not raise the banner \"{failure}\"",
+                );
+            }
+        }
+
+        step_until_painted(&mut harness, "the Connect button to appear", |h| {
+            h.query_by_label("Connect").is_some()
+        });
+        harness.get_by_label("Connect").click();
+        poll_until(
+            &mut harness,
+            "Connect to bring chain sync up after the stop",
+            |_| {
+                app_context
+                    .wallet_backend()
+                    .is_ok_and(|backend| backend.is_started())
+            },
+        );
+    });
+}
+
+/// Connect is the user's last word when it follows a Disconnect, even one that
+/// is still tearing down. That teardown takes the networks offline one after
+/// another, so it can reach the network on screen after the Connect was
+/// pressed — and must not take the new connection down with it.
+#[test]
+fn a_connect_pressed_while_a_disconnect_is_still_tearing_down_connects() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // Two networks, both offline: the teardown stops the one left in the
+        // background first, then the one on screen.
+        let (mut harness, _first, second) = mount_on_chooser_with_auto_start();
+        let background_context = harness.state().current_app_context().clone();
+        background_context
+            .update_auto_start_spv(false)
+            .expect("keep both networks offline");
+        harness.state_mut().change_network(second);
+        poll_until(&mut harness, "the switch to the second network", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        let app_context = harness.state().current_app_context().clone();
+
+        // Pin the teardown on the background network, before it reaches the
+        // one on screen.
+        let background_backend = background_context
+            .wallet_backend()
+            .expect("the first network's backend was wired at boot");
+        let slow_stop = rt.block_on(background_backend.lock_start_lifecycle_for_test());
+
+        // Disconnect while the indicator reads idle, which leaves Connect on
+        // offer for as long as the teardown runs.
+        harness.state_mut().test_arm_spv_block();
+        click_until(&mut harness, "Cancel", "the cancel confirmation", |h| {
+            h.query_by_label("Stop syncing").is_some()
+        });
+        click_until(
+            &mut harness,
+            "Stop syncing",
+            "the confirmed cancel to reach the frame loop",
+            |h| !h.state().test_spv_block_armed() && h.state().test_spv_teardown_running(),
+        );
+        click_until(
+            &mut harness,
+            "Connect",
+            "the Connect to reach the frame loop",
+            |h| h.state().test_spv_block_armed(),
+        );
+        // Let the Connect get as far as it can while the teardown is pinned:
+        // either it has finished, or it is waiting for the teardown.
+        poll_until(
+            &mut harness,
+            "the Connect to finish or to wait for the teardown",
+            |state| !state.test_spv_start_in_flight() || state.test_spv_start_awaiting_teardown(),
+        );
+        assert!(
+            harness.state().test_spv_teardown_running(),
+            "the teardown must still be pinned when the Connect has gone as far as it can",
+        );
+
+        drop(slow_stop);
+        poll_until(
+            &mut harness,
+            "the teardown and the Connect to finish",
+            |state| !state.test_spv_teardown_running() && !state.test_spv_start_in_flight(),
+        );
+        assert!(
+            app_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_started()),
+            "a Connect pressed after a Disconnect must leave chain sync running once that \
+             Disconnect has finished tearing down",
+        );
+    });
+}
+
+/// Disconnect overrules a start left on its way on a network the user has since
+/// switched away from: nothing brings chain sync up there afterwards.
+#[test]
+fn a_manual_disconnect_overrules_a_start_still_on_its_way_on_another_network() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, _first, second) = mount_on_chooser_with_auto_start();
+        let background_context = harness.state().current_app_context().clone();
+
+        // Pin the first network's start at storage preparation, then leave it
+        // behind. Auto-start goes off so the destination stays offline and the
+        // pinned start is the only one in play.
+        let parked_start = rt.block_on(background_context.test_hold_prepare_gate());
+        harness.state_mut().test_run_auto_start_spv();
+        background_context
+            .update_auto_start_spv(false)
+            .expect("keep the destination offline");
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "the switch away from the starting network",
+            |state| {
+                state.current_app_context().network() == second
+                    && state.boot_phase() == BootPhase::Ready
+            },
+        );
+
+        offer_disconnect(&mut harness);
+        harness.get_by_label("Disconnect").click();
+        poll_until(&mut harness, "the manual disconnect to finish", |state| {
+            state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+        });
+
+        drop(parked_start);
+        assert_overruled_start_stands_down(
+            &mut harness,
+            &background_context,
+            "on a network left in the background",
+        );
+    });
+}
+
+/// Disconnect takes every network offline, not only the one on screen. A
+/// network left with chain sync running in the background keeps its connections
+/// otherwise, and the user would return to it still connected.
+#[test]
+fn a_manual_disconnect_stops_chain_sync_left_running_on_another_network() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+
+        // Auto-start brings chain sync up on the second network; returning to
+        // the first leaves it running in the background.
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "chain sync to auto-start on the second network",
+            |state| {
+                let app_context = state.current_app_context();
+                app_context.network() == second
+                    && app_context
+                        .wallet_backend()
+                        .is_ok_and(|backend| backend.is_started())
+            },
+        );
+        let background_context = harness.state().current_app_context().clone();
+        let background_is_syncing = || {
+            background_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_started())
+        };
+        harness.state_mut().change_network(first);
+        poll_until(&mut harness, "the return to the first network", |state| {
+            state.current_app_context().network() == first && state.boot_phase() == BootPhase::Ready
+        });
+        assert!(
+            background_is_syncing(),
+            "a switch alone leaves the outgoing network's chain sync running",
+        );
+
+        // Live events from both networks rewrite the shared indicator, so
+        // re-assert the stand-in connection until a Disconnect click lands and
+        // takes effect.
+        let connection_status = background_context.connection_status();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while background_is_syncing() {
+            assert!(
+                Instant::now() < deadline,
+                "Disconnect must stop chain sync on the network left in the background",
+            );
+            if !matches!(
+                connection_status.spv_status(),
+                SpvStatus::Stopping | SpvStatus::Stopped
+            ) {
+                connection_status.set_spv_status(SpvStatus::Error);
+                connection_status.refresh_state();
+            }
+            harness.step();
+            if let Some(disconnect) = harness.query_by_label("Disconnect") {
+                disconnect.click();
+            }
+            harness.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
     });
 }
 

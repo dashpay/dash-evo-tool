@@ -1,3 +1,4 @@
+pub(crate) mod action_menu;
 pub mod address_input;
 pub mod alias_input;
 pub mod amount_input;
@@ -7,7 +8,6 @@ pub mod component_trait;
 pub mod confirmation_dialog;
 pub mod contract_chooser_panel;
 pub mod dashpay_subscreen_chooser_panel;
-pub mod dpns_subscreen_chooser_panel;
 pub mod entropy_grid;
 pub mod global_nav_switcher;
 pub mod icons;
@@ -15,12 +15,14 @@ pub mod identity_selector;
 pub mod info_popup;
 pub mod left_panel;
 pub mod legacy_recovery_section;
+pub mod local_schedule_input;
 pub mod message_banner;
 pub mod modal_chrome;
 pub mod passphrase_modal;
 pub mod password_input;
 pub mod pill;
 pub mod progress_overlay;
+pub mod qr_code_image;
 pub mod secret_prompt_host;
 pub mod selection_dialog;
 pub mod styled;
@@ -28,6 +30,7 @@ pub mod subscreen_chooser_panel;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;
+pub mod wallet_selector;
 pub mod wallet_unlock_popup;
 
 // Re-export the main traits for easy access

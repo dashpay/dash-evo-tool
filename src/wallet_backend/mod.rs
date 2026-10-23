@@ -531,6 +531,28 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// File name of the cross-network app database in the data directory.
+pub(crate) const APP_DATABASE_FILE: &str = "det-app.sqlite";
+
+/// The cross-network app k/v database: `<data_dir>/det-app.sqlite`.
+pub(crate) fn app_database_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(APP_DATABASE_FILE)
+}
+
+/// Every network, via an exhaustive match: a new [`Network`] variant fails to
+/// compile here until each caller (e.g. the deletion deny-list) is reviewed.
+pub(crate) fn all_networks() -> [Network; 4] {
+    let _exhaustive = |network: Network| match network {
+        Network::Mainnet | Network::Testnet | Network::Devnet | Network::Regtest => (),
+    };
+    [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ]
+}
+
 /// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
 ///
 /// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`
@@ -539,6 +561,20 @@ impl std::fmt::Debug for WalletBackend {
 /// created and locked down at boot, so no directory work happens here.
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
+}
+
+/// Parent of every network's [`spv_storage_dir`], `<data_dir>/spv/`.
+pub(crate) fn spv_root_dir(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("spv")
+}
+
+/// The per-network chain-sync (SPV) cache directory, `<data_dir>/spv/<network>/`.
+///
+/// The single definition shared by the backend (which creates it), the network
+/// clear (which empties it) and the deletion chokepoint (which confines that clear
+/// to it).
+pub(crate) fn spv_storage_dir(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    spv_root_dir(data_dir).join(network_prefix(network))
 }
 
 /// The upstream shielded coordinator's store,
@@ -1138,6 +1174,29 @@ impl WalletBackend {
         }
     }
 
+    /// Make the registered wallet track `lock`, as if found on the chain.
+    #[cfg(test)]
+    pub(crate) async fn track_asset_lock_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+        lock: platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock,
+    ) {
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        tokio::task::spawn_blocking(move || {
+            wallet.asset_locks().recover_asset_lock_blocking(
+                lock.transaction,
+                lock.amount,
+                lock.account_index,
+                lock.funding_type,
+                lock.identity_index,
+                lock.out_point,
+                lock.proof,
+            )
+        })
+        .await
+        .expect("track the funding transaction");
+    }
+
     #[cfg(test)]
     pub(crate) fn registration_attempt_count(&self) -> usize {
         self.inner
@@ -1710,7 +1769,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: source.into(),
+            }),
         }
     }
 
@@ -1834,6 +1895,22 @@ impl WalletBackend {
     /// either now (if masternodes already synced) or when the `EventBridge`
     /// reports the masternode list reached `Synced`.
     pub async fn start(&self) -> Result<(), TaskError> {
+        self.start_while(|| true).await.map(|_| ())
+    }
+
+    /// [`Self::start`] for a start that a later disconnect can overrule.
+    ///
+    /// `still_wanted` is read under the lock [`Self::stop_in_place`] holds, so
+    /// a start that sees `true` is always stopped by a stop requested after
+    /// it. It is read again when a stop got there first: an overruled start
+    /// stands down, where an unconditional one retries on the re-armed latch.
+    ///
+    /// Returns whether chain sync is started; `Ok(false)` means this call
+    /// stood down without starting it.
+    pub async fn start_while(
+        &self,
+        still_wanted: impl Fn() -> bool + Send + Sync,
+    ) -> Result<bool, TaskError> {
         loop {
             let flight = self.inner.start_latch.flight();
             let outcome = flight
@@ -1842,6 +1919,12 @@ impl WalletBackend {
                     let Some(_lifecycle) = self.inner.start_latch.claim(&flight).await else {
                         return Err(StartFlightError::Superseded);
                     };
+                    if !still_wanted() {
+                        // A caller that joined this flight may still be wanted:
+                        // leave it a fresh one to decide on.
+                        self.inner.start_latch.reset_if_current(&flight);
+                        return Err(StartFlightError::Superseded);
+                    }
                     flight.begun.store(true, Ordering::SeqCst);
                     match self.start_once().await {
                         Ok(()) => Ok(()),
@@ -1854,12 +1937,13 @@ impl WalletBackend {
                 .await;
 
             match outcome {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(true),
                 Err(StartFlightError::Failed(source)) => {
                     return Err(TaskError::WalletBackend {
                         source: Arc::clone(source),
                     });
                 }
+                Err(StartFlightError::Superseded) if !still_wanted() => return Ok(false),
                 Err(StartFlightError::Superseded) => {}
             }
         }
@@ -2066,6 +2150,13 @@ impl WalletBackend {
         self.inner.coordinator_gate.reset();
     }
 
+    /// Hold starts and stops pending, so tests can join multiple callers to
+    /// one flight or pin a stop on its way.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn lock_start_lifecycle_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.start_latch.lifecycle.lock().await
+    }
+
     /// Number of wallets currently registered with the backend.
     #[cfg(test)]
     pub async fn wallet_count(&self) -> usize {
@@ -2250,7 +2341,7 @@ impl WalletBackend {
         &self,
         address: &str,
         msg: &[u8; 32],
-    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+    ) -> Result<dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSignature, TaskError> {
         let scope = SecretScope::SingleKey {
             address: address.to_string(),
         };
@@ -2308,7 +2399,13 @@ impl WalletBackend {
                 (
                     id,
                     secret_access::PromptMeta {
-                        alias: Some(qi.to_string()),
+                        alias: Some(
+                            qi.display_name_label(
+                                self.dashpay_view()
+                                    .cached_display_name(&qi.identity.id())
+                                    .as_deref(),
+                            ),
+                        ),
                         password_hint,
                     },
                 )
@@ -2432,6 +2529,15 @@ impl WalletBackend {
             })
     }
 
+    /// Masternode identity ids in the current deterministic masternode list,
+    /// each mapped to whether it is an evonode. `None` until the list has synced.
+    pub async fn masternode_list_membership(
+        &self,
+    ) -> Option<std::collections::BTreeMap<dash_sdk::platform::Identifier, bool>> {
+        let summaries = self.inner.pwm.spv().masternode_list_summaries().await?;
+        Some(membership_from_summaries(summaries))
+    }
+
     /// Whether chain sync has not yet reached the tip.
     pub async fn is_syncing(&self) -> bool {
         match self.inner.pwm.spv().sync_progress().await {
@@ -2440,17 +2546,34 @@ impl WalletBackend {
         }
     }
 
-    /// [`TaskError::WalletNotLoaded`] naming the wallet the caller asked for,
-    /// so a user with several wallets open knows which one to wait for. Reads
-    /// the committed alias snapshot, which never takes the writer mutex.
+    /// The error for a wallet the backend has not registered, naming the
+    /// wallet the caller asked for so a user with several wallets open knows
+    /// which one it is. A password-protected wallet that is still locked gets
+    /// [`TaskError::WalletLockedNotLoaded`], because only unlocking registers
+    /// it; every other wallet gets [`TaskError::WalletNotLoaded`].
+    ///
+    /// Lock scope: the alias and the wallet handle are committed
+    /// [`WalletContext`](wallet_context::WalletContext) snapshots, which never
+    /// take the writer mutex and are released before the handle is touched.
+    /// The handle is only `try_read`: this runs under whatever the caller
+    /// already holds, so it must never wait on a wallet lock. A busy handle
+    /// reads as not locked and falls back to `WalletNotLoaded`.
     fn wallet_not_loaded(&self, seed_hash: &WalletSeedHash) -> TaskError {
-        let alias = self
-            .inner
-            .wallet_context
-            .hd_alias(seed_hash)
-            .unwrap_or_default();
-        TaskError::WalletNotLoaded {
-            wallet_label: wallet_label(&alias, seed_hash),
+        let wallets = &self.inner.wallet_context;
+        let label = wallet_label(&wallets.hd_alias(seed_hash).unwrap_or_default(), seed_hash);
+        let locked = wallets.hd_wallet(seed_hash).is_some_and(|wallet| {
+            wallet
+                .try_read()
+                .is_ok_and(|wallet| wallet.requires_password_unlock())
+        });
+        if locked {
+            TaskError::WalletLockedNotLoaded {
+                wallet_label: label,
+            }
+        } else {
+            TaskError::WalletNotLoaded {
+                wallet_label: label,
+            }
         }
     }
 
@@ -2904,6 +3027,12 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).utxos.clone()
     }
 
+    /// Number of current unspent outputs for the wallet, without copying
+    /// them. DISPLAY-ONLY, like [`Self::utxos`].
+    pub fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.utxo_count(seed_hash)
+    }
+
     /// UTXO-derived per-address balances for the wallet.
     pub fn address_balances(
         &self,
@@ -3138,12 +3267,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.join("spv");
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
-        dir.push(kv::network_prefix(network));
-        crate::app_dir::ensure_data_dir_exists(&dir)
-            .map_err(|source| TaskError::FileSystem { source })?;
+        let dir = spv_storage_dir(app_data_dir, network);
+        // Create (and lock down) the shared `spv` root before the network directory.
+        for directory in [spv_root_dir(app_data_dir), dir.clone()] {
+            crate::app_dir::ensure_data_dir_exists(&directory)
+                .map_err(|source| TaskError::FileSystem { source })?;
+        }
         Ok(dir)
     }
 }
@@ -3421,6 +3550,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MessageSigningMessageInvalid { .. }
         | P::MessageSigningKeyUnavailable { .. }
         | P::MessageSigningFailed { .. }
+        | P::PersisterFlush(_)
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3745,7 +3878,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ContestedNameNotTradable { .. }
         | P::DocumentNotForSale { .. }
         | P::DocumentPriceChanged { .. }
-        | P::InvitationNetworkMismatch { .. }
         | P::InvalidParameter(_)
         // Message signing is a wallet-local operation with no Platform
         // submission at all.
@@ -3757,7 +3889,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::PersisterFlush(_)
         | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
@@ -4957,5 +5094,57 @@ mod full_resync_tests {
             backend.request_full_resync([99; 32]).await,
             Err(TaskError::WalletNotLoaded { .. })
         ));
+    }
+}
+
+/// Key list entries by masternode identity id. The summary holds the
+/// proTxHash in wire order; Platform's identity id is the display order
+/// (drive-abci parses the RPC hex into the forward-displayed `ProTxHash`).
+fn membership_from_summaries(
+    summaries: impl IntoIterator<Item = platform_wallet::masternode::MasternodeListSummary>,
+) -> std::collections::BTreeMap<dash_sdk::platform::Identifier, bool> {
+    summaries
+        .into_iter()
+        .map(|summary| {
+            (
+                dash_sdk::platform::Identifier::from(summary.pro_tx_hash_display()),
+                summary.is_evonode,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod masternode_membership_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::ProTxHash;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use std::str::FromStr;
+
+    const DISPLAY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    /// The list key is the id DET loads a masternode under (the explorer /
+    /// `protx list` hex), which is also how Platform derives the identity id.
+    #[test]
+    fn membership_keys_match_the_loaded_masternode_identity_id() {
+        let loaded = crate::model::masternode_input::decode_identity_id(DISPLAY_HEX).unwrap();
+        let platform = ProTxHash::from_str(DISPLAY_HEX).unwrap().to_byte_array();
+        assert_eq!(platform, loaded.to_buffer(), "Platform id = RPC hex bytes");
+
+        let mut wire = loaded.to_buffer();
+        wire.reverse();
+        let summary = platform_wallet::masternode::MasternodeListSummary {
+            pro_tx_hash: wire,
+            service_address: None,
+            platform_http_port: None,
+            operator_public_key: [0; 48],
+            voting_key_id: [0; 20],
+            platform_node_id: None,
+            is_valid: true,
+            is_evonode: true,
+            has_extended_net_info: false,
+        };
+        let membership = membership_from_summaries([summary]);
+        assert_eq!(membership.get(&loaded), Some(&true));
     }
 }

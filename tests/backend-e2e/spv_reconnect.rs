@@ -49,6 +49,10 @@ use std::time::Duration;
 /// It only needs live testnet peers (outbound TCP on port 19999).
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore = "network-dependent; requires testnet egress — no funded wallet needed"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixture setup/teardown outside any production deletion path"
+)]
 async fn spv_reconnect_succeeds_without_already_open() {
     // ── Isolated context setup ──────────────────────────────────────────────
     let workdir =

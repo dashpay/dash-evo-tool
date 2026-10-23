@@ -166,40 +166,25 @@ pub(crate) fn derive_contact_info_encryption_keys(
     let root_path =
         DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/0'")).map_err(derive_err)?;
 
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-    let root = master_xprv
-        .derive_priv(&secp, &root_path)
-        .map_err(derive_err)?;
+    let root = master_xprv.derive_priv(&root_path).map_err(derive_err)?;
 
     // Key1 (encToUserId): root/(2^16)'/index'
     let key1 = root
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65536).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(65536).map_err(derive_err)?])
         .map_err(derive_err)?
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
     // Key2 (privateData): root/(2^16 + 1)'/index'
     let key2 = root
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65537).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(65537).map_err(derive_err)?])
         .map_err(derive_err)?
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
-        )
+        .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
     Ok((
-        Zeroizing::new(key1.private_key.secret_bytes()),
-        Zeroizing::new(key2.private_key.secret_bytes()),
+        Zeroizing::new(*key1.private_key.to_bytes()),
+        Zeroizing::new(*key2.private_key.to_bytes()),
     ))
 }
 
@@ -574,6 +559,41 @@ impl<'a> DashpayView<'a> {
         })
         .await
         .unwrap_or_default()
+    }
+
+    /// Read cached profile fields without blocking on wallet state or reading storage.
+    pub fn cached_profile(&self, owner: &Identifier) -> Option<StoredProfile> {
+        self.with_cached_profile(owner, |profile| profile_to_det(owner, profile, 0, 0))
+    }
+
+    /// Read the cached profile name without blocking on a wallet-state lock.
+    pub fn cached_display_name(&self, owner: &Identifier) -> Option<String> {
+        self.with_cached_profile(owner, |profile| {
+            profile
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+        .flatten()
+    }
+
+    fn with_cached_profile<T>(
+        &self,
+        owner: &Identifier,
+        read: impl FnOnce(&DashPayProfile) -> T,
+    ) -> Option<T> {
+        let wallets = self.backend.inner.wallets.try_read().ok()?;
+        for wallet in wallets.values() {
+            let Some(state) = wallet.try_state() else {
+                continue;
+            };
+            if let Some(identity) = state.identity_manager.managed_identity(owner) {
+                return identity.dashpay().profile.as_ref().map(read);
+            }
+        }
+        None
     }
 
     /// DashPay profile for `owner`, or `None` when upstream has none
@@ -2227,7 +2247,7 @@ mod tests {
         let kv = DetKv::from_store(store.clone());
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
-        store.fail_next_puts(2);
+        store.fail_next_puts_containing("", 2);
         assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
         // Even while storage is unavailable the view must see the successful write's times.
         assert_eq!(timestamps.get(&kv, &owner), (111, 222));
@@ -2261,7 +2281,7 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         timestamps.set(&kv, &owner, (111, 222)).unwrap();
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.set(&kv, &owner, (111, 333)).is_err());
         timestamps.initialize(&kv, &owner, 999).unwrap();
         assert_eq!(timestamps.get(&kv, &owner), (111, 333));
@@ -2291,9 +2311,9 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         timestamps.set(&kv, &owner, (111, 222)).unwrap();
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         assert!(timestamps.initialize(&kv, &owner, 999).is_err());
-        store.fail_reads(false);
+        store.fail_all_reads(false);
         assert_eq!(timestamps.get(&kv, &owner), (111, 222));
         assert_eq!(store.put_count(), 1);
     }
@@ -2306,7 +2326,7 @@ mod tests {
         let kv = DetKv::from_store(store.clone());
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.initialize(&kv, &owner, 111).is_err());
         timestamps.initialize(&kv, &owner, 222).unwrap();
         assert_eq!(timestamps.get(&kv, &owner), (111, 111));
@@ -2322,7 +2342,7 @@ mod tests {
         let timestamps = ProfileTimestamps::default();
         let owner = id_from_byte(1);
         let other = id_from_byte(2);
-        store.fail_next_puts(1);
+        store.fail_next_puts_containing("", 1);
         assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
         assert_eq!(timestamps.get(&kv, &other), (0, 0));
         timestamps.set(&kv, &owner, (111, 333)).unwrap();
@@ -3303,7 +3323,7 @@ mod tests {
 
         assert_eq!(
             seam.public_key,
-            local.public_key.serialize(),
+            local.public_key.to_compressed(),
             "published public key must match the receive-side xpub on mainnet"
         );
         assert_eq!(
@@ -3344,7 +3364,7 @@ mod tests {
 
         assert_eq!(
             seam.public_key,
-            local.public_key.serialize(),
+            local.public_key.to_compressed(),
             "published public key must match the receive-side xpub on testnet"
         );
         assert_eq!(
@@ -3386,7 +3406,7 @@ mod tests {
 
             assert_eq!(
                 seam.public_key,
-                local.public_key.serialize(),
+                local.public_key.to_compressed(),
                 "public key must match send↔receive on {network:?}"
             );
             assert_eq!(
@@ -3532,7 +3552,7 @@ mod tests {
             .expect("receive-side xpub");
         assert_eq!(
             published.public_key,
-            scanned.public_key.serialize(),
+            scanned.public_key.to_compressed(),
             "published xpub must equal the scanned xpub for the selected wallet"
         );
 
@@ -3542,7 +3562,7 @@ mod tests {
                 .expect("other-side xpub");
         assert_ne!(
             published.public_key,
-            other_scanned.public_key.serialize(),
+            other_scanned.public_key.to_compressed(),
             "the unselected wallet's seed must derive a different xpub"
         );
     }

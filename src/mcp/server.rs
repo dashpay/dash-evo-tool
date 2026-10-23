@@ -371,7 +371,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
     }
 
-    let db_file_path = data_file_path(&data_dir, "data.db")
+    let db_file_path = data_file_path(&data_dir, crate::database::legacy_backups::LEGACY_DATABASE)
         .map_err(|e| McpError::internal_error(format!("db path: {e}"), None))?;
     let db = if db_file_path.exists() {
         Arc::new(

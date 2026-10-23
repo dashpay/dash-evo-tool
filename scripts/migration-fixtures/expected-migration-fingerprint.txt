@@ -5,7 +5,7 @@
 #
 # fingerprint = sha256 of the LC_ALL=C-sorted "<sha256>  <path>" listing of every
 # file under packages/rs-platform-wallet-storage/migrations at that rev.
-pin=9f7ed16935bd540e4c2a542688800d2953f9f67a
-target_branch=v4.3-dev
-migration_count=18
-fingerprint=1c6a683d1b781045f4528048b49b1e945f4da6caeb71e72d8de7429904399b99
+pin=80c680affc6d122e64046bd53d49a0d4e7be4bd0
+target_branch=fix/sqlite-asset-lock-reconciliation
+migration_count=20
+fingerprint=bef23d42c54469dec15c68887b1d9efaf6c7fd3cc038dfbde548c9fb188a0e93

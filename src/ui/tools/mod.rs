@@ -16,7 +16,6 @@ pub enum ToolsSubscreen {
     ProofViewer,
     ContractViewer,
     GroveSTARK,
-    DPNS,
 }
 
 impl ToolsSubscreen {
@@ -29,7 +28,6 @@ impl ToolsSubscreen {
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
             Self::GroveSTARK => "ZK Proofs",
-            Self::DPNS => "DPNS",
         }
     }
 }

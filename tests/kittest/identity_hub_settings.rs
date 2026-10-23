@@ -6,8 +6,8 @@
 //! > **Steps**: mount hub, switch to Settings tab.
 //! > **Expected**:
 //! > - Section heading `Social profile` present.
-//! > - Section heading `Username` present.
-//! > - Section heading `Aliases` present.
+//! > - Section heading `Usernames` present (the old `Aliases` block is gone;
+//! >   see `identity_usernames.rs`).
 //! > - Advanced expander present.
 //!
 //! The harness default database has zero identities, so the full populated
@@ -57,5 +57,5 @@ fn settings_tab_variant_is_part_of_public_api() {
         all.contains(&IdentityHubTab::Settings),
         "IdentityHubTab::ALL must include Settings",
     );
-    assert_eq!(IdentityHubTab::Settings.label(), "Settings");
+    assert_eq!(IdentityHubTab::Settings.label(), "Profile");
 }

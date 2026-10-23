@@ -194,14 +194,13 @@ async fn step_add_key(
         key_type: KeyType::ECDSA_SECP256K1,
         read_only: false,
         data: {
-            use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
             use dash_sdk::dpp::dashcore::PrivateKey;
-            let secp = Secp256k1::new();
-            let secret_key =
-                dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
-                    .expect("invalid secret key");
+            let secret_key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(
+                &private_key_bytes,
+            )
+            .expect("invalid secret key");
             let pk = PrivateKey::new(secret_key, Network::Testnet);
-            pk.public_key(&secp).to_bytes().into()
+            pk.public_key().to_bytes().into()
         },
         disabled_at: None,
     });
@@ -234,8 +233,8 @@ async fn step_transfer_credits(
 ) {
     tracing::info!("=== Step 4: Transfer credits to another identity ===");
 
-    let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
-    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b).await;
+    let (_, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b).await;
     let reg_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),

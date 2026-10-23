@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
-use dash_evo_tool::wallet_backend::KV_SCHEMA_VERSION;
+use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -13,7 +12,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{assertions, cli};
+use crate::{assertions, cli, identity_storage};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExpectedIdentity {
@@ -63,16 +62,6 @@ fn check_records(expected: &[ExpectedIdentity], found: &[ExpectedIdentity]) -> R
         ));
     }
     Ok(())
-}
-
-// Mirrors context::identity_db::StoredQualifiedIdentity, including its bincode field order.
-#[derive(Deserialize)]
-struct StoredIdentity {
-    qi_bytes: Vec<u8>,
-    status: u8,
-    identity_type: String,
-    wallet_hash: Option<[u8; 32]>,
-    wallet_index: Option<u32>,
 }
 
 fn snapshot(bytes: &[u8], status: u8, identity_type: &str) -> Result<ExpectedIdentity, String> {
@@ -174,7 +163,12 @@ pub fn check_source(
     for row in rows {
         let (id, bytes, status, identity_type, alias) = row.map_err(|e| e.to_string())?;
         let record = snapshot(&bytes, status, &identity_type)?;
-        if record.id != dash_sdk::dpp::dashcore::base58::encode_slice(&id) || record.alias != alias
+        if record.id
+            != dash_sdk::dpp::platform_value::string_encoding::encode(
+                &id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+            || record.alias != alias
         {
             return Err("legacy identity columns disagree with the serialized identity".into());
         }
@@ -196,27 +190,18 @@ pub fn check_migrated(
     }
     let conn = assertions::open_copy(network_db, scratch, &format!("identities-{label}"))?
         .ok_or("migrated identity database is missing")?;
-    let mut statement = conn.prepare("SELECT identity_id, value FROM meta_identity WHERE key = 'det:identity:v1' ORDER BY identity_id")
-        .map_err(|e| e.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
     let mut found = Vec::new();
-    for row in rows {
-        let (id, bytes) = row.map_err(|e| e.to_string())?;
-        let Some((&KV_SCHEMA_VERSION, body)) = bytes.split_first() else {
-            return Err("unexpected identity k/v schema version".into());
-        };
-        let (stored, consumed): (StoredIdentity, _) =
-            bincode::serde::decode_from_slice(body, bincode::config::standard())
-                .map_err(|e| e.to_string())?;
-        if consumed != body.len() || stored.wallet_hash.is_some() || stored.wallet_index.is_some() {
-            return Err("unexpected data or wallet binding in public identity record".into());
+    for (id, stored) in identity_storage::read_identities(&conn)? {
+        if stored.wallet_hash.is_some() || stored.wallet_index.is_some() {
+            return Err("unexpected wallet binding in public identity record".into());
         }
         let record = snapshot(&stored.qi_bytes, stored.status, &stored.identity_type)?;
-        if record.id != dash_sdk::dpp::dashcore::base58::encode_slice(&id) {
+        if record.id
+            != dash_sdk::dpp::platform_value::string_encoding::encode(
+                &id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+        {
             return Err("identity storage key differs from its serialized identity".into());
         }
         found.push(record);
@@ -247,10 +232,21 @@ fn check_listing(expected: &[ExpectedIdentity], output: &Value) -> Result<(), St
         let actual = found
             .get(&Some(identity.id.as_str()))
             .ok_or_else(|| format!("identity-list omitted {}", identity.id))?;
-        let wanted = serde_json::json!({"id":identity.id,"alias":identity.alias,"identity_type":identity.identity_type,
+        let identity_type = IdentityType::from_tag(&identity.identity_type)
+            .ok_or_else(|| format!("unknown fixture identity type: {}", identity.identity_type))?;
+        // Public-only fixtures have no cached DashPay profile. Legacy aliases
+        // remain checked in storage above, but only node aliases appear in the API.
+        let mut wanted = serde_json::json!({"id":identity.id,"display_name":null,"identity_type":identity.identity_type,
             "status":identity.status,"balance_credits":identity.balance_credits,
             "dpns_names":identity.dpns_names.iter().map(|name| &name.name).collect::<Vec<_>>(),
             "wallet_index":null,"wallet_seed_hashes":[]});
+        if matches!(
+            identity_type,
+            IdentityType::Masternode | IdentityType::Evonode
+        ) && let Some(alias) = &identity.alias
+        {
+            wanted["alias"] = alias.clone().into();
+        }
         if **actual != wanted {
             return Err(format!(
                 "identity-list metadata mismatch: expected {wanted}, found {actual}"
@@ -347,10 +343,57 @@ mod tests {
     }
 
     #[test]
+    fn cli_listing_omits_user_and_absent_node_aliases() {
+        for identity_type in ["User", "Masternode", "Evonode"] {
+            let mut expected = identity();
+            expected.identity_type = identity_type.into();
+            if identity_type != "User" {
+                expected.alias = None;
+            }
+            let entry = serde_json::json!({
+                "id":"public-identity", "display_name":null, "identity_type":identity_type,
+                "status":"Active", "balance_credits":123, "dpns_names":["saved-name"],
+                "wallet_index":null, "wallet_seed_hashes":[]
+            });
+            assert!(
+                check_listing(
+                    std::slice::from_ref(&expected),
+                    &serde_json::json!({"identities":[entry.clone()]})
+                )
+                .is_ok()
+            );
+            for alias in [Value::Null, "Saved alias".into()] {
+                let mut leaked = entry.clone();
+                leaked["alias"] = alias;
+                assert!(
+                    check_listing(
+                        std::slice::from_ref(&expected),
+                        &serde_json::json!({"identities":[leaked]})
+                    )
+                    .is_err(),
+                    "{identity_type}"
+                );
+            }
+            let mut missing_profile_field = entry;
+            missing_profile_field
+                .as_object_mut()
+                .unwrap()
+                .remove("display_name");
+            assert!(
+                check_listing(
+                    &[expected],
+                    &serde_json::json!({"identities":[missing_profile_field]})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn cli_listing_must_preserve_metadata_and_remain_wallet_free() {
         let expected = vec![identity()];
         let entry = serde_json::json!({
-            "id":"public-identity", "alias":"Saved alias", "identity_type":"Masternode",
+            "id":"public-identity", "display_name":null, "alias":"Saved alias", "identity_type":"Masternode",
             "status":"Active", "balance_credits":123, "dpns_names":["saved-name"],
             "wallet_index":null, "wallet_seed_hashes":[]
         });
@@ -370,6 +413,8 @@ mod tests {
             .is_err()
         );
         for (field, value) in [
+            ("alias", Value::Null),
+            ("display_name", "Invented profile".into()),
             ("dpns_names", serde_json::json!([])),
             ("wallet_index", 0.into()),
             (

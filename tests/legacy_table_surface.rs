@@ -64,6 +64,9 @@ const ALLOW_LIST: &[&str] = &[
     // vault. A migration read inside the legacy → new boundary, the
     // sibling of finish_unwire.rs; never a cold-boot read.
     "src/backend_task/migration/single_key_restore.rs",
+    // Restore regression fixtures construct malformed legacy rows in #[cfg(test)].
+    // Tether rationale: docs/ai-design/2026-05-29-finish-unwire/notes.md §5.
+    "src/backend_task/migration/legacy_restore.rs",
     // Wallet-task entry points handing off to migration orchestrator
     // for retry / state transitions. The READS here are inside the
     // migration boundary (legacy → new), not cold-boot reads.

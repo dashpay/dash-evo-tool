@@ -30,18 +30,17 @@ use std::sync::{Arc, RwLock};
 /// and exactly one BIP-44 receive address, distinct per `seed`. The snapshot
 /// paths — not the wallet's own bookkeeping — are what the component offers.
 fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
     use dash_sdk::dpp::dashcore::{Address, PublicKey};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
     let wallet = Wallet::new_from_seed([seed; 64], Network::Testnet, Some(alias.to_string()), None)
         .expect("wallet from seed");
 
-    let secp = Secp256k1::new();
     let mut sk_bytes = [1u8; 32];
     sk_bytes[31] = seed.max(1);
-    let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
-    let address = Address::p2pkh(&PublicKey::new(sk.public_key(&secp)), Network::Testnet);
+    let sk = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&sk_bytes)
+        .expect("valid secret key");
+    let address = Address::p2pkh(&PublicKey::new(sk.public_key()), Network::Testnet);
 
     // m/44'/1'/0'/0/0 — a BIP-44 external receive path.
     let path = DerivationPath::from(
@@ -76,7 +75,10 @@ fn identity(alias: &str) -> QualifiedIdentity {
         identity_type: IdentityType::User,
         alias: Some(alias.to_string()),
         private_keys: KeyStorage::default(),
-        dpns_names: vec![],
+        dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
+            name: alias.to_string(),
+            acquired_at: 0,
+        }],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
         wallet_index: None,
@@ -84,6 +86,13 @@ fn identity(alias: &str) -> QualifiedIdentity {
         status: IdentityStatus::PendingCreation,
         network: Network::Testnet,
     }
+}
+
+fn identity_input(name: &str) -> AddressInput {
+    crate::support::with_isolated_data_dir(|| {
+        let (_runtime, context) = crate::support::fresh_app_context();
+        AddressInput::new(Network::Testnet).with_identities(&context, &[identity(name)])
+    })
 }
 
 /// Render `input` in a headless harness, focus its field to open (and paint) the
@@ -175,9 +184,8 @@ fn hint_trims_wallets_above_five() {
 
 #[test]
 fn wallet_pill_only_on_wallet_scoped_rows() {
-    let input = AddressInput::new(Network::Testnet)
+    let input = identity_input("alice")
         .with_wallets(&[wallet(1, "main")])
-        .with_identities(&[identity("alice")])
         .with_shielded_balance("tdash1zexampleshieldedaddress".to_string(), 0);
 
     with_rendered(input, |input| {
@@ -217,9 +225,8 @@ fn wallet_pill_only_on_wallet_scoped_rows() {
 
 #[test]
 fn tag_query_narrows_rows() {
-    let input = AddressInput::new(Network::Testnet)
+    let input = identity_input("carol")
         .with_wallets(&[wallet(1, "alpha"), wallet(2, "beta")])
-        .with_identities(&[identity("carol")])
         .with_initial_value("type:core wallet:alpha");
 
     with_rendered(input, |input| {

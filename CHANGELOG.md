@@ -212,19 +212,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Leaving Send clears its progress banner and lets a pending top-up continue in
-  the background. Identity Receive updates its QR code when the shared username
-  or identity changes (#1082).
-- An unused locked wallet no longer prevents top-up progress reads from registered
-  wallets. When the selected wallet needs unlocking, the message asks for that
-  action instead of asking the user to wait (#1087).
-- QR displays consistently offer a copy-value fallback when a code cannot be
-  generated and regenerate when the shared value changes (#1089).
-- The transition visualizer retains a parsed transition if its JSON display
-  fails, shows a readable fallback, and clears stale parsed state when the input
-  changes (#853).
-
-
 - Long lists of masternodes can be scrolled everywhere. In Masternodes →
   Votes, the "Vote with" list named every loaded node but did not scroll: with
   more nodes than fit in the window, the rest of the list and the "Save as my
@@ -874,20 +861,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
-
-- **Identity Home, Contacts and Profile** share an identity summary with usernames,
-  avatar and identity-bound Send, Top up and Move to wallet actions. The layout
-  adapts to narrow windows, keeps long actions reachable, and preserves profile
-  drafts for the same identity. Username overflow and registration actions now
-  sit together beside the names (#1074, #1094, #1097).
-- **Returning to an identity** keeps its cached profile, contacts and avatar
-  visible while reloading. Profile loading retries when the masternode list
-  becomes ready (#1090, #1095).
-- **Voting selection** now follows the decision assigned to each name. The
-  separate selection checkbox, Space selection shortcut and bulk decision bar
-  are removed. Cast and Clear stay visible on populated active contest views,
-  and disabled controls explain what is missing (#1088).
-
 
 - Masternodes → Votes → History now opens with the contest that ended most
   recently at the top, instead of in name order. Contests that ended at the

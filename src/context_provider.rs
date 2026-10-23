@@ -21,26 +21,32 @@ pub(crate) const MASTERNODE_LIST_NOT_READY_DETAIL: &str =
 
 /// Resolve a data contract by ID: check cached system contracts first, then DB.
 ///
+/// System contracts are served as `platform_version` defines them: the proof
+/// verifier passes the version it verifies with, which during an upgrade can
+/// be newer than the SDK's stored version.
+///
 /// All system contracts are listed in `cached` — adding a new one is a single
 /// array edit. The array size is tied to [`SYSTEM_CONTRACT_COUNT`] so the
 /// compiler enforces completeness.
 fn resolve_data_contract(
     app_ctx: &AppContext,
     data_contract_id: &Identifier,
+    platform_version: &PlatformVersion,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-    let cached: [Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
-        app_ctx.dpns_contract(),
-        app_ctx.dashpay_contract(),
-        app_ctx.token_history_contract(),
-        app_ctx.withdraws_contract(),
-        app_ctx.keyword_search_contract(),
+    let system_contracts = app_ctx.system_contracts_at(platform_version);
+    let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
+        &system_contracts.dpns,
+        &system_contracts.dashpay,
+        &system_contracts.token_history,
+        &system_contracts.withdrawals,
+        &system_contracts.keyword_search,
     ];
 
     if let Some(contract) = cached
         .into_iter()
         .find(|contract| data_contract_id == &contract.id())
     {
-        return Ok(Some(contract));
+        return Ok(Some(Arc::clone(contract)));
     }
 
     // K/V fallback for user-added / non-system contracts
@@ -108,10 +114,10 @@ impl ContextProvider for SpvProvider {
     fn get_data_contract(
         &self,
         data_contract_id: &Identifier,
-        _platform_version: &PlatformVersion,
+        platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
         let app_ctx = self.app_context()?;
-        resolve_data_contract(&app_ctx, data_contract_id)
+        resolve_data_contract(&app_ctx, data_contract_id, platform_version)
     }
 
     fn get_token_configuration(
@@ -231,5 +237,29 @@ mod quorum_error_tests {
             quorum_lookup_error(TaskError::NoIdentitiesFound),
             ContextProviderError::Generic(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod data_contract_tests {
+    use super::*;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    /// The proof verifier asks for a contract at the version it verifies
+    /// with, which during an upgrade can be newer than the SDK's stored
+    /// version. A system contract is served as that version defines it.
+    #[test]
+    fn system_contracts_resolve_at_the_requested_platform_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        for protocol_version in [13, 14] {
+            let platform_version = PlatformVersion::get(protocol_version).expect("known version");
+            let expected =
+                load_system_data_contract(SystemDataContract::Dashpay, platform_version).unwrap();
+            let resolved = resolve_data_contract(&ctx, &expected.id(), platform_version)
+                .expect("lookup")
+                .expect("a cached system contract");
+            assert_eq!(*resolved, expected, "protocol {protocol_version}");
+        }
     }
 }

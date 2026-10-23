@@ -45,17 +45,20 @@ already migrated empty database. The final schema and history must match an
 independent fresh current persister before publication.
 
 At Platform `344e110a630a0ca8060e38299d777cee8d7232e3` (dashpay/platform#5528),
-V020 (`core_transaction_accounting`) drops mined Core history and rewinds each
-filter checkpoint to at most birth height minus one (minimum zero), so the next
-SPV start rescans it. It keeps unmined history as evidence a rescan cannot
-redeliver: unconfirmed transactions with their instant locks and coins, and
-spent coins. V021 (`asset_lock_conflict_evidence`) rebuilds `asset_locks` with a
-`conflicted` status and an `operation_revision` column, copying every row
-unchanged. After migration, the bridge requires every non-Core row unchanged,
-the checkpoint rewind, the kept unmined history unchanged (a load-time record
-repair is compared through its retained original), and no Core row the legacy
-profile did not hold. The original backup retains the full pre-rescan Core data.
-
+V019 adds nullable asset-lock operation IDs and V020 (`core_transaction_accounting`)
+rebuilds Core history: it drops mined transactions, UTXOs and InstantLocks that an
+SPV rescan redelivers, keeps unmined transactions and spent coins whose spender is
+not known to be mined (stripping block details from the mined transactions funding
+them), and rewinds each filter checkpoint to at most birth height minus one
+(minimum zero). Loading may then drop pending spends whose authorization fails.
+V021 (`asset_lock_conflict_evidence`) rebuilds `asset_locks` with a `conflicted`
+status and an `operation_revision` column, copying every row unchanged. The bridge
+recognizes the Core migration by name, checks the checkpoint rewind, accepts any
+Core rows that remain unchanged from the original (only stripped block details on
+mined transactions), and requires every non-Core row to be preserved. The original
+backup retains the pre-rescan Core data; the app rebuilds confirmed Core history
+through SPV. A different V019 migration history, such as the unmerged `c0425f7`
+accounting schema, is not recognized by this bridge.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

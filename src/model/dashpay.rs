@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::validation::{TextLengthError, validate_char_count};
 
+/// Independent reads used to populate an identity's contact lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContactsLoadKind {
+    Contacts,
+    Requests,
+}
+
 /// Maximum number of characters stored in a DashPay payment memo.
 pub const MAX_PAYMENT_MEMO_CHARS: usize = 100;
 /// Maximum number of characters stored in a contact-request account label.

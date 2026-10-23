@@ -8,7 +8,7 @@
 
 use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactsLoadKind, contact_request_recipient};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Network;
@@ -16,12 +16,15 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 /// Threshold for surfacing an unusually long-running request and pruning its
 /// paid-action guard on the next view reset.
 const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Automatic retries allowed per read between two refreshes.
+const MAX_AUTOMATIC_READ_RETRIES: u8 = 3;
 
 /// A single cached contact-request entry, derived from a raw
 /// `DashPayContactRequests` result document.
@@ -44,9 +47,16 @@ pub struct ContactRequestEntry {
 /// View resets retain live paid-action guards and prune stale ones.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
-    /// `true` once the populated shell has dispatched its loads for this tab
-    /// entry. Guards every subsequent frame from re-dispatching.
+    /// Prevents repeated frame dispatch until a refresh or retry is due.
     load_requested: bool,
+    load_failed: bool,
+    /// Failed reads waiting out their own retry delay. Kept per read so one
+    /// read's failure never shortens the other's delay.
+    retry_at: BTreeMap<ContactsLoadKind, Instant>,
+    /// Failed reads whose delay has passed, sent by the next claim.
+    due_reads: BTreeSet<ContactsLoadKind>,
+    /// Automatic retries already sent per read since the last refresh.
+    retries_sent: BTreeMap<ContactsLoadKind, u8>,
     /// Incoming requests awaiting this identity's response.
     incoming: Vec<ContactRequestEntry>,
     /// Requests this identity has sent and that are still pending.
@@ -137,6 +147,8 @@ impl ContactsState {
     /// Clear cached view data while retaining guards for backend work still running.
     pub fn reset(&mut self) {
         self.load_requested = false;
+        self.load_failed = false;
+        self.clear_retries();
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
@@ -154,6 +166,80 @@ impl ContactsState {
     /// Whether the lists have not been asked for since the load was last armed.
     pub fn load_is_due(&self) -> bool {
         !self.load_requested
+    }
+
+    /// Whether a load outcome belongs to the identity whose lists are shown.
+    pub(crate) fn owns_load(&self, owner: (Network, Identifier)) -> bool {
+        self.owner == Some(owner)
+    }
+
+    /// Keep displayed contacts and paid-action guards after a failed read.
+    pub(crate) fn record_load_error(&mut self, kind: ContactsLoadKind, retry_at: Option<Instant>) {
+        if kind == ContactsLoadKind::Contacts {
+            self.load_failed = true;
+        }
+        let sent = self.retries_sent.get(&kind).copied().unwrap_or(0);
+        if sent < MAX_AUTOMATIC_READ_RETRIES
+            && let Some(retry_at) = retry_at
+        {
+            self.retry_at
+                .entry(kind)
+                .and_modify(|pending| *pending = (*pending).min(retry_at))
+                .or_insert(retry_at);
+        }
+    }
+
+    /// Whether the contact-list read failed with no automatic retry left, so
+    /// the user has to recover by hand. A failure whose retry is still waiting
+    /// for its delay or for the network counts as loading.
+    pub fn load_failed(&self) -> bool {
+        let retry_pending = self.retry_at.contains_key(&ContactsLoadKind::Contacts)
+            || self.due_reads.contains(&ContactsLoadKind::Contacts);
+        self.load_failed && !retry_pending
+    }
+
+    /// Claim the initial reads or only the failed reads due for a retry.
+    pub(crate) fn claim_reads(&mut self) -> Option<BTreeSet<ContactsLoadKind>> {
+        if !self.claim_load() {
+            return None;
+        }
+        let reads = if self.due_reads.is_empty() {
+            // A full load supersedes any retry still waiting for its delay.
+            self.retry_at.clear();
+            BTreeSet::from([ContactsLoadKind::Contacts, ContactsLoadKind::Requests])
+        } else {
+            let reads = std::mem::take(&mut self.due_reads);
+            for kind in &reads {
+                *self.retries_sent.entry(*kind).or_default() += 1;
+            }
+            reads
+        };
+        if reads.contains(&ContactsLoadKind::Contacts) {
+            self.load_failed = false;
+        }
+        Some(reads)
+    }
+
+    /// Re-arm the load for each failed read whose own retry delay has passed;
+    /// reads still waiting stay out of the batch. The hub calls this only while
+    /// its network is ready.
+    pub(crate) fn retry_load_if_due(&mut self, now: Instant) {
+        self.retry_at.retain(|kind, retry_at| {
+            let due = now >= *retry_at;
+            if due {
+                self.due_reads.insert(*kind);
+            }
+            !due
+        });
+        if !self.due_reads.is_empty() {
+            self.load_requested = false;
+        }
+    }
+
+    fn clear_retries(&mut self) {
+        self.retry_at.clear();
+        self.due_reads.clear();
+        self.retries_sent.clear();
     }
 
     /// Reset identity-scoped view data while retaining live paid-action guards.
@@ -180,6 +266,8 @@ impl ContactsState {
     /// user keeps seeing (and searching) the contacts they already had.
     pub fn invalidate(&mut self) {
         self.load_requested = false;
+        self.load_failed = false;
+        self.clear_retries();
     }
 
     /// Pending requests received by this identity.
@@ -266,6 +354,7 @@ impl ContactsState {
         self.contacts = visible;
         self.hidden = hidden;
         self.contacts_known = true;
+        self.load_failed = false;
         if let Some(selected) = self.detail.selected()
             && let Some(contact) = self.contacts.iter().find(|c| c.identity_id == selected)
         {
@@ -413,7 +502,7 @@ impl ContactsState {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
-        let PendingWrite::Note(note) = write else {
+        let PendingWrite::Note { note, before } = write else {
             return true;
         };
         let listed = if self.owner == Some((network, *owner)) {
@@ -424,10 +513,14 @@ impl ContactsState {
         } else {
             None
         };
-        let lagging = listed
-            .as_ref()
-            .filter(|_| published)
-            .map(|contact| contact.note.clone());
+        // The list read last, else the note the edit started from: lists of
+        // another identity are on screen when the save lands. A save kept on
+        // this device has none; no read lags behind it.
+        let lagging = published.then(|| {
+            listed
+                .as_ref()
+                .map_or(before, |contact| contact.note.clone())
+        });
         self.confirmed_notes.insert(
             (network, *owner, *contact_id),
             ConfirmedNote {
@@ -712,6 +805,61 @@ mod tests {
             state.selected_contact().and_then(|c| c.note.as_deref()),
             None
         );
+    }
+
+    /// Each failed read waits out its own retry delay: a later failure of one
+    /// read must not pull it into an earlier retry of the other.
+    #[test]
+    fn staggered_read_failures_retry_each_read_at_its_own_deadline() {
+        use ContactsLoadKind::{Contacts, Requests};
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        let mut state = ContactsState::default();
+        assert_eq!(
+            state.claim_reads(),
+            Some(BTreeSet::from([Contacts, Requests]))
+        );
+
+        state.record_load_error(Contacts, Some(at(5)));
+        state.record_load_error(Requests, Some(at(9)));
+        state.retry_load_if_due(at(5));
+        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
+        state.retry_load_if_due(at(8));
+        assert_eq!(state.claim_reads(), None, "Requests waits its full delay");
+        state.retry_load_if_due(at(9));
+        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
+
+        // An immediate retry (startup sync finished) must not drag along a
+        // read still waiting out an endpoint delay.
+        state.record_load_error(Contacts, Some(at(15)));
+        state.record_load_error(Requests, Some(at(10)));
+        state.retry_load_if_due(at(10));
+        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
+        state.retry_load_if_due(at(15));
+        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
+    }
+
+    /// Each read is retried automatically at most three times per refresh, so
+    /// staggered retries of one read never use up the other read's attempts.
+    #[test]
+    fn automatic_retries_stop_after_three_per_read() {
+        use ContactsLoadKind::{Contacts, Requests};
+        let start = Instant::now();
+        let mut state = ContactsState::default();
+        assert!(state.claim_reads().is_some());
+        for retry in 1..=4u64 {
+            let due = start + Duration::from_secs(retry);
+            state.record_load_error(Contacts, Some(due));
+            state.retry_load_if_due(due);
+            let expected = (retry <= 3).then(|| BTreeSet::from([Contacts]));
+            assert_eq!(state.claim_reads(), expected, "Contacts retry {retry}");
+        }
+        assert!(state.load_failed(), "the exhausted failure stays visible");
+
+        let due = start + Duration::from_secs(10);
+        state.record_load_error(Requests, Some(due));
+        state.retry_load_if_due(due);
+        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
     }
 
     #[test]
@@ -1169,6 +1317,101 @@ mod tests {
                     username,
                     &c.identity_id.to_string(Encoding::Base58)
                 ),
+            );
+        }
+    }
+    #[test]
+    fn contact_read_retries_are_capped_and_do_not_repeat_a_successful_sibling() {
+        for kind in [ContactsLoadKind::Contacts, ContactsLoadKind::Requests] {
+            let sibling = if kind == ContactsLoadKind::Contacts {
+                ContactsLoadKind::Requests
+            } else {
+                ContactsLoadKind::Contacts
+            };
+            let mut state = ContactsState::default();
+            assert_eq!(state.claim_reads().unwrap().len(), 2);
+            let now = Instant::now();
+            for _ in 0..3 {
+                state.record_load_error(kind, Some(now));
+                // Neither a permanent sibling error nor a successful list
+                // response may cancel recovery of the other read.
+                state.record_load_error(sibling, None);
+                state.record_contacts(vec![]);
+                state.retry_load_if_due(now);
+                assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
+                assert!(state.claim_reads().is_none());
+            }
+            state.record_load_error(kind, Some(now));
+            state.retry_load_if_due(now + Duration::from_secs(60));
+            assert!(
+                state.claim_reads().is_none(),
+                "stop after three automatic retries"
+            );
+            assert_eq!(state.load_failed(), kind == ContactsLoadKind::Contacts);
+
+            state.invalidate();
+            assert_eq!(state.claim_reads().unwrap().len(), 2);
+            state.record_load_error(kind, Some(now));
+            state.retry_load_if_due(now);
+            assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
+        }
+    }
+
+    /// A Contacts failure that will be retried automatically is still loading,
+    /// not failed: Home must not ask the user to recover by hand while the
+    /// retry waits for its delay or for the network to finish syncing.
+    #[test]
+    fn a_contacts_failure_with_an_automatic_retry_pending_is_not_reported_failed() {
+        use ContactsLoadKind::Contacts;
+        let start = Instant::now();
+        let mut state = ContactsState::default();
+        assert!(state.claim_reads().is_some());
+        for retry in 1..=3u64 {
+            let due = start + Duration::from_secs(retry);
+            state.record_load_error(Contacts, Some(due));
+            assert!(!state.load_failed(), "retry {retry} is scheduled");
+            state.retry_load_if_due(due);
+            assert!(!state.load_failed(), "retry {retry} is due");
+            assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
+        }
+        state.record_load_error(Contacts, Some(start + Duration::from_secs(4)));
+        assert!(state.load_failed(), "no retry is left after the cap");
+
+        state.invalidate();
+        assert!(state.claim_reads().is_some());
+        state.record_load_error(Contacts, None);
+        assert!(
+            state.load_failed(),
+            "a permanent failure is reported at once"
+        );
+    }
+
+    #[test]
+    fn request_retry_does_not_hide_a_permanent_contacts_load_failure() {
+        for contacts_fail_first in [false, true] {
+            let mut state = ContactsState::default();
+            state.claim_reads().unwrap();
+            let now = Instant::now();
+            if contacts_fail_first {
+                state.record_load_error(ContactsLoadKind::Contacts, None);
+            }
+            state.record_load_error(ContactsLoadKind::Requests, Some(now));
+            if !contacts_fail_first {
+                state.record_load_error(ContactsLoadKind::Contacts, None);
+            }
+            state.retry_load_if_due(now);
+            assert_eq!(
+                state.claim_reads(),
+                Some(BTreeSet::from([ContactsLoadKind::Requests]))
+            );
+            state.record_requests(vec![], vec![]);
+            assert!(
+                state.load_failed(),
+                "Contacts still failed, rather than loading"
+            );
+            assert!(
+                !state.contacts_known(),
+                "no contact-list answer has arrived"
             );
         }
     }

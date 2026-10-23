@@ -61,13 +61,17 @@ pub enum WalletTransactionHistoryError {
 }
 
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
+/// Shared, so one stopped task batch can report it for each of its tasks.
+#[derive(Clone)]
 pub struct BackendTaskJoinError {
-    source: tokio::task::JoinError,
+    source: std::sync::Arc<tokio::task::JoinError>,
 }
 
 impl From<tokio::task::JoinError> for BackendTaskJoinError {
     fn from(source: tokio::task::JoinError) -> Self {
-        Self { source }
+        Self {
+            source: std::sync::Arc::new(source),
+        }
     }
 }
 

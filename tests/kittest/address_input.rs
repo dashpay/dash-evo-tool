@@ -5,7 +5,7 @@
 //! click rect can own the row), which means their pills and text are not exposed
 //! to accesskit as queryable widgets. Data assertions therefore use the
 //! component's public introspection API (`effective_hint_text`, `rendered_rows`),
-//! whose fields map one-to-one to render decisions, while a focused render pass
+//! whose fields map one-to-one to render decisions, while a typing render pass
 //! actually paints the popup — exercising the real pill layout/paint path and
 //! guarding against panics there.
 
@@ -20,7 +20,7 @@ use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -95,8 +95,9 @@ fn identity_input(name: &str) -> AddressInput {
     })
 }
 
-/// Render `input` in a headless harness, focus its field to open (and paint) the
-/// autocomplete popup, then run `assert` against the component's public state.
+/// Render `input` in a headless harness, type into its field to open (and
+/// paint) the autocomplete popup, then run `assert` against the component's
+/// public state. The typed space leaves the query unchanged.
 fn with_rendered(input: AddressInput, assert: impl FnOnce(&AddressInput)) {
     let cell = Rc::new(RefCell::new(input));
     let cell_ui = Rc::clone(&cell);
@@ -107,10 +108,14 @@ fn with_rendered(input: AddressInput, assert: impl FnOnce(&AddressInput)) {
         });
 
     harness.run();
-    // Focus the text field so the popup opens next frame and paints its rows.
+    // Typing opens the popup; it paints its rows on the next frame.
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .focus();
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" ");
     harness.run();
     harness.run();
 
@@ -239,4 +244,61 @@ fn tag_query_narrows_rows() {
         assert_eq!(rows[0].kind, AddressKind::Core);
         assert_eq!(rows[0].wallet_pill.as_deref(), Some("alpha"));
     });
+}
+
+/// Whether the suggestion popup shows any row (rows are the only buttons).
+fn popup_rows(harness: &Harness<'_>) -> usize {
+    harness
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .filter(|node| node.accesskit_node().label().as_deref() != Some("Elsewhere"))
+        .count()
+}
+
+#[test]
+fn suggestions_open_while_typing_and_close_on_select_or_click_elsewhere() {
+    let cell = Rc::new(RefCell::new(
+        AddressInput::new(Network::Testnet).with_wallets(&[wallet(1, "main")]),
+    ));
+    let cell_ui = Rc::clone(&cell);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(480.0, 400.0))
+        .build_ui(move |ui| {
+            let _ = ui.button("Elsewhere");
+            let _ = cell_ui.borrow_mut().show(ui);
+        });
+    harness.run();
+
+    let field = || egui::accesskit::Role::TextInput;
+    harness.get_by_role(field()).focus();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "focus alone opens nothing");
+
+    harness.get_by_role(field()).type_text("y");
+    harness.run();
+    assert!(popup_rows(&harness) > 0, "typing offers suggestions");
+
+    harness.get_by_label("Elsewhere").click();
+    harness.run();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "a click elsewhere closes them");
+
+    harness.get_by_role(field()).focus();
+    harness.run();
+    assert_eq!(
+        popup_rows(&harness),
+        0,
+        "focusing again does not reopen them"
+    );
+
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert!(popup_rows(&harness) > 0, "editing reopens them");
+    let row = harness
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .find(|node| node.accesskit_node().label().as_deref() != Some("Elsewhere"))
+        .expect("a suggestion row");
+    row.click();
+    harness.run();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "choosing a suggestion closes them");
 }

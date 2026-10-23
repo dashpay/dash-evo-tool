@@ -3049,8 +3049,18 @@ impl WalletSendScreen {
         amount: Option<Amount>,
     ) {
         self.selected_source = source;
+        // The fields show what was set, as if it had been typed.
+        self.address_input = None;
+        self.pending_typed_address = destination
+            .as_ref()
+            .map(ValidatedAddress::to_address_string);
         self.typed_destination = destination.clone();
         self.validated_destination = destination;
+        self.amount_input = amount.clone().map(|amount| {
+            let mut input = Self::new_amount_input();
+            input.set_value(amount);
+            input
+        });
         self.amount = amount;
     }
 
@@ -3081,6 +3091,24 @@ impl WalletSendScreen {
             .ensure_requested(seed_hash, OwnAddressKind::Core);
         self.own_addresses
             .store(seed_hash, OwnAddressKind::Core, address);
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Seeds the backend's quote of the largest Core payment, in credits.
+    pub fn seed_core_send_limit_for_test(&mut self, max_credits: Credits) {
+        let Some((seed_hash, kind, revision)) =
+            self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
+        else {
+            return;
+        };
+        if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
+            .spend_limits
+            .ensure_requested(seed_hash, kind, revision)
+        {
+            self.spend_limits
+                .store(seed_hash, kind, request_id, max_credits);
+        }
     }
 
     #[cfg(feature = "testing")]

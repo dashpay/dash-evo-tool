@@ -338,6 +338,14 @@ pub fn pay_label(name: &str, total_credits: u64, needs_vote: bool) -> String {
     }
 }
 
+/// Why the identity needs more than the registration charges.
+pub fn admission_reserve_line(reserve_credits: u64) -> String {
+    let reserve = format_credits_as_dash(reserve_credits);
+    format!(
+        "The balance must also hold {reserve} while the network checks the name. This amount is not charged."
+    )
+}
+
 /// Low-balance warning on the confirm step.
 pub fn low_balance_line(balance_credits: u64, missing_credits: u64) -> String {
     let balance = format_credits_as_dash(balance_credits);

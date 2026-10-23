@@ -924,6 +924,46 @@ pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
         .contested_document_vote_resolution_fund_required_amount
 }
 
+/// Balance an identity must hold, beyond the fee, for Platform to admit the
+/// name document of a username registration, in credits. Never charged.
+///
+/// A name document type declaring a `chooseFirst` lookup (DPNS from contract
+/// version 3) makes Platform scan competing preorders when it writes the name.
+/// Before admitting it, Platform reserves the most that scan may bill: the
+/// credits per competitor of the fee schedule times the competitors it may
+/// read. A balance covering the fee but not this reserve is turned away after
+/// the first document was already paid for. Zero for a type without
+/// `chooseFirst`.
+///
+/// The two hashes Platform also reserves for the lookup cost a few thousand
+/// credits and sit inside the margin of
+/// [`PlatformFeeEstimator::estimate_username_registration`].
+pub fn username_name_admission_reserve_credits(
+    name_document_type: DocumentTypeRef<'_>,
+    platform_version: &PlatformVersion,
+) -> Credits {
+    let declares_choose_first = name_document_type
+        .reference_declarations()
+        .filter_map(|(_, reference)| reference.target())
+        .flat_map(|target| target.leaves())
+        .filter_map(|leaf| leaf.as_any_document_reference())
+        .any(|declaration| {
+            declaration
+                .lookup
+                .is_some_and(|lookup| lookup.choose_first.is_some())
+        });
+    if !declares_choose_first {
+        return 0;
+    }
+    platform_version
+        .fee_version
+        .document_reference
+        .choose_first_credits_per_candidate
+        .saturating_mul(u64::from(
+            platform_version.system_limits.max_choose_first_candidates,
+        ))
+}
+
 /// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
 pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
@@ -1777,6 +1817,31 @@ mod tests {
             assert!(
                 estimate <= required / 100 * 115,
                 "{label_chars}: {estimate}"
+            );
+        }
+    }
+
+    /// DPNS from contract version 3 picks the first preorder of a name, and
+    /// Platform admits the name document only with 0.001 DASH held beyond its
+    /// fee for that scan. Earlier contracts need no such reserve.
+    #[test]
+    fn username_name_admission_reserve_follows_the_contract_choose_first_rule() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        for (version, expected) in [(14, 0), (15, 100_000_000)] {
+            let pv = PlatformVersion::get(version).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+            let domain = contract.document_type_for_name("domain").unwrap();
+            assert_eq!(
+                username_name_admission_reserve_credits(domain, pv),
+                expected,
+                "protocol {version}"
+            );
+            let preorder = contract.document_type_for_name("preorder").unwrap();
+            assert_eq!(
+                username_name_admission_reserve_credits(preorder, pv),
+                0,
+                "protocol {version}: the preorder has no chooseFirst lookup"
             );
         }
     }

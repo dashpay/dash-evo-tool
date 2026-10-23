@@ -5,7 +5,7 @@
 use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::datetime::local_date_time_from_unix_millis;
@@ -170,9 +170,32 @@ impl ContractFeePotsScreen {
 
     fn fetch_pots(&mut self, contract_id: Identifier) -> AppAction {
         self.pots = FeePotsState::Loading(contract_id);
-        AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+        self.owned_request(BackendTask::ContractTask(Box::new(
             ContractTask::FetchContractFeePots(contract_id),
         )))
+    }
+
+    /// The request that pays out `pot` of `contract_id` to `identity`.
+    fn claim_request(
+        &self,
+        contract_id: Identifier,
+        pot: ContractFeePot,
+        identity: &QualifiedIdentity,
+    ) -> AppAction {
+        self.owned_request(BackendTask::ContractTask(Box::new(
+            ContractTask::ClaimContractFees {
+                contract_id,
+                pot,
+                identity: Box::new(identity.clone()),
+            },
+        )))
+    }
+
+    /// Dispatch `task` with a context, so its result and error come back to
+    /// this screen even if another screen covers it before the task finishes.
+    fn owned_request(&self, task: BackendTask) -> AppAction {
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     fn contract_matches_search(&self, contract: &QualifiedContract) -> bool {
@@ -243,13 +266,7 @@ impl ContractFeePotsScreen {
                 MessageBanner::set_global(ui.ctx(), "Claiming the fees...", MessageType::Info);
             handle.with_elapsed();
             self.progress_banner = Some(handle);
-            action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                ContractTask::ClaimContractFees {
-                    contract_id: contract.contract.id(),
-                    pot,
-                    identity: Box::new(identity.clone()),
-                },
-            )));
+            action = self.claim_request(contract.contract.id(), pot, identity);
         }
         ui.end_row();
         action
@@ -501,6 +518,41 @@ mod tests {
             }
             .contract_id(),
             Some(id)
+        );
+    }
+
+    /// The pots read and a claim carry a dispatch context, so their results
+    /// and errors reach this screen even if another screen covers it.
+    #[test]
+    fn fee_pot_requests_come_back_to_this_screen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ContractFeePotsScreen::new(&app_context);
+        let contract_id = Identifier::random();
+
+        let read = screen.fetch_pots(contract_id);
+        assert!(
+            matches!(
+                &read,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::ContractTask(task),
+                    ..
+                } if matches!(**task, ContractTask::FetchContractFeePots(id) if id == contract_id)
+            ),
+            "got {read:?}"
+        );
+
+        let identity = crate::backend_task::identity::key_limits_test_identity();
+        let claim = screen.claim_request(contract_id, ContractFeePot::Owner, &identity);
+        assert!(
+            matches!(
+                &claim,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::ContractTask(task),
+                    ..
+                } if matches!(**task, ContractTask::ClaimContractFees { .. })
+            ),
+            "got {claim:?}"
         );
     }
 

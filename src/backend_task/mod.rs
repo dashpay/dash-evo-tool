@@ -1233,6 +1233,9 @@ pub enum BackendTaskSuccessResult {
     UsernameAvailability {
         label: String,
         availability: crate::model::dpns_usernames::UsernameAvailability,
+        /// The community vote fee registering `label` pays now, in credits;
+        /// 0 when it opens or joins no vote.
+        contest_fund: u64,
     },
     /// Every loaded identity's username requests were refreshed and stored.
     MyUsernameRequestsRefreshed,

@@ -32,7 +32,9 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
-/// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
+/// Keep contested document creation within its contest's base fund — the
+/// moderation fund for a moderation election, the contested document fund
+/// otherwise — without auto-quoting a larger fund to join a crowded contest.
 pub fn document_create_contest_fund_cap(
     document_type: dash_sdk::dpp::data_contract::document_type::DocumentTypeRef<'_>,
     document: &dash_sdk::dpp::document::Document,
@@ -44,9 +46,12 @@ pub fn document_create_contest_fund_cap(
     use dash_sdk::dpp::document::DocumentV0Getters;
     let mut document = document.clone();
     document_type.regenerate_generated_properties(document.properties_mut(), platform_version)?;
+    use dash_sdk::dpp::voting::vote_polls::VotePoll;
     Ok(document_type
         .contested_vote_poll_for_document(&document, platform_version)?
-        .map(|_| contest_fee_credits(platform_version)))
+        .map(|VotePoll::ContestedDocumentResourceVotePoll(vote_poll)| {
+            vote_poll.required_vote_resolution_fund(platform_version)
+        }))
 }
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
@@ -1685,6 +1690,33 @@ mod tests {
                 None
             );
         }
+    }
+
+    /// A moderation election pays the moderation fund, not the contested
+    /// document fund every other contest pays.
+    #[test]
+    fn document_contest_cap_uses_the_moderation_fund_for_a_moderation_election() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        let pv = PlatformVersion::latest();
+        let contract =
+            load_system_data_contract(SystemDataContract::ModerationCharters, pv).unwrap();
+        let elected_charter = contract.document_type_for_name("electedCharter").unwrap();
+        let document = Document::V0(DocumentV0 {
+            properties: [("targetContractId".to_string(), Value::Identifier([3; 32]))].into(),
+            ..Default::default()
+        });
+        let fund_fees = &pv.fee_version.vote_resolution_fund_fees;
+        assert_ne!(
+            fund_fees.moderation_vote_resolution_fund_required_amount,
+            fund_fees.contested_document_vote_resolution_fund_required_amount
+        );
+        assert_eq!(
+            document_create_contest_fund_cap(elected_charter, &document, pv).unwrap(),
+            Some(fund_fees.moderation_vote_resolution_fund_required_amount)
+        );
     }
 
     #[test]

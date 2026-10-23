@@ -346,6 +346,11 @@ pub fn admission_reserve_line(reserve_credits: u64) -> String {
     )
 }
 
+/// Why the community vote fee is above the usual one.
+pub fn raised_contest_fee_line() -> &'static str {
+    "Many people have already asked for this name, so joining its vote costs more than usual."
+}
+
 /// Low-balance warning on the confirm step.
 pub fn low_balance_line(balance_credits: u64, missing_credits: u64) -> String {
     let balance = format_credits_as_dash(balance_credits);

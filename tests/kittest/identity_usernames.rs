@@ -122,9 +122,16 @@ fn answered(
     let mut screen = RegisterDpnsNameScreen::new(app_context, RegisterDpnsNameSource::Identities);
     screen.type_label_for_test(label);
     let _ = screen.flush_debounce_for_test();
+    // The base fund: the vote holds fewer requests than doubles it.
+    let contest_fund = if availability.needs_vote() {
+        contest_fee_credits(app_context.sdk_platform_version())
+    } else {
+        0
+    };
     screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {
         label: label.to_owned(),
         availability,
+        contest_fund,
     });
     screen
 }

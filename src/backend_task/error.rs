@@ -432,10 +432,13 @@ pub enum TaskError {
     )]
     WalletPaymentTooManyInputs { count: usize, max: usize },
 
-    /// The transfer to Platform would need more individual unspent outputs
-    /// than the network accepts in one deposit transaction.
+    /// An asset lock would need more individual unspent outputs than the
+    /// network accepts in one asset-lock transaction. Shared by every
+    /// asset-lock funding path (identity registration and top-up,
+    /// Platform-address funding, shielding, direct locks), so the text names
+    /// no single operation.
     #[error(
-        "This transfer needs to combine {count} small amounts from your wallet, which is more than the {max} the network accepts in one deposit. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
+        "This amount needs to combine {count} small amounts from your wallet into one transaction, which is more than the {max} the network accepts. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
@@ -4810,6 +4813,28 @@ mod tests {
         );
         assert!(!message.to_lowercase().contains("details"), "{message}");
         assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// The asset-lock input-cap refusal is shared by identity registration,
+    /// identity top-up, Platform-address funding, shielding and direct asset
+    /// locks, so its text must fit every one of them: it names the counts and
+    /// the fix, never a single operation.
+    #[test]
+    fn asset_lock_too_many_inputs_message_is_operation_neutral() {
+        let message = TaskError::AssetLockTooManyInputs {
+            count: 121,
+            max: 100,
+        }
+        .to_string();
+        assert!(message.contains("121"), "{message}");
+        assert!(message.contains("100"), "{message}");
+        assert!(message.contains("consolidate"), "{message}");
+        for operation_word in ["transfer", "deposit", "platform", "identity", "shield"] {
+            assert!(
+                !message.to_lowercase().contains(operation_word),
+                "must not name one operation ({operation_word}): {message}"
+            );
+        }
     }
 
     /// An unrelated generic protocol error stays the generic SDK variant.

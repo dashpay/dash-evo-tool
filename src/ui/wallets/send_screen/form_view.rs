@@ -1496,6 +1496,7 @@ impl WalletSendScreen {
             .id_salt("send_summary_details")
             .default_open(false)
             .show(ui, |ui| {
+                status_line(ui, "Paid from these addresses:");
                 egui::Grid::new("send_summary_details_grid")
                     .num_columns(2)
                     .spacing([12.0, 2.0])

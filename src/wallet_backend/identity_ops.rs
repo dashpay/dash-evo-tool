@@ -322,6 +322,9 @@ impl WalletBackend {
                     .ok_or(TaskError::WalletStateInconsistent)?;
                 self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
                     .await?;
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -696,6 +699,9 @@ impl WalletBackend {
                 // Seed-free and idempotent.
                 self.ensure_identity_managed(seed_hash, identity, identity_index)
                     .await?;
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -791,6 +797,9 @@ impl WalletBackend {
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let address_signer =
                     DetPlatformSigner::from_held(seed, self.inner.network, path_index);
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;

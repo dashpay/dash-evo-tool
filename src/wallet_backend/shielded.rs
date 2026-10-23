@@ -164,6 +164,9 @@ impl WalletBackend {
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;

@@ -628,6 +628,13 @@ pub async fn load_contacts_offline(
         if contact_id == owner_id {
             continue;
         }
+        // A withdrawn request stays hidden, as in the network list
+        // (`mutual_contacts`). Filtered here rather than in
+        // `DashpayView::contacts`, whose other callers register payment
+        // addresses and must keep every contact.
+        if backend.dashpay_is_withdrawn(&owner_id, &contact_id) {
+            continue;
+        }
 
         let cached = backend.contact_profile_cache().get(&contact_id);
         let memo = backend
@@ -706,6 +713,77 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After a restart the contacts list is built offline; a request the
+    /// owner withdrew stays hidden there, as it does in the network list.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_hides_a_withdrawn_request() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed = [0x3Cu8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let withdrawn = Identifier::from([0x22; 32]);
+        let pending = Identifier::from([0x33; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        for recipient in [withdrawn, pending] {
+            backend
+                .record_sent_contact_request(
+                    &seed_hash,
+                    &owner,
+                    platform_wallet::ContactRequest::new(
+                        owner,
+                        recipient,
+                        0,
+                        0,
+                        0,
+                        vec![0u8; 96],
+                        100_000,
+                        1,
+                    ),
+                )
+                .await
+                .expect("record sent request");
+        }
+        backend
+            .dashpay_mark_withdrawn(&owner, &withdrawn)
+            .expect("withdraw");
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        assert_eq!(
+            contacts.iter().map(|c| c.identity_id).collect::<Vec<_>>(),
+            vec![pending]
+        );
+    }
 
     fn details(note: &str) -> ContactDetails {
         ContactDetails {

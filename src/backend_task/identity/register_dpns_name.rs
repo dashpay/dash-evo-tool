@@ -1163,6 +1163,84 @@ mod tests {
         }
     }
 
+    /// A vote already holding the most requests the network accepts turns a
+    /// new one away whatever it states, after its first document was paid
+    /// for. The live check reports it as full, and registration is refused
+    /// before anything is sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_username_vote_is_refused_before_paying() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let platform_version = PlatformVersion::latest();
+        let max_contenders = crate::model::dpns::username_contest_max_contenders(platform_version)
+            .expect("the latest protocol caps a vote");
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let full_vote_sdk = || async {
+            let mut sdk = mock_sdk();
+            expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+            expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
+            expect_contender_count(&mut sdk, &ctx, "alice", max_contenders).await;
+            sdk
+        };
+
+        let check = ctx
+            .check_username_availability(
+                &full_vote_sdk().await,
+                Identifier::from([9; 32]),
+                "alice".to_owned(),
+            )
+            .await;
+        assert!(
+            matches!(
+                check,
+                Ok(BackendTaskSuccessResult::UsernameAvailability {
+                    availability: UsernameAvailability::ContestFull,
+                    contest_fund: 0,
+                    ..
+                })
+            ),
+            "{check:?}"
+        );
+
+        // Whatever the approval states, even the fund for the last open seat.
+        let mut identity = identity_with_signing_key(6);
+        identity.identity.set_balance(u64::MAX / 2);
+        let broadcast = AtomicBool::new(false);
+        let result = ctx
+            .register_dpns_name_through(
+                &full_vote_sdk().await,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice".to_owned(),
+                    approved_contest_fee: contest_fee_credits(platform_version) << 16,
+                    signing_key_id: Some(1),
+                },
+                |_| {
+                    broadcast.store(true, Ordering::Release);
+                    async { Err::<RegisterDpnsNameResult, _>(unproven_broadcast_failure()) }
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::UsernameContestFull { max_contenders: max })
+                    if max == max_contenders
+            ),
+            "{result:?}"
+        );
+        assert!(
+            !broadcast.load(Ordering::Acquire),
+            "nothing may be broadcast"
+        );
+    }
+
     /// Mock the paged count of the requests in the vote on `label`: pages of
     /// up to 100, each starting after the last request of the one before.
     async fn expect_contender_count(sdk: &mut Sdk, ctx: &AppContext, label: &str, count: u16) {

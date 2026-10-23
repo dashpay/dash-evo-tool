@@ -11,7 +11,13 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::voting::contender_structs::ContenderWithSerializedDocument;
 use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
+use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+use dash_sdk::drive::config::DEFAULT_QUERY_LIMIT;
+use dash_sdk::drive::query::vote_poll_vote_state_query::{
+    ContestedDocumentVotePollDriveQuery, ContestedDocumentVotePollDriveQueryResultType,
+};
 use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::query_types::Contenders;
@@ -21,20 +27,59 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns::{
-    ContestDurations, DpnsNameValidationResult, contest_durations, dpns_name_contest_document,
-    is_contested_label, normalize_dpns_label, validate_dpns_name,
+    ContestDurations, DpnsNameValidationResult, contest_durations, is_contested_label,
+    normalize_dpns_label, username_contest_max_contenders, validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
     ContenderTally, ContestSnapshot, ContestWinner, RequestPhase, UsernameAvailability,
     UsernameRequest, classify_availability, mark_wins_reflected, merge_requests,
     username_request_from_contest,
 };
+use crate::model::dpns_voting::dpns_vote_poll;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
 
 fn availability_error(source: SdkError) -> TaskError {
     TaskError::UsernameAvailabilityCheckFailed {
         source: Box::new(source),
+    }
+}
+
+/// The requests in the vote `vote_poll`, read in proved pages of up to 100
+/// that each start after the last request read, until `count_up_to` are.
+///
+/// The SDK's own count (`Sdk::contest_fund_to_join`) returns only the fund,
+/// and a full contest is told apart by its count alone.
+// TODO(upstream): drop for an SDK call returning the count once one exists.
+async fn count_contenders(
+    sdk: &Sdk,
+    vote_poll: &ContestedDocumentResourceVotePoll,
+    count_up_to: u16,
+) -> Result<u16, TaskError> {
+    let mut contenders: u16 = 0;
+    let mut start_at = None;
+    loop {
+        let page = ContenderWithSerializedDocument::fetch_many(
+            sdk,
+            ContestedDocumentVotePollDriveQuery {
+                vote_poll: vote_poll.clone(),
+                result_type: ContestedDocumentVotePollDriveQueryResultType::VoteTally,
+                offset: None,
+                limit: Some(DEFAULT_QUERY_LIMIT),
+                start_at,
+                allow_include_locked_and_abstaining_vote_tally: false,
+            },
+        )
+        .await
+        .map_err(availability_error)?;
+        let read = page.contenders.len();
+        contenders = contenders.saturating_add(u16::try_from(read).unwrap_or(u16::MAX));
+        match page.contenders.keys().next_back() {
+            Some(last) if read >= usize::from(DEFAULT_QUERY_LIMIT) && contenders < count_up_to => {
+                start_at = Some((last.to_buffer(), false));
+            }
+            _ => return Ok(contenders),
+        }
     }
 }
 
@@ -80,27 +125,31 @@ impl AppContext {
         ))
     }
 
-    /// The community vote fee registering `label` pays to join its contest
-    /// now, or 0 for a name that opens no contest.
+    /// The community vote fee registering `label`, a name that opens or joins
+    /// a vote, pays to join it now.
     ///
     /// Platform doubles a contest's fund once it holds 250 requests and again
     /// for every 50 more, and turns away a request stating less than that
-    /// after its first document was already paid for. The SDK counts the
-    /// requests, page by page, and applies the network's own rule.
+    /// after its first document was already paid for. A contest already
+    /// holding the most requests it accepts turns every new one away, which
+    /// is refused here as [`TaskError::UsernameContestFull`].
     pub(crate) async fn username_contest_fund_to_join(
         &self,
         sdk: &Sdk,
         label: &str,
     ) -> Result<Credits, TaskError> {
-        let dpns_contract = self.dpns_contract();
-        let domain_document_type = dpns_contract
-            .document_type_for_name("domain")
-            .map_err(|_| TaskError::DataContractNotFound)?;
-        let contest_fund = sdk
-            .contest_fund_to_join(domain_document_type, &dpns_name_contest_document(label))
-            .await
-            .map_err(availability_error)?;
-        Ok(contest_fund.unwrap_or(0))
+        let vote_poll = dpns_vote_poll(&self.dpns_contract(), &normalize_dpns_label(label))?;
+        let max_contenders = username_contest_max_contenders(sdk.version());
+        // Counting stops at the limit table's cap even where the network
+        // never enforces it: no count past it changes the fund.
+        let count_up_to = sdk.version().system_limits.max_contenders_per_contest;
+        let contenders = count_contenders(sdk, &vote_poll, count_up_to).await?;
+        if let Some(max_contenders) = max_contenders
+            && contenders >= max_contenders
+        {
+            return Err(TaskError::UsernameContestFull { max_contenders });
+        }
+        Ok(vote_poll.required_vote_resolution_fund_to_join(contenders, sdk.version()))
     }
 
     pub(super) async fn check_username_availability(
@@ -110,10 +159,16 @@ impl AppContext {
         label: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let availability = self.username_availability(sdk, identity_id, &label).await?;
-        let contest_fund = if availability.needs_vote() {
-            self.username_contest_fund_to_join(sdk, &label).await?
+        let (availability, contest_fund) = if availability.needs_vote() {
+            match self.username_contest_fund_to_join(sdk, &label).await {
+                Ok(contest_fund) => (availability, contest_fund),
+                Err(TaskError::UsernameContestFull { .. }) => {
+                    (UsernameAvailability::ContestFull, 0)
+                }
+                Err(error) => return Err(error),
+            }
         } else {
-            0
+            (availability, 0)
         };
         Ok(BackendTaskSuccessResult::UsernameAvailability {
             label,

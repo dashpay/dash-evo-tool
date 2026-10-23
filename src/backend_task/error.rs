@@ -439,6 +439,26 @@ pub enum TaskError {
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
+    /// The wallet could not quote the largest amount an operation accepts.
+    #[error("The wallet's available amount could not be checked. Wait a moment and try again.")]
+    SpendLimitQueryFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Shielding from Platform asked for more than the wallet's Platform
+    /// addresses can fund once the shielding fee is kept back.
+    #[error(
+        "Your Platform balance can shield at most {available_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
+        available_dash = format_credits_as_dash(*.available)
+    )]
+    ShieldFromPlatformCapacityExceeded {
+        available: u64,
+        required: u64,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections

@@ -372,6 +372,12 @@ pub enum BackendTaskContext {
         snapshot_generation: u64,
         request_id: u64,
     },
+    /// Spending-limit quote for one wallet and operation kind.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+    },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
     /// A wallet payment broadcast, bound to the network it was dispatched on.
@@ -575,6 +581,23 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn spend_limit_request(
+        &self,
+    ) -> Option<(
+        WalletSeedHash,
+        crate::model::spend_limit::SpendLimitKind,
+        u64,
+    )> {
+        match self.operation() {
+            Self::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => Some((*seed_hash, *kind, *request_id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn wallet_rename_task(&self) -> Option<&WalletTask> {
         match self.operation() {
             Self::WalletRename(task) => Some(task),
@@ -734,6 +757,15 @@ impl From<&BackendTask> for BackendTaskContext {
             }) => Self::AssetLockMaxAmount {
                 seed_hash: *seed_hash,
                 snapshot_generation: *snapshot_generation,
+                request_id: *request_id,
+            },
+            BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            }) => Self::SpendLimit {
+                seed_hash: *seed_hash,
+                kind: *kind,
                 request_id: *request_id,
             },
             BackendTask::WalletTask(
@@ -926,6 +958,14 @@ pub enum BackendTaskSuccessResult {
         amount_duffs: u64,
         observed_inputs: crate::wallet_backend::AssetLockInputState,
         is_partial: bool,
+    },
+    /// The largest amount, in credits, the upstream builder for `kind`
+    /// accepts from the wallet.
+    SpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+        max_credits: u64,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1653,6 +1693,19 @@ impl AppContext {
                     observed_inputs: quote.observed_inputs,
                     is_partial: quote.is_partial,
                 }),
+            WalletTask::GetSpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+            } => backend
+                .spend_limit_credits(&seed_hash, kind)
+                .await
+                .map(|max_credits| BackendTaskSuccessResult::SpendLimit {
+                    seed_hash,
+                    kind,
+                    request_id,
+                    max_credits,
+                }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -2110,6 +2163,25 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task).asset_lock_max_amount_request(),
             Some((seed_hash, 7, 42))
+        );
+    }
+
+    #[test]
+    fn backend_task_context_preserves_spend_limit_request_identity() {
+        let seed_hash = [0x3a; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            seed_hash,
+            kind: crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+            request_id: 43,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).spend_limit_request(),
+            Some((
+                seed_hash,
+                crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+                43
+            ))
         );
     }
 

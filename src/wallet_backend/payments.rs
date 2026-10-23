@@ -10,7 +10,9 @@
 //! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
+use crate::model::spend_limit::SpendLimitKind;
 use crate::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
@@ -636,6 +638,48 @@ impl WalletBackend {
         .map_err(|source| TaskError::AssetLockBalanceQueryFailed {
             source: Box::new(source),
         })
+    }
+
+    /// The largest amount, in credits, the upstream builder for `kind`
+    /// accepts from this wallet now — the amount behind that operation's Max.
+    ///
+    /// Both quotes come from upstream and price the same rules the real build
+    /// applies: a Core send pools the accounts `SEND_FUNDING_SOURCES` names,
+    /// with no change and the input cap; shielding from Platform follows the
+    /// shield planner's address order, minimum input and input-count limit.
+    pub async fn spend_limit_credits(
+        &self,
+        seed_hash: &WalletSeedHash,
+        kind: SpendLimitKind,
+    ) -> Result<u64, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let quote_failed = |source| TaskError::SpendLimitQueryFailed {
+            source: Arc::new(source),
+        };
+        match kind {
+            SpendLimitKind::CoreSend => wallet
+                .core()
+                .pooled_max_sendable(
+                    &platform_wallet::SEND_FUNDING_SOURCES,
+                    DEFAULT_BIP44_ACCOUNT,
+                    None,
+                )
+                .await
+                .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
+                .map_err(quote_failed),
+            SpendLimitKind::ShieldFromPlatform => wallet
+                // The payment account `ShieldFromBalance` shields from.
+                .shielded_shield_preflight(super::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT)
+                .await
+                .map(|preflight| {
+                    if preflight.can_shield {
+                        preflight.max_shieldable_credits
+                    } else {
+                        0
+                    }
+                })
+                .map_err(quote_failed),
+        }
     }
 
     /// Refuse an exact-amount asset lock that would need more inputs than the

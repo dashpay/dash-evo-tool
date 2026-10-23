@@ -26,6 +26,9 @@ column, its unique index and immutability trigger (checksum `1537039181339941563
 The snapshot contains no domain rows; history timestamps are normalized. The
 bridge copies existing asset-lock blobs unchanged and leaves the new column NULL.
 A different migration occupying version 19 is not an accepted source history.
+Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
+comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
+checksum, and so the snapshot, are unchanged.
 
 
 `public-rows.sql` contains only public synthetic rows from that old revision's

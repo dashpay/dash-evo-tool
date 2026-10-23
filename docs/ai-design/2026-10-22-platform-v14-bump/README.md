@@ -1,7 +1,7 @@
 # Platform protocol 14 support (Platform v5.1-dev pin)
 
 A point-in-time record of PR #1015: DET on Platform `v5.1-dev`
-(`033ecaee2f3badc8e04ff8be664062f33516e3e4`) and the protocol 14 features it
+(`a0d7b6ffec6f91e3818530b83d75adcd62480ebe`) and the protocol 14 features it
 adds. It supersedes the open "Devnet protocol seed" item of
 [`2026-09-14-platform-4.2-dev-bump`](../2026-09-14-platform-4.2-dev-bump/upgrade-notes.md).
 

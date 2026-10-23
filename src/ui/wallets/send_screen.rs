@@ -166,46 +166,7 @@ pub enum SendStatus {
     Error,
 }
 
-/// Fee strategy for platform transfers
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum PlatformFeeStrategy {
-    /// Deduct fee from first input
-    #[default]
-    DeductFromFirstInput,
-    /// Deduct fee from last input
-    DeductFromLastInput,
-    /// Reduce first output by fee amount
-    ReduceFirstOutput,
-    /// Reduce last output by fee amount
-    ReduceLastOutput,
-}
-
-impl std::fmt::Display for PlatformFeeStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DeductFromFirstInput => write!(f, "Deduct from first input"),
-            Self::DeductFromLastInput => write!(f, "Deduct from last input"),
-            Self::ReduceFirstOutput => write!(f, "Reduce first output"),
-            Self::ReduceLastOutput => write!(f, "Reduce last output"),
-        }
-    }
-}
-
-/// Source type for advanced mode - Core or Platform
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdvancedSourceType {
-    Core,
-    Platform,
-}
-
-impl std::fmt::Display for AdvancedSourceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Core => write!(f, "Core Wallet"),
-            Self::Platform => write!(f, "Platform Addresses"),
-        }
-    }
-}
+pub use crate::ui::state::send_form::{AdvancedSourceType, PlatformFeeStrategy};
 
 /// A Core address input for advanced mode
 #[derive(Debug, Clone)]

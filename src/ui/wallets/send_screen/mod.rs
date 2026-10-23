@@ -2262,8 +2262,14 @@ impl WalletSendScreen {
         wallets: &[WalletWithSnapshot],
         loaded_identities: &[QualifiedIdentity],
     ) -> AddressInput {
+        let hint = if allowed_kinds.contains(&AddressKind::Identity) {
+            "Address, username or identity ID"
+        } else {
+            "Address"
+        };
         let mut builder = AddressInput::new(self.app_context.network)
             .with_label("Send to")
+            .with_hint_text(hint)
             .with_address_kinds(allowed_kinds)
             .with_exclude_change(true);
 
@@ -2411,16 +2417,36 @@ impl WalletSendScreen {
         }
         if self.address_input.is_none() {
             let mut input = self.build_address_input(allowed_kinds, &wallets, identities);
-            if let Some(address) = self.pending_typed_address.take() {
-                input = input.with_initial_value(address);
+            match self.pending_typed_address.take() {
+                Some(address) => input = input.with_initial_value(address),
+                // A fresh, typeable field waits with the cursor in it (W1).
+                None if !matches!(
+                    self.identity_flow,
+                    Some((_, IdentitySendMode::MoveToWallet))
+                ) =>
+                {
+                    input.request_focus()
+                }
+                None => {}
             }
             self.address_input = Some(input);
         }
-        let resp = self
+        let expert = self.app_context.user_role().at_least(UserRole::Power);
+        let address_input = self
             .address_input
             .as_mut()
-            .expect("invariant: address_input set to Some immediately above")
-            .show(ui);
+            .expect("invariant: address_input set to Some immediately above");
+        let search_tags = expert.then(|| address_input.dynamic_hint());
+        let resp = address_input.show(ui);
+        // Not while typing, so the hint never covers the suggestions.
+        if let Some(tags) = search_tags.filter(|tags| !tags.is_empty())
+            && !resp.inner.response.has_focus()
+        {
+            resp.inner
+                .response
+                .clone()
+                .on_hover_text(format!("Narrow the suggestions with: {tags}"));
+        }
         if resp.inner.update(&mut self.typed_destination) {
             self.form.touched();
         }

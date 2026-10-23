@@ -401,3 +401,227 @@ fn w14_the_shield_preset_fixes_the_destination() {
         );
     });
 }
+
+/// No funds anywhere.
+fn empty_balances() -> SendBalances {
+    SendBalances {
+        core_duffs: 0,
+        core_addresses: Vec::new(),
+        platform: Vec::new(),
+        shielded_credits: 0,
+    }
+}
+
+fn text_inputs(harness: &Harness<'_, WalletSendScreen>) -> usize {
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .count()
+}
+
+#[test]
+fn w1_the_recipient_field_is_focused_and_asks_in_plain_words() {
+    with_isolated_data_dir(|| {
+        let fixture = fixture(None);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.run();
+
+        let field = harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|node| {
+                node.accesskit_node().placeholder() == Some("Address, username or identity ID")
+            })
+            .expect("the Send to field asks for an address, username or identity ID");
+        assert!(
+            field.accesskit_node().is_focused(),
+            "W1: the cursor waits in Send to"
+        );
+        assert!(
+            !has(&harness, "type:"),
+            "search tags are not shown to Everyday users"
+        );
+    });
+}
+
+#[test]
+fn w8_advanced_on_an_empty_wallet_keeps_send_disabled() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        fixture.screen.set_balances_for_test(empty_balances());
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            0.1,
+        );
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        harness.get_by_label("Advanced").click();
+        harness.run();
+
+        assert!(has(&harness, "No addresses of this kind hold any funds."));
+        assert!(has(&harness, "Choose the addresses to pay from."));
+        assert!(!send_responds(&mut harness));
+    });
+}
+
+#[test]
+fn w10_an_amount_above_an_explicit_source_says_how_much_it_can_send() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture
+            .screen
+            .set_simple_send_input_for_test(None, Some(platform_destination()), None);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        harness.get_by_label("Platform · 3.0000").click();
+        harness.run();
+        let amount = harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|node| node.accesskit_node().placeholder() == Some("0.00"))
+            .expect("the Amount field");
+        amount.focus();
+        harness.run();
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|node| node.accesskit_node().placeholder() == Some("0.00"))
+            .expect("the Amount field")
+            .type_text("5");
+        harness.run();
+
+        assert!(has(&harness, "⚠ Platform can send at most"));
+        assert!(harness.query_by_label_contains("Use ").is_some());
+        assert!(has(&harness, "Fix the highlighted field."));
+        assert!(!has(&harness, "Enter an amount."));
+        assert!(!send_responds(&mut harness));
+    });
+}
+
+#[test]
+fn w10_the_amount_field_stays_when_no_amount_covers_the_fee() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture
+            .screen
+            .seed_asset_lock_max_amount_for_test(fixture.seed_hash, 1_000);
+        enter(&mut fixture.screen, platform_destination(), 0.5);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        harness.get_by_label_contains("Core ·").click();
+        harness.run();
+
+        assert!(has(&harness, "⚠ The amount you can use is too small"));
+        assert_eq!(text_inputs(&harness), 2, "Send to and Amount both stay");
+        assert!(!send_responds(&mut harness));
+    });
+}
+
+#[test]
+fn w10_an_empty_wallet_says_so_under_the_amount_even_after_max() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.set_balances_for_test(empty_balances());
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            5.0,
+        );
+        fixture.screen.seed_core_send_limit_for_test(0);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        // The fixture wallet is not registered, so it reads "Unnamed wallet".
+        let no_funds = "⚠ There are no funds in Unnamed wallet to send. Add funds first.";
+        assert!(has(&harness, no_funds));
+
+        harness.get_by_label("Max").click();
+        harness.run();
+
+        assert!(has(&harness, no_funds), "Max keeps the typed amount");
+        assert!(!has(&harness, "Enter an amount."));
+        assert!(!send_responds(&mut harness));
+    });
+}
+
+#[test]
+fn w6_a_pinned_pay_from_returns_to_auto_when_receive_into_is_chosen() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        let own = core_address_on(fixture.screen.app_context.network());
+        fixture
+            .screen
+            .seed_own_core_address_for_test(fixture.seed_hash, own.to_string());
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("My wallets").click();
+        harness.run();
+        harness
+            .get_all_by_label("Auto")
+            .last()
+            .expect("Receive into Auto chip")
+            .click();
+        harness.run();
+        assert!(has(&harness, "so Receive into can choose automatically."));
+
+        harness
+            .get_all_by_label("Core")
+            .last()
+            .expect("Receive into Core chip")
+            .click();
+        harness.run();
+
+        assert_eq!(
+            harness.query_all_by_label_contains("✓ Auto").count(),
+            1,
+            "Pay from is back on Auto"
+        );
+    });
+}
+
+#[test]
+fn w8_several_recipients_count_only_filled_rows_and_align_their_remove_buttons() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        let destination = platform_destination();
+        let bech32m = destination.to_address_string();
+        enter(&mut fixture.screen, destination, 0.5);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+
+        assert!(has(&harness, "Summary"));
+        assert!(
+            !has(&harness, "2 recipients"),
+            "a blank row is not a recipient"
+        );
+        assert!(has(&harness, &format!("to {}", &bech32m[..8])));
+
+        let removes: Vec<f32> = harness
+            .get_all_by_label("✕")
+            .map(|node| node.rect().center().x)
+            .collect();
+        assert_eq!(removes.len(), 2);
+        assert!(
+            (removes[0] - removes[1]).abs() < 0.5,
+            "the ✕ buttons share a column: {removes:?}"
+        );
+    });
+}
+
+#[test]
+fn w3_choosing_an_explicit_source_does_not_shift_the_form() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(&mut fixture.screen, platform_destination(), 0.5);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        let before = harness.get_by_label("To").rect().top();
+
+        harness.get_by_label("Platform · 3.0000").click();
+        harness.run();
+
+        let after = harness.get_by_label("To").rect().top();
+        assert!(
+            (before - after).abs() < 0.5,
+            "To moved from {before} to {after}"
+        );
+    });
+}

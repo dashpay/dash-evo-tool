@@ -1325,46 +1325,6 @@ pub fn estimate_asset_lock_core_fee_duffs(num_inputs: usize) -> u64 {
     estimate_core_l1_send_fee_duffs(num_inputs, 2)
 }
 
-/// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
-/// the whole balance minus the estimated L1 network fee.
-///
-/// Returns `None` when the balance does not cover the estimated fee (i.e.
-/// nothing is left to send). Callers should disable "Max" and show a calm
-/// message in that case rather than producing an amount that would fail.
-///
-/// `num_inputs` is the wallet's UTXO count and `num_outputs` the recipient
-/// count; both are passed through to [`estimate_core_l1_send_fee_duffs`].
-pub fn core_max_send_amount_duffs(
-    balance_duffs: u64,
-    num_inputs: usize,
-    num_outputs: usize,
-) -> Option<u64> {
-    let fee = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
-    let spendable = balance_duffs.checked_sub(fee)?;
-    (spendable > 0).then_some(spendable)
-}
-
-/// The duffs a Core "Max" send must reserve for the L1 network fee — the
-/// difference between the spendable balance and [`core_max_send_amount_duffs`].
-///
-/// Returns `None` in lockstep with `core_max_send_amount_duffs`: when the
-/// spendable balance cannot cover the fee there is no valid Max to reserve
-/// against, so callers disable "Max" rather than show a reserve for a send
-/// that would fail.
-///
-/// `spendable_duffs` MUST be the spendable balance (confirmed + unconfirmed),
-/// never the headline `total` — `total` counts immature coinbase and locked
-/// CoinJoin funds the upstream `CoinSelector` rejects, so reserving against it
-/// over-shoots the selectable set and the broadcast fails.
-pub fn core_max_send_reserve_duffs(
-    spendable_duffs: u64,
-    num_inputs: usize,
-    num_outputs: usize,
-) -> Option<u64> {
-    let max = core_max_send_amount_duffs(spendable_duffs, num_inputs, num_outputs)?;
-    Some(spendable_duffs.saturating_sub(max))
-}
-
 /// Compute the exact shielded fee for a given number of Orchard actions.
 ///
 /// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
@@ -2243,53 +2203,6 @@ mod tests {
                 "estimate {estimate} must cover raw fee {raw_size} for {inputs} inputs"
             );
         }
-    }
-
-    #[test]
-    fn test_core_max_send_amount_subtracts_fee() {
-        // Balance well above the fee: spendable = balance - fee.
-        let balance = 1_000_000_u64;
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-        assert_eq!(
-            core_max_send_amount_duffs(balance, 1, 1),
-            Some(balance - fee)
-        );
-    }
-
-    #[test]
-    fn test_core_max_send_amount_edge_balance_at_or_below_fee() {
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-
-        // Balance exactly equal to the fee: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(fee, 1, 1), None);
-        // Balance below the fee: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(fee - 1, 1, 1), None);
-        // Zero balance: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(0, 1, 1), None);
-
-        // One duff above the fee: exactly one spendable duff.
-        assert_eq!(core_max_send_amount_duffs(fee + 1, 1, 1), Some(1));
-    }
-
-    #[test]
-    fn test_core_max_send_reserve_complements_send_amount() {
-        // Reserve + send amount must reconstitute the spendable balance, and the
-        // reserve equals the estimated fee whenever a Max exists.
-        let spendable = 1_000_000_u64;
-        let fee = estimate_core_l1_send_fee_duffs(3, 1);
-        let send = core_max_send_amount_duffs(spendable, 3, 1).expect("covers fee");
-        let reserve = core_max_send_reserve_duffs(spendable, 3, 1).expect("covers fee");
-        assert_eq!(send + reserve, spendable);
-        assert_eq!(reserve, fee);
-    }
-
-    #[test]
-    fn test_core_max_send_reserve_none_when_balance_below_fee() {
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-        // In lockstep with core_max_send_amount_duffs: no Max → no reserve.
-        assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
-        assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
-        assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
     }
 
     /// What the network takes from a Core wallet funding that is shielded, by

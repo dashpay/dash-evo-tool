@@ -763,6 +763,58 @@ mod backend_task_join_tests {
         );
     }
 
+    /// A batch that stops part-way reports the failure under each dispatch
+    /// context it carries, so the screen waiting on that read is settled
+    /// instead of loading for good; the rest of the batch keeps its one
+    /// unattributed report.
+    #[tokio::test]
+    async fn panicking_batch_settles_each_dispatched_read() {
+        use crate::model::dashpay::ContactsLoadKind;
+        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
+                network: Network::Testnet,
+                identity_id: Identifier::from([0x45; 32]),
+                kind,
+            }),
+        };
+        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
+        let requests = read(u64::MAX, ContactsLoadKind::Requests);
+        for (contexts, expected) in [
+            (
+                vec![contacts.clone(), requests.clone()],
+                vec![contacts.clone(), requests.clone()],
+            ),
+            (
+                vec![contacts.clone(), BackendTaskContext::Other],
+                vec![contacts.clone(), BackendTaskContext::Unknown],
+            ),
+            (
+                vec![BackendTaskContext::Other, BackendTaskContext::Other],
+                vec![BackendTaskContext::Unknown],
+            ),
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+            let sender = SenderAsync::new(tx, egui::Context::default());
+            let join_handle = tokio::task::spawn_blocking(|| panic!("batch child panic"));
+
+            forward_backend_tasks_join_error(join_handle.await, sender, contexts).await;
+
+            let mut reported = Vec::new();
+            while let Ok(result) = rx.try_recv() {
+                let TaskResult::Error {
+                    context,
+                    error: TaskError::BackendTaskFailed { .. },
+                } = result
+                else {
+                    panic!("expected a typed backend task failure, got {result:?}");
+                };
+                reported.push(context);
+            }
+            assert_eq!(reported, expected);
+        }
+    }
+
     #[tokio::test]
     async fn panicking_scheduled_vote_sweep_clears_in_progress_guard() {
         let network = Network::Testnet;
@@ -1210,6 +1262,35 @@ async fn forward_backend_task_join_error(
         };
         if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
             tracing::error!(%error, "Failed to report a stopped backend task");
+        }
+    }
+}
+
+/// Report a task batch that stopped before returning its results. A batch runs
+/// its tasks in one join, so one panic loses every result. Each task sent under
+/// a dispatch context hears of the failure under that context, which settles
+/// the screen waiting on it; the batch's other tasks share one unattributed
+/// report, as a single stopped task does.
+async fn forward_backend_tasks_join_error(
+    join_result: Result<(), tokio::task::JoinError>,
+    sender: egui_mpsc::SenderAsync<TaskResult>,
+    contexts: Vec<BackendTaskContext>,
+) {
+    let Err(source) = join_result else {
+        return;
+    };
+    let source = crate::backend_task::error::BackendTaskJoinError::from(source);
+    let (dispatched, others): (Vec<_>, Vec<_>) = contexts
+        .into_iter()
+        .partition(|context| context.dispatch_id().is_some());
+    let unattributed =
+        (dispatched.is_empty() || !others.is_empty()).then_some(BackendTaskContext::Unknown);
+    for context in dispatched.into_iter().chain(unattributed) {
+        let error = TaskError::BackendTaskFailed {
+            source: source.clone(),
+        };
+        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
+            tracing::error!(%error, "Failed to report a stopped backend task batch");
         }
     }
 }
@@ -2414,16 +2495,43 @@ impl AppState {
         );
     }
 
-    /// Handle the backend tasks and send the results through the channel
-    fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    /// Handle the backend tasks and send the results through the channel.
+    ///
+    /// Contact-list reads in a batch report to the screen that sent them, as a
+    /// task dispatched with its own context does: the hub asks for its lists
+    /// once per arrival, so a failure delivered to a screen covering it would
+    /// leave it waiting for good.
+    fn handle_backend_tasks(
+        &mut self,
+        tasks: Vec<BackendTask>,
+        mode: BackendTasksExecutionMode,
+        owner: Option<ScreenOwner>,
+    ) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
+        let network = app_context.network;
         let contexts = tasks
             .iter()
-            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
+            .map(|task| {
+                let context = BackendTaskContext::for_task_on(task, network);
+                match owner {
+                    Some(owner) if context.contacts_load().is_some() => {
+                        let context = BackendTaskContext::for_dispatch_on(task, network);
+                        self.request_owners.record(&context, owner);
+                        context
+                    }
+                    _ => context,
+                }
+            })
             .collect::<Vec<_>>();
+        #[cfg(feature = "testing")]
+        if let Some(captured) = &mut self.captured_dispatches {
+            captured.extend(tasks.into_iter().zip(contexts));
+            return;
+        }
         let handle = tokio::runtime::Handle::current();
+        let watcher_contexts = contexts.clone();
 
         let _ = self.subtasks.spawn_blocking_sync(
             "backend_tasks_join_watcher",
@@ -2453,12 +2561,7 @@ impl AppState {
                 });
             },
             move |join_result| {
-                forward_backend_task_join_error(
-                    join_result,
-                    watcher_sender,
-                    None,
-                    BackendTaskContext::Unknown,
-                )
+                forward_backend_tasks_join_error(join_result, watcher_sender, watcher_contexts)
             },
         );
     }
@@ -4330,7 +4433,7 @@ impl App for AppState {
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode);
+                    self.handle_backend_tasks(tasks, mode, owner);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

@@ -3054,7 +3054,8 @@ impl ScreenLike for WalletsBalancesScreen {
             | crate::ui::BackendTaskSuccessResult::ShieldedFromAssetLock { .. }
             | crate::ui::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
                 ..
-            }) => {
+            }
+            | crate::ui::BackendTaskSuccessResult::ShieldedMaxTransferStatus { .. }) => {
                 if let Some(shielded_view) = &mut self.shielded_tab_view {
                     shielded_view.handle_result(&result);
                 }
@@ -3077,6 +3078,10 @@ impl ScreenLike for WalletsBalancesScreen {
         // visible (the refresh is not a dispatched task, so its result went to the
         // screen in view and ours was silently discarded).
         self.refreshing = false;
+        // A "Max" transfer may have moved on while another screen was shown.
+        if let Some(shielded_view) = &mut self.shielded_tab_view {
+            shielded_view.refresh_on_arrival();
+        }
         // Asset-lock mutations happen on pushed screens. Returning to this root
         // screen must re-fetch instead of reusing a terminal Loaded(empty) entry.
         if let Some(seed_hash) = self

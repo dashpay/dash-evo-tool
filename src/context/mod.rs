@@ -20,6 +20,7 @@ pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
 mod settings_db;
+mod shielded_max_transfer_db;
 mod system_contracts;
 #[cfg(test)]
 pub(crate) mod test_support;

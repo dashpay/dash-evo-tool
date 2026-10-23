@@ -3384,6 +3384,37 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// A "Max" transfer from the Core wallet to the shielded balance is still
+    /// unsettled, so a new one was not started. Nothing was built or sent.
+    #[error(
+        "An earlier transfer of your whole wallet balance to your shielded balance has not finished yet. Open the Shielded tab of this wallet and choose Finish now."
+    )]
+    ShieldedMaxTransferAlreadyPending,
+
+    /// A "Max" transfer started but stopped before it finished. Its id is
+    /// kept, so finishing it continues with the same funds.
+    #[error(
+        "Your transfer to the shielded balance has started but has not finished yet. Your funds are safe. Open the Shielded tab of this wallet and choose Finish now."
+    )]
+    ShieldedMaxTransferUnfinished {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// The Core wallet's confirmed funds do not cover the fees of a "Max"
+    /// transfer to the shielded balance.
+    #[error(
+        "Your wallet does not have enough confirmed funds to cover the fees of this transfer. Wait for incoming payments to confirm, then try again."
+    )]
+    ShieldedMaxInsufficientFunds,
+
+    /// The Core wallet holds more separate payments than one transfer to the
+    /// shielded balance can spend.
+    #[error(
+        "Your wallet holds too many separate payments to move in one transfer. Enter a smaller amount instead of using Max."
+    )]
+    ShieldedMaxTooManyCoins,
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.

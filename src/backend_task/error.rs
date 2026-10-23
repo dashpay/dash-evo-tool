@@ -1352,13 +1352,6 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// The contact's details were saved from another device after this save
-    /// read them; publishing would undo that change with older values.
-    #[error(
-        "Your contact details were changed on another device while you were saving. Check them and save your change again."
-    )]
-    ContactInfoChangedElsewhere,
-
     /// A DashPay record this device keeps (which contact details it holds,
     /// which requests were withdrawn) could not be read, so an action that
     /// depends on it cannot tell what to do.

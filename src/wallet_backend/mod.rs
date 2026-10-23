@@ -25,7 +25,6 @@ pub mod auth_pubkey_cache;
 pub(crate) mod auth_pubkey_cache;
 mod avatar_cache;
 mod contact_info;
-pub(crate) use contact_info::ContactInfoBaseline;
 mod contact_profile_cache;
 mod coordinator_gate;
 mod dashpay;

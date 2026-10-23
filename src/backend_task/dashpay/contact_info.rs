@@ -94,17 +94,11 @@ pub async fn create_or_update_contact_info(
 /// The reads and writes one contact details save performs, behind a trait so
 /// their order and failures can be driven in tests.
 trait SaveOps {
-    /// What the current details were read from; the publish replaces only that.
-    type Baseline: Send + Sync;
-    /// The details shown for the contact now, the fields an update keeps, and
-    /// what they were read from.
-    fn current(
-        &self,
-    ) -> impl Future<Output = Result<(ContactDetails, Self::Baseline), TaskError>> + Send;
+    /// The details shown for the contact now; the fields an update keeps.
+    fn current(&self) -> impl Future<Output = Result<ContactDetails, TaskError>> + Send;
     fn publish(
         &self,
         details: ContactDetails,
-        baseline: &Self::Baseline,
     ) -> impl Future<Output = Result<ContactInfoPublishOutcome, TaskError>> + Send;
     /// Record that platform-wallet holds the contact's details, so a legacy
     /// document no longer stands in for them.
@@ -123,8 +117,7 @@ async fn save_contact_details<O: SaveOps>(
     ops: &O,
     update: &ContactInfoUpdate,
 ) -> Result<bool, TaskError> {
-    let (current, baseline) = ops.current().await?;
-    let details = update.apply_to(current);
+    let details = update.apply_to(ops.current().await?);
 
     validate_contact_note(details.note.as_deref().unwrap_or_default())?;
     // The bound platform-wallet enforces, checked before it saves anything.
@@ -138,7 +131,7 @@ async fn save_contact_details<O: SaveOps>(
         source: Box::new(source),
     })?;
 
-    let outcome = ops.publish(details, &baseline).await?;
+    let outcome = ops.publish(details).await?;
     ops.mark_synced()?;
     match outcome {
         ContactInfoPublishOutcome::Published => Ok(true),
@@ -160,9 +153,7 @@ struct PlatformSaveOps<'a> {
 }
 
 impl SaveOps for PlatformSaveOps<'_> {
-    type Baseline = crate::wallet_backend::ContactInfoBaseline;
-
-    async fn current(&self) -> Result<(ContactDetails, Self::Baseline), TaskError> {
+    async fn current(&self) -> Result<ContactDetails, TaskError> {
         let owner = self.identity.identity.id();
         self.backend.dashpay_sync_contact_infos(&owner).await?;
         let local = self
@@ -182,18 +173,21 @@ impl SaveOps for PlatformSaveOps<'_> {
         let legacy = legacy
             .get(&self.contact_id)
             .map(super::contacts::ContactData::details);
-        let current =
-            super::contacts::shown_contact_details(published, local, synced_before, legacy);
-        Ok((current, stored.baseline))
+        Ok(super::contacts::shown_contact_details(
+            published,
+            local,
+            synced_before,
+            legacy,
+        ))
     }
 
     async fn publish(
         &self,
         details: ContactDetails,
-        baseline: &Self::Baseline,
     ) -> Result<ContactInfoPublishOutcome, TaskError> {
+        // TODO: preserved fields come from `current()`'s read; upstream set_contact_info has no expected-revision check, so a newer edit from another device in between is overwritten.
         self.backend
-            .dashpay_set_contact_info(self.identity, &self.contact_id, details, baseline)
+            .dashpay_set_contact_info(self.identity, &self.contact_id, details)
             .await
     }
 
@@ -354,16 +348,13 @@ mod tests {
     }
 
     impl SaveOps for ScriptedSave {
-        type Baseline = ();
-
-        async fn current(&self) -> Result<(ContactDetails, ()), TaskError> {
-            Ok((self.current.lock().unwrap().take().expect("read once")?, ()))
+        async fn current(&self) -> Result<ContactDetails, TaskError> {
+            self.current.lock().unwrap().take().expect("read once")
         }
 
         async fn publish(
             &self,
             details: ContactDetails,
-            _baseline: &(),
         ) -> Result<ContactInfoPublishOutcome, TaskError> {
             self.published.lock().unwrap().push(details);
             Ok(ContactInfoPublishOutcome::DeferredUntilTwoContacts)

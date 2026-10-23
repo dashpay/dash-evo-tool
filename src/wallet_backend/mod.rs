@@ -312,6 +312,10 @@ impl StartLatch {
 /// always operated account 0; multi-account support is out of P2 scope.
 const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 
+/// The Platform Payment account shielding from Platform draws on. Its Max is
+/// quoted against the same account.
+pub(crate) const SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT: u32 = 0;
+
 /// Number of times [`WalletBackend::resolve_registered_wallet`] re-probes the
 /// upstream wallet manager before concluding a wallet is genuinely absent.
 /// Tolerates the brief window where a concurrent registration has created the
@@ -3324,6 +3328,15 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
 
+        P::PlatformShieldCapacityExceeded {
+            available,
+            required,
+        } => TaskError::ShieldFromPlatformCapacityExceeded {
+            available,
+            required,
+            source: Box::new(e),
+        },
+
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
         other @ (P::FinalityTimeout(_)
         | P::AssetLockProofWait(_)
@@ -3444,7 +3457,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
-        | P::PlatformShieldCapacityExceeded { .. }
         | P::CorePooledInsufficientFunds { .. }
         | P::InsufficientIdentityCredits { .. }
         | P::IdentityDiscoveryIncomplete { .. }
@@ -4654,6 +4666,26 @@ mod tests {
     /// "do not re-submit" message and never falsely reports success. A wrong
     /// route here is a funds-safety bug (the user re-spends thinking it failed),
     /// so this guards the exact string keys upstream emits.
+    #[test]
+    fn map_shielded_op_error_types_a_shield_above_the_planner_capacity() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let mapped = map_shielded_op_error(P::PlatformShieldCapacityExceeded {
+            available: 7,
+            required: 9,
+        });
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    available: 7,
+                    required: 9,
+                    ..
+                }
+            ),
+            "{mapped:?}"
+        );
+    }
+
     #[test]
     fn map_shielded_op_error_routes_spend_unconfirmed_by_operation() {
         use platform_wallet::error::PlatformWalletError as P;

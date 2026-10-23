@@ -737,77 +737,39 @@ fn equal_rows(
     )
 }
 
-/// One SQLite value, comparable across connections.
-#[derive(PartialEq, Eq)]
-enum Cell {
-    Null,
-    Integer(i64),
-    /// IEEE-754 bits; the bridge compares stored values, not numeric equality.
-    Real(u64),
-    Text(Vec<u8>),
-    Blob(Vec<u8>),
-}
+/// SHA-256 over one row's `cols` values, read without copying them.
+///
+/// Each value is tagged with its storage class and length-prefixed, so two rows
+/// share a digest only if every value has the same class and the same stored
+/// bytes: `1`, `1.0` and `'1'` differ, reals compare by IEEE-754 bits (`-0.0`
+/// is not `0.0`) and text by its bytes, whatever the column's collation.
+fn row_digest(row: &rusqlite::Row<'_>, cols: usize) -> rusqlite::Result<[u8; 32]> {
+    use rusqlite::types::ValueRef;
+    use sha2::{Digest, Sha256};
 
-impl From<rusqlite::types::ValueRef<'_>> for Cell {
-    fn from(value: rusqlite::types::ValueRef<'_>) -> Self {
-        use rusqlite::types::ValueRef;
-        match value {
-            ValueRef::Null => Self::Null,
-            ValueRef::Integer(i) => Self::Integer(i),
-            ValueRef::Real(r) => Self::Real(r.to_bits()),
-            ValueRef::Text(t) => Self::Text(t.to_vec()),
-            ValueRef::Blob(b) => Self::Blob(b.to_vec()),
-        }
-    }
-}
-
-impl Cell {
-    /// Mirrors [`cell_order_sql`]: storage class first, then SQLite's value order.
-    /// Only `-0.0` and `0.0` order equal while differing as cells.
-    fn order(&self, other: &Self) -> std::cmp::Ordering {
-        let rank = |cell: &Self| match cell {
-            Self::Null => 0,
-            Self::Integer(_) => 1,
-            Self::Real(_) => 2,
-            Self::Text(_) => 3,
-            Self::Blob(_) => 4,
+    let mut hasher = Sha256::new();
+    for i in 0..cols {
+        let mut tagged = |tag: u8, bytes: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
         };
-        match (self, other) {
-            (Self::Integer(a), Self::Integer(b)) => a.cmp(b),
-            (Self::Real(a), Self::Real(b)) => f64::from_bits(*a)
-                .partial_cmp(&f64::from_bits(*b))
-                .unwrap_or(std::cmp::Ordering::Equal),
-            (Self::Text(a), Self::Text(b)) | (Self::Blob(a), Self::Blob(b)) => a.cmp(b),
-            _ => rank(self).cmp(&rank(other)),
+        match row.get_ref(i)? {
+            ValueRef::Null => tagged(0, &[]),
+            ValueRef::Integer(v) => tagged(1, &v.to_be_bytes()),
+            ValueRef::Real(v) => tagged(2, &v.to_bits().to_be_bytes()),
+            ValueRef::Text(v) => tagged(3, v),
+            ValueRef::Blob(v) => tagged(4, v),
         }
     }
-}
-
-/// `ORDER BY` terms that sort `col` the way [`Cell::order`] does: by storage class,
-/// then by value, comparing text as bytes whatever the column's collation.
-fn cell_order_sql(col: &str) -> String {
-    let col = quote(col);
-    format!(
-        "CASE typeof({col}) WHEN 'null' THEN 0 WHEN 'integer' THEN 1 WHEN 'real' THEN 2 WHEN 'text' THEN 3 ELSE 4 END, {col} COLLATE BINARY"
-    )
-}
-
-fn row_order(a: &[Cell], b: &[Cell]) -> std::cmp::Ordering {
-    a.iter()
-        .zip(b)
-        .map(|(a, b)| a.order(b))
-        .find(|o| o.is_ne())
-        .unwrap_or(std::cmp::Ordering::Equal)
+    Ok(hasher.finalize().into())
 }
 
 /// Every `target` row matching `target_filter` must equal, on `cols`, a `source` row
 /// selected by `source_filter`. Rows may be dropped; none may be added or changed.
 ///
-/// Both sides stream in one order and are merged, so memory is bounded by the
-/// source rows that order equal to one target row (its duplicates), not by the
-/// whole history. A target row is accepted only on exact equality with a source
-/// row; were SQLite's order ever to disagree with [`Cell::order`], a retained row
-/// could be refused, never an altered or invented one accepted.
+/// Source rows are kept as [`row_digest`]s, so memory grows by 32 bytes per row
+/// rather than with record blobs, scripts and InstantLocks.
 fn rows_retained(
     source: &Connection,
     target: &Connection,
@@ -816,56 +778,23 @@ fn rows_retained(
     source_filter: &str,
     target_filter: &str,
 ) -> Result<(), UpgradeError> {
-    use std::cmp::Ordering;
-
     let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
-    let order = cols
-        .iter()
-        .map(|c| cell_order_sql(c))
-        .collect::<Vec<_>>()
-        .join(",");
-    let read = |row: Option<&rusqlite::Row<'_>>| -> Result<Option<Vec<Cell>>, UpgradeError> {
-        row.map(|row| {
-            (0..cols.len())
-                .map(|i| row.get_ref(i).map(Cell::from))
-                .collect::<Result<_, _>>()
-        })
-        .transpose()
-        .map_err(Into::into)
-    };
-    let mut source_stmt = source.prepare(&format!(
-        "SELECT {names} FROM {}{source_filter} ORDER BY {order}",
+    let mut original = std::collections::HashSet::new();
+    let mut stmt = source.prepare(&format!(
+        "SELECT {names} FROM {}{source_filter}",
         quote(table)
     ))?;
-    let mut target_stmt = target.prepare(&format!(
-        "SELECT {names} FROM {} WHERE {target_filter} ORDER BY {order}",
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        original.insert(row_digest(row, cols.len())?);
+    }
+    let mut stmt = target.prepare(&format!(
+        "SELECT {names} FROM {} WHERE {target_filter}",
         quote(table)
     ))?;
-    let mut source_rows = source_stmt.query([])?;
-    let mut target_rows = target_stmt.query([])?;
-    let mut next_source = read(source_rows.next()?)?;
-    // The source rows that order equal to the latest target row.
-    let mut group: Vec<Vec<Cell>> = Vec::new();
-    while let Some(row) = read(target_rows.next()?)? {
-        if group
-            .first()
-            .is_none_or(|first| row_order(first, &row) != Ordering::Equal)
-        {
-            group.clear();
-            while let Some(candidate) = next_source.take() {
-                match row_order(&candidate, &row) {
-                    // Dropped by the migration.
-                    Ordering::Less => {}
-                    Ordering::Equal => group.push(candidate),
-                    Ordering::Greater => {
-                        next_source = Some(candidate);
-                        break;
-                    }
-                }
-                next_source = read(source_rows.next()?)?;
-            }
-        }
-        if !group.contains(&row) {
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if !original.contains(&row_digest(row, cols.len())?) {
             return Err(UpgradeError::Verification);
         }
     }

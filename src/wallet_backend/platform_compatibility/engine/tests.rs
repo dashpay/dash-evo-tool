@@ -1408,3 +1408,13 @@ fn rows_retained_walks_large_interleaved_histories() {
     );
     assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
 }
+
+#[test]
+fn rows_retained_keeps_column_boundaries() {
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        "INSERT INTO t VALUES (X'61', X'6204')",
+        "INSERT INTO t VALUES (X'610462', X'')",
+    );
+    assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
+}

@@ -182,6 +182,8 @@ pub struct FormLocks {
     pub to: bool,
     /// Receive into is fixed (the To mode may still change).
     pub receive_into: bool,
+    /// The To mode (Someone else / My wallets) is fixed.
+    pub to_mode: bool,
 }
 
 /// Where an entry point opens the form (spec §11).
@@ -346,7 +348,7 @@ impl SendFormState {
         from_wallet: Option<WalletSeedHash>,
         default_receive_into: PayFromKind,
     ) {
-        if self.start.locks.to {
+        if self.start.locks.to || self.start.locks.to_mode {
             return;
         }
         self.pin_notice = None;

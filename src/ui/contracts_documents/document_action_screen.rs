@@ -1517,6 +1517,11 @@ impl DocumentActionScreen {
         let entropy: [u8; 32] = rng.r#gen();
 
         let owner_id = qi.identity.id();
+        // Before protocol version 14 this entropy-only id is the document's id,
+        // which Platform recomputes from the entropy. From protocol version 14
+        // (`Document::document_id_depends_on_nonce`) the id also commits to the
+        // identity contract nonce, so this one is only a placeholder that building
+        // the create transition replaces. Read the id from the confirmed document.
         let id = Document::generate_document_id_v0(
             &contract.contract.id(),
             &owner_id,

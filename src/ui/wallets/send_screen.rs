@@ -349,6 +349,10 @@ pub struct WalletSendScreen {
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
+    /// The amount "Max" filled in on the Core-to-shielded route. While the
+    /// amount still equals it, the send moves the whole balance minus fees
+    /// rather than this estimate; any other amount ends that.
+    shield_max_amount: Option<Amount>,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -362,6 +366,19 @@ pub struct WalletSendScreen {
 
 /// Refusal of a top-up while another top-up of the same identity runs.
 const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
+
+/// Caption under the amount while a Core-to-shielded send is a "Max" transfer.
+const SHIELD_MAX_CAPTION: &str = "Max moves your whole available balance. The fees are taken from it, so the exact amount is known once the transfer is built.";
+
+/// Whether a Core-to-shielded send moves the whole balance: Max was chosen on
+/// that route and the amount has not changed since.
+fn shield_max_drain_selected(
+    core_to_shielded: bool,
+    max_amount: Option<&Amount>,
+    amount: Option<&Amount>,
+) -> bool {
+    core_to_shielded && max_amount.is_some() && max_amount == amount
+}
 
 /// Merge the confirmation dialog's action into the frame action. The dialog
 /// consumes the click and clears itself, so a confirmed send is one-shot: it
@@ -411,6 +428,7 @@ impl WalletSendScreen {
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
+            shield_max_amount: None,
             flow: SendFlow::General,
             identity_flow: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -849,6 +867,21 @@ impl WalletSendScreen {
                     .spendable()
             })
             .unwrap_or(0)
+    }
+
+    fn is_core_to_shielded(&self) -> bool {
+        matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+            && self.destination_kind() == Some(AddressKind::Shielded)
+    }
+
+    /// Whether the next send is a "Max" transfer from the Core wallet to the
+    /// shielded balance.
+    fn is_shield_max_drain(&self) -> bool {
+        shield_max_drain_selected(
+            self.is_core_to_shielded(),
+            self.shield_max_amount.as_ref(),
+            self.amount.as_ref(),
+        )
     }
 
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
@@ -1979,6 +2012,14 @@ impl WalletSendScreen {
             Some(ValidatedAddress::Shielded(_))
         ) {
             return Err("Please enter a valid shielded address".to_string());
+        }
+
+        // Max moves everything minus fees; the backend sizes it once the
+        // funding is built, so no estimated amount is validated here.
+        if self.is_shield_max_drain() {
+            return Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldMaxFromCore { seed_hash },
+            )));
         }
 
         let amount_duffs = self
@@ -3159,6 +3200,12 @@ impl WalletSendScreen {
             return;
         }
 
+        let core_to_shielded = self.is_core_to_shielded();
+        let max_hint = if self.is_shield_max_drain() {
+            Some(SHIELD_MAX_CAPTION.to_string())
+        } else {
+            max_hint
+        };
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
@@ -3179,6 +3226,10 @@ impl WalletSendScreen {
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
+                if response.inner.max_clicked {
+                    self.shield_max_amount =
+                        core_to_shielded.then(|| self.amount.clone()).flatten();
+                }
             });
 
         // Show transaction type hint
@@ -3633,6 +3684,11 @@ impl WalletSendScreen {
             .as_ref()
             .map(|amount| format_credits_as_dash(amount.value()))
             .unwrap_or_else(|| "0 DASH".to_string());
+        if self.is_shield_max_drain() {
+            return format!(
+                "You are about to move your whole wallet balance, about {amount}, to the shielded address {destination}. The fees are taken from it, so the exact amount is known once the transfer is built. Confirm this transfer only if the destination is correct."
+            );
+        }
         let fee_preview = self.current_fee_preview();
         let fee = Self::confirmation_fee_sentence(fee_preview.map(|preview| preview.fee_credits));
 
@@ -6261,6 +6317,86 @@ mod tests {
             },
         ]);
         harness.step();
+    }
+
+    #[test]
+    fn shield_max_drain_needs_the_route_and_the_untouched_max_amount() {
+        let max = Amount::dash_from_duffs(5_000);
+        let edited = Amount::dash_from_duffs(4_999);
+        assert!(shield_max_drain_selected(true, Some(&max), Some(&max)));
+        assert!(!shield_max_drain_selected(true, Some(&max), Some(&edited)));
+        assert!(!shield_max_drain_selected(true, Some(&max), None));
+        assert!(!shield_max_drain_selected(true, None, Some(&max)));
+        assert!(!shield_max_drain_selected(false, Some(&max), Some(&max)));
+    }
+
+    /// Max on Core-to-shielded moves the whole balance through the backend's
+    /// drain; typing a different amount afterwards goes back to an exact send.
+    #[test]
+    fn core_to_shielded_max_drains_until_the_amount_is_edited() {
+        const BUILDER_MAX_DUFFS: u64 = 10_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen.seed_asset_lock_max_amount_for_test(seed_hash, BUILDER_MAX_DUFFS);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+
+        assert!(harness.state().is_shield_max_drain());
+        assert!(
+            harness
+                .get_all_by_label(SHIELD_MAX_CAPTION)
+                .next()
+                .is_some(),
+            "the caption must say the amount is the whole balance minus fees"
+        );
+        let Ok(AppAction::BackendTask(task)) = harness.state_mut().send_core_to_shielded(seed_hash)
+        else {
+            panic!("Max must dispatch a backend task");
+        };
+        assert_eq!(
+            task,
+            BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldMaxFromCore { seed_hash }
+            )
+        );
+
+        let input = harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .expect("amount input");
+        input.focus();
+        harness.run();
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .expect("amount input")
+            .type_text("1");
+        harness.run();
+
+        assert!(
+            !harness.state().is_shield_max_drain(),
+            "a typed amount must end the whole-balance transfer"
+        );
+        assert!(
+            !matches!(
+                harness.state_mut().send_core_to_shielded(seed_hash),
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldMaxFromCore { .. },
+                )))
+            ),
+            "an edited amount must not drain the wallet"
+        );
     }
 
     #[test]

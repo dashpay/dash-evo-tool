@@ -1,13 +1,16 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
+use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::feature_gate::{Check, FeatureGate};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::address::truncate_address;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferState;
 use crate::ui::ScreenType;
+use crate::ui::components::styled::StyledButton;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::DashColors;
@@ -36,6 +39,15 @@ pub const SHIELDED_SKIP_MIGRATION_LABEL: &str = "Skip for now";
 /// is not known to the app.
 pub const SHIELDED_FROM_CORE_WITHOUT_AMOUNT: &str =
     "Your Dash was shielded. Your shielded balance will show the new amount after the next sync.";
+/// "Max" transfer from the Core wallet: complete sentences or standalone
+/// labels, each one translation unit.
+pub const SHIELDED_MAX_TRANSFER_PENDING_LABEL: &str = "A transfer of your whole wallet balance to your shielded balance has not finished yet. Your funds are safe.";
+pub const SHIELDED_MAX_TRANSFER_FINISH_LABEL: &str = "Finish now";
+pub const SHIELDED_MAX_TRANSFER_FINISHING_LABEL: &str =
+    "Finishing the transfer to your shielded balance.";
+pub const SHIELDED_MAX_TRANSFER_FINISHED_LABEL: &str = "Your earlier transfer to your shielded balance has finished. Your shielded balance will show the new amount after the next sync.";
+pub const SHIELDED_MAX_TRANSFER_NOT_SENT_LABEL: &str = "Your earlier transfer to your shielded balance did not start. Your funds are still in your wallet.";
+pub const SHIELDED_MAX_TRANSFER_CONFLICTED_LABEL: &str = "Your earlier transfer to your shielded balance did not go through because its coins were spent by another payment. Check your balance, then start a new transfer.";
 pub const SHIELDED_ADDRESS_HEADING: &str = "Shielded Address";
 pub const SHIELDED_ADDRESS_HINT: &str = "Share this address to receive a private transfer.";
 pub const SHIELDED_ADDRESS_PENDING_LABEL: &str =
@@ -109,6 +121,21 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
     }
 }
 
+/// What the tab knows about the wallet's "Max" transfer from the Core wallet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaxTransferNotice {
+    /// Not looked up since the tab was opened or came back into view.
+    Unchecked,
+    /// A status read is on its way.
+    Checking,
+    /// No unsettled transfer.
+    Absent,
+    /// An unsettled transfer the user can finish.
+    Pending,
+    /// "Finish now" is running.
+    Finishing,
+}
+
 /// View component for the Shielded tab within the Wallets screen.
 pub struct ShieldedTabView {
     app_context: Arc<AppContext>,
@@ -131,6 +158,7 @@ pub struct ShieldedTabView {
     /// on the sidecar-failure banner. Suppresses the retry banner and
     /// locks the tab until the app restarts.
     sidecar_skipped: bool,
+    max_transfer: MaxTransferNotice,
 }
 
 impl ShieldedTabView {
@@ -148,6 +176,7 @@ impl ShieldedTabView {
             pending_task: None,
             shielded_address: None,
             sidecar_skipped: false,
+            max_transfer: MaxTransferNotice::Unchecked,
         }
     }
 
@@ -188,6 +217,18 @@ impl ShieldedTabView {
             // Skip-for-now is session-scoped to the wallet; a new
             // wallet starts with the retry banner re-enabled.
             self.sidecar_skipped = false;
+            self.max_transfer = MaxTransferNotice::Unchecked;
+        }
+    }
+
+    /// Look the "Max" transfer up again the next time the tab draws, unless a
+    /// task about it is already running.
+    pub fn refresh_on_arrival(&mut self) {
+        if matches!(
+            self.max_transfer,
+            MaxTransferNotice::Absent | MaxTransferNotice::Pending
+        ) {
+            self.max_transfer = MaxTransferNotice::Unchecked;
         }
     }
 
@@ -200,11 +241,84 @@ impl ShieldedTabView {
     /// `handle_wallet_unlocked` — the UI never triggers it.
     pub fn tick(&mut self) -> AppAction {
         self.refresh_from_backend_state();
+        self.check_max_transfer();
 
         self.pending_task
             .take()
             .map(AppAction::BackendTask)
             .unwrap_or(AppAction::None)
+    }
+
+    /// Once per arrival, ask where a stored "Max" transfer stands. The stored
+    /// record is read only here, never every frame.
+    fn check_max_transfer(&mut self) {
+        if self.max_transfer != MaxTransferNotice::Unchecked
+            || !self.is_initialized
+            || self.pending_task.is_some()
+        {
+            return;
+        }
+        self.max_transfer = if self
+            .app_context
+            .has_pending_shielded_max_transfer(&self.seed_hash)
+        {
+            self.pending_task = Some(BackendTask::ShieldedTask(
+                ShieldedTask::ShieldMaxFromCoreStatus {
+                    seed_hash: self.seed_hash,
+                },
+            ));
+            MaxTransferNotice::Checking
+        } else {
+            MaxTransferNotice::Absent
+        };
+    }
+
+    /// The notice for an unsettled "Max" transfer, with "Finish now" where
+    /// shielded operations are available.
+    fn render_max_transfer_notice(&mut self, ui: &mut Ui, dark_mode: bool) {
+        if !matches!(
+            self.max_transfer,
+            MaxTransferNotice::Pending | MaxTransferNotice::Finishing
+        ) {
+            return;
+        }
+        let can_finish = FeatureGate::ShieldedOperations.is_available(&self.app_context);
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(6.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(SHIELDED_MAX_TRANSFER_PENDING_LABEL)
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                if self.max_transfer == MaxTransferNotice::Finishing {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.label(
+                            RichText::new(SHIELDED_MAX_TRANSFER_FINISHING_LABEL)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                } else if can_finish
+                    && StyledButton::new(SHIELDED_MAX_TRANSFER_FINISH_LABEL)
+                        .show(ui)
+                        .clicked()
+                {
+                    self.finish_max_transfer();
+                }
+            });
+        ui.add_space(10.0);
+    }
+
+    fn finish_max_transfer(&mut self) {
+        self.pending_task = Some(BackendTask::ShieldedTask(
+            ShieldedTask::FinishShieldMaxFromCore {
+                seed_hash: self.seed_hash,
+            },
+        ));
+        self.max_transfer = MaxTransferNotice::Finishing;
     }
 
     /// Sync local display state from the push snapshots and the upstream
@@ -341,9 +455,37 @@ impl ShieldedTabView {
                     Some(format!("Unshielded {}", format_credits_as_dash(*amount)));
                 true
             }
+            BackendTaskSuccessResult::ShieldedMaxTransferStatus { seed_hash, state }
+                if *seed_hash == self.seed_hash =>
+            {
+                self.max_transfer = match state {
+                    Some(ShieldedMaxTransferState::Pending) => MaxTransferNotice::Pending,
+                    Some(ShieldedMaxTransferState::Finished) => {
+                        self.success_message = Some(SHIELDED_MAX_TRANSFER_FINISHED_LABEL.into());
+                        MaxTransferNotice::Absent
+                    }
+                    Some(ShieldedMaxTransferState::NotSent) => {
+                        self.success_message = Some(SHIELDED_MAX_TRANSFER_NOT_SENT_LABEL.into());
+                        MaxTransferNotice::Absent
+                    }
+                    Some(ShieldedMaxTransferState::Conflicted) => {
+                        self.error_message = Some(SHIELDED_MAX_TRANSFER_CONFLICTED_LABEL.into());
+                        MaxTransferNotice::Absent
+                    }
+                    None => MaxTransferNotice::Absent,
+                };
+                true
+            }
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
+                // A finished "Max" transfer settles any notice about it.
+                if matches!(
+                    self.max_transfer,
+                    MaxTransferNotice::Pending | MaxTransferNotice::Finishing
+                ) {
+                    self.max_transfer = MaxTransferNotice::Absent;
+                }
                 self.success_message = Some(match amount {
                     Some(amount) => format!(
                         "Shielded {} from core wallet",
@@ -369,6 +511,13 @@ impl ShieldedTabView {
     pub fn handle_error(&mut self, error: &str) {
         self.syncing = false;
         self.initializing = false;
+        // The error does not say which task failed. A stored transfer stays
+        // visible, and a failed "Finish now" is looked up again.
+        self.max_transfer = match self.max_transfer {
+            MaxTransferNotice::Checking => MaxTransferNotice::Pending,
+            MaxTransferNotice::Finishing => MaxTransferNotice::Unchecked,
+            other => other,
+        };
         self.error_message = Some(error.to_string());
     }
 
@@ -618,6 +767,9 @@ impl ShieldedTabView {
             });
 
         ui.add_space(10.0);
+
+        // An unsettled "Max" transfer from the Core wallet.
+        self.render_max_transfer_notice(ui, dark_mode);
 
         // In-flight shielded sync progress (push-based).
         self.render_sync_progress(ui, dark_mode);
@@ -1051,5 +1203,132 @@ mod tests {
             tab.success_message.as_deref(),
             Some("Shielded 0.001000008 DASH from core wallet")
         );
+    }
+
+    #[test]
+    fn max_transfer_copy_is_i18n_clean() {
+        for sentence in [
+            SHIELDED_MAX_TRANSFER_PENDING_LABEL,
+            SHIELDED_MAX_TRANSFER_FINISHING_LABEL,
+            SHIELDED_MAX_TRANSFER_FINISHED_LABEL,
+            SHIELDED_MAX_TRANSFER_NOT_SENT_LABEL,
+            SHIELDED_MAX_TRANSFER_CONFLICTED_LABEL,
+        ] {
+            assert!(
+                sentence.ends_with('.'),
+                "user-facing copy must be a complete sentence: {sentence}"
+            );
+        }
+        assert!(!SHIELDED_MAX_TRANSFER_FINISH_LABEL.is_empty());
+    }
+
+    fn max_transfer_tab() -> (tempfile::TempDir, ShieldedTabView) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        let tab = ShieldedTabView::new(&ctx, WalletSeedHash::default());
+        (tmp, tab)
+    }
+
+    fn status(
+        state: Option<ShieldedMaxTransferState>,
+    ) -> crate::backend_task::BackendTaskSuccessResult {
+        crate::backend_task::BackendTaskSuccessResult::ShieldedMaxTransferStatus {
+            seed_hash: WalletSeedHash::default(),
+            state,
+        }
+    }
+
+    /// A pending transfer offers "Finish now", which finishes that transfer
+    /// once and shows progress until its outcome arrives.
+    #[test]
+    fn a_pending_max_transfer_can_be_finished_once() {
+        let (_tmp, mut tab) = max_transfer_tab();
+        tab.max_transfer = MaxTransferNotice::Checking;
+
+        assert!(tab.handle_result(&status(Some(ShieldedMaxTransferState::Pending))));
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Pending);
+
+        tab.finish_max_transfer();
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Finishing);
+        assert_eq!(
+            tab.pending_task,
+            Some(BackendTask::ShieldedTask(
+                ShieldedTask::FinishShieldMaxFromCore {
+                    seed_hash: WalletSeedHash::default(),
+                }
+            ))
+        );
+        // Arriving again while it runs must not start a second lookup.
+        tab.refresh_on_arrival();
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Finishing);
+
+        assert!(tab.handle_result(
+            &crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash: WalletSeedHash::default(),
+                amount: None,
+            }
+        ));
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Absent);
+    }
+
+    /// A failed "Finish now" is looked up again; a failed lookup still shows
+    /// the stored transfer.
+    #[test]
+    fn a_failed_max_transfer_task_keeps_the_transfer_visible() {
+        let (_tmp, mut tab) = max_transfer_tab();
+        tab.max_transfer = MaxTransferNotice::Finishing;
+        tab.handle_error("failed");
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Unchecked);
+
+        tab.max_transfer = MaxTransferNotice::Checking;
+        tab.handle_error("failed");
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Pending);
+    }
+
+    #[test]
+    fn a_settled_max_transfer_says_how_it_ended() {
+        let (_tmp, mut tab) = max_transfer_tab();
+        for (state, success, error) in [
+            (
+                ShieldedMaxTransferState::Finished,
+                Some(SHIELDED_MAX_TRANSFER_FINISHED_LABEL),
+                None,
+            ),
+            (
+                ShieldedMaxTransferState::NotSent,
+                Some(SHIELDED_MAX_TRANSFER_NOT_SENT_LABEL),
+                None,
+            ),
+            (
+                ShieldedMaxTransferState::Conflicted,
+                None,
+                Some(SHIELDED_MAX_TRANSFER_CONFLICTED_LABEL),
+            ),
+        ] {
+            tab.max_transfer = MaxTransferNotice::Checking;
+            tab.success_message = None;
+            tab.error_message = None;
+            assert!(tab.handle_result(&status(Some(state))));
+            assert_eq!(tab.max_transfer, MaxTransferNotice::Absent, "{state:?}");
+            assert_eq!(tab.success_message.as_deref(), success, "{state:?}");
+            assert_eq!(tab.error_message.as_deref(), error, "{state:?}");
+        }
+
+        tab.max_transfer = MaxTransferNotice::Checking;
+        assert!(tab.handle_result(&status(None)));
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Absent);
+    }
+
+    /// Another wallet's transfer leaves this tab alone.
+    #[test]
+    fn another_wallets_max_transfer_is_ignored() {
+        let (_tmp, mut tab) = max_transfer_tab();
+        assert!(!tab.handle_result(
+            &crate::backend_task::BackendTaskSuccessResult::ShieldedMaxTransferStatus {
+                seed_hash: [0x77; 32],
+                state: Some(ShieldedMaxTransferState::Pending),
+            }
+        ));
+        assert_eq!(tab.max_transfer, MaxTransferNotice::Unchecked);
     }
 }

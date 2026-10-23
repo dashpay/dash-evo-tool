@@ -1359,6 +1359,14 @@ pub fn shield_from_balance_fee_headroom(
     base_fee.saturating_mul(multiplier) / 1000
 }
 
+/// The smallest funding lock, in duffs, a "Max" transfer from the Core wallet
+/// to the shielded balance may build: one duff more than covers the shielded
+/// pool fee (`pool_fee_credits`), so the recipient always receives something.
+/// A smaller drain is abandoned before anything is broadcast.
+pub const fn shield_max_minimum_lock_duffs(pool_fee_credits: Credits) -> u64 {
+    (pool_fee_credits / CREDITS_PER_DUFF).saturating_add(1)
+}
+
 /// How far above the fee multiplier the user saw a document action fee may be
 /// priced when it executes, in percent: a transition signed just before an
 /// epoch boundary is not refused for a small move. Platform refuses the action
@@ -1653,6 +1661,22 @@ mod action_fee_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn shield_max_minimum_lock_leaves_the_recipient_a_positive_amount() {
+        for pool_fee_credits in [0, 1, 999, 1_000, 1_001, 2_345_678] {
+            let lock_duffs = shield_max_minimum_lock_duffs(pool_fee_credits);
+            assert!(
+                lock_duffs * CREDITS_PER_DUFF > pool_fee_credits,
+                "a {lock_duffs}-duff lock must cover a {pool_fee_credits}-credit fee"
+            );
+            assert!(
+                (lock_duffs - 1) * CREDITS_PER_DUFF <= pool_fee_credits,
+                "the minimum must be the smallest such lock"
+            );
+        }
+        assert_eq!(shield_max_minimum_lock_duffs(u64::MAX), u64::MAX / 1000 + 1);
+    }
     use super::*;
 
     #[test]

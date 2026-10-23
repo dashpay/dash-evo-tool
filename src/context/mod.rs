@@ -20,6 +20,7 @@ pub mod migration_status;
 #[cfg(test)]
 mod platform_version_guard;
 mod settings_db;
+mod shielded_max_transfer_db;
 mod system_contracts;
 #[cfg(test)]
 pub(crate) mod test_support;

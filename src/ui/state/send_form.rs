@@ -219,6 +219,10 @@ pub struct SendFormState {
     receive_identity: Option<Identifier>,
     to_wallet: Option<WalletSeedHash>,
     pin_notice: Option<PinNotice>,
+    /// Pay from holds a pin set by Auto under Receive into, not a user choice.
+    pay_from_pinned: bool,
+    /// Receive into holds a pin set by Auto under Pay from, not a user choice.
+    receive_into_pinned: bool,
     max_intent: bool,
     recipients: Vec<RecipientRow>,
     advanced_type: AdvancedSourceType,
@@ -244,6 +248,8 @@ impl SendFormState {
             receive_identity: None,
             to_wallet: None,
             pin_notice: None,
+            pay_from_pinned: false,
+            receive_into_pinned: false,
             max_intent: false,
             recipients: Vec::new(),
             advanced_type: AdvancedSourceType::Core,
@@ -320,15 +326,21 @@ impl SendFormState {
 
     /// Choose Pay from. Choosing Auto while Receive into is on Auto pins
     /// Receive into to `pin_receive_into` — what its Auto had resolved to, or
-    /// its default. Never touches the To value.
+    /// its default. Leaving Auto releases such a pin, since a pin is never the
+    /// user's choice. Never touches the To value.
     pub fn choose_pay_from(&mut self, choice: PayFrom, pin_receive_into: PayFromKind) {
         if self.start.locks.pay_from {
             return;
         }
         self.pin_notice = None;
+        self.pay_from_pinned = false;
         if choice == PayFrom::Auto && self.destination_is_auto() && !self.start.locks.receive_into {
             self.receive_into = ReceiveInto::from_kind(pin_receive_into);
+            self.receive_into_pinned = true;
             self.pin_notice = Some(PinNotice::ReceiveIntoPinned(pin_receive_into));
+        } else if choice != PayFrom::Auto && self.receive_into_pinned {
+            self.receive_into = ReceiveInto::Auto;
+            self.receive_into_pinned = false;
         }
         self.pay_from = choice;
     }
@@ -375,18 +387,24 @@ impl SendFormState {
 
     /// Choose Receive into. Choosing Auto while Pay from is on Auto pins Pay
     /// from to `pin_pay_from` — what its Auto had resolved to, or its default.
+    /// Leaving Auto releases such a pin.
     pub fn choose_receive_into(&mut self, choice: ReceiveInto, pin_pay_from: PayFromKind) {
         if self.start.locks.to || self.start.locks.receive_into {
             return;
         }
         self.pin_notice = None;
         self.receive_into_chosen = true;
+        self.receive_into_pinned = false;
         if choice == ReceiveInto::Auto
             && self.pay_from == PayFrom::Auto
             && !self.start.locks.pay_from
         {
             self.pay_from = PayFrom::from_kind(pin_pay_from);
+            self.pay_from_pinned = true;
             self.pin_notice = Some(PinNotice::PayFromPinned(pin_pay_from));
+        } else if choice != ReceiveInto::Auto && self.pay_from_pinned {
+            self.pay_from = PayFrom::Auto;
+            self.pay_from_pinned = false;
         }
         self.receive_into = choice;
     }
@@ -789,5 +807,52 @@ mod tests {
         form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
         assert_eq!(form.fee_strategy(), PlatformFeeStrategy::ReduceLastOutput);
         assert!(form.fee_strategy().reduces_output());
+    }
+
+    #[test]
+    fn a_pinned_pay_from_returns_to_auto_when_receive_into_leaves_auto() {
+        let mut form = SendFormState::default();
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Auto, PayFromKind::Core);
+        assert_eq!(form.pay_from(), PayFrom::Core, "pinned");
+
+        form.choose_receive_into(ReceiveInto::Platform, PayFromKind::Core);
+        assert_eq!(
+            form.pay_from(),
+            PayFrom::Auto,
+            "the pin was the app's choice, not the user's"
+        );
+        assert_eq!(form.receive_into(), ReceiveInto::Platform);
+    }
+
+    #[test]
+    fn a_pinned_receive_into_returns_to_auto_when_pay_from_leaves_auto() {
+        let mut form = SendFormState::default();
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Auto, PayFromKind::Core);
+        form.choose_pay_from(PayFrom::Auto, PayFromKind::Platform);
+        assert_eq!(form.receive_into(), ReceiveInto::Platform, "pinned");
+
+        form.choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        assert_eq!(form.receive_into(), ReceiveInto::Auto);
+        assert_eq!(form.pay_from(), PayFrom::Core);
+    }
+
+    #[test]
+    fn an_explicitly_chosen_side_is_never_switched_back() {
+        let mut form = SendFormState::default();
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        form.choose_pay_from(PayFrom::Platform, PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Auto, PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        assert_eq!(form.pay_from(), PayFrom::Platform);
+
+        // Picking another option on the pinned side makes it the user's own.
+        form.choose_pay_from(PayFrom::Auto, PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Auto, PayFromKind::Core);
+        assert_eq!(form.pay_from(), PayFrom::Core, "pinned");
+        form.choose_pay_from(PayFrom::Platform, PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        assert_eq!(form.pay_from(), PayFrom::Platform);
     }
 }

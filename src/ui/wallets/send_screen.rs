@@ -1289,16 +1289,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                format_duffs_as_dash(amount_duffs),
-                format_duffs_as_dash(balance)
-            ));
-        }
-
+        // No balance check here: the display snapshot can lag the pooled
+        // quote behind Max. `WalletBackend::send_payment` dry-runs the pooled
+        // build before any prompt and refuses a shortfall with a typed error.
         let wallet = self
             .selected_wallet
             .as_ref()
@@ -6668,6 +6661,32 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// The display snapshot can lag (or be empty before its first update)
+    /// while the pooled quote already offers a positive Max, so it must not
+    /// veto a Core send: the backend's pooled build decides and refuses a
+    /// real shortfall with a typed error.
+    #[test]
+    fn core_send_is_not_refused_by_the_display_balance() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        assert_eq!(screen.get_core_balance(), 0, "precondition: empty snapshot");
+
+        let action = screen.send_core_to_core();
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::CoreTask(
+                    CoreTask::SendWalletPayment { ref request, .. }
+                ))) if request.recipients.len() == 1
+                    && request.recipients[0].amount_duffs == 100_000_000
+            ),
+            "the send must reach the backend: {action:?}"
         );
     }
 

@@ -543,12 +543,17 @@ impl KeyStorage {
         self.private_keys
             .get(key)
             .map(|(qualified_identity_public_key_data, private_key_data)| {
-                (
-                    private_key_data.clone(),
-                    qualified_identity_public_key_data
-                        .in_wallet_at_derivation_path
-                        .clone(),
-                )
+                // A key held only as a wallet reference is in that wallet even
+                // when its public key records no wallet path (a masternode key
+                // found in a wallet's provider or funding accounts).
+                let wallet_info = qualified_identity_public_key_data
+                    .in_wallet_at_derivation_path
+                    .clone()
+                    .or_else(|| match private_key_data {
+                        PrivateKeyData::AtWalletDerivationPath(path) => Some(path.clone()),
+                        _ => None,
+                    });
+                (private_key_data.clone(), wallet_info)
             })
     }
 
@@ -1559,6 +1564,26 @@ mod tests {
                 "a lone {data:?} placement is still the answer"
             );
         }
+    }
+
+    /// A key held only as a wallet reference reports that wallet even when
+    /// its public key records no wallet path — how a masternode key found in
+    /// a wallet is stored, so the key screens can still open the wallet.
+    #[test]
+    fn a_wallet_reference_reports_its_wallet() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let path = WalletDerivationPath {
+            wallet_seed_hash: [0x5A; 32],
+            derivation_path: "m/9'/1'/3'/2'/0".parse().unwrap(),
+        };
+        let ks = filed_under(
+            &key,
+            &[(MAIN, PrivateKeyData::AtWalletDerivationPath(path.clone()))],
+        );
+        assert!(matches!(
+            ks.held_private_key_data(&key),
+            Some((PrivateKeyData::AtWalletDerivationPath(_), Some(found))) if found == path
+        ));
     }
 
     /// A key nothing is filed for has no placement to name and no material.

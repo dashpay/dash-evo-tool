@@ -46,6 +46,7 @@ pub(crate) mod kv_test_support;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
+mod masternode;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
@@ -106,6 +107,7 @@ pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
+pub use masternode::{MasternodeWalletKeys, MasternodeWithdrawal};
 pub use payments::AssetLockMaxAmountQuote;
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;

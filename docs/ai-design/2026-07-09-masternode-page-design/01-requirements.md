@@ -468,6 +468,11 @@ story and its "Try to derive from loaded wallet" checkbox do NOT carry over to t
 always pasted manually there. The wallet pill's real purpose on this page is unrelated — it is the **funding
 source for Top up** (FR-9), reflected in US-7's acceptance criteria.
 
+**Superseded 2026-10-23:** the retirement rationale above holds only for nodes registered from another wallet.
+Owner/voting keys live in the registering wallet's DIP-3 provider accounts (non-hardened index) and the payout key
+in its funding accounts; blank key fields are now filled from those wallets automatically (no checkbox). See
+02-ux-spec §4c.
+
 ---
 
 **US-7 — Switch wallet/identity from anywhere (silent + two-way, blast-radius-limited).**

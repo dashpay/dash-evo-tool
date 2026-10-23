@@ -7,6 +7,7 @@ use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::masternode_keys::MasternodeKeyHashes;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -17,15 +18,16 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
+use crate::wallet_backend::MasternodeWalletKeys;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 
 use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::platform::transition::masternode_vote_keys::{select_voting_key, voter_identity_id};
 use dash_sdk::platform::{Fetch, Identity};
@@ -218,6 +220,51 @@ impl AppContext {
             encrypted_private_keys.extend(wallet_private_keys);
         }
 
+        // A node key left blank may be held by one of this device's wallets:
+        // reference it at its derivation path instead of asking for it. A
+        // merge never swaps a key the node already stores for a reference.
+        let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
+            load_mode == IdentityLoadMode::MergeIntoExisting
+                && existing_stored.as_ref().is_some_and(|existing| {
+                    existing
+                        .private_keys
+                        .identity_public_keys()
+                        .iter()
+                        .any(|(t, key)| {
+                            **t == target && key.identity_public_key.purpose() == purpose
+                        })
+                })
+        };
+        let (node_key_hashes, wallet_keys) = if identity_type != IdentityType::User {
+            self.find_node_keys_in_wallets(
+                &identity,
+                owner_private_key_bytes.is_none()
+                    && !already_stored(PrivateKeyOnMainIdentity, Purpose::OWNER),
+                payout_address_private_key_bytes.is_none()
+                    && !already_stored(PrivateKeyOnMainIdentity, Purpose::TRANSFER),
+                voting_private_key_bytes.is_none()
+                    && !already_stored(PrivateKeyOnVoterIdentity, Purpose::VOTING),
+            )
+            .await
+        } else {
+            Default::default()
+        };
+        let mut insert_wallet_held_key = |purpose, hash: Option<[u8; 20]>, path| {
+            if let Some((key_id, entry)) = wallet_held_key_entry(&identity, purpose, hash, path) {
+                encrypted_private_keys.insert((PrivateKeyOnMainIdentity, key_id), entry);
+            }
+        };
+        if owner_private_key_bytes.is_none() {
+            insert_wallet_held_key(Purpose::OWNER, node_key_hashes.owner, wallet_keys.owner);
+        }
+        if payout_address_private_key_bytes.is_none() {
+            insert_wallet_held_key(
+                Purpose::TRANSFER,
+                node_key_hashes.payout,
+                wallet_keys.payout,
+            );
+        }
+
         if identity_type != IdentityType::User
             && let Some(owner_private_key_bytes) = owner_private_key_bytes
         {
@@ -262,56 +309,78 @@ impl AppContext {
             );
         }
 
-        // If the identity type is not a User, and we have a voting private key, verify it
-        let associated_voter_identity = if identity_type != IdentityType::User {
-            if let Some(voting_private_key_bytes) = voting_private_key_bytes {
-                if let Ok(private_key) =
-                    PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
-                {
-                    let voting_address = private_key.public_key().pubkey_hash().to_byte_array();
-                    let voter_identifier = voter_identity_id(
-                        ProTxHash::from_byte_array(identity_id.to_buffer()),
-                        &voting_address,
-                    );
+        // The voting key comes from the typed input, or else from a wallet that
+        // holds the key the masternode list records for this node.
+        let voting_key = match voting_private_key_bytes {
+            _ if identity_type == IdentityType::User => None,
+            Some(bytes) => {
+                let private_key = PrivateKey::from_byte_array(&bytes, self.network)
+                    .map_err(|_| TaskError::InvalidPrivateKey)?;
+                Some((
+                    private_key.public_key().pubkey_hash().to_byte_array(),
+                    PrivateKeyData::Clear(bytes),
+                ))
+            }
+            None => node_key_hashes
+                .voting
+                .zip(wallet_keys.voting)
+                .map(|(hash, path)| (hash, PrivateKeyData::AtWalletDerivationPath(path))),
+        };
 
-                    // Fetch the voter identifier
-                    let voter_identity = match await_network_request_with_timeout(
-                        NETWORK_REQUEST_TIMEOUT,
-                        Identity::fetch_by_identifier(sdk, voter_identifier),
-                        |source| TaskError::IdentityLoadTimeout { source },
-                    )
-                    .await?
-                    {
-                        Ok(Some(identity)) => identity,
-                        Ok(None) => return Err(TaskError::MasternodeVotingKeyNotFound),
-                        Err(e) => return Err(TaskError::from(e)),
+        let mut associated_voter_identity = None;
+        if let Some((voting_address, voting_key_data)) = voting_key {
+            // A wallet-found voting key is a bonus the user did not ask for:
+            // without a usable voter identity the node loads without it
+            // instead of failing.
+            let from_wallet = matches!(voting_key_data, PrivateKeyData::AtWalletDerivationPath(_));
+            let voter_identifier = voter_identity_id(
+                ProTxHash::from_byte_array(identity_id.to_buffer()),
+                &voting_address,
+            );
+            let voter_identity = match await_network_request_with_timeout(
+                NETWORK_REQUEST_TIMEOUT,
+                Identity::fetch_by_identifier(sdk, voter_identifier),
+                |source| TaskError::IdentityLoadTimeout { source },
+            )
+            .await?
+            {
+                Ok(Some(identity)) => Some(identity),
+                Ok(None) if from_wallet => None,
+                Ok(None) => return Err(TaskError::MasternodeVotingKeyNotFound),
+                Err(e) => return Err(TaskError::from(e)),
+            };
+            let usable = voter_identity.and_then(|voter| {
+                let key = select_voting_key(&voter, &voting_address)?.clone();
+                Some((voter, key))
+            });
+            match usable {
+                Some((voter_identity, key)) => {
+                    // A wallet reference stays in the private-key data only;
+                    // see `wallet_held_key_entry`.
+                    let qualified_key = match &voting_key_data {
+                        PrivateKeyData::AtWalletDerivationPath(_) => {
+                            QualifiedIdentityPublicKey::from(key.clone())
+                        }
+                        _ => {
+                            QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
+                                key.clone(),
+                                self.network,
+                                &wallets.values().collect::<Vec<_>>(),
+                            )
+                        }
                     };
-
-                    let key = select_voting_key(&voter_identity, &voting_address)
-                        .ok_or(TaskError::MasternodeVotingKeyNotUsable)?;
-                    let qualified_key =
-                        QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
-                            key.clone(),
-                            self.network,
-                            &wallets.values().collect::<Vec<_>>(),
-                        );
                     encrypted_private_keys.insert(
                         (PrivateKeyOnVoterIdentity, key.id()),
-                        (
-                            qualified_key,
-                            PrivateKeyData::Clear(voting_private_key_bytes),
-                        ),
+                        (qualified_key, voting_key_data),
                     );
-                    Some((voter_identity, key))
-                } else {
-                    return Err(TaskError::InvalidPrivateKey);
+                    associated_voter_identity = Some((voter_identity, key));
                 }
-            } else {
-                None
+                None if from_wallet => tracing::debug!(
+                    "The voting key found in a wallet has no usable voter identity; loading the node without it"
+                ),
+                None => return Err(TaskError::MasternodeVotingKeyNotUsable),
             }
-        } else {
-            None
-        };
+        }
 
         // let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
 
@@ -990,6 +1059,73 @@ impl AppContext {
             })
             .collect()
     }
+}
+
+impl AppContext {
+    /// The node's key hashes and where this device's wallets hold them, for
+    /// the roles the user left blank. Best effort: a node loads with what was
+    /// typed when no wallet holds a key or the wallets cannot be checked.
+    async fn find_node_keys_in_wallets(
+        &self,
+        identity: &Identity,
+        want_owner: bool,
+        want_payout: bool,
+        want_voting: bool,
+    ) -> (MasternodeKeyHashes, MasternodeWalletKeys) {
+        let Ok(backend) = self.wallet_backend() else {
+            return Default::default();
+        };
+        let on_identity = MasternodeKeyHashes::from_identity(identity);
+        let hashes = MasternodeKeyHashes {
+            owner: on_identity.owner.filter(|_| want_owner),
+            payout: on_identity.payout.filter(|_| want_payout),
+            voting: if want_voting {
+                backend.masternode_voting_key_hash(identity.id()).await
+            } else {
+                None
+            },
+        };
+        match backend.find_masternode_wallet_keys(hashes).await {
+            Ok(found) => (hashes, found),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "Could not check this device's wallets for the node's keys"
+                );
+                (hashes, MasternodeWalletKeys::default())
+            }
+        }
+    }
+}
+
+/// The key-storage entry for the active `purpose` key of `identity` whose
+/// hash160 is `hash`, held by a wallet at `path`. Only the derivation
+/// reference is stored — never key bytes.
+///
+/// The reference lives in the private-key data only. The public key's own
+/// wallet path is what [`QualifiedIdentity::determine_wallet_info`] reads to
+/// file an identity as one of a wallet's identities, and a provider or funding
+/// path carries no identity index, so a node must not be filed there.
+fn wallet_held_key_entry(
+    identity: &Identity,
+    purpose: Purpose,
+    hash: Option<[u8; 20]>,
+    path: Option<WalletDerivationPath>,
+) -> Option<(KeyID, (QualifiedIdentityPublicKey, PrivateKeyData))> {
+    let (hash, path) = hash.zip(path)?;
+    let key = identity.public_keys().values().find(|key| {
+        key.purpose() == purpose
+            && key.key_type() == KeyType::ECDSA_HASH160
+            && !key.is_disabled()
+            && key.data().as_slice() == hash.as_slice()
+    })?;
+    Some((
+        key.id(),
+        (
+            QualifiedIdentityPublicKey::from(key.clone()),
+            PrivateKeyData::AtWalletDerivationPath(path),
+        ),
+    ))
 }
 
 /// Exclusive key-index bound of the wallet-match scan for an identity whose
@@ -3165,5 +3301,213 @@ mod tests {
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// hash160 of the key at `path` under `seed`, computed straight from the
+    /// seed — an independent DIP-3 vector.
+    fn wallet_key_hash(seed: &[u8; 64], path: &str) -> [u8; 20] {
+        use std::str::FromStr;
+        DerivationPath::from_str(path)
+            .unwrap()
+            .derive_priv_ecdsa_for_master_seed(seed, Network::Testnet)
+            .unwrap()
+            .to_priv()
+            .public_key()
+            .pubkey_hash()
+            .to_byte_array()
+    }
+
+    fn hash160_key(
+        id: KeyID,
+        purpose: dash_sdk::dpp::identity::Purpose,
+        hash: [u8; 20],
+    ) -> IdentityPublicKey {
+        IdentityPublicKey::V0(
+            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                id,
+                purpose,
+                security_level: SecurityLevel::CRITICAL,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_HASH160,
+                read_only: false,
+                data: hash.to_vec().into(),
+                disabled_at: None,
+            },
+        )
+    }
+
+    const WALLET_NODE_SEED: [u8; 64] = [0x4E; 64];
+    const WALLET_NODE_OWNER_PATH: &str = "m/9'/1'/3'/2'/3";
+    const WALLET_NODE_PAYOUT_PATH: &str = "m/44'/1'/0'/0/2";
+
+    /// A context holding one registered wallet, and a mock SDK serving a node
+    /// whose owner and payout keys that wallet holds.
+    async fn wallet_held_node() -> (
+        Arc<AppContext>,
+        tempfile::TempDir,
+        WalletSeedHash,
+        Identifier,
+        Sdk,
+    ) {
+        use dash_sdk::dpp::identity::Purpose;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let wallet = Wallet::new_from_seed(WALLET_NODE_SEED, Network::Testnet, None, None).unwrap();
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &WALLET_NODE_SEED,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .unwrap();
+        ctx.wallet_backend()
+            .unwrap()
+            .register_wallet_from_seed(&seed_hash, &WALLET_NODE_SEED, Some(0))
+            .await
+            .unwrap();
+
+        let node_id = Identifier::from([0x5C; 32]);
+        let mut identity =
+            Identity::create_basic_identity(node_id, PlatformVersion::latest()).unwrap();
+        identity.add_public_keys([
+            hash160_key(
+                0,
+                Purpose::OWNER,
+                wallet_key_hash(&WALLET_NODE_SEED, WALLET_NODE_OWNER_PATH),
+            ),
+            hash160_key(
+                1,
+                Purpose::TRANSFER,
+                wallet_key_hash(&WALLET_NODE_SEED, WALLET_NODE_PAYOUT_PATH),
+            ),
+        ]);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(node_id, Some(identity))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, dash_sdk::platform::Document, _, dash_sdk::query_types::Documents>(
+                ctx.owned_dpns_names_query(node_id),
+                Some(dash_sdk::query_types::Documents::default()),
+            )
+            .await
+            .unwrap();
+        (ctx, dir, seed_hash, node_id, sdk)
+    }
+
+    fn node_load_input(
+        node_id: Identifier,
+        owner_key: Secret,
+        load_mode: IdentityLoadMode,
+    ) -> IdentityInputToLoad {
+        IdentityInputToLoad {
+            identity_id_input: node_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::default(),
+            owner_private_key_input: owner_key,
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode,
+            load_token: None,
+        }
+    }
+
+    fn wallet_reference(seed_hash: WalletSeedHash, path: &str) -> WalletDerivationPath {
+        WalletDerivationPath {
+            wallet_seed_hash: seed_hash,
+            derivation_path: path.parse().unwrap(),
+        }
+    }
+
+    /// A node registered with keys from a wallet on this device loads with
+    /// its owner and payout keys referenced at their wallet derivation paths
+    /// (DIP-3 owner path, non-hardened index) — nothing typed, nothing copied
+    /// into the vault.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_keys_held_by_a_wallet_load_without_typing_them() {
+        let (ctx, _dir, seed_hash, node_id, sdk) = wallet_held_node().await;
+        let input = node_load_input(node_id, Secret::default(), IdentityLoadMode::RejectIfExists);
+        let BackendTaskSuccessResult::LoadedIdentity(loaded) =
+            ctx.load_identity(&sdk, input).await.unwrap()
+        else {
+            panic!("expected a loaded identity");
+        };
+
+        for (key_id, path) in [(0, WALLET_NODE_OWNER_PATH), (1, WALLET_NODE_PAYOUT_PATH)] {
+            let (_, data) = loaded
+                .private_keys
+                .entry_at(&(M, key_id))
+                .unwrap_or_else(|| panic!("key {key_id} must be held"));
+            assert!(
+                matches!(data, PrivateKeyData::AtWalletDerivationPath(found)
+                    if *found == wallet_reference(seed_hash, path)),
+                "key {key_id} must reference {path}, got {data:?}"
+            );
+        }
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), node_id.to_buffer());
+        for key_id in [0, 1] {
+            assert_eq!(view.scheme(&M, key_id).unwrap(), SecretScheme::Absent);
+        }
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert!(stored.private_keys == loaded.private_keys);
+        // Key references into a wallet do not make the node one of that
+        // wallet's own identities.
+        assert_eq!(loaded.determine_wallet_info().unwrap(), None);
+        let filed_in_wallet = ctx.wallet_context().wallets()[&seed_hash]
+            .read()
+            .unwrap()
+            .identities
+            .values()
+            .any(|identity| identity.id() == node_id);
+        assert!(
+            !filed_in_wallet,
+            "the node must not be filed as a wallet identity"
+        );
+        backend.shutdown().await;
+    }
+
+    /// A typed key wins over the wallet, and a later merge with blank fields
+    /// keeps the stored key instead of swapping it for a wallet reference.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typed_and_stored_node_keys_are_never_replaced_by_wallet_references() {
+        let (ctx, _dir, seed_hash, node_id, sdk) = wallet_held_node().await;
+        let owner_wif = WALLET_NODE_OWNER_PATH
+            .parse::<DerivationPath>()
+            .unwrap()
+            .derive_priv_ecdsa_for_master_seed(&WALLET_NODE_SEED, Network::Testnet)
+            .unwrap()
+            .to_priv()
+            .to_wif();
+        let typed = node_load_input(
+            node_id,
+            Secret::new(owner_wif),
+            IdentityLoadMode::RejectIfExists,
+        );
+        ctx.load_identity(&sdk, typed).await.unwrap();
+        let merge = node_load_input(
+            node_id,
+            Secret::default(),
+            IdentityLoadMode::MergeIntoExisting,
+        );
+        ctx.load_identity(&sdk, merge).await.unwrap();
+
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let (_, owner) = stored.private_keys.entry_at(&(M, 0)).unwrap();
+        assert!(
+            !matches!(owner, PrivateKeyData::AtWalletDerivationPath(_)),
+            "the typed owner key must stay, got {owner:?}"
+        );
+        let (_, payout) = stored.private_keys.entry_at(&(M, 1)).unwrap();
+        assert!(
+            matches!(payout, PrivateKeyData::AtWalletDerivationPath(found)
+            if *found == wallet_reference(seed_hash, WALLET_NODE_PAYOUT_PATH))
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

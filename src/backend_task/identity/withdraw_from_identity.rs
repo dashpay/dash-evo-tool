@@ -2,6 +2,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::wallet_backend::MasternodeWithdrawal;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
@@ -92,19 +93,44 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_credit_withdrawal();
 
-        let remaining_balance = qualified_identity
-            .identity
-            .clone()
-            .withdraw(
-                &sdk,
-                to_address,
-                credits,
-                Some(1),
-                signing_key,
-                qualified_identity.clone(),
-                None,
-            )
-            .await?;
+        // A masternode key held by one of this device's wallets is signed by
+        // that wallet's masternode withdrawal, which re-checks the key against
+        // the node and enforces the payout-address rule itself. Keys entered
+        // by hand keep the identity's own signer.
+        let remaining_balance = match qualified_identity
+            .wallet_masternode_withdrawal(signing_key_id)
+        {
+            Some(route) => {
+                tracing::info!(role = ?route.role, "Withdrawing through the wallet that holds the masternode key");
+                self.wallet_backend()?
+                    .masternode_withdraw(
+                        &route.wallet_seed_hash,
+                        MasternodeWithdrawal {
+                            identity_id: qualified_identity.identity.id(),
+                            key_hashes: route.key_hashes,
+                            role: route.role,
+                            amount_credits: credits,
+                            destination: to_address,
+                        },
+                    )
+                    .await?
+            }
+            None => {
+                qualified_identity
+                    .identity
+                    .clone()
+                    .withdraw(
+                        &sdk,
+                        to_address,
+                        credits,
+                        Some(1),
+                        signing_key,
+                        qualified_identity.clone(),
+                        None,
+                    )
+                    .await?
+            }
+        };
 
         let actual_fee = balance_before
             .saturating_sub(remaining_balance)

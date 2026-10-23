@@ -14,6 +14,7 @@ use dash_sdk::dpp::data_contract::document_type::ContestedIndexFieldMatch;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
+use dash_sdk::dpp::document::{Document, DocumentV0};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
@@ -39,16 +40,7 @@ pub fn classify_dpns_registration_outcome(
     label: &str,
     platform_version: &PlatformVersion,
 ) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
-    let text = |value: &str| Value::Text(value.to_string());
-    let properties = BTreeMap::from([
-        ("label".to_string(), text(strip_dash_suffix(label))),
-        (
-            "normalizedLabel".to_string(),
-            text(&normalize_dpns_label(label)),
-        ),
-        ("parentDomainName".to_string(), text("dash")),
-        ("normalizedParentDomainName".to_string(), text("dash")),
-    ]);
+    let properties = dpns_name_fields(label);
     match document_type
         .contested_vote_poll_for_document_properties(&properties, platform_version)
         .map_err(Box::new)?
@@ -58,6 +50,30 @@ pub fn classify_dpns_registration_outcome(
         }
         None => Ok(DpnsRegistrationOutcome::Registered),
     }
+}
+
+/// The name fields a `domain` document for `label` carries: the ones a
+/// contest on the name is decided by.
+fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
+    let text = |value: &str| Value::Text(value.to_string());
+    BTreeMap::from([
+        ("label".to_string(), text(strip_dash_suffix(label))),
+        (
+            "normalizedLabel".to_string(),
+            text(&normalize_dpns_label(label)),
+        ),
+        ("parentDomainName".to_string(), text("dash")),
+        ("normalizedParentDomainName".to_string(), text("dash")),
+    ])
+}
+
+/// A `domain` document for `label` carrying only its name fields, enough to
+/// find the contest registering `label` would join. Not a document to submit.
+pub fn dpns_name_contest_document(label: &str) -> Document {
+    Document::V0(DocumentV0 {
+        properties: dpns_name_fields(label),
+        ..Default::default()
+    })
 }
 
 /// How long a DPNS name contest runs and how long others may join it.

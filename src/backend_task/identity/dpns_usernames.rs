@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
@@ -20,8 +21,8 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns::{
-    ContestDurations, DpnsNameValidationResult, contest_durations, is_contested_label,
-    normalize_dpns_label, validate_dpns_name,
+    ContestDurations, DpnsNameValidationResult, contest_durations, dpns_name_contest_document,
+    is_contested_label, normalize_dpns_label, validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
     ContenderTally, ContestSnapshot, ContestWinner, RequestPhase, UsernameAvailability,
@@ -79,6 +80,29 @@ impl AppContext {
         ))
     }
 
+    /// The community vote fee registering `label` pays to join its contest
+    /// now, or 0 for a name that opens no contest.
+    ///
+    /// Platform doubles a contest's fund once it holds 250 requests and again
+    /// for every 50 more, and turns away a request stating less than that
+    /// after its first document was already paid for. The SDK counts the
+    /// requests, page by page, and applies the network's own rule.
+    pub(crate) async fn username_contest_fund_to_join(
+        &self,
+        sdk: &Sdk,
+        label: &str,
+    ) -> Result<Credits, TaskError> {
+        let dpns_contract = self.dpns_contract();
+        let domain_document_type = dpns_contract
+            .document_type_for_name("domain")
+            .map_err(|_| TaskError::DataContractNotFound)?;
+        let contest_fund = sdk
+            .contest_fund_to_join(domain_document_type, &dpns_name_contest_document(label))
+            .await
+            .map_err(availability_error)?;
+        Ok(contest_fund.unwrap_or(0))
+    }
+
     pub(super) async fn check_username_availability(
         &self,
         sdk: &Sdk,
@@ -86,9 +110,15 @@ impl AppContext {
         label: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let availability = self.username_availability(sdk, identity_id, &label).await?;
+        let contest_fund = if availability.needs_vote() {
+            self.username_contest_fund_to_join(sdk, &label).await?
+        } else {
+            0
+        };
         Ok(BackendTaskSuccessResult::UsernameAvailability {
             label,
             availability,
+            contest_fund,
         })
     }
 

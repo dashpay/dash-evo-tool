@@ -24,7 +24,7 @@ base64 = "0.23.1"
 # and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
 # dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
 # `not_used` was attempted but requires manual GitHub action — see coordinator note).
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "a0d7b6ffec6f91e3818530b83d75adcd62480ebe", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "b25b72155fe3ebeb411c3501a93a13938a7a93bf", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -34,15 +34,15 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "a0d7b6ffec6f91e
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "a0d7b6ffec6f91e3818530b83d75adcd62480ebe" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "a0d7b6ffec6f91e3818530b83d75adcd62480ebe", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "b25b72155fe3ebeb411c3501a93a13938a7a93bf" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "b25b72155fe3ebeb411c3501a93a13938a7a93bf", features = [
     "serde",
     "shielded",
 ] }
 # `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
 # visitor copies a borrowed `&str` straight into guarded memory instead of
 # routing through a transient `String`. Secret schemas are included by `secrets`.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "a0d7b6ffec6f91e3818530b83d75adcd62480ebe", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "b25b72155fe3ebeb411c3501a93a13938a7a93bf", features = [
     "shielded",
     "serde",
 ] }

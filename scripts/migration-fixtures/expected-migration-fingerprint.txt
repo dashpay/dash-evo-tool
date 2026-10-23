@@ -5,7 +5,7 @@
 #
 # fingerprint = sha256 of the LC_ALL=C-sorted "<sha256>  <path>" listing of every
 # file under packages/rs-platform-wallet-storage/migrations at that rev.
-pin=a0d7b6ffec6f91e3818530b83d75adcd62480ebe
-target_branch=v5.1-dev
-migration_count=19
-fingerprint=79465f56868e4dfd6e0ba05e4eefe7e7d4ac8ef478c2579ba019d12f868278e6
+pin=b25b72155fe3ebeb411c3501a93a13938a7a93bf
+target_branch=fix/persist-drain-conflict-outcomes
+migration_count=21
+fingerprint=e892cdd2055088e6d8b7bed2f2ee3d762bb207491f3769ac45c7bdf204609309

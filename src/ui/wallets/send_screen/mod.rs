@@ -3089,7 +3089,8 @@ impl WalletSendScreen {
         let _ = self
             .own_addresses
             .ensure_requested(seed_hash, OwnAddressKind::Core);
-        self.own_addresses
+        let _ = self
+            .own_addresses
             .store(seed_hash, OwnAddressKind::Core, address);
     }
 
@@ -3651,7 +3652,9 @@ impl WalletSendScreen {
                 .store(*seed_hash, *kind, *request_id, *max_credits);
             return true;
         }
-        match result {
+        // A receiving address this form asked for is consumed here: it is
+        // not the outcome of a send.
+        let own_address = match result {
             crate::backend_task::BackendTaskSuccessResult::GeneratedReceiveAddress {
                 seed_hash,
                 address,
@@ -3664,13 +3667,13 @@ impl WalletSendScreen {
             } => self
                 .own_addresses
                 .store(*seed_hash, OwnAddressKind::Platform, address.clone()),
-            _ => {}
-        }
+            _ => false,
+        };
         if Self::task_result_updates_address_input(result) {
             self.address_input_snapshot_signature = None;
             self.identities_by_wallet = None;
         }
-        false
+        own_address
     }
 }
 
@@ -7123,5 +7126,28 @@ mod tests {
         screen.sync_route();
         assert_eq!(screen.validated_destination.as_ref(), Some(&typed));
         assert_eq!(screen.typed_destination.as_ref(), Some(&typed));
+    }
+
+    /// A receiving address the form asked for is consumed, so it never ends a
+    /// send's progress; one it did not ask for is left alone.
+    #[test]
+    fn an_own_receiving_address_reply_is_consumed_only_when_asked_for() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        let reply = BackendTaskSuccessResult::GeneratedReceiveAddress {
+            seed_hash,
+            address: testnet_core_address(12).to_string(),
+        };
+        assert!(!screen.refresh_form_inputs(&reply), "nobody asked for it");
+        let _ = screen
+            .own_addresses
+            .ensure_requested(seed_hash, OwnAddressKind::Core);
+        assert!(screen.refresh_form_inputs(&reply));
+        assert!(
+            screen
+                .own_addresses
+                .get(&seed_hash, OwnAddressKind::Core)
+                .is_some()
+        );
     }
 }

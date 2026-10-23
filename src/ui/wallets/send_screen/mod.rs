@@ -7031,7 +7031,7 @@ mod tests {
         (screen, temp_dir)
     }
 
-    /// A1: Core and Platform funds shield only into the paying wallet's own
+    /// Core and Platform funds shield only into the paying wallet's own
     /// pool, whatever address is entered. Paying someone else's private
     /// address from them must be refused before any task is built.
     #[test]
@@ -7063,7 +7063,7 @@ mod tests {
         }
     }
 
-    /// A1 through the form: Pay from Core with a foreign private address
+    /// Through the form: Pay from Core with a foreign private address
     /// keeps Send disabled, and pressing it anyway opens no confirmation.
     #[test]
     fn the_form_refuses_core_to_someone_elses_private_address() {

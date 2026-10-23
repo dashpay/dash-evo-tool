@@ -2966,6 +2966,13 @@ pub enum TaskError {
     )]
     TokenOncePerIdentityNotSupported,
 
+    /// The token creator asked for a token that cannot be transferred, on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+    )]
+    NonTransferableTokenNotSupported,
+
     /// The identity already took its single claim of a token's
     /// once-per-identity distribution, so Platform refused another one.
     #[error(

@@ -1317,6 +1317,16 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 - After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
 - A second claim refused by the network is explained.
 
+### TOK-020: Create a token holders cannot transfer [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
+
+- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- A network that does not support it is refused before anything is paid.
+- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- A transfer refused by the network is explained.
+
 ## Contracts and Documents (DOC)
 
 ### DOC-001: Register a new data contract [Implemented]

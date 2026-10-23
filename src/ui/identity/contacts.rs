@@ -230,30 +230,45 @@ fn dispatch_request_shared(
 
 /// One-shot hydration of the tab: the contact list and the request lists.
 ///
-/// Both loads travel as a single [`AppAction::BackendTasks`]. Two separate
+/// Both loads travel as a single [`AppAction::BackendTasksWithContexts`]. Two separate
 /// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
 /// so the first load would be dropped on the floor and the active section would
 /// never fill.
 pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
-    if !state.claim_load() {
+    let Some(reads) = state.claim_reads() else {
         return AppAction::None;
-    }
-    let contacts = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-        identity: identity.clone(),
-    }));
-    // Its own dispatch, so an older load answering late is recognised as stale.
-    let contacts_context = BackendTaskContext::for_dispatch_on(&contacts, identity.network);
-    if let Some(dispatch_id) = contacts_context.dispatch_id() {
-        state.record_contacts_load(dispatch_id);
-    }
-    let requests = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-        identity: identity.clone(),
-    }));
-    let requests_context = BackendTaskContext::for_task_on(&requests, identity.network);
-    AppAction::BackendTasksWithContexts(
-        vec![(contacts, contacts_context), (requests, requests_context)],
-        BackendTasksExecutionMode::Concurrent,
-    )
+    };
+    let tasks = reads
+        .into_iter()
+        .map(|kind| {
+            let task = BackendTask::DashPayTask(Box::new(match kind {
+                crate::model::dashpay::ContactsLoadKind::Contacts => DashPayTask::LoadContacts {
+                    identity: identity.clone(),
+                },
+                crate::model::dashpay::ContactsLoadKind::Requests => {
+                    DashPayTask::LoadContactRequests {
+                        identity: identity.clone(),
+                    }
+                }
+            }));
+            let context = match kind {
+                // Its own dispatch, so an older load answering late is
+                // recognised as stale.
+                crate::model::dashpay::ContactsLoadKind::Contacts => {
+                    let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
+                    if let Some(dispatch_id) = context.dispatch_id() {
+                        state.record_contacts_load(dispatch_id);
+                    }
+                    context
+                }
+                crate::model::dashpay::ContactsLoadKind::Requests => {
+                    BackendTaskContext::for_task_on(&task, identity.network)
+                }
+            };
+            (task, context)
+        })
+        .collect();
+    AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Concurrent)
 }
 
 /// Backend task for a request-card action. Accept and Decline act on a received
@@ -410,7 +425,13 @@ pub fn tab_load_action(
     match ContactsTabState::resolve(app_context, active.as_ref(), profiles) {
         ContactsTabState::Populated { identity } => {
             state.reconcile_owner(&identity);
-            load_action(&identity, state)
+            // Held until the masternode list is synced, as on Home: an earlier
+            // proof-verifying read gets the queried nodes banned.
+            if app_context.connection_status().masternodes_ready() {
+                load_action(&identity, state)
+            } else {
+                AppAction::None
+            }
         }
         ContactsTabState::Gated { .. } => AppAction::None,
     }
@@ -1184,7 +1205,13 @@ pub(super) fn render_preview(
                 *outcome = super::home::HomeOutcome::GoToContact(contact.identity_id);
             }
         }
-        if state.contacts_len() == 0 && state.incoming().is_empty() {
+        if !state.contacts_known() {
+            ui.label(if state.load_failed() {
+                "Contacts could not be loaded. Open Contacts to try again."
+            } else {
+                "Loading contacts…"
+            });
+        } else if state.contacts_len() == 0 && state.incoming().is_empty() {
             ui.label("No contacts yet. Add someone by their username.");
         }
         if ui.button("See all contacts").clicked() {

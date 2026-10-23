@@ -182,6 +182,9 @@ fn contacts_tab_load_is_for_a_populated_tab_and_goes_out_once() {
 
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
+        // The tab holds its proof-verifying reads until the masternode list
+        // is synced; this test starts on a synced network.
+        app_context.connection_status().set_masternodes_ready(true);
         let identity = seed_identity(&app_context, vec![], vec![]);
         let mut state = ContactsState::default();
         let mut profiles = ProfileCache::default();
@@ -200,6 +203,16 @@ fn contacts_tab_load_is_for_a_populated_tab_and_goes_out_once() {
                 ..Default::default()
             },
         );
+        app_context.connection_status().set_masternodes_ready(false);
+        assert!(
+            matches!(
+                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
+                AppAction::None
+            ),
+            "the populated tab holds its reads until the masternode list is synced"
+        );
+        assert!(state.load_is_due(), "the held load is still owed");
+        app_context.connection_status().set_masternodes_ready(true);
         let load = contacts::tab_load_action(&app_context, &mut state, &mut profiles);
         assert!(
             matches!(&load, AppAction::BackendTasksWithContexts(tasks, _) if tasks.len() == 2),

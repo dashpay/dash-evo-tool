@@ -91,7 +91,8 @@ impl FailureLogLatch {
 }
 
 /// Runs a blocking OS theme detector on one dedicated worker thread, so
-/// callers (the egui frame loop) wait at most `budget` per attempt.
+/// startup and explicit preference changes wait at most `budget` per attempt,
+/// while recurring frame-loop polls never wait for the worker.
 ///
 /// Invariants:
 /// - At most one detection runs at a time (`in_flight`). A caller arriving
@@ -174,6 +175,16 @@ impl BoundedThemeDetector {
 
     /// Returns the OS theme, waiting at most `budget`.
     fn detect(&self) -> Detection {
+        self.detect_with_budget(self.budget)
+    }
+
+    /// Returns a completed result or starts a probe without waiting for it.
+    /// Uses the same single-flight worker and late-result slot as `detect`.
+    fn poll(&self) -> Detection {
+        self.detect_with_budget(Duration::ZERO)
+    }
+
+    fn detect_with_budget(&self, budget: Duration) -> Detection {
         if let Some(parked) = Detection::from_late(self.late.swap(LATE_EMPTY, Ordering::SeqCst)) {
             return parked;
         }
@@ -191,7 +202,7 @@ impl BoundedThemeDetector {
             self.in_flight.store(false, Ordering::SeqCst);
             return Detection::Failed;
         }
-        match reply_rx.recv_timeout(self.budget) {
+        match reply_rx.recv_timeout(budget) {
             Ok(outcome) => {
                 // Drop the copy the worker parked: this is the freshest completed
                 // result, and replaying it would skip the next real detection.
@@ -234,9 +245,10 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
 }
 
 /// Detect system theme, returning `None` when the OS gave no answer.
-/// Use this for polling: a `None` means "keep the previous theme" rather than
+/// A `None` means "keep the previous theme" rather than
 /// flipping to an arbitrary default. Never blocks the caller for longer than
 /// `THEME_DETECTION_BUDGET`; a slower answer is returned on a later poll.
+/// For recurring UI frames, use [`poll_system_theme`] to avoid even that wait.
 /// `Unspecified` maps to Light (common on Linux where `dark_light` often
 /// can't determine the theme).
 pub fn try_detect_system_theme() -> Option<ThemeMode> {
@@ -246,12 +258,25 @@ pub fn try_detect_system_theme() -> Option<ThemeMode> {
     }
 }
 
+/// Poll system theme without waiting for OS detection or requiring Tokio.
+/// Returns a completed result, or dispatches a probe to the existing dedicated
+/// worker and returns `None`. Pending and failed probes leave the caller's
+/// current appearance unchanged. The worker retains late results for the next
+/// poll and permits only one in-flight probe, even if the OS call hangs.
+pub fn poll_system_theme() -> Option<ThemeMode> {
+    match system_theme_detector().poll() {
+        Detection::Dark => Some(ThemeMode::Dark),
+        Detection::Light => Some(ThemeMode::Light),
+        Detection::Pending | Detection::Failed => None,
+    }
+}
+
 /// Outcome of a system-theme detection attempt for callers that must react
 /// differently to "no answer yet" than to "detection failed" — e.g. an
 /// explicit preference change, where a still-pending answer (common on a cold
 /// Linux portal request) should not be reported as a failure: the next poll
 /// will pick up the late result once it arrives. Polling callers that only
-/// need a detected mode should use `try_detect_system_theme` instead, which
+/// need a detected mode should use `poll_system_theme` instead, which
 /// intentionally treats both as "keep the previous theme".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeDetectionOutcome {
@@ -1652,6 +1677,41 @@ mod tests {
             TIGHT_BUDGET,
         );
         (detector, gate, calls)
+    }
+
+    #[test]
+    fn polling_without_tokio_never_waits_and_shares_the_single_flight_worker() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let (mut detector, gate, calls) = gated_detector();
+        // A poll must ignore even a very long synchronous detection budget.
+        detector.budget = PROMPT;
+        let (result_tx, result_rx) = mpsc::channel();
+        let caller = thread::spawn(move || {
+            let outcome = detector.poll();
+            result_tx.send((outcome, detector)).unwrap();
+        });
+        let result = result_rx.recv_timeout(Duration::from_secs(1));
+        if result.is_err() {
+            // Release the gate even on failure, so the test leaves no hung worker.
+            gate.send(dark_light::Mode::Dark).unwrap();
+        }
+        caller.join().unwrap();
+        let (outcome, detector) = result.expect("poll must return while OS detection is blocked");
+        assert_eq!(outcome, Detection::Pending);
+        wait_until("the worker to start the probe", || {
+            calls.load(Ordering::SeqCst) == 1
+        });
+        for _ in 0..3 {
+            assert_eq!(detector.poll(), Detection::Pending);
+        }
+        // The bounded path must share the in-flight guard with the polling path.
+        assert_eq!(detector.detect(), Detection::Pending);
+        gate.send(dark_light::Mode::Dark).unwrap();
+        wait_until("the late result to be parked", || {
+            !detector.in_flight.load(Ordering::SeqCst)
+        });
+        assert_eq!(detector.poll(), Detection::Dark);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

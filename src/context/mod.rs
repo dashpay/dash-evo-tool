@@ -1573,7 +1573,25 @@ impl AppContext {
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
+        Self::key_deriving_wallet_hash(&qi)
+    }
+
+    /// The wallet that owns a loaded identity: its stored owner, else (legacy
+    /// records) the loaded wallet that derives one of its keys. Not
+    /// `associated_wallets`, which lists every loaded wallet.
+    pub(crate) fn identity_owner_wallet(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&qi.identity.id()) {
+            return Some(hash);
+        }
+        Self::key_deriving_wallet_hash(qi)
+    }
+
+    fn key_deriving_wallet_hash(qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
+        let wallet = qi
+            .identity
+            .public_keys()
+            .values()
+            .find_map(|key| crate::ui::identity::wallet_for_signing_key(qi, Some(key)))?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }

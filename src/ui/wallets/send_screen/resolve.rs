@@ -367,8 +367,8 @@ impl WalletSendScreen {
                 .load_local_qualified_identities()
                 .unwrap_or_default()
             {
-                for wallet in identity.associated_wallets.keys() {
-                    by_wallet.entry(*wallet).or_default().push(identity.clone());
+                if let Some(owner) = self.app_context.identity_owner_wallet(&identity) {
+                    by_wallet.entry(owner).or_default().push(identity);
                 }
             }
             self.identities_by_wallet = Some(by_wallet);

@@ -2712,7 +2712,7 @@ mod tests {
         );
     }
 
-    /// PRRT_kwDOM8GK3c6vZ6qO / vbDgP: the synced and withdrawn markers are
+    /// The synced and withdrawn markers are
     /// read for presence only, so
     /// a value in an unknown encoding still counts; a failed read is an error.
     #[test]

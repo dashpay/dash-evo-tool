@@ -1355,7 +1355,7 @@ mod tests {
         ));
     }
 
-    /// PRRT_kwDOM8GK3c6vWRKJ: after the owner withdraws their request to
+    /// After the owner withdraws their request to
     /// id(3), id(3)'s later request is listed for the owner to answer; the
     /// pair is not taken for a contact and both rows dropped.
     #[test]
@@ -1452,7 +1452,7 @@ mod tests {
         assert!(*ops.re_engaged.lock().unwrap());
     }
 
-    /// PRRT_kwDOM8GK3c6vWRKe: accepting (or sending again) where the owner's
+    /// Accepting (or sending again) where the owner's
     /// withdrawn request still stands restores it without a new publish.
     #[tokio::test]
     async fn an_existing_withdrawn_request_is_restored() {
@@ -1472,7 +1472,7 @@ mod tests {
         assert!(!*pending.re_engaged.lock().unwrap());
     }
 
-    /// PRRT_kwDOM8GK3c6vbDgP: an unreadable withdrawal record fails the
+    /// An unreadable withdrawal record fails the
     /// accept or send instead of reporting success with the withdrawal still
     /// in force.
     #[tokio::test]
@@ -1625,7 +1625,7 @@ mod tests {
         }
     }
 
-    /// PRRT_kwDOM8GK3c6vbDgL: the reply is taken in and the contact
+    /// The reply is taken in and the contact
     /// established after the reciprocal query; the cancellation then reports
     /// the contact and records no withdrawal.
     #[tokio::test]

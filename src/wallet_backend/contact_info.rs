@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(contact_info_write_index(Some(3), true).expect("index"), 3);
     }
 
-    /// PRRT_kwDOM8GK3c6vvZQ5: an identity whose wallet cannot be resolved is
+    /// An identity whose wallet cannot be resolved is
     /// an error, not "no details published". A save reads this baseline for
     /// every field it keeps, so an empty one would publish empty fields.
     #[tokio::test]

@@ -1992,6 +1992,7 @@ impl AppContext {
         qualified_identity: &mut QualifiedIdentity,
         wallet: &Option<(WalletSeedHash, u32)>,
         intent: DiscoveryIntent,
+        balance_provenance: crate::model::identity_balance::BalanceProvenance,
     ) -> std::result::Result<bool, TaskError> {
         let identity_id = qualified_identity.identity.id();
         let lock = self.identity_record_lock(identity_id);
@@ -2022,6 +2023,7 @@ impl AppContext {
             );
             self.clear_identity_unloaded(&kv, &id)?;
         }
+        self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
 
         let existing: Option<StoredQualifiedIdentity> = kv
             .get(DetScope::Identity(&id), IDENTITY_KEY)
@@ -4680,7 +4682,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4727,7 +4734,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4768,7 +4780,12 @@ mod tests {
         let ctx = Arc::clone(&staged.ctx);
         let discovery = std::thread::spawn(move || {
             let _attached = discovery_probe.attach();
-            ctx.store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            ctx.store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
         });
 
         // Unbounded on purpose: the discovery thread cannot acquire a lock this
@@ -4845,7 +4862,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut reloaded, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut reloaded,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "with the marker retired, discovery must keep the identity refreshed again",
         );
@@ -4881,7 +4903,12 @@ mod tests {
         assert!(
             !staged
                 .ctx
-                .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rediscovered,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("a refusal is not an error"),
             "discovery must not restore what the wipe cleared",
         );
@@ -4908,7 +4935,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut found, &None, DiscoveryIntent::UserRequested)
+                .store_discovered_identity(
+                    &mut found,
+                    &None,
+                    DiscoveryIntent::UserRequested,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "a search the user started must load the identity back",
         );
@@ -4985,7 +5017,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("first refresh");
         let after_first = staged
             .ctx
@@ -5002,7 +5039,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("second refresh");
         let after_second = staged
             .ctx
@@ -5074,7 +5116,12 @@ mod tests {
 
         let err = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect_err("a mixed-protection merge must fail closed");
 
         assert!(
@@ -5201,7 +5248,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rebuilt,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
         );
 

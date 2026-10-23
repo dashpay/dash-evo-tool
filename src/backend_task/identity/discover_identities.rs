@@ -3,6 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::derived_identity_key::recovery_scan_bound;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_discovery::{
     DiscoveryIntent, DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP,
     should_continue_scan,
@@ -159,13 +160,13 @@ impl AppContext {
                     after: None,
                 };
 
-                match dash_sdk::platform::Identity::fetch(&sdk, query).await {
-                    Ok(Some(identity)) => {
-                        fetched_identity = Some(identity);
+                match dash_sdk::platform::Identity::fetch_with_metadata(&sdk, query, None).await {
+                    Ok((Some(identity), metadata)) => {
+                        fetched_identity = Some((identity, metadata.height));
                         matched_key_index = Some(key_index);
                         break;
                     }
-                    Ok(None) => continue,
+                    Ok((None, _)) => continue,
                     Err(e) => {
                         tracing::debug!(
                             error = %e,
@@ -178,7 +179,7 @@ impl AppContext {
                 }
             }
 
-            if let Some(identity) = fetched_identity {
+            if let Some((identity, fetched_height)) = fetched_identity {
                 let identity_id = identity.id();
                 tracing::info!(
                     identity_id = %identity_id,
@@ -191,7 +192,13 @@ impl AppContext {
                 highest_found = Some(highest_found.map_or(current_index, |h| h.max(current_index)));
 
                 match self
-                    .upsert_discovered_identity(&settings, identity, wallet, current_index)
+                    .upsert_discovered_identity(
+                        &settings,
+                        identity,
+                        fetched_height,
+                        wallet,
+                        current_index,
+                    )
                     .await
                 {
                     Ok(true) => summary.stored = summary.stored.saturating_add(1),
@@ -289,6 +296,7 @@ impl AppContext {
         self: &Arc<Self>,
         settings: &ScanSettings<'_>,
         identity: dash_sdk::platform::Identity,
+        fetched_height: u64,
         wallet: &Arc<RwLock<Wallet>>,
         identity_index: u32,
     ) -> Result<bool, TaskError> {
@@ -318,6 +326,7 @@ impl AppContext {
             &mut qualified_identity,
             &Some((seed_hash, identity_index)),
             settings.intent,
+            BalanceProvenance::ObservedAt(fetched_height),
         )?;
 
         adopt_discovered_identity(wallet, identity_index, &qualified_identity.identity, stored);
@@ -579,7 +588,12 @@ mod tests {
 
         let mut rebuilt = wallet_only_rebuild_of(&before);
         let stored = ctx
-            .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuilt,
+                &None,
+                DiscoveryIntent::Automatic,
+                BalanceProvenance::Unobserved,
+            )
             .expect("store the rediscovered identity");
         assert!(stored, "a listed identity is refreshed");
 
@@ -658,7 +672,12 @@ mod tests {
 
         let mut rebuilt = wallet_only_rebuild_of(&before);
         let stored = ctx
-            .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuilt,
+                &None,
+                DiscoveryIntent::Automatic,
+                BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(

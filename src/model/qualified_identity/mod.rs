@@ -27,7 +27,6 @@ use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -3374,6 +3373,7 @@ mod protocol_v14_compat_tests {
     use super::*;
     use crate::model::identity_key_usability::SigningScope;
     use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+    use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;

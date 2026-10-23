@@ -91,10 +91,7 @@ impl AppContext {
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
         if let Some(balance) = claimant_balance {
-            self.edit_local_qualified_identity(&identity_id, |fresh| {
-                fresh.identity.set_balance(balance);
-                Ok(())
-            })?;
+            self.persist_claimant_balance(&identity_id, balance)?;
         }
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {
@@ -102,6 +99,28 @@ impl AppContext {
             pot,
             claimant_balance,
             remaining_credits: claimed.remaining_credits,
+        })
+    }
+}
+
+impl AppContext {
+    /// Store `balance`, the claimant's balance after a claim the network
+    /// paid out, on the record of `identity_id`. The claim is already paid
+    /// out, so a failure here is reported as
+    /// [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not as a failed
+    /// claim.
+    fn persist_claimant_balance(
+        &self,
+        identity_id: &Identifier,
+        balance: dash_sdk::dpp::fee::Credits,
+    ) -> Result<(), TaskError> {
+        self.edit_local_qualified_identity(identity_id, |fresh| {
+            fresh.identity.set_balance(balance);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|source| TaskError::ContractFeesClaimedButBalanceNotSaved {
+            source: Box::new(source),
         })
     }
 }
@@ -133,6 +152,25 @@ async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedMod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A claim the network paid out is reported as paid out, not as failed,
+    /// when storing the claimant's new balance on this device fails.
+    #[test]
+    fn a_claim_whose_balance_cannot_be_saved_is_reported_as_paid_out() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        // Nothing is stored for this identity, so the write fails.
+        let result = ctx.persist_claimant_balance(&Identifier::random(), 1_000);
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
+            ),
+            "got {result:?}"
+        );
+    }
 
     /// Before protocol version 14 is confirmed nothing is read or claimed:
     /// an older network has no fee pots.

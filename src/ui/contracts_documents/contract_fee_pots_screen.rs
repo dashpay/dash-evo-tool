@@ -301,6 +301,17 @@ impl ScreenLike for ContractFeePotsScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, _context: &BackendTaskContext, error: &TaskError) {
+        // The claim was paid out though its balance was not saved: re-read
+        // the pots so the emptied pot shows and no retry is invited.
+        if matches!(
+            error,
+            TaskError::ContractFeesClaimedButBalanceNotSaved { .. }
+        ) {
+            self.pots = FeePotsState::NotLoaded;
+        }
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::ContractFeePots {
@@ -570,6 +581,37 @@ mod tests {
             ),
             "got {claim:?}"
         );
+    }
+
+    /// A claim paid out whose balance could not be saved re-reads the pots,
+    /// so the emptied pot shows and no retry is invited.
+    #[test]
+    fn a_paid_out_claim_that_was_not_saved_rereads_the_pots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ContractFeePotsScreen::new(&app_context);
+        let contract_id = Identifier::random();
+        screen.pots = FeePotsState::Loaded {
+            contract_id,
+            pots: ContractFeePots::default(),
+            seated_moderators: SeatedModerators::NotSeated,
+        };
+        screen.claim_in_flight = Some(ContractFeePot::Owner);
+        let identity = crate::backend_task::identity::key_limits_test_identity();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.claim_request(contract_id, ContractFeePot::Owner, &identity)
+        else {
+            panic!("the claim goes out with a context");
+        };
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::ContractFeesClaimedButBalanceNotSaved {
+                source: Box::new(TaskError::IdentityNotFoundLocally),
+            },
+        );
+
+        assert_eq!(screen.pots, FeePotsState::NotLoaded);
     }
 
     fn claimable() -> ClaimGate {

@@ -84,6 +84,8 @@ pub struct AmountInput {
     max_exceeded_hint: Option<String>,
     /// Optional persistent caption rendered below the amount field.
     caption: Option<String>,
+    /// Whether an amount above `max_amount` is refused.
+    validate_max: bool,
 }
 
 impl AmountInput {
@@ -115,6 +117,7 @@ impl AmountInput {
             changed: true,                // Start as changed to force initial validation
             max_exceeded_hint: None,
             caption: None,
+            validate_max: true,
         }
     }
 
@@ -211,6 +214,14 @@ impl AmountInput {
         self
     }
 
+    /// Whether an amount above the maximum is refused (default `true`). With
+    /// `false`, the maximum only backs the "Max" button and the caller reports
+    /// an amount that is too large itself.
+    pub fn with_max_validation(mut self, validate: bool) -> Self {
+        self.validate_max = validate;
+        self
+    }
+
     /// Sets a hint explaining why the maximum is limited (e.g., "fees reserved").
     /// This hint is appended to the error message when the max is exceeded.
     pub fn with_max_exceeded_hint(mut self, hint: impl Into<String>) -> Self {
@@ -297,7 +308,8 @@ impl AmountInput {
                 }
 
                 // Check if amount exceeds maximum
-                if let Some(max_amount) = self.max_amount
+                if self.validate_max
+                    && let Some(max_amount) = self.max_amount
                     && amount.value() > max_amount
                 {
                     let max_formatted = Amount::new(max_amount, self.decimal_places);
@@ -597,6 +609,20 @@ mod tests {
         assert!(
             validation_result.unwrap().is_some(),
             "Amount within range should have parsed amount"
+        );
+    }
+
+    #[test]
+    fn without_max_validation_an_amount_above_the_maximum_is_kept() {
+        let mut input = AmountInput::new(Amount::new(0, 2))
+            .with_max_amount(Some(10000))
+            .with_max_validation(false);
+        input.amount_str = "150.00".to_string();
+        assert_eq!(
+            input
+                .validate_amount()
+                .map(|amount| amount.map(|a| a.value())),
+            Ok(Some(15000))
         );
     }
 

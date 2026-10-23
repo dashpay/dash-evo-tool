@@ -2891,8 +2891,11 @@ pub enum TaskError {
     NoUtxosAvailable,
 
     /// The wallet balance is too low to cover the requested amount plus fees.
+    /// Both amounts are in duffs and are shown in Dash.
     #[error(
-        "You do not have enough Dash. You have {available} duffs but need {required} duffs. Please add more funds and retry."
+        "You do not have enough Dash. You have {available_dash} but need {required_dash}. Add more funds, or enter a smaller amount, and try again.",
+        available_dash = format_duffs_as_dash(*.available),
+        required_dash = format_duffs_as_dash(*.required)
     )]
     InsufficientFunds { available: u64, required: u64 },
 
@@ -4814,6 +4817,20 @@ mod tests {
         );
         assert!(!message.to_lowercase().contains("details"), "{message}");
         assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// The pooled build's shortfall is the only balance check a Core send
+    /// gets, so its message states both amounts in Dash, never in duffs.
+    #[test]
+    fn insufficient_funds_message_states_amounts_in_dash() {
+        let message = TaskError::InsufficientFunds {
+            available: 50_000_000,
+            required: 100_000_000,
+        }
+        .to_string();
+        assert!(message.contains("0.5 DASH"), "{message}");
+        assert!(message.contains("1 DASH"), "{message}");
+        assert!(!message.to_lowercase().contains("duff"), "{message}");
     }
 
     /// The asset-lock input-cap refusal is shared by identity registration,

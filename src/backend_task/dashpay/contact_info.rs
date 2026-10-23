@@ -4,6 +4,7 @@ use crate::backend_task::error::{ContactInfoReadError, TaskError};
 use crate::context::AppContext;
 use crate::model::dashpay::{
     AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
+    validate_contact_note,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
@@ -24,6 +25,8 @@ use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
+use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData as UpstreamPrivateData;
+use platform_wallet::wallet::identity::crypto::contact_info::encode_private_data_bounded;
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -44,89 +47,40 @@ impl ContactInfoPrivateData {
         Self::default()
     }
 
-    /// Minimum plaintext size so that IV (16) + AES-CBC ciphertext ≥ 48 bytes
-    /// (the `privateData` field's `minItems` in the DashPay contract).
-    /// PKCS7 pads 16 bytes to 32 (adds a full padding block when input is
-    /// block-aligned), so 16 plaintext → 32 ciphertext → 48 with IV.
-    const MIN_PLAINTEXT_SIZE: usize = 16;
+    /// The plaintext floor platform-wallet pads to with zero bytes, so that
+    /// IV (16) + AES-CBC ciphertext reaches the contract's 48-byte minimum.
+    /// Older versions of this client padded to 16 bytes, starting with a zero.
+    const MIN_PLAINTEXT_SIZE: usize = 17;
 
-    // Serialize to bytes for encryption
-    pub fn serialize(&self) -> Result<Vec<u8>, DashPayError> {
-        let mut bytes = Vec::new();
-
-        // Version (4 bytes)
-        bytes.extend_from_slice(&self.version.to_le_bytes());
-
-        // Alias name (length + string)
-        if let Some(alias) = &self.alias_name {
-            let alias_bytes = alias.as_bytes();
-            let alias_len = alias_bytes.len();
-            if alias_len > u8::MAX as usize {
-                return Err(DashPayError::ContactInfoValidationFailed {
-                    errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
-                });
-            }
-            bytes.push(alias_len as u8);
-            bytes.extend_from_slice(alias_bytes);
-        } else {
-            bytes.push(0u8);
-        }
-
-        // Note (length + string)
-        if let Some(note) = &self.note {
-            let note_bytes = note.as_bytes();
-            let note_len = note_bytes.len();
-            if note_len > u8::MAX as usize {
-                return Err(DashPayError::ContactInfoValidationFailed {
-                    errors: vec![format!("Note too long ({note_len} bytes, max 255)")],
-                });
-            }
-            bytes.push(note_len as u8);
-            bytes.extend_from_slice(note_bytes);
-        } else {
-            bytes.push(0u8);
-        }
-
-        // Display hidden (1 byte)
-        bytes.push(if self.display_hidden { 1 } else { 0 });
-
-        // Accepted accounts (length + array)
-        let accounts_len = self.accepted_accounts.len();
-        if accounts_len > u8::MAX as usize {
+    /// Encode for encryption with platform-wallet's DIP-15 codec, so every
+    /// client that uses it reads what this one writes.
+    pub fn serialize(&self) -> Result<Vec<u8>, TaskError> {
+        let alias_len = self.alias_name.as_deref().map_or(0, str::len);
+        if alias_len > u8::MAX as usize {
             return Err(DashPayError::ContactInfoValidationFailed {
-                errors: vec![format!(
-                    "Too many accepted accounts ({accounts_len}, max 255)"
-                )],
-            });
-        }
-        bytes.push(accounts_len as u8);
-        for account in &self.accepted_accounts {
-            bytes.extend_from_slice(&account.to_le_bytes());
-        }
-
-        // Pad to minimum plaintext size so the encrypted output (IV + ciphertext)
-        // meets the DashPay contract's privateData minItems (48 bytes).
-        // First padding byte is 0x00 as a sentinel so deserializers can
-        // distinguish real data from padding. Remaining bytes are random.
-        if bytes.len() < Self::MIN_PLAINTEXT_SIZE {
-            use bip39::rand::RngCore;
-            bytes.push(0x00); // sentinel: marks start of padding
-            let remaining = Self::MIN_PLAINTEXT_SIZE - bytes.len();
-            if remaining > 0 {
-                let mut pad = vec![0u8; remaining];
-                StdRng::from_entropy().fill_bytes(&mut pad);
-                bytes.extend_from_slice(&pad);
+                errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
             }
+            .into());
         }
-
-        Ok(bytes)
+        validate_contact_note(self.note.as_deref().unwrap_or_default())?;
+        encode_private_data_bounded(&UpstreamPrivateData {
+            alias_name: self.alias_name.clone(),
+            note: self.note.clone(),
+            display_hidden: self.display_hidden,
+            accepted_accounts: self.accepted_accounts.clone(),
+        })
+        .map_err(|source| TaskError::DashPayContactInfoEncoding {
+            source: Box::new(source),
+        })
     }
 
     /// Parse the plaintext produced by [`serialize`](Self::serialize).
     ///
     /// Returns `None` for a truncated or non-canonical v0 payload, invalid
     /// UTF-8, or an unsupported version. The only accepted trailing bytes are
-    /// this client's sentinel padding up to [`Self::MIN_PLAINTEXT_SIZE`].
+    /// zero padding up to [`Self::MIN_PLAINTEXT_SIZE`].
+    /// Stricter than platform-wallet's reader: a write must never drop fields
+    /// it cannot read.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
         let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
         if version != 0 {
@@ -134,10 +88,30 @@ impl ContactInfoPrivateData {
         }
         let mut pos = 4;
 
+        // A Bitcoin CompactSize length, in its shortest encoding only.
+        let take_compact_size = |pos: &mut usize| -> Option<usize> {
+            let field = |width: usize| bytes.get(*pos + 1..*pos + 1 + width);
+            let (value, width): (u64, usize) = match *bytes.get(*pos)? {
+                0xFD => (u16::from_le_bytes(field(2)?.try_into().ok()?).into(), 3),
+                0xFE => (u32::from_le_bytes(field(4)?.try_into().ok()?).into(), 5),
+                0xFF => (u64::from_le_bytes(field(8)?.try_into().ok()?), 9),
+                n => (n.into(), 1),
+            };
+            let shortest = match width {
+                3 => 0xFD,
+                5 => 0x1_0000,
+                9 => 0x1_0000_0000,
+                _ => 0,
+            };
+            if value < shortest {
+                return None;
+            }
+            *pos += width;
+            usize::try_from(value).ok()
+        };
         let take_string = |pos: &mut usize| -> Option<Option<String>> {
-            let len = *bytes.get(*pos)? as usize;
-            *pos += 1;
-            let raw = bytes.get(*pos..*pos + len)?;
+            let len = take_compact_size(pos)?;
+            let raw = bytes.get(*pos..pos.checked_add(len)?)?;
             *pos += len;
             if len == 0 {
                 Some(None)
@@ -155,8 +129,7 @@ impl ContactInfoPrivateData {
         };
         pos += 1;
 
-        let count = *bytes.get(pos)? as usize;
-        pos += 1;
+        let count = take_compact_size(&mut pos)?;
         let accepted_accounts = (0..count)
             .map(|_| {
                 let raw = bytes.get(pos..pos + 4)?;
@@ -166,7 +139,8 @@ impl ContactInfoPrivateData {
             .collect::<Option<Vec<u32>>>()?;
 
         if pos < bytes.len()
-            && (bytes.len() != Self::MIN_PLAINTEXT_SIZE || bytes.get(pos) != Some(&0))
+            && (bytes.len() > Self::MIN_PLAINTEXT_SIZE
+                || bytes[pos..].iter().any(|byte| *byte != 0))
         {
             return None;
         }
@@ -187,7 +161,8 @@ fn apply_contact_info_update(
     existing: Option<&Document>,
     private_data_key: &[u8; 32],
 ) -> Result<ContactInfoPrivateData, TaskError> {
-    let preserves_existing = matches!(update.nickname, ContactInfoField::Preserve)
+    let preserves_existing = matches!(update.display_hidden, ContactInfoField::Preserve)
+        || matches!(update.nickname, ContactInfoField::Preserve)
         || matches!(update.note, ContactInfoField::Preserve)
         || matches!(update.accepted_accounts, AcceptedAccounts::Preserve);
 
@@ -203,7 +178,9 @@ fn apply_contact_info_update(
     if let ContactInfoField::Replace(note) = update.note {
         data.note = note;
     }
-    data.display_hidden = update.display_hidden;
+    if let ContactInfoField::Replace(hidden) = update.display_hidden {
+        data.display_hidden = hidden;
+    }
     if let AcceptedAccounts::Replace(accounts) = update.accepted_accounts {
         data.accepted_accounts = accounts;
     }
@@ -377,7 +354,7 @@ fn next_contact_info_page(docs: &Documents) -> Option<Start> {
         .map(|last_id| Start::StartAfter(last_id.to_buffer().to_vec()))
 }
 
-async fn fetch_all_contact_info_documents<F, Fut>(
+pub(super) async fn fetch_all_contact_info_documents<F, Fut>(
     mut query: DocumentQuery,
     mut fetch_page: F,
 ) -> Result<Documents, TaskError>
@@ -575,8 +552,8 @@ pub(super) async fn contact_info_is_hidden(
 /// identity has none yet and replacing it otherwise.
 ///
 /// The document is written whole, so `update` explicitly chooses which fields
-/// are preserved and which fields are replaced. Nicknames, notes, and account
-/// lists are each limited to 255 bytes/items by the v0 encoding.
+/// are preserved and which fields are replaced. Nicknames and notes are limited
+/// to 255 UTF-8 bytes; the encoded payload must also fit the contract size limit.
 ///
 /// # Errors
 ///
@@ -590,6 +567,31 @@ pub async fn create_or_update_contact_info(
     identity: QualifiedIdentity,
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let write_guard = app_context
+        .contact_info_writes
+        .acquire(identity.identity.id())
+        .await;
+    create_or_update_contact_info_locked(
+        app_context,
+        sdk,
+        identity,
+        contact_user_id,
+        update,
+        &write_guard,
+    )
+    .await
+}
+
+/// Write while the caller holds the owner's lock across its reads and decisions.
+/// Request actions acquire their request lock before this owner lock.
+pub(super) async fn create_or_update_contact_info_locked(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    contact_user_id: Identifier,
+    update: ContactInfoUpdate,
+    _write_guard: &tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
@@ -1031,6 +1033,163 @@ mod tests {
         assert_eq!(documents.keys().last().copied(), Some(id(101)));
     }
 
+    /// DIP-15 writes string lengths as CompactSize, where 253 and longer take a
+    /// three-byte prefix. Other platform-wallet clients must read what this
+    /// client writes, and this client what they write.
+    #[test]
+    fn contact_details_round_trip_with_the_platform_wallet_codec() {
+        use platform_wallet::wallet::identity::crypto as upstream;
+        for len in [0, 252, 253, 255] {
+            let text = (len > 0).then(|| "x".repeat(len));
+            let ours = ContactInfoPrivateData {
+                version: 0,
+                alias_name: text.clone(),
+                note: text.clone(),
+                display_hidden: true,
+                accepted_accounts: vec![0, 3],
+            };
+            let theirs = upstream::ContactInfoPrivateData {
+                alias_name: text.clone(),
+                note: text.clone(),
+                display_hidden: true,
+                accepted_accounts: vec![0, 3],
+            };
+
+            let decoded = upstream::decode_private_data(&ours.serialize().expect("serialize"));
+            assert_eq!(
+                decoded.ok(),
+                Some(theirs.clone()),
+                "platform-wallet reads {len} bytes"
+            );
+
+            let parsed =
+                ContactInfoPrivateData::deserialize(&upstream::encode_private_data(&theirs))
+                    .unwrap_or_else(|| {
+                        panic!("this client reads {len} bytes from platform-wallet")
+                    });
+            assert_eq!(parsed.alias_name, text);
+            assert_eq!(parsed.note, text);
+            assert!(parsed.display_hidden);
+            assert_eq!(parsed.accepted_accounts, vec![0, 3]);
+        }
+    }
+
+    #[test]
+    fn contact_info_fee_estimate_covers_preserved_accounts() {
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimator = PlatformFeeEstimator::new();
+        for len in [0, 252, 253, 255] {
+            for accounts in [0, 1, 16, 252, 253, 400, 500] {
+                let text = (len > 0).then(|| "x".repeat(len));
+                let data = ContactInfoPrivateData {
+                    alias_name: text.clone(),
+                    note: text,
+                    accepted_accounts: (0..accounts).collect(),
+                    ..Default::default()
+                };
+                let Ok(encoded) = data.serialize() else {
+                    continue;
+                };
+                let encrypted = encrypt_private_data(&encoded, &KEY).unwrap();
+                assert!(
+                    estimator.estimate_contact_info_write()
+                        >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
+                    "{len}-byte fields and {accounts} accounts"
+                );
+            }
+        }
+    }
+
+    fn contact_details_page(documents: impl IntoIterator<Item = Document>) -> Documents {
+        documents
+            .into_iter()
+            .map(|document| (document.id(), Some(document)))
+            .collect()
+    }
+
+    /// A stored contactInfo for `contact` whose note platform-wallet wrote.
+    fn saved_note_document(document_id: u8, contact: Identifier, note: &str) -> Document {
+        use platform_wallet::wallet::identity::crypto as upstream;
+        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY).expect("encrypt");
+        let mut document = lookup_contact_info_document(document_id, document_id.into(), user_id);
+        let plaintext = upstream::encode_private_data(&upstream::ContactInfoPrivateData {
+            note: Some(note.to_string()),
+            ..Default::default()
+        });
+        let private_data = encrypt_private_data(&plaintext, &KEY).expect("encrypt");
+        document.set("privateData", Value::Bytes(private_data));
+        document
+    }
+
+    /// The details loaded from `pages`, and whether every page was asked for
+    /// in the order the write lookup uses.
+    async fn load_details(
+        pages: Vec<Documents>,
+    ) -> (
+        std::collections::HashMap<Identifier, super::super::contacts::ContactData>,
+        bool,
+    ) {
+        let contract =
+            load_system_data_contract(SystemDataContract::Dashpay, PlatformVersion::latest())
+                .expect("DashPay contract fixture");
+        let query = DocumentQuery::new(contract, "contactInfo").expect("contactInfo query");
+        let mut pages = VecDeque::from(pages);
+        let mut ordered = true;
+        let details = super::super::contacts::load_contact_details(
+            query,
+            |query| {
+                ordered &= query
+                    .order_by_clauses
+                    .iter()
+                    .any(|clause| clause.field == "$updatedAt" && clause.ascending);
+                ready(Ok::<_, TaskError>(pages.pop_front().unwrap_or_default()))
+            },
+            |_| ready(Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))),
+        )
+        .await
+        .expect("contact details load");
+        (details, ordered)
+    }
+
+    /// A saved note can sit beyond the first page of the owner's contactInfo
+    /// documents; it must not be read as "no note".
+    #[tokio::test]
+    async fn the_contact_details_load_reads_every_page() {
+        let contact = id(201);
+        let other = encrypt_to_user_id(&id(202).to_buffer(), &KEY).expect("encrypt");
+        let first_page = contact_details_page(
+            (1..=100).map(|byte| lookup_contact_info_document(byte, byte.into(), other)),
+        );
+        let note = "n".repeat(253);
+        let second_page = contact_details_page([saved_note_document(101, contact, &note)]);
+
+        let (details, ordered) = load_details(vec![first_page, second_page]).await;
+
+        assert_eq!(
+            details.get(&contact).and_then(|c| c.note.clone()),
+            Some(note)
+        );
+        assert!(ordered, "pages follow the order the write lookup uses");
+    }
+
+    /// With two documents for one contact, the load shows the one a save
+    /// rewrites: the first in that order.
+    #[tokio::test]
+    async fn the_contact_details_load_shows_the_document_a_save_rewrites() {
+        let contact = id(201);
+        let page = contact_details_page([
+            saved_note_document(1, contact, "kept"),
+            saved_note_document(2, contact, "stale"),
+        ]);
+
+        let (details, _) = load_details(vec![page]).await;
+
+        assert_eq!(
+            details.get(&contact).and_then(|c| c.note.as_deref()),
+            Some("kept")
+        );
+    }
+
     #[test]
     fn private_data_round_trips_every_accepted_account() {
         let original = ContactInfoPrivateData {
@@ -1129,7 +1288,7 @@ mod tests {
     fn trailing_extension_bytes_require_confirmation() {
         let mut bytes = ContactInfoPrivateData {
             version: 0,
-            alias_name: Some("12345678".to_string()),
+            alias_name: Some("123456789".to_string()),
             note: None,
             display_hidden: false,
             accepted_accounts: Vec::new(),
@@ -1143,6 +1302,24 @@ mod tests {
     }
 
     #[test]
+    fn contact_info_padding_rejects_nonzero_bytes_after_the_sentinel() {
+        let canonical = ContactInfoPrivateData::new()
+            .serialize()
+            .expect("serialize");
+        for length in [16, ContactInfoPrivateData::MIN_PLAINTEXT_SIZE] {
+            assert!(ContactInfoPrivateData::deserialize(&canonical[..length]).is_some());
+            for offset in 9..length {
+                let mut malformed = canonical[..length].to_vec();
+                malformed[offset] = 42;
+                assert!(
+                    ContactInfoPrivateData::deserialize(&malformed).is_none(),
+                    "nonzero padding at {offset} in {length} bytes must require confirmation"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn minimum_size_padding_requires_the_sentinel() {
         let mut bytes = ContactInfoPrivateData::new()
             .serialize()
@@ -1150,6 +1327,24 @@ mod tests {
         bytes[8] = 1;
 
         assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn contact_info_note_preserves_a_concurrent_visibility_change() {
+        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+        let data = apply_contact_info_update(
+            ContactInfoUpdate::note(Some("New note".into())),
+            Some(&existing),
+            &KEY,
+        )
+        .unwrap();
+        assert!(
+            data.display_hidden,
+            "note edits must keep the latest stored visibility"
+        );
+        assert_eq!(data.note.as_deref(), Some("New note"));
+        assert_eq!(data.alias_name.as_deref(), Some("Bao"));
+        assert_eq!(data.accepted_accounts, vec![0, 4, 9]);
     }
 
     #[test]

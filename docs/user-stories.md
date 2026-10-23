@@ -1042,6 +1042,8 @@ As a user, I want to see my contacts and their profiles so that I can manage my 
 
 - Lists all accepted contacts.
 - View individual contact details and profile.
+- In the Identity Hub Contacts tab, selecting a contact shows its picture, name, username, and
+  bio beside the list, or under it on a narrow window.
 
 ### DPY-006: Send payment to contact [Implemented]
 **Persona:** Alex, Priya
@@ -1076,7 +1078,11 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
-- Changes persist locally.
+- The Identity Hub contact details edit the private note, which is saved encrypted on Dash
+  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
+  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  legacy DashPay screens can continue to show an older local note.
+- Edits made through the legacy contact-details screen persist in its local memo.
 
 ### DPY-010: Remove a contact [Gap]
 **Persona:** Alex, Priya
@@ -1733,6 +1739,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
 - Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Selecting a contact in Home's preview opens Contacts with that person's profile and private note selected in Contact details. The selection stays visible while the list refreshes.
 - Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]

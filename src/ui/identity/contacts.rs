@@ -12,25 +12,34 @@
 //!
 //! Row actions dispatch the DashPay backend tasks directly: Accept and Decline
 //! on a received request, Cancel on a sent one, and Pay on an established
-//! contact (which opens the existing send-payment screen), and View Profile
-//! (which opens the existing contact-profile viewer).
+//! contact (which opens the existing send-payment screen). Clicking an
+//! established contact shows it in the detail pane beside the list (under it on
+//! a narrow window), with its profile and a private note saved encrypted on
+//! Dash Platform.
 
 use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+use crate::model::dashpay::{
+    ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, UnreadableContactInfoPolicy, validate_contact_note,
+};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
+use crate::ui::components::avatar::Avatar;
+use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::state::AvatarCache;
 use crate::ui::state::contacts_view::contact_label;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
+use eframe::egui::{CornerRadius, Frame, Label, Margin, RichText, Stroke, TextEdit, Ui};
 use std::sync::Arc;
 
 pub use crate::ui::state::contacts_view::{ContactRequestEntry, ContactsState};
@@ -42,7 +51,18 @@ pub const ADD_BY_USERNAME_LABEL: &str = "Add by username";
 pub const SCAN_QR_LABEL: &str = "Scan QR";
 pub const SHOW_MY_QR_LABEL: &str = "Show my QR";
 pub const PAY_LABEL: &str = "Pay";
-pub const VIEW_PROFILE_LABEL: &str = "View Profile";
+pub const SELECT_CONTACT_TOOLTIP: &str = "Show this contact's details.";
+pub const DETAIL_HEADING: &str = "Contact details";
+pub const NO_SELECTION: &str = "Select a contact to see their details.";
+pub const NOTE_HEADING: &str = "Private note";
+pub const NOTE_HINT: &str = "Only you can see this note. It is stored encrypted on Dash Platform.";
+pub const NOTE_PLACEHOLDER: &str = "Add a note that only you can see";
+pub const SAVE_NOTE_LABEL: &str = "Save note";
+pub const SAVING_NOTE_LABEL: &str = "Saving…";
+pub const NOTE_UNCHANGED_TOOLTIP: &str = "There are no changes to save.";
+pub const NOTE_SAVE_TOOLTIP: &str = "Save this note on Dash Platform. Saving costs a small fee.";
+pub const NOTE_SAVED: &str = "Your note is saved.";
+const NOTE_SAVING_TOOLTIP: &str = "This contact's details are being saved.";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
 pub const SENT_HEADING: &str = "Sent requests";
@@ -69,6 +89,13 @@ pub const HIDDEN_EXPLAINER: &str = "Hidden contacts are kept out of your list. D
 /// instead of promising a withdrawal the protocol cannot deliver.
 pub const CANCEL_EXPLAINER: &str = "Cancelling a request hides it and tells the other person you are no longer waiting. The \
      original request stays on the network.";
+
+/// Below this tab width the detail pane stacks under the contact list. Home
+/// and Profile switch to one column at the same width.
+const TWO_COLUMN_MIN_WIDTH: f32 = 760.0;
+/// Share of the two-column width the contact list takes.
+const LIST_SHARE: f32 = 0.55;
+const DETAIL_AVATAR_SIZE: f32 = 64.0;
 
 /// Every clickable affordance on the Contacts tab header + populated shell.
 /// Mirrors the home-tab `HomeButton` dispatcher pattern so the dead-button
@@ -203,7 +230,7 @@ fn dispatch_request_shared(
 
 /// One-shot hydration of the tab: the contact list and the request lists.
 ///
-/// Both loads travel as a single [`AppAction::BackendTasks`]. Two separate
+/// Both loads travel as a single [`AppAction::BackendTasksWithContexts`]. Two separate
 /// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
 /// so the first load would be dropped on the floor and the active section would
 /// never fill.
@@ -211,26 +238,37 @@ pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsStat
     let Some(reads) = state.claim_reads() else {
         return AppAction::None;
     };
-    AppAction::BackendTasks(
-        reads
-            .into_iter()
-            .map(|kind| {
-                BackendTask::DashPayTask(Box::new(match kind {
-                    crate::model::dashpay::ContactsLoadKind::Contacts => {
-                        DashPayTask::LoadContacts {
-                            identity: identity.clone(),
-                        }
+    let tasks = reads
+        .into_iter()
+        .map(|kind| {
+            let task = BackendTask::DashPayTask(Box::new(match kind {
+                crate::model::dashpay::ContactsLoadKind::Contacts => DashPayTask::LoadContacts {
+                    identity: identity.clone(),
+                },
+                crate::model::dashpay::ContactsLoadKind::Requests => {
+                    DashPayTask::LoadContactRequests {
+                        identity: identity.clone(),
                     }
-                    crate::model::dashpay::ContactsLoadKind::Requests => {
-                        DashPayTask::LoadContactRequests {
-                            identity: identity.clone(),
-                        }
+                }
+            }));
+            let context = match kind {
+                // Its own dispatch, so an older load answering late is
+                // recognised as stale.
+                crate::model::dashpay::ContactsLoadKind::Contacts => {
+                    let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
+                    if let Some(dispatch_id) = context.dispatch_id() {
+                        state.record_contacts_load(dispatch_id);
                     }
-                }))
-            })
-            .collect(),
-        BackendTasksExecutionMode::Concurrent,
-    )
+                    context
+                }
+                crate::model::dashpay::ContactsLoadKind::Requests => {
+                    BackendTaskContext::for_task_on(&task, identity.network)
+                }
+            };
+            (task, context)
+        })
+        .collect();
+    AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Concurrent)
 }
 
 /// Backend task for a request-card action. Accept and Decline act on a received
@@ -273,6 +311,71 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
     }
 }
 
+/// Backend task that stores `note` as the private note on `contact`, keeping
+/// its nickname, accepted accounts and hidden state.
+pub fn save_note_task(
+    identity: QualifiedIdentity,
+    contact: &ContactData,
+    note: Option<String>,
+) -> DashPayTask {
+    DashPayTask::UpdateContactInfo {
+        identity,
+        contact_id: contact.identity_id,
+        update: ContactInfoUpdate::note(note),
+    }
+}
+
+/// The fee line shown beside Save note.
+pub fn note_fee_text(fee: &str) -> String {
+    format!("Estimated fee for saving this note: up to {fee}.")
+}
+
+/// Dispatch the save of the selected contact's note draft, if it has a valid
+/// change. A save already running for that contact dispatches nothing: each
+/// save is a paid write.
+fn dispatch_note_save(state: &mut ContactsState, identity: &QualifiedIdentity) -> AppAction {
+    let Some(contact) = state.selected_contact().cloned() else {
+        return AppAction::None;
+    };
+    let detail = state.detail_mut();
+    let valid = detail
+        .note_to_save(&contact.identity_id)
+        .is_none_or(|note| validate_contact_note(&note).is_ok());
+    if !valid || !detail.is_dirty(&contact.identity_id) {
+        return AppAction::None;
+    }
+    let Some(note) = detail.begin_save(identity.identity.id(), contact.identity_id) else {
+        return AppAction::None;
+    };
+    AppAction::BackendTask(BackendTask::DashPayTask(Box::new(save_note_task(
+        identity.clone(),
+        &contact,
+        note,
+    ))))
+}
+
+/// Dispatch the unhide of `contact`. Unhiding rewrites the contact's whole
+/// `contactInfo`, so it waits for any other write to that contact to finish.
+fn dispatch_unhide(
+    state: &mut ContactsState,
+    identity: &QualifiedIdentity,
+    contact: &ContactData,
+) -> AppAction {
+    if !state
+        .detail_mut()
+        .begin_visibility_write(identity.identity.id(), contact.identity_id)
+    {
+        return AppAction::None;
+    }
+    // Move the row now; the authoritative reload lands when the broadcast
+    // confirms.
+    state.unhide_contact(&contact.identity_id);
+    AppAction::BackendTask(BackendTask::DashPayTask(Box::new(unhide_task(
+        identity.clone(),
+        contact,
+    ))))
+}
+
 /// Public entry point invoked by `hub_screen` when the Contacts tab is active.
 ///
 /// Resolves the "current" identity as the app-scoped active identity. When no
@@ -287,9 +390,21 @@ pub fn render(
     identity: Option<&QualifiedIdentity>,
     state: &mut ContactsState,
     profiles: &mut super::profile_cache::ProfileCache,
+    avatars: &mut AvatarCache,
+    pending_avatars: &mut Vec<BackendTask>,
 ) -> AppAction {
     let tab_state = ContactsTabState::resolve(app_context, identity, profiles);
-    render_state(ui, app_context, &tab_state, state)
+    let mut avatars = DetailAvatars {
+        cache: avatars,
+        pending: pending_avatars,
+    };
+    render_state(ui, app_context, &tab_state, state, &mut avatars)
+}
+
+/// The hub's avatar cache and the fetches the detail pane asks it for.
+struct DetailAvatars<'a> {
+    cache: &'a mut AvatarCache,
+    pending: &'a mut Vec<BackendTask>,
 }
 
 /// The populated Contacts tab's load, when it is due: the contact list and the
@@ -374,11 +489,12 @@ fn render_state(
     app_context: &Arc<AppContext>,
     tab_state: &ContactsTabState,
     state: &mut ContactsState,
+    avatars: &mut DetailAvatars<'_>,
 ) -> AppAction {
     match tab_state {
         ContactsTabState::Gated { handle } => render_gated(ui, handle.as_deref()),
         ContactsTabState::Populated { identity } => {
-            render_populated(ui, app_context, identity, state)
+            render_populated(ui, app_context, identity, state, avatars)
         }
     }
 }
@@ -409,14 +525,15 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
     AppAction::None
 }
 
-/// Populated-state shell — three sections, each rendering live rows, plus a
-/// one-shot dispatch of [`DashPayTask::LoadContacts`] +
-/// [`DashPayTask::LoadContactRequests`].
+/// Populated-state shell — the three sections and the selected contact's
+/// detail pane: beside them on a wide tab, under the active contacts on a
+/// narrow one.
 fn render_populated(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
+    avatars: &mut DetailAvatars<'_>,
 ) -> AppAction {
     state.reconcile_owner(identity);
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
@@ -424,16 +541,249 @@ fn render_populated(
 
     action |= header_row(ui, app_context, dark_mode);
 
-    // The sections scroll below the header, so a long contact list stays
-    // reachable in a short window.
-    eframe::egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            action |= received_section(ui, app_context, identity, state, dark_mode);
-            action |= active_section(ui, app_context, identity, state, dark_mode);
-            action |= sent_section(ui, app_context, identity, state, dark_mode);
+    // Everything scrolls below the header, so a long contact list stays
+    // reachable in a short window. The two columns scroll on their own, so the
+    // details stay in view while the list is scrolled.
+    if ui.available_width() >= TWO_COLUMN_MIN_WIDTH {
+        let content_width = ui.available_width() - Spacing::LG;
+        let list_width = content_width * LIST_SHARE;
+        let detail_width = content_width - list_width;
+        // The column gap applies between the columns only, not inside them.
+        let item_spacing = ui.spacing().item_spacing;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = Spacing::LG;
+            let height = ui.available_height();
+            ui.allocate_ui_with_layout(
+                eframe::egui::vec2(list_width, height),
+                eframe::egui::Layout::top_down(eframe::egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing = item_spacing;
+                    ui.set_width(list_width);
+                    eframe::egui::ScrollArea::vertical()
+                        .id_salt("identity_hub_contacts_list")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            action |= received_section(ui, app_context, identity, state, dark_mode);
+                            action |= active_section(ui, app_context, identity, state, dark_mode);
+                            action |= sent_section(ui, app_context, identity, state, dark_mode);
+                        });
+                },
+            );
+            ui.allocate_ui_with_layout(
+                eframe::egui::vec2(detail_width, height),
+                eframe::egui::Layout::top_down(eframe::egui::Align::Min),
+                |ui| {
+                    ui.spacing_mut().item_spacing = item_spacing;
+                    ui.set_width(detail_width);
+                    eframe::egui::ScrollArea::vertical()
+                        .id_salt("identity_hub_contact_detail")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            action |=
+                                detail_pane(ui, app_context, identity, state, avatars, dark_mode);
+                        });
+                },
+            );
         });
+    } else {
+        eframe::egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                action |= received_section(ui, app_context, identity, state, dark_mode);
+                action |= active_section(ui, app_context, identity, state, dark_mode);
+                // Stacked, the empty pane would only push the sent requests down.
+                if state.selected_contact().is_some() {
+                    action |= detail_pane(ui, app_context, identity, state, avatars, dark_mode);
+                }
+                action |= sent_section(ui, app_context, identity, state, dark_mode);
+            });
+    }
     action
+}
+
+/// Open the send-payment screen for `contact_id`.
+fn pay_action(
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    contact_id: Identifier,
+) -> AppAction {
+    AppAction::AddScreen(
+        ScreenType::DashPaySendPayment(identity.clone(), contact_id).create_screen(app_context),
+    )
+}
+
+/// The selected contact's profile, its Pay action, and its private note.
+fn detail_pane(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut ContactsState,
+    avatars: &mut DetailAvatars<'_>,
+    dark_mode: bool,
+) -> AppAction {
+    let mut action = AppAction::None;
+    let mut save_clicked = false;
+    ui.add_space(12.0);
+
+    section_card(ui, dark_mode, DETAIL_HEADING, |ui| {
+        let Some(contact) = state.selected_contact().cloned() else {
+            ui.label(RichText::new(NO_SELECTION).color(DashColors::text_secondary(dark_mode)));
+            return;
+        };
+        let label = contact_label(&contact);
+
+        ui.horizontal(|ui| {
+            match contact
+                .avatar_url
+                .as_deref()
+                .filter(|url| !url.is_empty() && !avatars.cache.is_failed(url))
+            {
+                Some(url) => {
+                    if let Some(task) = Avatar::new(Some(url), DETAIL_AVATAR_SIZE)
+                        .show(ui, avatars.cache)
+                        .fetch
+                    {
+                        avatars.pending.push(task);
+                    }
+                }
+                None => {
+                    super::avatar::paint_identity_monogram(
+                        ui,
+                        DETAIL_AVATAR_SIZE,
+                        HeroIdentityKind::User,
+                        label.chars().next(),
+                        DashColors::DASH_BLUE,
+                    );
+                }
+            }
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.add(
+                    Label::new(
+                        RichText::new(&label)
+                            .strong()
+                            .size(18.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    )
+                    .truncate(),
+                );
+                if let Some(handle) = contact_handle(&contact, &label) {
+                    ui.add(
+                        Label::new(
+                            RichText::new(handle).color(DashColors::text_secondary(dark_mode)),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+        });
+
+        if let Some(bio) = contact
+            .bio
+            .as_deref()
+            .map(str::trim)
+            .filter(|bio| !bio.is_empty())
+        {
+            ui.add_space(8.0);
+            ui.label(RichText::new(bio).color(DashColors::text_primary(dark_mode)));
+        }
+
+        if FeatureGate::DashPayOperations.is_available(app_context) {
+            ui.add_space(8.0);
+            let pay = ComponentStyles::add_secondary_button(ui, PAY_LABEL, dark_mode)
+                .clickable_tooltip("Send Dash to this contact.");
+            if pay.clicked() {
+                action = pay_action(app_context, identity, contact.identity_id);
+            }
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+        save_clicked = note_editor(ui, app_context, identity, state, &contact, dark_mode);
+    });
+
+    if save_clicked {
+        action = dispatch_note_save(state, identity);
+    }
+    action
+}
+
+/// The private-note editor, its size and fee, and Save note. Returns whether
+/// Save note was clicked while it could save.
+fn note_editor(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    state: &mut ContactsState,
+    contact: &ContactData,
+    dark_mode: bool,
+) -> bool {
+    let contact_id = contact.identity_id;
+    let saving = state
+        .detail()
+        .is_writing(&identity.identity.id(), &contact_id);
+    let detail = state.detail_mut();
+    let Some(note) = detail.note_mut(&contact_id) else {
+        return false;
+    };
+
+    ui.label(
+        RichText::new(NOTE_HEADING)
+            .strong()
+            .color(DashColors::text_primary(dark_mode)),
+    );
+    ui.label(
+        RichText::new(NOTE_HINT)
+            .small()
+            .color(DashColors::text_secondary(dark_mode)),
+    );
+    ui.add_space(6.0);
+    ui.add_enabled(
+        !saving,
+        TextEdit::multiline(note)
+            .hint_text(NOTE_PLACEHOLDER)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY),
+    );
+
+    let to_save = detail.note_to_save(&contact_id);
+    let note_bytes = to_save.as_deref().map_or(0, str::len);
+    super::settings::counter(ui, note_bytes, MAX_CONTACT_NOTE_BYTES, dark_mode);
+    let invalid = to_save
+        .as_deref()
+        .and_then(|note| validate_contact_note(note).err());
+    if let Some(error) = invalid {
+        ui.label(RichText::new(error.to_string()).color(DashColors::ERROR));
+    }
+
+    ui.add_space(8.0);
+    let fee = app_context.fee_estimator().estimate_contact_info_write();
+    ui.label(
+        RichText::new(note_fee_text(&format_credits_as_dash(fee)))
+            .small()
+            .color(DashColors::text_secondary(dark_mode)),
+    );
+    ui.add_space(6.0);
+
+    let dirty = detail.is_dirty(&contact_id);
+    let can_save = dirty && invalid.is_none() && !saving;
+    let label = if saving {
+        SAVING_NOTE_LABEL
+    } else {
+        SAVE_NOTE_LABEL
+    };
+    let save = ComponentStyles::add_primary_button_enabled(ui, can_save, label);
+    let save = if can_save {
+        save.clickable_tooltip(NOTE_SAVE_TOOLTIP)
+    } else if saving {
+        save.disabled_tooltip(NOTE_SAVING_TOOLTIP)
+    } else if let Some(error) = invalid {
+        save.disabled_tooltip(error.to_string())
+    } else {
+        save.disabled_tooltip(NOTE_UNCHANGED_TOOLTIP)
+    };
+    save.clicked() && can_save
 }
 
 /// Received requests — one [`RequestCard`] per incoming request, with Accept
@@ -477,10 +827,10 @@ fn received_section(
     dispatch_request_shared(app_context, state, identity, clicked)
 }
 
-/// Active contacts — searchable list of established contacts, each row offering
-/// the existing contact-profile viewer and, when enabled, the send-payment
-/// screen. Pay is an experimental DashPay feature, classified identically at all
-/// four entry points into [`ScreenType::DashPaySendPayment`].
+/// Active contacts — searchable list of established contacts. Clicking a contact
+/// shows it in the detail pane; each row also offers, when enabled, the
+/// send-payment screen. Pay is an experimental DashPay feature, classified
+/// identically at every entry point into [`ScreenType::DashPaySendPayment`].
 fn active_section(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -494,6 +844,8 @@ fn active_section(
 
     let heading = format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len());
     let has_contacts = state.contacts_len() > 0;
+    let selected = state.detail().selected();
+    let mut clicked_contact = None;
 
     section_card(ui, dark_mode, &heading, |ui| {
         // The search box only earns its place once there is something to search.
@@ -521,17 +873,29 @@ fn active_section(
                     ui,
                     |ui| {
                         ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(&label)
-                                    .strong()
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
+                            let row = ui
+                                .add(eframe::egui::Button::selectable(
+                                    selected == Some(contact.identity_id),
+                                    RichText::new(&label)
+                                        .strong()
+                                        .color(DashColors::text_primary(dark_mode)),
+                                ))
+                                .clickable_tooltip(SELECT_CONTACT_TOOLTIP);
+                            if row.clicked() {
+                                clicked_contact = Some(contact.identity_id);
+                            }
                             if let Some(handle) = contact_handle(contact, &label) {
-                                ui.label(
-                                    RichText::new(handle)
-                                        .small()
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
+                                // Line the handle up with the name, which the
+                                // row button insets by its padding.
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    ui.add_space(ui.spacing().button_padding.x);
+                                    ui.label(
+                                        RichText::new(handle)
+                                            .small()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                });
                             }
                         });
                     },
@@ -541,27 +905,8 @@ fn active_section(
                                 .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
                                 .clickable_tooltip("Send Dash to this contact.");
                             if pay.clicked() {
-                                action = AppAction::AddScreen(
-                                    ScreenType::DashPaySendPayment(
-                                        identity.clone(),
-                                        contact.identity_id,
-                                    )
-                                    .create_screen(app_context),
-                                );
+                                action = pay_action(app_context, identity, contact.identity_id);
                             }
-                        }
-
-                        let view_profile = ui
-                            .add(ComponentStyles::secondary_button(
-                                VIEW_PROFILE_LABEL,
-                                dark_mode,
-                            ))
-                            .clickable_tooltip("View this contact's public profile.");
-                        if view_profile.clicked() {
-                            action = AppAction::AddScreen(
-                                contact_profile_screen_type(identity.clone(), contact.identity_id)
-                                    .create_screen(app_context),
-                            );
                         }
                     },
                 );
@@ -586,6 +931,9 @@ fn active_section(
         action |= hidden_section(ui, identity, state, dark_mode);
     });
 
+    if let Some(contact_id) = clicked_contact {
+        state.select_contact(&contact_id);
+    }
     action
 }
 
@@ -621,7 +969,10 @@ fn hidden_section(
     // The clicked contact is cloned out of the list so the unhide can mutate
     // `state` once the read borrow the row loop holds has ended.
     let mut clicked: Option<ContactData> = None;
+    let owner = identity.identity.id();
     for contact in state.hidden_contacts() {
+        // A write to this contact is still running; the unhide waits for it.
+        let busy = state.detail().is_writing(&owner, &contact.identity_id);
         // Unhide is laid out first so a long name is shortened to the room it
         // leaves instead of pushing the button past the content column.
         eframe::egui::Sides::new().shrink_left().truncate().show(
@@ -634,7 +985,10 @@ fn hidden_section(
             },
             |ui| {
                 let unhide = ui
-                    .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
+                    .add_enabled(
+                        !busy,
+                        ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode),
+                    )
                     .clickable_tooltip(UNHIDE_TOOLTIP);
                 if unhide.clicked() {
                     clicked = Some(contact.clone());
@@ -645,13 +999,7 @@ fn hidden_section(
     }
 
     if let Some(contact) = clicked {
-        // Move the row now; the authoritative reload lands when the broadcast
-        // confirms.
-        state.unhide_contact(&contact.identity_id);
-        action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(unhide_task(
-            identity.clone(),
-            &contact,
-        ))));
+        action = dispatch_unhide(state, identity, &contact);
     }
 
     action
@@ -821,10 +1169,6 @@ fn contact_handle(contact: &ContactData, label: &str) -> Option<String> {
     (handle != label && username != label).then_some(handle)
 }
 
-fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
-    ScreenType::DashPayContactProfileViewer(identity, contact_id)
-}
-
 /// Compact Home preview; request actions share the Contacts tab's paid-action guards.
 pub(super) fn render_preview(
     ui: &mut Ui,
@@ -858,10 +1202,7 @@ pub(super) fn render_preview(
         }
         for contact in state.matching_contacts().take(6) {
             if ui.button(contact_label(contact)).clicked() {
-                action = AppAction::AddScreen(
-                    contact_profile_screen_type(identity.clone(), contact.identity_id)
-                        .create_screen(app_context),
-                );
+                *outcome = super::home::HomeOutcome::GoToContact(contact.identity_id);
             }
         }
         if !state.contacts_known() {
@@ -889,6 +1230,7 @@ pub(super) fn render_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::dashpay::ContactInfoField;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
@@ -1008,12 +1350,12 @@ mod tests {
     }
 
     fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
-        let AppAction::BackendTasks(tasks, _) = action else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
             panic!("expected the contact loads, got {action:?}");
         };
         tasks
             .into_iter()
-            .map(|task| match task {
+            .map(|(task, _)| match task {
                 BackendTask::DashPayTask(task) => match *task {
                     DashPayTask::LoadContacts { identity }
                     | DashPayTask::LoadContactRequests { identity } => identity.identity.id(),
@@ -1068,9 +1410,185 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------
+    // Private note — a paid, encrypted contactInfo write.
+    // ---------------------------------------------------------------
+
+    fn contact_with_note(note: Option<&str>) -> ContactData {
+        ContactData {
+            note: note.map(str::to_string),
+            ..contact_named("Bao")
+        }
+    }
+
+    /// A state bound to `identity` with Bao listed and selected.
+    fn state_with_selected_contact(
+        identity: &QualifiedIdentity,
+        note: Option<&str>,
+    ) -> ContactsState {
+        let mut state = ContactsState::default();
+        state.reconcile_owner(identity);
+        state.record_contacts(vec![contact_with_note(note)]);
+        state.select_contact(&id(5));
+        state
+    }
+
+    fn saved_note(action: AppAction) -> (Identifier, Identifier, ContactInfoUpdate) {
+        let AppAction::BackendTask(BackendTask::DashPayTask(task)) = action else {
+            panic!("expected a contactInfo write, got {action:?}");
+        };
+        match *task {
+            DashPayTask::UpdateContactInfo {
+                identity,
+                contact_id,
+                update,
+            } => (identity.identity.id(), contact_id, update),
+            other => panic!("expected UpdateContactInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saving_a_note_replaces_only_the_note_of_that_contact() {
+        let mut contact = contact_with_note(None);
+        contact.is_hidden = true;
+        let task = save_note_task(qualified_identity(id(1)), &contact, Some("Bao".into()));
+        let (owner, contact_id, update) = saved_note(AppAction::BackendTask(
+            BackendTask::DashPayTask(Box::new(task)),
+        ));
+        assert_eq!((owner, contact_id), (id(1), id(5)));
+        assert_eq!(update, ContactInfoUpdate::note(Some("Bao".into())));
+    }
+
+    #[test]
+    fn save_note_sends_the_edited_note_once() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, Some("Old"));
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "  Met at the meetup\n".into();
+
+        let (owner, contact_id, update) = saved_note(dispatch_note_save(&mut state, &identity));
+        assert_eq!((owner, contact_id), (id(1), id(5)));
+        assert_eq!(
+            update.note,
+            crate::model::dashpay::ContactInfoField::Replace(Some("Met at the meetup".into()))
+        );
+        assert!(state.detail().is_writing(&id(1), &id(5)));
+        assert_eq!(
+            dispatch_note_save(&mut state, &identity),
+            AppAction::None,
+            "a second click must not pay for a second write"
+        );
+    }
+
+    #[test]
+    fn clearing_a_note_saves_no_note() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, Some("Old"));
+        state.detail_mut().note_mut(&id(5)).expect("draft").clear();
+
+        let (_, _, update) = saved_note(dispatch_note_save(&mut state, &identity));
+        assert_eq!(
+            update.note,
+            crate::model::dashpay::ContactInfoField::Replace(None)
+        );
+    }
+
+    #[test]
+    fn an_unchanged_or_too_long_note_is_not_saved() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, Some("Old"));
+        assert_eq!(dispatch_note_save(&mut state, &identity), AppAction::None);
+
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "a".repeat(256);
+        assert_eq!(dispatch_note_save(&mut state, &identity), AppAction::None);
+        assert!(!state.detail().is_writing(&id(1), &id(5)));
+
+        let mut unselected = ContactsState::default();
+        unselected.reconcile_owner(&identity);
+        assert_eq!(
+            dispatch_note_save(&mut unselected, &identity),
+            AppAction::None
+        );
+    }
+
+    fn hidden_bao() -> ContactData {
+        ContactData {
+            is_hidden: true,
+            ..contact_with_note(None)
+        }
+    }
+
+    /// An unhide and a note save both rewrite the same contactInfo document,
+    /// so they run one at a time: the second would otherwise race the first
+    /// and the hub could not tell which write a result settles.
+    #[test]
+    fn a_note_save_waits_for_a_running_unhide_of_that_contact() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+        state.reconcile_owner(&identity);
+        state.record_contacts(vec![hidden_bao()]);
+
+        let (_, contact_id, update) =
+            saved_note(dispatch_unhide(&mut state, &identity, &hidden_bao()));
+        assert_eq!(contact_id, id(5));
+        assert_eq!(update.display_hidden, ContactInfoField::Replace(false));
+        assert_eq!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None,
+            "a second unhide must not pay for a second write"
+        );
+
+        state.select_contact(&id(5));
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "Bao".into();
+        assert_eq!(
+            dispatch_note_save(&mut state, &identity),
+            AppAction::None,
+            "the note save must wait for the unhide"
+        );
+
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(5)));
+        assert_eq!(
+            state.selected_contact().and_then(|c| c.note.as_deref()),
+            None,
+            "an unhide stores no note"
+        );
+        assert_ne!(dispatch_note_save(&mut state, &identity), AppAction::None);
+    }
+
+    #[test]
+    fn an_unhide_waits_for_a_running_note_save_of_that_contact() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, None);
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "Bao".into();
+        assert_ne!(dispatch_note_save(&mut state, &identity), AppAction::None);
+
+        assert_eq!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None
+        );
+        state.release_contact_info_write(Network::Testnet, &id(1), &id(5));
+        assert_ne!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None
+        );
+    }
+
+    #[test]
+    fn the_fee_line_is_one_sentence_with_the_amount() {
+        assert_eq!(
+            note_fee_text("0.0001 DASH"),
+            "Estimated fee for saving this note: up to 0.0001 DASH."
+        );
+    }
+
     #[test]
     fn copy_constants_are_complete_sentences() {
         for line in [
+            NO_SELECTION,
+            NOTE_HINT,
+            NOTE_UNCHANGED_TOOLTIP,
+            NOTE_SAVE_TOOLTIP,
+            NOTE_SAVED,
+            SELECT_CONTACT_TOOLTIP,
             NO_RECEIVED_EMPTY,
             NO_ACTIVE_EMPTY,
             NO_SENT_EMPTY,
@@ -1148,17 +1666,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn contact_profile_action_targets_the_working_viewer_and_selected_contact() {
-        let identity = qualified_identity(id(1));
-
-        assert!(matches!(
-            contact_profile_screen_type(identity, id(2)),
-            ScreenType::DashPayContactProfileViewer(owner, contact_id)
-                if owner.identity.id() == id(1) && contact_id == id(2)
-        ));
-    }
-
     // ---------------------------------------------------------------
     // Request-row actions — the dead-button regression these rows had:
     // Accept/Decline were TODO stubs and Cancel had no task at all.
@@ -1234,7 +1741,7 @@ mod tests {
                 assert_eq!(identity.identity.id(), id(1));
                 assert_eq!(contact_id, id(5), "the clicked contact must be unhidden");
                 assert!(
-                    !update.display_hidden,
+                    update.display_hidden == ContactInfoField::Replace(false),
                     "unhiding must broadcast contactInfo with the hidden flag cleared"
                 );
             }
@@ -1290,20 +1797,21 @@ mod tests {
         let identity = qualified_identity(id(1));
         let mut state = ContactsState::default();
 
-        let AppAction::BackendTasks(tasks, mode) = load_action(&identity, &mut state) else {
+        let AppAction::BackendTasksWithContexts(tasks, mode) = load_action(&identity, &mut state)
+        else {
             panic!("hydration must dispatch its loads as one multi-task action");
         };
 
         assert_eq!(mode, BackendTasksExecutionMode::Concurrent);
         assert!(
-            tasks.iter().any(|t| matches!(
+            tasks.iter().any(|(t, _)| matches!(
                 t,
                 BackendTask::DashPayTask(task) if matches!(**task, DashPayTask::LoadContacts { .. })
             )),
             "the contact list must be loaded — without it the active section stays empty"
         );
         assert!(
-            tasks.iter().any(|t| matches!(
+            tasks.iter().any(|(t, _)| matches!(
                 t,
                 BackendTask::DashPayTask(task)
                     if matches!(**task, DashPayTask::LoadContactRequests { .. })

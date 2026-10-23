@@ -40,9 +40,7 @@ use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_
 use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 #[cfg(test)]
 use dash_sdk::dpp::key_wallet::Utxo;
-use dash_sdk::dpp::key_wallet::account::Account;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
@@ -57,7 +55,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
-use super::payments::ProbeDeadline;
+use super::payments::{AssetLockFundingPool, ProbeDeadline};
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
@@ -240,75 +238,78 @@ fn asset_lock_final_funds_duffs<'a>(
 }
 
 fn observe_asset_lock_inputs_locked(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
-    let candidates: Vec<_> = managed_account
-        .utxos
-        .values()
-        .filter(|utxo| {
-            (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
-        })
-        .cloned()
-        .collect();
-    let values: BTreeMap<_, _> = candidates
-        .iter()
-        .map(|utxo| (utxo.outpoint, utxo.value()))
-        .collect();
-    let mut observed = Vec::with_capacity(candidates.len());
-    // One account clone reused across batches: only `.utxos` varies per batch,
-    // and the live `ReservationSet` is `Arc`-shared by the clone anyway.
-    let mut dry_run_account = managed_account.clone();
-
-    for batch in candidates.chunks(ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE) {
-        if deadline.expired() {
-            return Ok(None);
-        }
-        dry_run_account.utxos = batch
-            .iter()
+    let current_height = pool.current_height();
+    let mut observed = Vec::new();
+    for (managed_account, account) in pool.accounts() {
+        let candidates: Vec<_> = managed_account
+            .utxos
+            .values()
+            .filter(|utxo| {
+                (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
+            })
             .cloned()
-            .map(|utxo| (utxo.outpoint, utxo))
             .collect();
-        let result = TransactionBuilder::new()
-            .set_fee_rate(FeeRate::new(0))
-            .set_current_height(current_height)
-            .set_selection_strategy(SelectionStrategy::All)
-            .set_special_payload(TransactionPayload::AssetLockPayloadType(
-                AssetLockPayload::new(vec![TxOut {
-                    value: 1,
-                    script_pubkey: ScriptBuf::new(),
-                }]),
-            ))
-            .add_funding(&mut dry_run_account, account)
-            .require_final_inputs()
-            .build_unsigned_reserved();
-        match result {
-            Ok((transaction, _, reservation)) => {
-                observed.extend(transaction.input.iter().filter_map(|input| {
-                    values
-                        .get(&input.previous_output)
-                        .map(|value| (input.previous_output, *value))
-                }));
-                if let Some(token) = reservation {
-                    dry_run_account.release_reservation_if_owner(&transaction, token);
+        let values: BTreeMap<_, _> = candidates
+            .iter()
+            .map(|utxo| (utxo.outpoint, utxo.value()))
+            .collect();
+        // One account clone reused across batches: only `.utxos` varies per
+        // batch, and the live `ReservationSet` is `Arc`-shared by the clone
+        // anyway.
+        let mut dry_run_account = managed_account.clone();
+
+        for batch in candidates.chunks(ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE) {
+            if deadline.expired() {
+                return Ok(None);
+            }
+            dry_run_account.utxos = batch
+                .iter()
+                .cloned()
+                .map(|utxo| (utxo.outpoint, utxo))
+                .collect();
+            let result = TransactionBuilder::new()
+                .set_fee_rate(FeeRate::new(0))
+                .set_current_height(current_height)
+                .set_selection_strategy(SelectionStrategy::All)
+                .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                    AssetLockPayload::new(vec![TxOut {
+                        value: 1,
+                        script_pubkey: ScriptBuf::new(),
+                    }]),
+                ))
+                .add_funding(&mut dry_run_account, account)
+                .require_final_inputs()
+                .build_unsigned_reserved();
+            match result {
+                Ok((transaction, _, reservation)) => {
+                    observed.extend(transaction.input.iter().filter_map(|input| {
+                        values
+                            .get(&input.previous_output)
+                            .map(|value| (input.previous_output, *value))
+                    }));
+                    if let Some(token) = reservation {
+                        dry_run_account.release_reservation_if_owner(&transaction, token);
+                    }
                 }
+                Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
+                Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
+                | Err(BuilderError::InsufficientFunds { .. }) => {
+                    // A sub-dust batch is an ordinary near-drained state, not a
+                    // failure; its eligible candidates still shape the real
+                    // builder's cross-batch choices, so they stay in the key.
+                    // Unlike the success branch above, this arm cannot filter
+                    // out an already-reserved outpoint, so one may transiently
+                    // enter `observed`. That is safe: this key only ever drives
+                    // quote *match* detection (see the doc comment below),
+                    // never the amount `TransactionBuilder` reports or actually
+                    // spends.
+                    observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
+                }
+                Err(source) => return Err(source),
             }
-            Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
-            Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
-            | Err(BuilderError::InsufficientFunds { .. }) => {
-                // A sub-dust batch is an ordinary near-drained state, not a
-                // failure; its eligible candidates still shape the real
-                // builder's cross-batch choices, so they stay in the key.
-                // Unlike the success branch above, this arm cannot filter out
-                // an already-reserved outpoint, so one may transiently enter
-                // `observed`. That is safe: this key only ever drives quote
-                // *match* detection (see the doc comment below), never the
-                // amount `TransactionBuilder` reports or actually spends.
-                observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
-            }
-            Err(source) => return Err(source),
         }
     }
 
@@ -322,29 +323,25 @@ fn observe_asset_lock_inputs_locked(
 /// `Ok(None)` means the deadline expired before the whole composition was
 /// observed — a truncated set must never be used as a key.
 pub(super) fn asset_lock_final_input_state(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
+    observe_asset_lock_inputs_locked(pool, deadline)
 }
 
 /// Like [`asset_lock_final_input_state`], but `Ok(None)` also covers losing
 /// the observation try-lock, so the per-event recompute path never blocks.
 fn try_asset_lock_final_input_state(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let Ok(_observation_guard) = ASSET_LOCK_INPUT_OBSERVATION_LOCK.try_lock() else {
         return Ok(None);
     };
-    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
+    observe_asset_lock_inputs_locked(pool, deadline)
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -904,7 +901,6 @@ impl SnapshotStore {
         let state = match wallet.try_state() {
             Some(state) => {
                 let core_balance = state.balance();
-                let current_height = state.last_processed_height();
                 let balance = DetWalletBalance {
                     confirmed: core_balance.confirmed(),
                     unconfirmed: core_balance.unconfirmed(),
@@ -913,42 +909,33 @@ impl SnapshotStore {
                 // Best-effort: on observation contention or failure only this
                 // field carries forward — the composition key is fail-closed
                 // by construction, so a stale key merely forces revalidation.
-                let asset_lock_inputs = match (
-                    state
-                        .wallet()
-                        .get_bip44_account(super::DEFAULT_BIP44_ACCOUNT),
-                    state
-                        .core_wallet
-                        .accounts
-                        .standard_bip44_accounts
-                        .get(&super::DEFAULT_BIP44_ACCOUNT),
+                // The observation key ignores the input cap: it only detects
+                // composition changes, so any cap would do.
+                let pool = AssetLockFundingPool::from_wallet(
+                    state.wallet(),
+                    &state.core_wallet,
+                    usize::MAX,
+                );
+                let asset_lock_inputs = match try_asset_lock_final_input_state(
+                    &pool,
+                    &ProbeDeadline::unbounded(),
                 ) {
-                    (Some(account), Some(managed_account)) => {
-                        match try_asset_lock_final_input_state(
-                            managed_account,
-                            account,
-                            current_height,
-                            &ProbeDeadline::unbounded(),
-                        ) {
-                            Ok(Some(inputs)) => inputs,
-                            Ok(None) => {
-                                tracing::debug!(
-                                    wallet = ?&wallet_id[..4],
-                                    "asset-lock observation contended during snapshot recompute; carrying the prior composition forward"
-                                );
-                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
-                            }
-                            Err(source) => {
-                                tracing::debug!(
-                                    wallet = ?&wallet_id[..4],
-                                    ?source,
-                                    "asset-lock observation failed during snapshot recompute; carrying the prior composition forward"
-                                );
-                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
-                            }
-                        }
+                    Ok(Some(inputs)) => inputs,
+                    Ok(None) => {
+                        tracing::debug!(
+                            wallet = ?&wallet_id[..4],
+                            "asset-lock observation contended during snapshot recompute; carrying the prior composition forward"
+                        );
+                        self.snapshot(&seed_hash).asset_lock_inputs.clone()
                     }
-                    _ => AssetLockInputState::default(),
+                    Err(source) => {
+                        tracing::debug!(
+                            wallet = ?&wallet_id[..4],
+                            ?source,
+                            "asset-lock observation failed during snapshot recompute; carrying the prior composition forward"
+                        );
+                        self.snapshot(&seed_hash).asset_lock_inputs.clone()
+                    }
                 };
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
@@ -1561,9 +1548,12 @@ mod tests {
         managed_account.utxos.insert(outpoint, utxo);
 
         let before = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("initial input observation")
@@ -1599,9 +1589,12 @@ mod tests {
             .expect("reservation-producing build");
 
         let after = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("reservation-aware input observation")
@@ -1668,16 +1661,27 @@ mod tests {
 
         let expired = ProbeDeadline::after(Duration::ZERO);
         assert_eq!(
-            asset_lock_final_input_state(managed_account, account, CURRENT_HEIGHT, &expired)
-                .expect("observation"),
+            asset_lock_final_input_state(
+                &AssetLockFundingPool::for_account(
+                    managed_account,
+                    account,
+                    CURRENT_HEIGHT,
+                    usize::MAX
+                ),
+                &expired,
+            )
+            .expect("observation"),
             None,
             "an expired deadline must stop the observation before any builder batch runs"
         );
 
         let complete = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("observation")
@@ -1727,9 +1731,12 @@ mod tests {
         managed_account.utxos.insert(outpoint, utxo);
 
         let observed = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("a sub-dust balance is an ordinary wallet state, not an observation failure")

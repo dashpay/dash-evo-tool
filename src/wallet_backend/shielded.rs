@@ -158,6 +158,8 @@ impl WalletBackend {
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access

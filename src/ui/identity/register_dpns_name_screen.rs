@@ -15,7 +15,9 @@ use crate::model::dpns_usernames::{
     UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
     registration_key_status,
 };
-use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
+use crate::model::fee_estimation::{
+    contest_fee_credits, format_credits_as_dash, username_name_admission_reserve_credits,
+};
 use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -89,6 +91,20 @@ struct RegistrationReview {
     needs_vote: bool,
     registration_fee: u64,
     contest_fee: u64,
+    /// Held on the balance while the network checks the name; not charged.
+    admission_reserve: u64,
+}
+
+impl RegistrationReview {
+    /// What the registration charges.
+    fn total(&self) -> u64 {
+        self.registration_fee.saturating_add(self.contest_fee)
+    }
+
+    /// The balance the identity needs before the registration can start.
+    fn required_balance(&self) -> u64 {
+        self.total().saturating_add(self.admission_reserve)
+    }
 }
 
 pub struct RegisterDpnsNameScreen {
@@ -240,6 +256,19 @@ impl RegisterDpnsNameScreen {
         contest_fee_credits(self.app_context.sdk_platform_version())
     }
 
+    fn admission_reserve(&self) -> u64 {
+        self.app_context
+            .dpns_contract()
+            .document_type_for_name("domain")
+            .map(|domain| {
+                username_name_admission_reserve_credits(
+                    domain,
+                    self.app_context.sdk_platform_version(),
+                )
+            })
+            .unwrap_or(0)
+    }
+
     /// Restart the debounce after the typed label changed.
     fn on_label_changed(&mut self) {
         self.review = None;
@@ -304,6 +333,7 @@ impl RegisterDpnsNameScreen {
             } else {
                 0
             },
+            admission_reserve: self.admission_reserve(),
         })
     }
 
@@ -529,10 +559,12 @@ impl RegisterDpnsNameScreen {
         let Some(identity) = self.selected_qualified_identity.clone() else {
             return action;
         };
+        let total = review.total();
+        let required_balance = review.required_balance();
+        let admission_reserve = review.admission_reserve;
         let name = review.label;
         let needs_vote = review.needs_vote;
         let registration_fee = review.registration_fee;
-        let total = registration_fee.saturating_add(review.contest_fee);
         let balance = identity.identity.balance();
 
         ui.heading("Review and pay");
@@ -583,6 +615,12 @@ impl RegisterDpnsNameScreen {
                     ))
                     .color(DashColors::text_secondary(dark_mode)),
                 );
+                if admission_reserve > 0 {
+                    ui.label(
+                        RichText::new(username_copy::admission_reserve_line(admission_reserve))
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                }
             });
 
         if self.app_context.user_role().at_least(UserRole::Power) {
@@ -645,7 +683,7 @@ impl RegisterDpnsNameScreen {
             }
         }
 
-        let missing = total.saturating_sub(balance);
+        let missing = required_balance.saturating_sub(balance);
         if missing > 0 {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -1137,5 +1175,40 @@ mod tests {
         let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
         assert_eq!(screen.contest_fee(), 10_000_000_000);
         assert_eq!(format_credits_as_dash(screen.contest_fee()), "0.1 DASH");
+    }
+
+    /// A DPNS contract that picks the first preorder of a name makes the
+    /// network hold 0.001 DASH beyond the fees before it accepts the name, so
+    /// the confirm step asks for that much more than it charges.
+    #[test]
+    fn confirm_requires_the_name_admission_reserve_beyond_the_charge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        for (version, reserve) in [(14, 0), (15, 100_000_000)] {
+            let pv = dash_sdk::dpp::version::PlatformVersion::get(version).expect("version");
+            ctx.sdk.store(Arc::new(
+                dash_sdk::SdkBuilder::new_mock()
+                    .with_version(pv)
+                    .build()
+                    .expect("mock sdk"),
+            ));
+            let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+            assert_eq!(screen.admission_reserve(), reserve, "protocol {version}");
+            let review = RegistrationReview {
+                label: "alice-123".to_owned(),
+                identity_id: dash_sdk::platform::Identifier::from([7; 32]),
+                network: ctx.network,
+                needs_vote: false,
+                registration_fee: 90_000_000,
+                contest_fee: 0,
+                admission_reserve: screen.admission_reserve(),
+            };
+            assert_eq!(review.total(), 90_000_000, "protocol {version}");
+            assert_eq!(
+                review.required_balance(),
+                90_000_000 + reserve,
+                "protocol {version}"
+            );
+        }
     }
 }

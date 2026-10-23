@@ -11,7 +11,7 @@ use crate::{
             DpnsNameValidationResult, DpnsRegistrationOutcome, classify_dpns_registration_outcome,
             normalize_dpns_label, validate_dpns_name,
         },
-        fee_estimation::contest_fee_credits,
+        fee_estimation::{contest_fee_credits, username_name_admission_reserve_credits},
         qualified_identity::{DPNSNameInfo, QualifiedIdentity},
     },
 };
@@ -209,8 +209,14 @@ impl AppContext {
         );
         let balance_before = qualified_identity.identity.balance();
         // Refused here, not by the network: it would take the first document's
-        // fee and only then turn the second document down.
-        let required = estimated_fee.saturating_add(input.approved_contest_fee);
+        // fee and only then turn the second document down. The admission
+        // reserve is held, not charged, but the name document is refused
+        // without it.
+        let admission_reserve =
+            username_name_admission_reserve_credits(domain_document_type, sdk.version());
+        let required = estimated_fee
+            .saturating_add(input.approved_contest_fee)
+            .saturating_add(admission_reserve);
         if balance_before < required {
             return Err(TaskError::UsernameRegistrationBalanceTooLow {
                 available: balance_before,
@@ -228,8 +234,10 @@ impl AppContext {
         .await
         {
             Ok(domain_document) => name_acquired_at(&domain_document),
-            // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
-            // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
+            // Not rebranded: a preorder conflict never means someone else holds the username.
+            // Before DPNS v3 the preorder's unique index is its random `saltedDomainHash`; from
+            // v3 it is `$ownerId, nameHash`, this identity's own earlier request. Either way the
+            // generic `PlatformEntryConflict` message stays.
             Err(BroadcastFailure::Preorder(error)) => return Err(TaskError::from(*error)),
             Err(BroadcastFailure::Domain(error)) => {
                 self.resolve_failed_domain_broadcast(
@@ -601,16 +609,46 @@ mod tests {
     async fn registration_is_refused_before_broadcast_when_the_balance_cannot_cover_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let vote_fee = crate::model::fee_estimation::contest_fee_credits(Sdk::new_mock().version());
-        for (label, approved_contest_fee) in [("alice-123", 0), ("alice", vote_fee)] {
+        // A network whose DPNS contract picks the first preorder of a name.
+        let platform_version = PlatformVersion::latest();
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let vote_fee = crate::model::fee_estimation::contest_fee_credits(platform_version);
+        let domain_contract = ctx.dpns_contract();
+        let admission_reserve =
+            crate::model::fee_estimation::username_name_admission_reserve_credits(
+                domain_contract
+                    .document_type_for_name("domain")
+                    .expect("DPNS domain document type"),
+                platform_version,
+            );
+        assert!(
+            admission_reserve > 0,
+            "the DPNS contract under test must pick the first preorder of a name"
+        );
+        // Short by the reserve: the balance covers both fees but not what Platform
+        // holds back before admitting the name document. Short by one credit: just
+        // under everything required.
+        for (label, approved_contest_fee, short_by) in [
+            ("alice-123", 0, admission_reserve),
+            ("alice", vote_fee, admission_reserve),
+            ("alice-123", 0, 1),
+            ("alice", vote_fee, 1),
+        ] {
             let needs_vote = approved_contest_fee > 0;
             let required = ctx
                 .fee_estimator()
                 .estimate_username_registration(label.len(), needs_vote)
-                + approved_contest_fee;
+                + approved_contest_fee
+                + admission_reserve;
             let mut identity = identity_with_signing_key(3);
-            identity.identity.set_balance(required - 1);
-            let mut sdk = Sdk::new_mock();
+            identity.identity.set_balance(required - short_by);
+            let mut sdk = mock_sdk();
             expect_domain_lookup(&mut sdk, &ctx, label, false).await;
             if needs_vote {
                 expect_vote_state(&mut sdk, &ctx, label, Contenders::default()).await;
@@ -637,7 +675,7 @@ mod tests {
                 matches!(
                     result,
                     Err(TaskError::UsernameRegistrationBalanceTooLow { available, required: needed })
-                        if available == required - 1 && needed == required
+                        if available == required - short_by && needed == required
                 ),
                 "{label}: {result:?}"
             );

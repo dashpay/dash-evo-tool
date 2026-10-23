@@ -117,6 +117,26 @@ impl AppContext {
         self.write_local_qualified_identity_locked(qualified_identity)
     }
 
+    /// [`Self::insert_local_qualified_identity`] for a record whose balance
+    /// comes from `provenance`; adopts the balance kept, as
+    /// [`Self::update_local_qualified_identity_observed`] does.
+    pub(crate) fn insert_local_qualified_identity_observed(
+        &self,
+        qualified_identity: &mut QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+        provenance: BalanceProvenance,
+    ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(qualified_identity.identity.id());
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.adopt_balance_observation_locked(qualified_identity, provenance)?;
+        self.insert_local_qualified_identity_under_lock(
+            qualified_identity,
+            wallet_and_identity_id_info,
+        )
+    }
+
     /// [`Self::edit_local_qualified_identity`] whose `edit` sets a balance
     /// from `provenance`.
     pub(crate) fn edit_local_qualified_identity_observed(

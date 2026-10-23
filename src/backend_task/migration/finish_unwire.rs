@@ -1728,6 +1728,7 @@ fn migrate_identities(
                 &mut qi,
                 wallet,
                 crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
             )
         },
     )?;
@@ -5378,6 +5379,7 @@ mod tests {
                     &mut qi,
                     wallet,
                     crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved,
                 )
                 .map_err(|_| TaskError::WalletNotFound)
             },

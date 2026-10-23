@@ -8,6 +8,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -74,10 +75,16 @@ impl AppContext {
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
         if let Some(balance) = claimant_balance {
-            self.edit_local_qualified_identity(&identity_id, |fresh| {
-                fresh.identity.set_balance(balance);
-                Ok(())
-            })?;
+            // TODO(upstream): `claim_contract_fees` returns no response
+            // metadata, so the claimed balance has no height to order it by.
+            self.edit_local_qualified_identity_observed(
+                &identity_id,
+                BalanceProvenance::ConfirmedUnordered,
+                |fresh| {
+                    fresh.identity.set_balance(balance);
+                    Ok(())
+                },
+            )?;
         }
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {

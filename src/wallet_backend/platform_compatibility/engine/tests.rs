@@ -1091,3 +1091,76 @@ fn platform_compatibility_refuses_unrecognized_version_19_without_changes() {
     assert_eq!(snapshot(&path), before);
     assert!(backup_files(dir.path()).is_empty());
 }
+
+/// Stage the public rows and run `migrate` as if it were the accounting migration.
+fn upgrade_through_core_rescan(
+    migrate: &str,
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    String,
+    Result<Option<PathBuf>, UpgradeError>,
+) {
+    let (dir, path, target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(include_str!("../fixtures/public-rows.sql"))
+        .unwrap();
+    let before = snapshot(&path);
+    let result = upgrade(&path, &target, |stage| {
+        let conn = Connection::open(stage)?;
+        conn.execute(
+            "INSERT INTO refinery_schema_history VALUES (20, ?1, '2026-01-01T00:00:00Z', '1')",
+            [CORE_ACCOUNTING_MIGRATION],
+        )?;
+        // The checkpoint rewind the bridge verifies independently of `migrate`.
+        conn.execute_batch(
+            "UPDATE core_sync_state SET synced_height = (
+                SELECT MIN(COALESCE(core_sync_state.synced_height, MAX(w.birth_height - 1, 0)),
+                           MAX(w.birth_height - 1, 0))
+                FROM wallets w WHERE w.wallet_id = core_sync_state.wallet_id);",
+        )?;
+        conn.execute_batch(migrate)?;
+        Ok(())
+    });
+    (dir, path, before, result)
+}
+
+#[test]
+fn platform_compatibility_accepts_core_rows_the_rescan_drops_or_strips() {
+    let (_dir, path, _, result) = upgrade_through_core_rescan(
+        "UPDATE core_transactions SET block_hash = NULL, block_time = NULL, finalized = 0, record_blob = NULL;",
+    );
+    result.unwrap().unwrap();
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM core_transactions WHERE record_blob IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+
+    let (_dir, _, _, result) = upgrade_through_core_rescan("DELETE FROM core_utxos;");
+    result.unwrap().unwrap();
+}
+
+#[test]
+fn platform_compatibility_refuses_core_rows_the_rescan_alters_or_invents() {
+    for migrate in [
+        "UPDATE core_utxos SET value = value + 1;",
+        "UPDATE core_transactions SET height = height + 1;",
+        "INSERT INTO core_instant_locks SELECT wallet_id, txid, X'00' FROM core_transactions;",
+        "UPDATE core_transactions SET height = NULL;",
+    ] {
+        let (dir, path, before, result) = upgrade_through_core_rescan(migrate);
+        assert!(
+            matches!(result, Err(UpgradeError::Verification)),
+            "{migrate}: {result:?}"
+        );
+        assert_eq!(snapshot(&path), before, "{migrate}");
+        assert!(backup_files(dir.path()).is_empty(), "{migrate}");
+    }
+}

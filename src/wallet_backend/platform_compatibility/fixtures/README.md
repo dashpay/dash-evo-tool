@@ -23,14 +23,19 @@ migrated empty database. The final schema and history must match an independent
 fresh current persister before publication; both fixtures remain historical
 recognition guards and must not be replaced with the latest schema.
 
-At Platform `f7500221fa2020de16a7402d664d7abd2b8a78a2`, V019 adds nullable
-asset-lock operation IDs and V021 resets Core transactions, UTXOs and InstantLocks,
-rewinding each filter checkpoint to at most birth height minus one (minimum zero).
-There is no V020 migration. The bridge checks this reset and preservation of
-non-Core rows after upstream migration. The original backup retains the pre-reset
-Core data; the app rebuilds confirmed Core history through SPV. Unconfirmed
-transactions return only if relayed again. A different V019 migration history,
-such as the unmerged `c0425f7` accounting schema, is not recognized by this bridge.
+At Platform `80c680affc6d122e64046bd53d49a0d4e7be4bd0`, V019 adds nullable
+asset-lock operation IDs and V020 (`core_transaction_accounting`) rebuilds Core
+history: it drops mined transactions, UTXOs and InstantLocks that an SPV rescan
+redelivers, keeps unmined transactions and spent coins whose spender is not known
+to be mined (stripping block details from the mined transactions funding them),
+and rewinds each filter checkpoint to at most birth height minus one (minimum
+zero). Loading may then drop pending spends whose authorization fails. The bridge
+recognizes the migration by name, checks the checkpoint rewind, accepts any Core
+rows that remain unchanged from the original (only stripped block details on mined
+transactions), and requires every non-Core row to be preserved. The original
+backup retains the pre-rescan Core data; the app rebuilds confirmed Core history
+through SPV. A different V019 migration history, such as the unmerged `c0425f7`
+accounting schema, is not recognized by this bridge.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

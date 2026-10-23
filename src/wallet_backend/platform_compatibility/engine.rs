@@ -9,6 +9,8 @@ const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
 const TARGET_SCHEMA: &str = include_str!("fixtures/e3cd7cf.sql");
 const HISTORY: &str = "refinery_schema_history";
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
+/// Upstream migration that rebuilds Core history through an SPV rescan.
+const CORE_ACCOUNTING_MIGRATION: &str = "core_transaction_accounting";
 
 /// A compatibility upgrade stopped before committing changes to the original database.
 #[derive(Debug, thiserror::Error)]
@@ -735,6 +737,71 @@ fn equal_rows(
     )
 }
 
+/// One SQLite value, comparable and hashable across connections.
+#[derive(PartialEq, Eq, Hash)]
+enum Cell {
+    Null,
+    Integer(i64),
+    /// IEEE-754 bits; the bridge compares stored values, not numeric equality.
+    Real(u64),
+    Text(Vec<u8>),
+    Blob(Vec<u8>),
+}
+
+impl From<rusqlite::types::ValueRef<'_>> for Cell {
+    fn from(value: rusqlite::types::ValueRef<'_>) -> Self {
+        use rusqlite::types::ValueRef;
+        match value {
+            ValueRef::Null => Self::Null,
+            ValueRef::Integer(i) => Self::Integer(i),
+            ValueRef::Real(r) => Self::Real(r.to_bits()),
+            ValueRef::Text(t) => Self::Text(t.to_vec()),
+            ValueRef::Blob(b) => Self::Blob(b.to_vec()),
+        }
+    }
+}
+
+/// Every `target` row matching `target_filter` must equal, on `cols`, a `source` row
+/// selected by `source_filter`. Rows may be dropped; none may be added or changed.
+fn rows_retained(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
+    let read = |conn: &Connection, sql: &str| -> Result<Vec<Vec<Cell>>, UpgradeError> {
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(
+                (0..cols.len())
+                    .map(|i| row.get_ref(i).map(Cell::from))
+                    .collect::<Result<_, _>>()?,
+            );
+        }
+        Ok(out)
+    };
+    let original = read(
+        source,
+        &format!("SELECT {names} FROM {}{source_filter}", quote(table)),
+    )?
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    let retained = read(
+        target,
+        &format!("SELECT {names} FROM {} WHERE {target_filter}", quote(table)),
+    )?;
+    if retained.iter().all(|row| original.contains(row)) {
+        Ok(())
+    } else {
+        Err(UpgradeError::Verification)
+    }
+}
+
 fn equal_queries(
     source: &Connection,
     target: &Connection,
@@ -941,9 +1008,10 @@ fn upgrade_with_hook_locked(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     verify(&target)?;
+    // Matched by name: upstream renumbered this migration before it shipped.
     let resets_core = history(&target)?
         .iter()
-        .any(|(version, _, _)| *version == 21);
+        .any(|(_, name, _)| name == CORE_ACCOUNTING_MIGRATION);
     for (table, mut cols, filter) in copied {
         match table {
             "meta_data_versions" => {
@@ -956,13 +1024,24 @@ fn upgrade_with_hook_locked(
                     "SELECT wallet_id, domain, seq FROM meta_data_versions ORDER BY wallet_id, domain", 3)?;
                 continue;
             }
-            "core_transactions" | "core_utxos" | "core_instant_locks" if resets_core => {
-                if target
-                    .prepare(&format!("SELECT 1 FROM {}", quote(table)))?
-                    .exists([])?
-                {
-                    return Err(UpgradeError::Verification);
-                }
+            // The accounting migration drops Core history that SPV rebuilds, keeps
+            // unsettled evidence, and strips block details from kept mined funding;
+            // loading may drop further unauthorized pending spends. What remains must
+            // come from the original: nothing is invented or altered otherwise.
+            "core_transactions" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "height IS NULL")?;
+                rows_retained(
+                    &source,
+                    &target,
+                    table,
+                    &["wallet_id", "txid", "height"].map(String::from),
+                    &filter,
+                    "height IS NOT NULL",
+                )?;
+                continue;
+            }
+            "core_utxos" | "core_instant_locks" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "1")?;
                 continue;
             }
             "core_sync_state" if resets_core => {

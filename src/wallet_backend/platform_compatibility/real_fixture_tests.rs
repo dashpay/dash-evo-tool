@@ -248,15 +248,16 @@ fn table_counts(path: &Path, scratch: &Path) -> BTreeMap<String, i64> {
         .collect()
 }
 
-/// Non-Core tables retain their rows; V021 clears rebuildable Core history.
+/// Non-Core tables retain their rows; the Core accounting migration drops the
+/// Core history SPV rebuilds and keeps only unsettled evidence.
 /// Every newly added table starts empty.
 fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) {
     for (table, rows) in data_tables(before) {
         if ["core_transactions", "core_utxos", "core_instant_locks"].contains(&table) {
-            assert_eq!(
-                after.get(table).copied(),
-                Some(0),
-                "{db_name}: V021 must clear {table}"
+            let kept = after.get(table).copied().unwrap_or(0);
+            assert!(
+                kept <= rows,
+                "{db_name}: the Core rescan may only drop {table} rows, kept {kept} of {rows}"
             );
             continue;
         }

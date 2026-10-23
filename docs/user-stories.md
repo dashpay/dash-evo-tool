@@ -1432,6 +1432,17 @@ As a contract owner or moderator, I want to see what my contract's document fees
 - A pot can be claimed once per epoch. The app shows the last payout's epoch but does not block a claim on it; a second claim in the same epoch is refused by the network, and the message says to try again once the next epoch starts.
 - After a claim, the pot and the claimant's new balance are shown.
 
+### DOC-013: Delete an entry of an indexOnly document type [Implemented]
+**Persona:** Jordan
+
+As a developer working with a contract whose document type keeps only index entries (`indexOnly`, protocol version 14), I want to see that its entries are read-only and delete one by the values it was created with, so that I can clean up test data without paying for actions the network will refuse.
+
+- Query results for such a type say that its entries are rebuilt from the network's indexes, read-only, and carry computed IDs.
+- Replace, transfer, purchase and set price are not offered for such a type.
+- Delete fetches the identity's entries; selecting one prefills its values as editable JSON, checked before sending (missing, unknown or malformed values are refused with a reason).
+- The confirmation warns that the delete fails, and the fee is still charged, if any value differs from the original entry.
+- Offered only on networks that accept the delete (protocol version 14 and later).
+
 ## Developer and Power Tools (DEV)
 
 ### DEV-001: Decode state transitions [Implemented]

@@ -62,6 +62,9 @@ pub enum Capability {
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
+    /// The connected platform accepts the transition that deletes an
+    /// indexOnly document by its values.
+    IndexOnlyDocumentDelete,
 }
 
 impl Capability {
@@ -116,6 +119,10 @@ impl Capability {
                     .max_version
                     >= 1
             }),
+            Capability::IndexOnlyDocumentDelete => {
+                PlatformVersion::get_optional(ctx.platform_protocol_version())
+                    .is_some_and(crate::model::index_only_document::index_only_delete_supported)
+            }
         }
     }
 }
@@ -227,6 +234,9 @@ pub enum FeatureGate {
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
+    /// Deleting an indexOnly document by its values. Offered only where the
+    /// connected network accepts the transition.
+    IndexOnlyDocumentDelete,
 }
 
 impl FeatureGate {
@@ -253,6 +263,9 @@ impl FeatureGate {
             )],
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
+            }
+            FeatureGate::IndexOnlyDocumentDelete => {
+                &[Check::Capability(Capability::IndexOnlyDocumentDelete)]
             }
         }
     }
@@ -535,6 +548,7 @@ mod tests {
                 FeatureGate::ContractFeePots,
                 FeatureGate::ContractBoundAuthenticationKeys,
                 FeatureGate::NonTransferableTokens,
+                FeatureGate::IndexOnlyDocumentDelete,
             ] {
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
                 ctx.set_platform_protocol_version(13);

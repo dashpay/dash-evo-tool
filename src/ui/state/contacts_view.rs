@@ -410,7 +410,7 @@ impl ContactsState {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
-        let PendingWrite::Note(note) = write else {
+        let PendingWrite::Note { note, before } = write else {
             return true;
         };
         let listed = if self.owner == Some((network, *owner)) {
@@ -421,7 +421,13 @@ impl ContactsState {
         } else {
             None
         };
-        let lagging = listed.as_ref().map(|contact| contact.note.clone());
+        // The list read last, else the note the edit started from: lists of
+        // another identity are on screen when the save lands.
+        let lagging = Some(
+            listed
+                .as_ref()
+                .map_or(before, |contact| contact.note.clone()),
+        );
         self.confirmed_notes.insert(
             (network, *owner, *contact_id),
             ConfirmedNote {

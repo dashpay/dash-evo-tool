@@ -11,8 +11,12 @@ use std::collections::HashMap;
 /// `contactInfo` document, so a contact has at most one at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingWrite {
-    /// A private-note save, with the note that was sent.
-    Note(Option<String>),
+    /// A private-note save: the note that was sent, and the stored note the
+    /// edit started from, which a read lagging behind the save still returns.
+    Note {
+        note: Option<String>,
+        before: Option<String>,
+    },
     /// An unhide.
     Visibility,
 }
@@ -136,8 +140,11 @@ impl ContactDetailState {
     ) -> Option<Option<String>> {
         let draft = self.draft_for(&contact_id)?;
         let note = normalized_note(&draft.text);
-        self.begin_write(owner, contact_id, PendingWrite::Note(note.clone()))
-            .then_some(note)
+        let write = PendingWrite::Note {
+            note: note.clone(),
+            before: draft.baseline.clone(),
+        };
+        self.begin_write(owner, contact_id, write).then_some(note)
     }
 
     /// Claim the write slot for unhiding `contact_id`. `false` when a write to
@@ -304,7 +311,10 @@ mod tests {
 
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
-            Some(PendingWrite::Note(Some("Bao".into())))
+            Some(PendingWrite::Note {
+                note: Some("Bao".into()),
+                before: None
+            })
         );
         assert!(!state.is_writing(&id(1), &id(5)));
         state.sync(&contact(5, Some("Bao")));
@@ -350,7 +360,10 @@ mod tests {
         assert!(!state.begin_visibility_write(id(1), id(5)));
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
-            Some(PendingWrite::Note(Some("First note".into())))
+            Some(PendingWrite::Note {
+                note: Some("First note".into()),
+                before: None
+            })
         );
         assert_eq!(
             state.begin_save(id(1), id(5)),
@@ -375,7 +388,10 @@ mod tests {
         );
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
-            Some(PendingWrite::Note(Some("Bao".into())))
+            Some(PendingWrite::Note {
+                note: Some("Bao".into()),
+                before: None
+            })
         );
     }
 }

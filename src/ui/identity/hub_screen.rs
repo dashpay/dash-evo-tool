@@ -2701,6 +2701,11 @@ mod tests {
                 "Mine",
             ),
             (
+                "a save landing after an identity switch waits out a lagging read",
+                &[IdentitySwitch, Saved, ListFromAfter("Old")],
+                "Mine",
+            ),
+            (
                 "another network's lists are not overridden",
                 &[Saved, NetworkSwitch, ListFromBefore("Old")],
                 "Old",

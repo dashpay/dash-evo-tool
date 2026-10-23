@@ -1142,6 +1142,9 @@ pub enum BackendTaskSuccessResult {
     ContractFeePots {
         contract_id: Identifier,
         pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
+        /// The seated moderation team, which claims an elected contract's
+        /// moderators pot instead of its interim team.
+        seated_moderators: crate::model::contract_fee_pots::SeatedModerators,
     },
     /// A contract fee pot was paid out. `claimant_balance` is the claiming
     /// identity's balance after the claim, `remaining_credits` what is left

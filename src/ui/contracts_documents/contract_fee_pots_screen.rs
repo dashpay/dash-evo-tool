@@ -8,6 +8,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::contract_fee_pots::{SeatedModerators, pot_claimants};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
@@ -40,6 +41,7 @@ enum FeePotsState {
     Loaded {
         contract_id: Identifier,
         pots: ContractFeePots,
+        seated_moderators: SeatedModerators,
     },
     /// The read failed; the banner says why.
     Failed(Identifier),
@@ -221,6 +223,7 @@ impl ContractFeePotsScreen {
         contract: &QualifiedContract,
         pot: ContractFeePot,
         state: &ContractFeePotState,
+        seated_moderators: &SeatedModerators,
     ) -> AppAction {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(match pot {
@@ -238,13 +241,13 @@ impl ContractFeePotsScreen {
             None => "Never claimed".to_string(),
         });
 
-        let recipients = pot.recipients(&contract.contract);
+        let claimants = pot_claimants(pot, &contract.contract, seated_moderators);
         let claimant = self
             .selected_identity
             .as_ref()
-            .filter(|identity| recipients.contains(&identity.identity.id()));
+            .filter(|identity| claimants.includes(&identity.identity.id()));
         let disabled_reason = claim_blocked_reason(ClaimGate {
-            has_recipients: !recipients.is_empty(),
+            has_recipients: claimants.any(),
             identity_selected: self.selected_identity.is_some(),
             identity_receives: claimant.is_some(),
             credits: state.credits,
@@ -300,10 +303,16 @@ impl ScreenLike for ContractFeePotsScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ContractFeePots { contract_id, pots }
-                if self.pots == FeePotsState::Loading(contract_id) =>
-            {
-                self.pots = FeePotsState::Loaded { contract_id, pots };
+            BackendTaskSuccessResult::ContractFeePots {
+                contract_id,
+                pots,
+                seated_moderators,
+            } if self.pots == FeePotsState::Loading(contract_id) => {
+                self.pots = FeePotsState::Loaded {
+                    contract_id,
+                    pots,
+                    seated_moderators,
+                };
             }
             BackendTaskSuccessResult::ContractFeesClaimed {
                 contract_id,
@@ -435,7 +444,11 @@ impl ScreenLike for ContractFeePotsScreen {
                         inner_action |= self.fetch_pots(contract_id);
                     }
                 }
-                FeePotsState::Loaded { pots, .. } => {
+                FeePotsState::Loaded {
+                    pots,
+                    seated_moderators,
+                    ..
+                } => {
                     egui::Grid::new("contract_fee_pots_grid")
                         .num_columns(4)
                         .spacing([16.0, 8.0])
@@ -451,12 +464,14 @@ impl ScreenLike for ContractFeePotsScreen {
                                 &contract,
                                 ContractFeePot::Owner,
                                 &pots.owner,
+                                &seated_moderators,
                             );
                             inner_action |= self.render_pot_row(
                                 ui,
                                 &contract,
                                 ContractFeePot::Moderators,
                                 &pots.moderators,
+                                &seated_moderators,
                             );
                         });
                     ui.add_space(8.0);
@@ -515,6 +530,7 @@ mod tests {
             FeePotsState::Loaded {
                 contract_id: id,
                 pots: ContractFeePots::default(),
+                seated_moderators: SeatedModerators::NotSeated,
             }
             .contract_id(),
             Some(id)

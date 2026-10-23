@@ -8,6 +8,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::contract_fee_pots::{SeatedModerators, has_elected_moderation};
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -29,8 +30,9 @@ fn fee_claim_key_requirements() -> KeyRequirements<'static> {
 }
 
 impl AppContext {
-    /// Both fee pots of `contract_id`. A contract nobody has paid fees to
-    /// reads as two empty pots.
+    /// Both fee pots of `contract_id`, with the seated moderation team that
+    /// claims an elected contract's moderators pot. A contract nobody has paid
+    /// fees to reads as two empty pots.
     pub(super) async fn fetch_contract_fee_pots(
         &self,
         sdk: &Sdk,
@@ -39,12 +41,27 @@ impl AppContext {
         if !FeatureGate::ContractFeePots.is_available(self) {
             return Err(TaskError::ContractFeePotsNotSupported);
         }
+        // A contract saved here without elected moderation has no seated
+        // team, so its team is not read. One not saved here is read anyway.
+        let elected = self
+            .get_unqualified_contract_by_id(&contract_id)
+            .ok()
+            .flatten()
+            .is_none_or(|contract| has_elected_moderation(&contract));
         // Only the pots are proved. The response metadata's epoch is not
         // signed, so nothing is decided from it.
-        let pots = ContractFeePots::fetch(sdk, contract_id).await?;
+        let (pots, seated_moderators) =
+            tokio::join!(ContractFeePots::fetch(sdk, contract_id), async {
+                if elected {
+                    read_seated_moderators(sdk, contract_id).await
+                } else {
+                    SeatedModerators::NotSeated
+                }
+            });
         Ok(BackendTaskSuccessResult::ContractFeePots {
             contract_id,
-            pots: pots.unwrap_or_default(),
+            pots: pots?.unwrap_or_default(),
+            seated_moderators,
         })
     }
 
@@ -86,6 +103,30 @@ impl AppContext {
             claimant_balance,
             remaining_credits: claimed.remaining_credits,
         })
+    }
+}
+
+/// The seated moderation team of `contract_id`, its leader and active
+/// members: who Platform lets claim an elected contract's moderators pot.
+///
+/// A failed read is not an error of the pots read: the pots still show, and
+/// the claim is left to Platform to accept or refuse.
+async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedModerators {
+    match sdk.fetch_moderation_team(contract_id).await {
+        Ok(None) => SeatedModerators::NotSeated,
+        Ok(Some(team)) => {
+            let mut members = team.members;
+            members.insert(team.leader_id);
+            SeatedModerators::Seated(members)
+        }
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                %contract_id,
+                "Could not read the seated moderation team; leaving moderator claims to Platform"
+            );
+            SeatedModerators::Unknown
+        }
     }
 }
 

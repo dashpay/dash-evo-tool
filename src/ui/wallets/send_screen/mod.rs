@@ -4056,6 +4056,45 @@ mod tests {
         )
     }
 
+    /// Pay from › Identity lists only identities the From wallet owns.
+    /// Hydration links every identity to every loaded wallet, so that link is
+    /// not ownership.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pay_from_offers_only_the_identities_the_wallet_owns() {
+        let (mut screen, _temp_dir) = send_screen();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                screen.app_context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wallet backend");
+        let owner = screen.selected_wallet.clone().expect("owner wallet");
+        let owner_hash = screen.selected_wallet_seed_hash.expect("owner hash");
+        let other = Arc::new(RwLock::new(
+            Wallet::new_from_seed([2u8; 64], Network::Testnet, None, None).expect("wallet"),
+        ));
+        let other_hash = other.read().expect("wallet").seed_hash();
+        let ctx = screen.app_context.clone();
+        ctx.wallet_context().insert_test_wallet(owner_hash, owner);
+        ctx.wallet_context()
+            .insert_test_wallet(other_hash, other.clone());
+        ctx.insert_local_qualified_identity(&bound_identity(), &Some((owner_hash, 0)))
+            .expect("store identity");
+
+        assert_eq!(screen.paying_identities().len(), 1, "the owner pays");
+
+        screen.selected_wallet = Some(other);
+        screen.selected_wallet_seed_hash = Some(other_hash);
+        screen.identities_by_wallet = None;
+        assert!(
+            screen.paying_identities().is_empty(),
+            "another wallet has no identity to pay from"
+        );
+    }
+
     fn bound_identity() -> QualifiedIdentity {
         use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
         use crate::model::qualified_identity::{IdentityStatus, IdentityType};

@@ -7,6 +7,7 @@ This is a proposal for simplifying Wallet › Send. It is design only; no code h
 | [01-requirements.md](01-requirements.md) | Inventory of today's screen, UX findings, requirements `SR-xx`, acceptance criteria, deviations `D-xx`, dependencies |
 | [02-ux-spec.md](02-ux-spec.md) | Anatomy, option catalogue, Auto resolution rules, defaults, Max, Summary, error copy, locked/network states, presets, disclosure, responsive layout, accessibility, edge cases |
 | [03-wireframes.md](03-wireframes.md) | ASCII wireframes W1–W14 |
+| [wireframes.html](wireframes.html) | The same W1–W14 rendered as interactive HTML mock-ups (open in a browser) |
 
 User stories: SND-019 … SND-022 in [`docs/user-stories.md`](../../user-stories.md) (`[Gap]`).
 

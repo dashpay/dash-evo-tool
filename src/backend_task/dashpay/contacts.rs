@@ -252,6 +252,8 @@ pub(super) struct StoredContactDetails {
     /// From documents older versions of this app wrote under the legacy
     /// key root, newest per contact; an error as for `published`.
     pub(super) legacy: Result<HashMap<Identifier, ContactData>, TaskError>,
+    /// The documents these details were read from, which a save may replace.
+    pub(super) baseline: crate::wallet_backend::ContactInfoBaseline,
 }
 
 /// Read every `contactInfo` document the owner stored, both as DIP-0015
@@ -298,7 +300,11 @@ pub(super) async fn stored_contact_details(
     } else {
         Ok(HashMap::new())
     };
-    Ok(StoredContactDetails { published, legacy })
+    Ok(StoredContactDetails {
+        published,
+        legacy,
+        baseline: crate::wallet_backend::ContactInfoBaseline::of(&documents),
+    })
 }
 
 /// The details the contacts list shows for one contact, and that a save
@@ -463,8 +469,9 @@ pub async fn load_contacts(
             Default::default()
         }
     };
-    let StoredContactDetails { published, legacy } =
-        stored_contact_details(app_context, sdk, &identity).await?;
+    let StoredContactDetails {
+        published, legacy, ..
+    } = stored_contact_details(app_context, sdk, &identity).await?;
     let mut published = published.unwrap_or_else(|error| {
         tracing::debug!(?error, "LoadContacts: published contact details not read");
         BTreeMap::new()

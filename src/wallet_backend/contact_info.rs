@@ -7,8 +7,9 @@
 //! platform-wallet's own `derive_contact_info_keys`, the AES steps from the
 //! `platform-encryption` crate it uses, so both sides always agree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
@@ -97,11 +98,16 @@ impl WalletBackend {
     /// not an established contact
     /// ([`TaskError::ContactInfoContactNotEstablished`]). A failed publish is
     /// [`TaskError::DashPayContactInfoWriteFailed`].
+    ///
+    /// The details are published only over the documents `baseline` was read
+    /// from: when the contact's document changed since, nothing is published
+    /// ([`TaskError::ContactInfoChangedElsewhere`]).
     pub(crate) async fn dashpay_set_contact_info(
         &self,
         identity: &QualifiedIdentity,
         contact_id: &Identifier,
         details: ContactDetails,
+        baseline: &ContactInfoBaseline,
     ) -> Result<ContactInfoPublishOutcome, TaskError> {
         let owner = identity.identity.id();
         let seed_hash = identity
@@ -131,8 +137,9 @@ impl WalletBackend {
                 let seed = plaintext
                     .expose_hd_seed()
                     .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                let crypto = ContactInfoCrypto::new(seed, network, identity_index);
-                dashpay
+                let crypto = ContactInfoCrypto::new(seed, network, identity_index)
+                    .replacing_only(contact_id, baseline);
+                let published = dashpay
                     .set_contact_info_with_external_signer(
                         &owner,
                         contact_id,
@@ -142,10 +149,13 @@ impl WalletBackend {
                         identity,
                         &crypto,
                     )
-                    .await
-                    .map_err(|source| TaskError::DashPayContactInfoWriteFailed {
-                        source: Arc::new(source),
-                    })
+                    .await;
+                if crypto.found_changed_document() {
+                    return Err(TaskError::ContactInfoChangedElsewhere);
+                }
+                published.map_err(|source| TaskError::DashPayContactInfoWriteFailed {
+                    source: Arc::new(source),
+                })
             })
             .await
     }
@@ -289,6 +299,27 @@ fn contact_info_write_index(
     Ok(identity_index)
 }
 
+/// The sealed `privateData` of the `contactInfo` documents a save read its
+/// baseline from.
+///
+/// Every publish seals `privateData` under a fresh random IV, so these bytes
+/// name one revision of a document: a document whose sealed payload is not
+/// here was written after the baseline was read.
+#[derive(Debug, Default)]
+pub(crate) struct ContactInfoBaseline(BTreeSet<Vec<u8>>);
+
+impl ContactInfoBaseline {
+    pub(crate) fn of(documents: &[Document]) -> Self {
+        Self(
+            documents
+                .iter()
+                .filter_map(StoredContactInfo::of)
+                .map(|stored| stored.private_data.to_vec())
+                .collect(),
+        )
+    }
+}
+
 /// Seals and opens `contactInfo` ciphertexts for one wallet identity.
 ///
 /// Holds a borrow of the seed for one operation only; it never copies the
@@ -297,6 +328,15 @@ pub(crate) struct ContactInfoCrypto<'a> {
     seed: &'a [u8; 64],
     network: Network,
     identity_index: u32,
+    replacing: Option<ReplaceGuard<'a>>,
+}
+
+/// Keeps a write from replacing a document it did not read; see
+/// [`ContactInfoCrypto::replacing_only`].
+struct ReplaceGuard<'a> {
+    contact_id: [u8; 32],
+    baseline: &'a ContactInfoBaseline,
+    found_changed: AtomicBool,
 }
 
 impl<'a> ContactInfoCrypto<'a> {
@@ -305,7 +345,37 @@ impl<'a> ContactInfoCrypto<'a> {
             seed,
             network,
             identity_index,
+            replacing: None,
         }
+    }
+
+    /// Refuse to seal once a document for `contact_id` that is not in
+    /// `baseline` was opened.
+    ///
+    /// platform-wallet's write fetches the owner's documents again, opens each
+    /// through this provider, and replaces the first that opens to the contact
+    /// under its current revision. A document written by another device since
+    /// the baseline was read would be replaced with fields kept from the older
+    /// read; refusing to seal stops the write before anything is published.
+    pub(crate) fn replacing_only(
+        mut self,
+        contact_id: &Identifier,
+        baseline: &'a ContactInfoBaseline,
+    ) -> Self {
+        self.replacing = Some(ReplaceGuard {
+            contact_id: contact_id.to_buffer(),
+            baseline,
+            found_changed: AtomicBool::new(false),
+        });
+        self
+    }
+
+    /// Whether the write opened a document for its contact written after its
+    /// baseline was read.
+    pub(crate) fn found_changed_document(&self) -> bool {
+        self.replacing
+            .as_ref()
+            .is_some_and(|guard| guard.found_changed.load(Ordering::Relaxed))
     }
 
     /// The two AES keys beneath `root_path`, derived by platform-wallet.
@@ -419,6 +489,11 @@ impl ContactCryptoProvider for ContactInfoCrypto<'_> {
         private_data_plaintext: &[u8],
         private_data_iv: &[u8; 16],
     ) -> Result<ContactInfoSealed, PlatformWalletError> {
+        if self.found_changed_document() {
+            return Err(PlatformWalletError::InvalidParameter(
+                "contactInfo changed after it was read".to_string(),
+            ));
+        }
         let keys = self.keys(root_path, derivation_index)?;
         Ok(ContactInfoSealed {
             enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(
@@ -448,11 +523,16 @@ impl ContactCryptoProvider for ContactInfoCrypto<'_> {
                         "contactInfo privateData could not be decrypted: {error}"
                     ))
                 })?;
+        let contact_id =
+            platform_encryption::decrypt_enc_to_user_id(&keys.enc_to_user_id_key, enc_to_user_id);
+        if let Some(guard) = &self.replacing
+            && guard.contact_id == contact_id
+            && !guard.baseline.0.contains(private_data_blob)
+        {
+            guard.found_changed.store(true, Ordering::Relaxed);
+        }
         Ok(ContactInfoOpened {
-            contact_id: platform_encryption::decrypt_enc_to_user_id(
-                &keys.enc_to_user_id_key,
-                enc_to_user_id,
-            ),
+            contact_id,
             private_data,
         })
     }
@@ -508,6 +588,78 @@ mod tests {
             platform_encryption::decrypt_private_data(&keys.private_data_key, &sealed.private_data)
                 .expect("decrypt"),
             b"note"
+        );
+    }
+
+    /// PRRT_kwDOM8GK3c6vbDgJ: a save read its baseline while the contact's
+    /// document held one nickname; another device then rewrote it. The write
+    /// opens that newer document first, as platform-wallet does, and must
+    /// not seal: its kept fields come from the older read.
+    #[tokio::test]
+    async fn a_write_does_not_replace_a_document_changed_since_its_read() {
+        let contact = Identifier::from([9u8; 32]);
+        let other = Identifier::from([8u8; 32]);
+        let keys = upstream_keys(2, 0);
+        let seal = |id: &Identifier, nickname: &[u8], iv: u8| ContactInfoSealed {
+            enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(
+                &keys.enc_to_user_id_key,
+                &id.to_buffer(),
+            ),
+            private_data: platform_encryption::encrypt_private_data(
+                &keys.private_data_key,
+                &[iv; 16],
+                nickname,
+            ),
+        };
+        let read = seal(&contact, b"Bao", 1);
+        let theirs = seal(&other, b"Lan", 2);
+        let baseline = ContactInfoBaseline::of(&[
+            stored_document(1, 2, 0, &read),
+            stored_document(2, 2, 0, &theirs),
+        ]);
+        let write = |documents: Vec<ContactInfoSealed>| {
+            let baseline = &baseline;
+            async move {
+                let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX)
+                    .replacing_only(&contact, baseline);
+                for document in &documents {
+                    crypto
+                        .contact_info_open(
+                            &root(IDENTITY_INDEX, 2),
+                            0,
+                            &document.enc_to_user_id,
+                            &document.private_data,
+                        )
+                        .await
+                        .expect("open");
+                }
+                let sealed = crypto
+                    .contact_info_seal(
+                        &root(IDENTITY_INDEX, 2),
+                        0,
+                        &contact.to_buffer(),
+                        b"n",
+                        &[3; 16],
+                    )
+                    .await;
+                (sealed.is_ok(), crypto.found_changed_document())
+            }
+        };
+
+        assert_eq!(
+            write(vec![seal(&contact, b"Bao", 1), seal(&other, b"Lan", 2)]).await,
+            (true, false),
+            "the documents read can be replaced"
+        );
+        assert_eq!(
+            write(vec![seal(&other, b"Rewritten", 4)]).await,
+            (true, false),
+            "another contact's document is not this write's concern"
+        );
+        assert_eq!(
+            write(vec![seal(&contact, b"Newer", 5)]).await,
+            (false, true),
+            "a document rewritten since the read is not replaced"
         );
     }
 

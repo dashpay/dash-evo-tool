@@ -825,7 +825,10 @@ pub async fn accept_contact_request(
 /// The local state that re-engages someone the owner withdrew a request
 /// from, behind a trait so the decision can be driven in tests.
 trait ReEngageOps {
-    fn is_withdrawn(&self) -> bool;
+    /// # Errors
+    ///
+    /// The withdrawal record could not be read.
+    fn is_withdrawn(&self) -> Result<bool, TaskError>;
     /// Lift the ignore and clear the withdrawal and decline markers.
     fn re_engage(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
 }
@@ -833,7 +836,7 @@ trait ReEngageOps {
 /// Restore a withdrawn request the owner sent earlier, which still stands on
 /// Platform; returns whether there was one. Nothing is published.
 async fn restore_withdrawn_request<O: ReEngageOps>(ops: &O) -> Result<bool, TaskError> {
-    if !ops.is_withdrawn() {
+    if !ops.is_withdrawn()? {
         return Ok(false);
     }
     ops.re_engage().await?;
@@ -847,8 +850,9 @@ struct PlatformReEngage<'a> {
 }
 
 impl ReEngageOps for PlatformReEngage<'_> {
-    fn is_withdrawn(&self) -> bool {
-        self.backend.dashpay_is_withdrawn(&self.owner, &self.peer)
+    fn is_withdrawn(&self) -> Result<bool, TaskError> {
+        self.backend
+            .dashpay_withdrawal_recorded(&self.owner, &self.peer)
     }
 
     async fn re_engage(&self) -> Result<(), TaskError> {
@@ -903,16 +907,25 @@ trait RejectOps {
     ) -> impl Future<Output = Result<tokio::sync::OwnedMutexGuard<()>, TaskError>> + Send;
     /// Forget the progress record an older version kept for this action.
     fn clear_phase(&self) -> Result<(), TaskError>;
-    /// Ignore the sender in platform-wallet (local only).
-    fn ignore_sender(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
+    /// Ignore the sender in platform-wallet (local only), unless the contact
+    /// is already established there; returns whether the ignore stands.
+    fn ignore_sender(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
     fn mark_declined(&self) -> Result<(), TaskError>;
     fn request_id(&self) -> Identifier;
+    fn sender_id(&self) -> Identifier;
 }
 
 async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
-    ops.ignore_sender().await?;
-    let result = complete_rejection(ops.request_id(), || ops.mark_declined())?;
+    let result = if ops.ignore_sender().await? {
+        complete_rejection(ops.request_id(), || ops.mark_declined())?
+    } else {
+        // The contact was established before the ignore took effect.
+        BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
+            request_id: ops.request_id(),
+            contact_id: ops.sender_id(),
+        }
+    };
     ops.clear_phase()?;
     Ok(result)
 }
@@ -943,10 +956,10 @@ impl RejectOps for PlatformRejectOps<'_> {
             )
     }
 
-    async fn ignore_sender(&self) -> Result<(), TaskError> {
+    async fn ignore_sender(&self) -> Result<bool, TaskError> {
         self.app_context
             .wallet_backend()?
-            .dashpay_ignore_contact_sender(&self.owner_id, &self.from_identity_id)
+            .dashpay_ignore_unless_established(&self.owner_id, &self.from_identity_id)
             .await
     }
 
@@ -958,6 +971,10 @@ impl RejectOps for PlatformRejectOps<'_> {
 
     fn request_id(&self) -> Identifier {
         self.request_id
+    }
+
+    fn sender_id(&self) -> Identifier {
+        self.from_identity_id
     }
 }
 
@@ -1002,8 +1019,10 @@ trait CancelOps {
     fn reciprocal_request_exists(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
 
     /// Ignore the recipient in platform-wallet (local only), so a reply to
-    /// the withdrawn request cannot establish the contact on its own.
-    fn ignore_recipient(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
+    /// the withdrawn request cannot establish the contact on its own; returns
+    /// whether the ignore stands, which it does not when the reply was taken
+    /// in first and the contact is already established.
+    fn ignore_recipient(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
 
     /// Record the withdrawal in the DET sidecar so the request stops being
     /// listed as pending.
@@ -1022,10 +1041,12 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
     let _action_guard = ops.lock_action().await?;
     let outcome = if ops.reciprocal_request_exists().await? {
         CancelOutcome::AlreadyEstablished
-    } else {
-        ops.ignore_recipient().await?;
+    } else if ops.ignore_recipient().await? {
         ops.mark_withdrawn()?;
         CancelOutcome::Withdrawn
+    } else {
+        // The reply was taken in after the query, before the ignore.
+        CancelOutcome::AlreadyEstablished
     };
     ops.clear_phase()?;
     Ok(outcome)
@@ -1085,10 +1106,10 @@ impl CancelOps for PlatformCancelOps<'_> {
             .dashpay_mark_withdrawn(&self.owner_id, &self.to_identity_id)
     }
 
-    async fn ignore_recipient(&self) -> Result<(), TaskError> {
+    async fn ignore_recipient(&self) -> Result<bool, TaskError> {
         self.app_context
             .wallet_backend()?
-            .dashpay_ignore_contact_sender(&self.owner_id, &self.to_identity_id)
+            .dashpay_ignore_unless_established(&self.owner_id, &self.to_identity_id)
             .await
     }
 }
@@ -1345,12 +1366,18 @@ mod tests {
     #[derive(Default)]
     struct ScriptedReEngage {
         withdrawn: bool,
+        unreadable: bool,
         re_engaged: std::sync::Mutex<bool>,
     }
 
     impl ReEngageOps for ScriptedReEngage {
-        fn is_withdrawn(&self) -> bool {
-            self.withdrawn
+        fn is_withdrawn(&self) -> Result<bool, TaskError> {
+            if self.unreadable {
+                return Err(TaskError::DashPayLocalStateRead {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
+            Ok(self.withdrawn)
         }
 
         async fn re_engage(&self) -> Result<(), TaskError> {
@@ -1377,6 +1404,23 @@ mod tests {
                 .expect("nothing to restore")
         );
         assert!(!*pending.re_engaged.lock().unwrap());
+    }
+
+    /// PRRT_kwDOM8GK3c6vbDgP: an unreadable withdrawal record fails the
+    /// accept or send instead of reporting success with the withdrawal still
+    /// in force.
+    #[tokio::test]
+    async fn an_unreadable_withdrawal_record_fails_the_restore() {
+        let ops = ScriptedReEngage {
+            unreadable: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            restore_withdrawn_request(&ops).await,
+            Err(TaskError::DashPayLocalStateRead { .. })
+        ));
+        assert!(!*ops.re_engaged.lock().unwrap());
     }
 
     #[test]
@@ -1481,6 +1525,8 @@ mod tests {
         withdraw_fails: bool,
         phase_cleared: Mutex<bool>,
         ignored: Mutex<bool>,
+        /// The reply is taken in between the reciprocal query and the ignore.
+        established_meanwhile: bool,
     }
 
     impl CancelOps for ScriptedOps {
@@ -1497,9 +1543,9 @@ mod tests {
             Ok(self.reciprocal)
         }
 
-        async fn ignore_recipient(&self) -> Result<(), TaskError> {
-            *self.ignored.lock().unwrap() = true;
-            Ok(())
+        async fn ignore_recipient(&self) -> Result<bool, TaskError> {
+            *self.ignored.lock().unwrap() = !self.established_meanwhile;
+            Ok(!self.established_meanwhile)
         }
 
         fn mark_withdrawn(&self) -> Result<(), TaskError> {
@@ -1511,6 +1557,24 @@ mod tests {
             *self.withdrawn.lock().unwrap() = true;
             Ok(())
         }
+    }
+
+    /// PRRT_kwDOM8GK3c6vbDgL: the reply is taken in and the contact
+    /// established after the reciprocal query; the cancellation then reports
+    /// the contact and records no withdrawal.
+    #[tokio::test]
+    async fn a_reply_taken_in_during_the_cancel_wins() {
+        let ops = ScriptedOps {
+            established_meanwhile: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            cancel_flow(&ops).await.expect("cancel"),
+            CancelOutcome::AlreadyEstablished
+        );
+        assert!(!*ops.withdrawn.lock().unwrap());
+        assert!(!*ops.ignored.lock().unwrap(), "the ignore is lifted again");
     }
 
     #[tokio::test]
@@ -1581,6 +1645,7 @@ mod tests {
     struct ScriptedRejectOps {
         action_lock: Arc<tokio::sync::Mutex<()>>,
         ignore_fails: bool,
+        established_meanwhile: bool,
         ignored: Mutex<usize>,
         declined: Mutex<bool>,
     }
@@ -1594,12 +1659,15 @@ mod tests {
             Ok(())
         }
 
-        async fn ignore_sender(&self) -> Result<(), TaskError> {
+        async fn ignore_sender(&self) -> Result<bool, TaskError> {
             if self.ignore_fails {
                 return Err(TaskError::WalletStateInconsistent);
             }
+            if self.established_meanwhile {
+                return Ok(false);
+            }
             *self.ignored.lock().unwrap() += 1;
-            Ok(())
+            Ok(true)
         }
 
         fn mark_declined(&self) -> Result<(), TaskError> {
@@ -1610,6 +1678,28 @@ mod tests {
         fn request_id(&self) -> Identifier {
             id(7)
         }
+
+        fn sender_id(&self) -> Identifier {
+            id(8)
+        }
+    }
+
+    /// The decline twin of `a_reply_taken_in_during_the_cancel_wins`: the
+    /// owner's own request (sent from another device) is taken in first, so
+    /// the contact is established and nothing is declined.
+    #[tokio::test]
+    async fn a_contact_established_during_the_decline_wins() {
+        let ops = ScriptedRejectOps {
+            established_meanwhile: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            reject_flow(&ops).await,
+            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, contact_id })
+                if request_id == id(7) && contact_id == id(8)
+        ));
+        assert!(!*ops.declined.lock().unwrap());
     }
 
     #[tokio::test]

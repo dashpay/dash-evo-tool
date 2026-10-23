@@ -1304,6 +1304,46 @@ impl WalletBackend {
         kv_contains(&self.kv(), owner, KV_PREFIX_WITHDRAWN, counterparty_id)
     }
 
+    /// [`Self::dashpay_is_withdrawn`] for a decision that changes state: a
+    /// failed read is an error, not "not withdrawn".
+    pub(crate) fn dashpay_withdrawal_recorded(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_WITHDRAWN, counterparty_id)
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
+    }
+
+    /// Ignore `peer` for `owner` unless platform-wallet has established the
+    /// contact; returns whether the ignore stands.
+    ///
+    /// Establishing a contact and ignoring a sender each take platform-wallet's
+    /// wallet lock, and once `peer` is ignored their requests are no longer
+    /// ingested and their pending one is dropped. So a contact found
+    /// established after the ignore was established before it: the ignore lost
+    /// the race, and is lifted again.
+    pub(crate) async fn dashpay_ignore_unless_established(
+        &self,
+        owner: &Identifier,
+        peer: &Identifier,
+    ) -> Result<bool, TaskError> {
+        self.dashpay_ignore_contact_sender(owner, peer).await?;
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(true);
+        };
+        let established = wallet
+            .state()
+            .await
+            .identity_manager
+            .managed_identity(owner)
+            .is_some_and(|managed| managed.dashpay().established_contacts().contains_key(peer));
+        if established {
+            self.dashpay_unignore_contact_sender(owner, peer).await?;
+        }
+        Ok(!established)
+    }
+
     /// Clear `owner`'s withdrawal marker for `counterparty_id`. Idempotent —
     /// clearing an absent marker is `Ok(())`. Re-sending a request to the same
     /// person retires the earlier withdrawal, so the fresh request lists.
@@ -1337,7 +1377,7 @@ impl WalletBackend {
         contact_id: &Identifier,
     ) -> Result<bool, TaskError> {
         kv_marker_present(&self.kv(), owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
-            .map_err(|source| TaskError::ContactDetailsStateRead { source })
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
     }
 
     pub(crate) async fn dashpay_lock_contact_request_action(
@@ -2661,48 +2701,51 @@ mod tests {
         );
     }
 
-    /// PRRT_kwDOM8GK3c6vZ6qO: the synced marker is read for presence only, so
+    /// PRRT_kwDOM8GK3c6vZ6qO / vbDgP: the synced and withdrawn markers are
+    /// read for presence only, so
     /// a value in an unknown encoding still counts; a failed read is an error.
     #[test]
     fn a_marker_read_tells_failure_from_absence() {
-        use platform_wallet_storage::{KvError, KvStore, ObjectId};
+        for prefix in [KV_PREFIX_DETAILS_SYNCED, KV_PREFIX_WITHDRAWN] {
+            use platform_wallet_storage::{KvError, KvStore, ObjectId};
 
-        let store = Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default());
-        let kv = DetKv::from_store(store.clone());
-        let (owner, contact) = (id_from_byte(1), id_from_byte(2));
-        assert!(!kv_marker_present(&kv, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).unwrap());
-        store
-            .put(
-                &ObjectId::Identity(owner.to_buffer()),
-                &sidecar_key(KV_PREFIX_DETAILS_SYNCED, &contact),
-                &[crate::wallet_backend::kv::SCHEMA_VERSION.wrapping_add(1), 0],
-            )
-            .unwrap();
-        assert!(
-            kv_marker_present(&kv, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).unwrap(),
-            "a marker in an unknown encoding is still present"
-        );
+            let store = Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default());
+            let kv = DetKv::from_store(store.clone());
+            let (owner, contact) = (id_from_byte(1), id_from_byte(2));
+            assert!(!kv_marker_present(&kv, &owner, prefix, &contact).unwrap());
+            store
+                .put(
+                    &ObjectId::Identity(owner.to_buffer()),
+                    &sidecar_key(prefix, &contact),
+                    &[crate::wallet_backend::kv::SCHEMA_VERSION.wrapping_add(1), 0],
+                )
+                .unwrap();
+            assert!(
+                kv_marker_present(&kv, &owner, prefix, &contact).unwrap(),
+                "a marker in an unknown encoding is still present"
+            );
 
-        struct UnreadableKv;
-        impl KvStore for UnreadableKv {
-            fn get(&self, _: &ObjectId, _: &str) -> Result<Option<Vec<u8>>, KvError> {
-                Err(KvError::LockPoisoned)
+            struct UnreadableKv;
+            impl KvStore for UnreadableKv {
+                fn get(&self, _: &ObjectId, _: &str) -> Result<Option<Vec<u8>>, KvError> {
+                    Err(KvError::LockPoisoned)
+                }
+                fn put(&self, _: &ObjectId, _: &str, _: &[u8]) -> Result<(), KvError> {
+                    Ok(())
+                }
+                fn delete(&self, _: &ObjectId, _: &str) -> Result<(), KvError> {
+                    Ok(())
+                }
+                fn list_keys(&self, _: &ObjectId, _: Option<&str>) -> Result<Vec<String>, KvError> {
+                    Ok(Vec::new())
+                }
             }
-            fn put(&self, _: &ObjectId, _: &str, _: &[u8]) -> Result<(), KvError> {
-                Ok(())
-            }
-            fn delete(&self, _: &ObjectId, _: &str) -> Result<(), KvError> {
-                Ok(())
-            }
-            fn list_keys(&self, _: &ObjectId, _: Option<&str>) -> Result<Vec<String>, KvError> {
-                Ok(Vec::new())
-            }
+            let unreadable = DetKv::from_store(Arc::new(UnreadableKv));
+            assert!(
+                kv_marker_present(&unreadable, &owner, prefix, &contact).is_err(),
+                "a failed read is not absence"
+            );
         }
-        let unreadable = DetKv::from_store(Arc::new(UnreadableKv));
-        assert!(
-            kv_marker_present(&unreadable, &owner, KV_PREFIX_DETAILS_SYNCED, &contact).is_err(),
-            "a failed read is not absence"
-        );
     }
 
     /// F40: two identities that share a wallet must not see each other's

@@ -1557,7 +1557,7 @@ mod derived_key_tests {
                 contract_bounds: None,
                 read_only: false,
                 disabled_at: None,
-                data: dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(&[
+                data: dash_sdk::dpp::secp256k1::PublicKey::from_slice(&[
                     0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95,
                     0xCE, 0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59,
                     0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17, 0x98,
@@ -1849,9 +1849,9 @@ mod derived_key_tests {
     /// follow the fresh record.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_id_change_refreshes_and_reselects_the_matching_slot() {
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 
         let (staged, mut identity) = staged_screen_parts(true).await;
         identity.identity.set_id(staged.id);

@@ -405,7 +405,7 @@ mod tests {
                 ciphertext,
                 salt,
                 nonce,
-                pub_key.inner.serialize().to_vec(),
+                pub_key.inner.to_compressed().to_vec(),
                 address,
                 alias,
                 network.to_string(),
@@ -448,7 +448,7 @@ mod tests {
 
         // And the recovered key bytes equal the original.
         let mut buf = [0u8; 32];
-        buf.copy_from_slice(&parsed.inner[..]);
+        buf.copy_from_slice(&*parsed.inner.to_bytes());
         assert_eq!(buf, raw, "recovered key must equal the original");
     }
 

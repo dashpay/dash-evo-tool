@@ -449,7 +449,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-                    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+                    use dash_sdk::dpp::secp256k1::SecretKey;
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
@@ -1033,7 +1033,7 @@ impl QualifiedIdentity {
                                 "Using corrected derivation path for signing (found via scan)"
                             );
                             let signature =
-                                signer::sign(&data, &extended_key.private_key.to_secret_bytes())
+                                signer::sign(&data, extended_key.private_key.to_bytes().as_slice())
                                     .map_err(|_| TaskError::EncryptionError {
                                         detail:
                                             "Failed to sign with the recovered derivation path."

@@ -629,9 +629,13 @@ async fn step_update_contact_info(
             data: {
                 use dash_sdk::dpp::dashcore::PrivateKey;
                 let secret_key =
-                    dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
+                    dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
                         .expect("Step 5: invalid secret key");
-                let pk = PrivateKey::new(secret_key, dash_sdk::dpp::dashcore::Network::Testnet);
+                let pk = PrivateKey::from_byte_array(
+                    secret_key.as_secret_bytes(),
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                )
+                .expect("valid secret key");
                 pk.public_key().to_bytes().into()
             },
             disabled_at: None,
@@ -849,7 +853,7 @@ async fn tc_045_detect_incoming_contact_payment() {
     // curve points — secp256k1 now rejects raw bytes that are not on the curve,
     // so a hand-written `[0x02; 33]` is no longer a usable public key.
     let derive_pubkey = |seed: [u8; 32]| {
-        let secret_key = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(seed)
+        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(seed)
             .expect("fixed test secret key is a valid scalar");
         dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key())
     };

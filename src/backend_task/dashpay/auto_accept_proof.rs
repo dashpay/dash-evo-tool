@@ -1,8 +1,8 @@
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::secp256k1::Message;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -163,7 +163,7 @@ pub async fn generate_auto_accept_proof(
     .map_err(|e| TaskError::DashPay(DashPayError::from(e)))?;
 
     // Extract the private key bytes (32 bytes)
-    let proof_key = auto_accept_xprv.private_key.to_secret_bytes();
+    let proof_key = *auto_accept_xprv.private_key.to_bytes();
 
     Ok(AutoAcceptProofData {
         identity_id: identity.identity.id(),
@@ -205,11 +205,10 @@ pub fn create_auto_accept_proof_bytes_with_key(
 
     let message = Message::from_digest(message_hash.into());
 
-    let secret_key =
-        dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(*(signing_key_bytes))
-            .map_err(|e| format!("Failed to create secret key: {}", e))?;
+    let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(signing_key_bytes))
+        .map_err(|e| format!("Failed to create secret key: {}", e))?;
 
-    let signature = dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(message, &secret_key);
+    let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret_key);
     let sig_bytes = signature.serialize_compact();
 
     // Build the proof bytes
@@ -285,16 +284,11 @@ pub async fn verify_auto_accept_proof(
         .ok_or("Private key not found")?;
     let xprv = derive_auto_accept_key(&wallet_seed[..], our_identity.network, key_index)
         .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
-    let pubkey = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(
-        &dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(
-            xprv.private_key.to_secret_bytes(),
-        )
-        .map_err(|e| format!("Failed to create secret key: {}", e))?,
-    );
-    let sig = dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature::from_compact(signature_bytes)
+    let pubkey = dash_sdk::dpp::secp256k1::PublicKey::from(xprv.private_key.public_key());
+    let sig = dash_sdk::dpp::secp256k1::ecdsa::Signature::from_compact(signature_bytes)
         .map_err(|e| format!("Invalid signature bytes: {}", e))?;
 
-    match dash_sdk::dpp::dashcore::secp256k1::ecdsa::verify(&sig, message, &pubkey) {
+    match dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, message, &pubkey) {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }

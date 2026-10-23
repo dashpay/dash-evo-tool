@@ -214,7 +214,7 @@ mod tests {
 
     use dash_sdk::dpp::dashcore::PublicKey;
     use dash_sdk::dpp::dashcore::base58;
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
+    use dash_sdk::dpp::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
     use crate::wallet_backend::kv_test_support::InMemoryKv;
 

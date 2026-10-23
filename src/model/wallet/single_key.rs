@@ -303,7 +303,7 @@ impl SingleKeyWallet {
         let private_key = PrivateKey::from_wif(wif).map_err(|e| e.to_string())?;
         let network = private_key.network;
         let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&private_key.inner[..]);
+        key_bytes.copy_from_slice(&*private_key.inner.to_bytes());
         Self::new(key_bytes, network, password, alias)
     }
 

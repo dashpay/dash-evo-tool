@@ -678,7 +678,7 @@ mod tests {
     async fn derived_key_persists_as_path_and_signs_after_reload() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::derived_identity_key::test_support::fixture;
-        use dash_sdk::dpp::dashcore::secp256k1::{Message, SecretKey};
+        use dash_sdk::dpp::secp256k1::{Message, SecretKey};
 
         let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
         let (mut identity, cache, seed_hash, seed) = fixture();
@@ -743,11 +743,11 @@ mod tests {
 
         let secret = SecretKey::from_secret_bytes(*bytes).unwrap();
         let message = Message::from_digest([1; 32]);
-        let signature = dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(message, &secret);
-        dash_sdk::dpp::dashcore::secp256k1::ecdsa::verify(
+        let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret);
+        dash_sdk::dpp::secp256k1::ecdsa::verify(
             &signature,
             message,
-            &cache.get(Network::Testnet, 0, 3).unwrap().inner,
+            &cache.get(Network::Testnet, 0, 3).unwrap().inner.into(),
         )
         .unwrap();
     }
@@ -870,7 +870,7 @@ mod tests {
     /// The stage's identity as published after another device added a key
     /// (not from this wallet) at key id 1.
     fn network_record_with_foreign_key(stage: &DerivedStage) -> Identity {
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
+        use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
         let mut record = stage.identity.identity.clone();
         let mut foreign = record.public_keys()[&0].clone();
         foreign.set_id(1);

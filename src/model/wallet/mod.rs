@@ -1033,18 +1033,13 @@ impl Wallet {
         for wallet in slice {
             let wallet_ref = wallet.read_recover();
             if wallet_ref.seed_hash() == wallet_seed_hash {
-                // SECURITY: `ExtendedPrivKey` is a `Copy` BIP-32 type from
-                // key_wallet with no `Drop`, so its inner SecretKey + ChainCode
-                // cannot be wiped by RAII here. Extract the key straight into a
-                // `Zeroizing` buffer and never bind the intermediate to a named
-                // local; the transient copy left on the stack is the
-                // unavoidable residue of a third-party `Copy` type.
-                let secret = Zeroizing::new(
-                    derivation_path
-                        .derive_priv_ecdsa_for_master_seed(seed, network)?
-                        .private_key
-                        .to_secret_bytes(),
-                );
+                // SECURITY: extract the key straight into a `Zeroizing` buffer
+                // and never bind the intermediate `ExtendedPrivKey` to a named
+                // local; its secret key wipes itself when the temporary drops.
+                let secret = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(seed, network)?
+                    .private_key
+                    .to_bytes();
                 return Ok(Some(secret));
             }
         }
@@ -1240,7 +1235,7 @@ impl Wallet {
         key_index: u32,
         public_key: &PublicKey,
     ) -> Result<(), WalletError> {
-        public_key_result_map.insert(public_key.inner.serialize().to_vec(), key_index);
+        public_key_result_map.insert(public_key.inner.to_compressed().to_vec(), key_index);
         public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
         if register_addresses {
             let derivation_path = DerivationPath::identity_authentication_path(
@@ -1361,7 +1356,7 @@ impl Wallet {
                 let derived = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&child_path)?;
-                let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
+                let dash_public_key = PublicKey::from_slice(&derived.public_key.to_compressed())
                     .map_err(|e| WalletError::PublicKeyParse(Box::new(e)))?;
                 let derivation_path = DerivationPath::from(vec![
                     ChildNumber::Hardened { index: 44 },
@@ -2400,12 +2395,12 @@ mod tests {
 
     /// Helper: create a test address on Testnet
     fn test_address(index: u8) -> Address {
-        use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+        use dash_sdk::dpp::secp256k1::SecretKey;
 
         let mut sk_bytes = [0u8; 32];
         sk_bytes[0] = if index == 0 { 1 } else { index };
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
-        let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&sk);
+        let inner = dash_sdk::dpp::secp256k1::PublicKey::from_secret_key(&sk);
         let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
@@ -2955,7 +2950,10 @@ mod tests {
                     .expect("cache hit");
 
                 assert_eq!(from_cache, from_seed);
-                assert_eq!(from_cache.inner.serialize(), from_seed.inner.serialize());
+                assert_eq!(
+                    from_cache.inner.to_compressed(),
+                    from_seed.inner.to_compressed()
+                );
                 assert_eq!(from_cache.pubkey_hash(), from_seed.pubkey_hash());
             }
         }
@@ -3166,11 +3164,11 @@ mod tests {
         let slice = vec![Arc::new(RwLock::new(wallet))];
 
         let path = DerivationPath::identity_registration_path(network, 0);
-        let reference = path
+        let reference = *path
             .derive_priv_ecdsa_for_master_seed(&seed, network)
             .expect("reference derive")
             .private_key
-            .to_secret_bytes();
+            .to_bytes();
         let param = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
             &slice, seed_hash, &seed, &path, network,
         )

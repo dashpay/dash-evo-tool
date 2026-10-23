@@ -1436,8 +1436,8 @@ mod tests {
                         .to_priv();
 
                     assert_eq!(
-                        entry.public_key.inner.serialize(),
-                        private_key.public_key().inner.serialize(),
+                        entry.public_key.inner.to_compressed(),
+                        private_key.public_key().inner.to_compressed(),
                         "public/private key drift at ({network:?}, id={identity_index}, key={key_index})"
                     );
 
@@ -1525,12 +1525,11 @@ mod tests {
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
 
-        let resolved_pub =
-            dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(*stored.1)
-                .expect("secret")
-                .public_key();
+        let resolved_pub = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*stored.1)
+            .expect("secret")
+            .public_key();
         assert_eq!(
-            master.public_key.inner.serialize(),
+            master.public_key.inner.to_compressed(),
             resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
         );

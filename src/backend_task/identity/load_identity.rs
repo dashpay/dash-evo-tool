@@ -342,8 +342,8 @@ impl AppContext {
                     let public_key_bytes = public_key.to_bytes();
                     let pub_key_hash = public_key.pubkey_hash().to_byte_array();
                     (
-                        (public_key_bytes, private_key.inner.to_secret_bytes()),
-                        (pub_key_hash, private_key.inner.to_secret_bytes()),
+                        (public_key_bytes, *private_key.inner.to_bytes()),
+                        (pub_key_hash, *private_key.inner.to_bytes()),
                     )
                 })
                 .unzip();

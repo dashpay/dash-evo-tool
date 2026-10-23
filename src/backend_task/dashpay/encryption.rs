@@ -1,10 +1,10 @@
 use aes_gcm::aes::Aes256;
 use bip39::rand::{self, RngCore};
 use cbc;
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -36,7 +36,7 @@ pub fn generate_ecdh_shared_key(
             // Perform ECDH to get shared secret. The 64-byte point is secret;
             // hold it in `Zeroizing` so it is wiped once the key is hashed out.
             let shared_secret = Zeroizing::new(
-                dash_sdk::dpp::dashcore::secp256k1::ecdh::shared_secret_point(
+                dash_sdk::dpp::secp256k1::ecdh::shared_secret_point(
                     &public_key,
                     &secret_key,
                 ),
@@ -297,7 +297,7 @@ pub fn decrypt_account_label(
 mod tests {
     use super::*;
     use bip39::rand::{self, RngCore};
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
+    use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 
     fn generate_test_shared_key() -> [u8; 32] {
         let mut shared_key = [0u8; 32];

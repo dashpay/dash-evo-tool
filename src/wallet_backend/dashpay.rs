@@ -182,10 +182,7 @@ pub(crate) fn derive_contact_info_encryption_keys(
         .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
-    Ok((
-        Zeroizing::new(key1.private_key.to_secret_bytes()),
-        Zeroizing::new(key2.private_key.to_secret_bytes()),
-    ))
+    Ok((key1.private_key.to_bytes(), key2.private_key.to_bytes()))
 }
 
 // ---------------------------------------------------------------------------
@@ -3323,7 +3320,7 @@ mod tests {
 
         assert_eq!(
             seam.public_key,
-            local.public_key.serialize(),
+            local.public_key.to_compressed(),
             "published public key must match the receive-side xpub on mainnet"
         );
         assert_eq!(
@@ -3364,7 +3361,7 @@ mod tests {
 
         assert_eq!(
             seam.public_key,
-            local.public_key.serialize(),
+            local.public_key.to_compressed(),
             "published public key must match the receive-side xpub on testnet"
         );
         assert_eq!(
@@ -3406,7 +3403,7 @@ mod tests {
 
             assert_eq!(
                 seam.public_key,
-                local.public_key.serialize(),
+                local.public_key.to_compressed(),
                 "public key must match send↔receive on {network:?}"
             );
             assert_eq!(
@@ -3552,7 +3549,7 @@ mod tests {
             .expect("receive-side xpub");
         assert_eq!(
             published.public_key,
-            scanned.public_key.serialize(),
+            scanned.public_key.to_compressed(),
             "published xpub must equal the scanned xpub for the selected wallet"
         );
 
@@ -3562,7 +3559,7 @@ mod tests {
                 .expect("other-side xpub");
         assert_ne!(
             published.public_key,
-            other_scanned.public_key.serialize(),
+            other_scanned.public_key.to_compressed(),
             "the unselected wallet's seed must derive a different xpub"
         );
     }

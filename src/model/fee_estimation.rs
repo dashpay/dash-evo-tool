@@ -2435,7 +2435,7 @@ mod tests {
     fn any_core_address() -> Address {
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
+        use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
 
         let sk = SecretKey::from_secret_bytes([1u8; 32]).expect("valid secret key");
         let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&sk).serialize())

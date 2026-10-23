@@ -35,9 +35,10 @@
 
 use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::secp256k1::{self, Message, PublicKey, ecdsa};
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::key_wallet::signer::{ExtendedPubKeySigner, Signer, SignerMethod};
+use dash_sdk::dpp::secp256k1::{self, Message, PublicKey, ecdsa};
 use zeroize::Zeroizing;
 
 use crate::wallet_backend::secret_access::SecretPlaintext;
@@ -123,8 +124,13 @@ impl<'a> DetSigner<'a> {
     /// Derive the secp256k1 secret at `path` from the held HD seed. Errors
     /// with [`DetSignerError::WrongSecretKind`] if the held secret is a
     /// single key (no derivation tree).
+    ///
+    /// Signing stays on the secp256k1 primitive (plain RFC 6979 nonce), so
+    /// signatures are byte-identical to earlier builds; the newer
+    /// `EcdsaSecretKey::sign` grinds for a low R and would change them.
     fn derive_secret(&self, path: &DerivationPath) -> Result<secp256k1::SecretKey, DetSignerError> {
-        Ok(self.derive_xprv(path)?.private_key)
+        let scalar = self.derive_xprv(path)?.private_key.to_bytes();
+        secp256k1::SecretKey::from_secret_bytes(*scalar).map_err(DetSignerError::Sign)
     }
 
     /// Sign `msg` (a 32-byte digest) with the held **single key** directly,
@@ -140,9 +146,7 @@ impl<'a> DetSigner<'a> {
                 let sk = secp256k1::SecretKey::from_secret_bytes(***key)
                     .map_err(DetSignerError::Sign)?;
                 let message = message_from_digest(*msg)?;
-                Ok(dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(
-                    message, &sk,
-                ))
+                Ok(dash_sdk::dpp::secp256k1::ecdsa::sign(message, &sk))
             }
             HeldSecret::HdSeed(_) => Err(DetSignerError::WrongSecretKind),
         }
@@ -174,18 +178,18 @@ impl Signer for DetSigner<'_> {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), Self::Error> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), Self::Error> {
         let secret = self.derive_secret(path)?;
 
         let msg = message_from_digest(sighash)?;
-        let signature = dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(msg, &secret);
+        let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(msg, &secret);
         let public_key = PublicKey::from_secret_key(&secret);
-        Ok((signature, public_key))
+        Ok((signature.into(), public_key.into()))
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, Self::Error> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, Self::Error> {
         let secret = self.derive_secret(path)?;
-        Ok(PublicKey::from_secret_key(&secret))
+        Ok(PublicKey::from_secret_key(&secret).into())
     }
 }
 
@@ -311,14 +315,20 @@ mod tests {
             // the path, then sign + recover the public key with the same
             // secp256k1 primitive `DetSigner` uses internally.
 
-            let reference_sk = path
-                .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
-                .expect("reference derive")
-                .private_key;
+            let reference_sk = secp256k1::SecretKey::from_secret_bytes(
+                *path
+                    .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
+                    .expect("reference derive")
+                    .private_key
+                    .to_bytes(),
+            )
+            .expect("valid scalar");
             let reference_msg = Message::from_digest(sighash);
-            let reference_sig =
-                dash_sdk::dpp::dashcore::secp256k1::ecdsa::sign(reference_msg, &reference_sk);
-            let reference_pk = PublicKey::from_secret_key(&reference_sk);
+            let reference_sig = EcdsaSignature::from(dash_sdk::dpp::secp256k1::ecdsa::sign(
+                reference_msg,
+                &reference_sk,
+            ));
+            let reference_pk = EcdsaPublicKey::from(PublicKey::from_secret_key(&reference_sk));
 
             // The JIT signer over the same seed, held open through the
             // chokepoint, must match byte-for-byte.
@@ -403,13 +413,13 @@ mod tests {
     fn hd_derivation_matches_pinned_vector() {
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
 
-        let sk = path
+        let pk = path
             .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, Network::Testnet)
             .expect("derive")
-            .private_key;
-        let pk = PublicKey::from_secret_key(&sk);
+            .private_key
+            .public_key();
         assert_eq!(
-            hex::encode(pk.serialize()),
+            hex::encode(pk.to_compressed()),
             PINNED_TESTNET_PUBKEY_HEX,
             "derived pubkey drifted from the pinned vector — a derivation regression"
         );
@@ -434,7 +444,9 @@ mod tests {
         let mut key_bytes = [0u8; 32];
         key_bytes[31] = 1;
         let sk = secp256k1::SecretKey::from_secret_bytes(key_bytes).unwrap();
-        let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
+        let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif();
         let imported = view
             .import_wif_with_passphrase(
                 &wif,

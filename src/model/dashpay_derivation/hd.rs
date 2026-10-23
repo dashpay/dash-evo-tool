@@ -70,7 +70,7 @@ pub fn generate_contact_xpub_data(
     let chain_code = xpub.chain_code.to_bytes();
 
     // Get the public key bytes (33 bytes compressed)
-    let public_key_bytes = xpub.public_key.serialize();
+    let public_key_bytes = xpub.public_key.to_compressed();
 
     Ok((parent_fingerprint, chain_code, public_key_bytes))
 }
@@ -249,8 +249,8 @@ mod tests {
 
         // Different timestamps should produce different keys
         assert_ne!(
-            key1.private_key.to_secret_bytes(),
-            key2.private_key.to_secret_bytes(),
+            key1.private_key.to_bytes(),
+            key2.private_key.to_bytes(),
             "Different timestamps should produce different keys"
         );
     }
@@ -329,8 +329,8 @@ mod tests {
                 .expect("Should derive xpub for account 1");
 
         assert_ne!(
-            xpub_account0.public_key.serialize(),
-            xpub_account1.public_key.serialize(),
+            xpub_account0.public_key.to_compressed(),
+            xpub_account1.public_key.to_compressed(),
             "Different accounts should produce different xpubs"
         );
     }
@@ -367,8 +367,8 @@ mod tests {
         assert_eq!(xpub_testnet.network, Network::Testnet);
         assert_eq!(xpub_mainnet.network, Network::Mainnet);
         assert_ne!(
-            xpub_testnet.public_key.serialize(),
-            xpub_mainnet.public_key.serialize(),
+            xpub_testnet.public_key.to_compressed(),
+            xpub_mainnet.public_key.to_compressed(),
             "different coin types must produce different keys"
         );
     }

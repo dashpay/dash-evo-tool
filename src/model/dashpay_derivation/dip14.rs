@@ -1,4 +1,5 @@
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaPublicKey;
 use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
@@ -6,8 +7,8 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 /// This module implements Extended Key Derivation using 256-bit Unsigned Integers
 /// as specified in DIP-0014 for DashPay contact relationships.
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
+use dash_sdk::dpp::secp256k1::SecretKey;
 use dash_sdk::platform::Identifier;
 
 use super::DerivationError;
@@ -31,7 +32,7 @@ pub fn ckd_priv_256(
     if hardened {
         // Hardened derivation: 0x00 || ser_256(k_par) || ser(i)
         hmac_engine.input(&[0x00]);
-        hmac_engine.input(&parent_key.private_key.to_secret_bytes());
+        hmac_engine.input(&*parent_key.private_key.to_bytes());
 
         if is_compatibility_mode {
             // Use ser_32(i) for compatibility
@@ -43,7 +44,7 @@ pub fn ckd_priv_256(
     } else {
         // Non-hardened derivation: ser_P(point(k_par)) || ser(i)
         let parent_pubkey = parent_key.private_key.public_key();
-        hmac_engine.input(&parent_pubkey.serialize());
+        hmac_engine.input(&parent_pubkey.to_compressed());
 
         if is_compatibility_mode {
             // Use ser_32(i) for compatibility
@@ -60,14 +61,15 @@ pub fn ckd_priv_256(
     // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
     let (i_l, i_r) = hmac_bytes.split_at(32);
 
-    // Parse I_L as a private key and add to parent key
-    let i_l_key = SecretKey::from_secret_bytes(
-        i_l.try_into()
-            .map_err(|_| dash_sdk::dpp::dashcore::secp256k1::Error::InvalidSecretKey)?,
-    )?;
+    // Parse I_L as a private key (refusing zero and values >= n) and add it
+    // to the parent key.
+    let i_l: &[u8; 32] = i_l
+        .try_into()
+        .map_err(|_| dash_sdk::dpp::secp256k1::Error::InvalidSecretKey)?;
+    SecretKey::from_secret_bytes(*i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
-    let child_key = parent_key.private_key.add_tweak(&i_l_key.into())?;
+    let child_key = parent_key.private_key.add_tweak(i_l)?;
 
     // Chain code is I_R (32 bytes)
     let mut chain_code_bytes = [0u8; 32];
@@ -176,10 +178,10 @@ fn index_to_child_number(
 }
 
 /// Calculate fingerprint for a public key (first 4 bytes of HASH160)
-fn calculate_fingerprint(pubkey: &PublicKey) -> Fingerprint {
+fn calculate_fingerprint(pubkey: &EcdsaPublicKey) -> Fingerprint {
     use dash_sdk::dpp::dashcore::hashes::hash160;
 
-    let hash = hash160::Hash::hash(&pubkey.serialize());
+    let hash = hash160::Hash::hash(&pubkey.to_compressed());
     let mut fingerprint_bytes = [0u8; 4];
     fingerprint_bytes.copy_from_slice(&hash.to_byte_array()[0..4]);
     Fingerprint::from(fingerprint_bytes)

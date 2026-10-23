@@ -2326,7 +2326,7 @@ impl WalletBackend {
         &self,
         address: &str,
         msg: &[u8; 32],
-    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+    ) -> Result<dash_sdk::dpp::secp256k1::ecdsa::Signature, TaskError> {
         let scope = SecretScope::SingleKey {
             address: address.to_string(),
         };

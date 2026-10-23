@@ -2335,7 +2335,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
 async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear() {
     use crate::backend_task::system_task::SystemTask;
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender.clone())
@@ -3624,7 +3624,7 @@ fn seed_legacy_protected_single_key(
             ciphertext,
             salt,
             nonce,
-            pub_key.inner.serialize().to_vec(),
+            pub_key.inner.to_compressed().to_vec(),
             address,
             alias,
             Network::Testnet.to_string(),

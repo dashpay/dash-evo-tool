@@ -104,9 +104,10 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     let new_public_key_data = {
         use dash_sdk::dpp::dashcore::PrivateKey;
         let secret_key =
-            dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
                 .expect("valid secret");
-        PrivateKey::new(secret_key, Network::Testnet)
+        PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
             .public_key()
             .to_bytes()
     };
@@ -261,7 +262,7 @@ async fn materialize_master_key_as_clear(
                 let xprv = master_path
                     .derive_priv_ecdsa_for_master_seed(seed, network)
                     .expect("derive master private key from seed");
-                Ok(xprv.to_priv().inner.to_secret_bytes())
+                Ok(*xprv.to_priv().inner.to_bytes())
             },
         )
         .await

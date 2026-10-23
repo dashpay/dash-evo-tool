@@ -680,7 +680,7 @@ mod tests {
     }
 
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).

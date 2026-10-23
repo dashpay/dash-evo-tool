@@ -365,7 +365,7 @@ mod tests {
     /// valid address to stand in for a funded-but-unindexed chain address.
     fn addr_from_byte(b: u8) -> Address {
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
+        use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
 
         let mut sk_bytes = [0u8; 32];
         sk_bytes[0] = if b == 0 { 1 } else { b };

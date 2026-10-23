@@ -1045,7 +1045,6 @@ impl SnapshotStore {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -1053,6 +1052,7 @@ mod tests {
     };
     use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
     use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     fn seed(n: u8) -> WalletSeedHash {
         [n; 32]

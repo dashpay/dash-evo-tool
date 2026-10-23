@@ -132,11 +132,11 @@ fn find_wallet_path(
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
     use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     const TEST_SEED: [u8; 64] = [7u8; 64];
 

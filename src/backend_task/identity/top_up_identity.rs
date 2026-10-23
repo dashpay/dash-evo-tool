@@ -153,42 +153,33 @@ impl AppContext {
         let linked_wallet = self
             .stored_identity_wallet_link(&identity_id)?
             .map(|(owner, _)| owner);
-        let (new_balance, provenance) =
-            match resolve_top_up_route(identity_id, linked_wallet, &seed_hash)? {
-                TopUpRoute::OwnIdentity => {
-                    // Fail-secure: a wallet-funded top-up of an own identity derives
-                    // its asset-lock account from this wallet's HD tree at the
-                    // identity's index, so the op index must equal the identity's
-                    // recorded `wallet_index`. Reject before any funds move.
-                    validate_topup_index(
-                        identity_id,
-                        qualified_identity.wallet_index,
+        let route = resolve_top_up_route(identity_id, linked_wallet, &seed_hash)?;
+        let (new_balance, provenance) = match route {
+            TopUpRoute::OwnIdentity => {
+                // Fail-secure: a wallet-funded top-up of an own identity derives
+                // its asset-lock account from this wallet's HD tree at the
+                // identity's index, so the op index must equal the identity's
+                // recorded `wallet_index`. Reject before any funds move.
+                validate_topup_index(identity_id, qualified_identity.wallet_index, identity_index)?;
+                self.wallet_backend()?
+                    .top_up_identity(
+                        &seed_hash,
+                        &qualified_identity.identity,
+                        funding,
                         identity_index,
-                    )?;
-                    self.wallet_backend()?
-                        .top_up_identity(
-                            &seed_hash,
-                            &qualified_identity.identity,
-                            funding,
-                            identity_index,
-                            None,
-                        )
-                        .await?
-                }
-                TopUpRoute::ForeignIdentity => {
-                    // TODO(upstream): no `top_up_identity_with_private_key` variant
-                    // returns the response metadata, so this balance has no height.
-                    let balance = self
-                        .top_up_foreign_identity(
-                            sdk,
-                            &qualified_identity.identity,
-                            &seed_hash,
-                            funding,
-                        )
-                        .await?;
-                    (balance, BalanceProvenance::ConfirmedUnordered)
-                }
-            };
+                        None,
+                    )
+                    .await?
+            }
+            TopUpRoute::ForeignIdentity => {
+                // TODO(upstream): no `top_up_identity_with_private_key` variant
+                // returns the response metadata, so this balance has no height.
+                let balance = self
+                    .top_up_foreign_identity(sdk, &qualified_identity.identity, &seed_hash, funding)
+                    .await?;
+                (balance, BalanceProvenance::ConfirmedUnordered)
+            }
+        };
         qualified_identity.identity.set_balance(new_balance);
 
         let actual_fee = match amount_duffs_for_fee {

@@ -408,27 +408,26 @@ impl AppContext {
             }
         };
 
+        let id = &identity_id;
         let provenance = refreshed_balance.map_or(BalanceProvenance::Unobserved, |refreshed| {
             BalanceProvenance::ObservedAt(refreshed.height)
         });
-        if let Err(error) =
-            self.edit_local_qualified_identity_observed(&identity_id, provenance, |fresh| {
-                if outcome == DpnsRegistrationOutcome::Registered
-                    && !fresh.dpns_names.iter().any(|known| known.name == name)
-                {
-                    fresh.dpns_names.push(DPNSNameInfo {
-                        name: name.to_owned(),
-                        acquired_at: confirmed_at.unwrap_or_else(crate::utils::time::now_ms),
-                    });
-                }
-                if let Some(refreshed) = refreshed_balance {
-                    fresh.identity.set_balance(refreshed.credits);
-                }
-                let main_username = self.main_username(fresh);
-                fresh.initialize_node_alias(None, main_username.as_deref());
-                Ok(())
-            })
-        {
+        if let Err(error) = self.edit_local_qualified_identity_observed(id, provenance, |fresh| {
+            if outcome == DpnsRegistrationOutcome::Registered
+                && !fresh.dpns_names.iter().any(|known| known.name == name)
+            {
+                fresh.dpns_names.push(DPNSNameInfo {
+                    name: name.to_owned(),
+                    acquired_at: confirmed_at.unwrap_or_else(crate::utils::time::now_ms),
+                });
+            }
+            if let Some(refreshed) = refreshed_balance {
+                fresh.identity.set_balance(refreshed.credits);
+            }
+            let main_username = self.main_username(fresh);
+            fresh.initialize_node_alias(None, main_username.as_deref());
+            Ok(())
+        }) {
             tracing::warn!(
                 ?error,
                 "Identity could not be saved locally after username registration"

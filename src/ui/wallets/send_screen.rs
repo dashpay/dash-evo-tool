@@ -14,11 +14,10 @@ use crate::model::asset_lock::{
 };
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
-    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_spendable_credits,
-    shield_from_balance_fee_headroom,
+    allocate_platform_addresses_with_fee, estimate_address_funding_fee_from_transition,
+    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_topup_min_funding_duffs, max_spendable_credits, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -900,6 +899,11 @@ impl WalletSendScreen {
                 seed_hash,
                 SpendLimitKind::ShieldFromPlatform,
                 platform_balances_revision(addresses),
+            )),
+            (SourceSelection::CoreWallet, AddressKind::Core) => Some((
+                seed_hash,
+                SpendLimitKind::CoreSend,
+                self.app_context.asset_lock_probe_snapshot(&seed_hash).0,
             )),
             _ => None,
         }
@@ -3101,46 +3105,35 @@ impl WalletSendScreen {
                         )
                     }
                     Some(AddressKind::Core) => {
-                        // Core-to-Core "Max": reserve the L1 network fee so the
-                        // send leaves enough to cover it. The fee scales with
-                        // the wallet's UTXO count (a Max send spends them all)
-                        // into a single recipient output with no change.
-                        let seed_hash = self
-                            .selected_wallet
-                            .as_ref()
-                            .and_then(|w| w.read().ok().map(|wallet| wallet.seed_hash()));
-                        if let Some(seed_hash) = seed_hash {
-                            let spendable_balance_duffs =
-                                self.app_context.snapshot_balance(&seed_hash).spendable();
-                            let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
-                            match core_max_send_amount_duffs(spendable_balance_duffs, utxo_count, 1)
-                            {
-                                Some(send_amount_duffs) => {
-                                    max = Some(send_amount_duffs * CREDITS_PER_DUFF);
-                                    let fee_duffs = core_max_send_reserve_duffs(
-                                        spendable_balance_duffs,
-                                        utxo_count,
-                                        1,
-                                    )
-                                    .unwrap_or(0);
-                                    let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
-                                    Some(format!(
-                                        "A network fee of approximately {fee} is reserved from your balance."
-                                    ))
-                                }
-                                None => {
-                                    // Balance does not cover the network fee.
-                                    // Leave no Max value so the button cannot
-                                    // produce an amount that would fail.
-                                    max = None;
-                                    Some(
-                                        "Your balance is too low to cover the network fee."
-                                            .to_string(),
-                                    )
-                                }
+                        // Core-to-Core "Max": the backend's quote of the largest
+                        // payment the pooled build accepts, net of its fee.
+                        // Nothing is offered until it arrives.
+                        match self.spend_limit(SpendLimitKind::CoreSend) {
+                            Some(0) => {
+                                max = None;
+                                Some(
+                                    "Your balance is too low to cover the network fee.".to_string(),
+                                )
                             }
-                        } else {
-                            None
+                            Some(max_credits) => {
+                                max = Some(max_credits);
+                                let utxo_count = self
+                                    .selected_wallet_seed_hash
+                                    .map(|seed_hash| {
+                                        self.app_context.snapshot_utxo_count(&seed_hash)
+                                    })
+                                    .unwrap_or(0);
+                                let fee_duffs =
+                                    estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                                let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
+                                Some(format!(
+                                    "A network fee of approximately {fee} is reserved from your balance."
+                                ))
+                            }
+                            None => {
+                                max = None;
+                                None
+                            }
                         }
                     }
                     _ => None,
@@ -6675,6 +6668,51 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// Core sends pool several accounts, so Max for a Core payment is the
+    /// backend's pooled quote, never the displayed balance less an estimate.
+    #[test]
+    fn core_send_max_is_the_backend_quote() {
+        const QUOTE_DUFFS: u64 = 1_234_567;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind: SpendLimitKind::CoreSend,
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("the Core send form must ask for the pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend,
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "Max must be exactly the pooled quote"
         );
     }
 

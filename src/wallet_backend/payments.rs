@@ -4,9 +4,9 @@
 //! Every seed-bearing operation here opens a single just-in-time
 //! [`SecretAccess`](super::SecretAccess) session so the HD seed is decrypted
 //! once, borrowed by the [`DetSigner`] for signing, and zeroized when the
-//! scope ends. `send_payment` builds and broadcasts a BIP-44 payment;
-//! `create_asset_lock_proof` builds an asset lock whose credit output DET
-//! spends itself and returns its one-time key, and
+//! scope ends. `send_payment` builds and broadcasts a payment from the pooled
+//! accounts; `create_asset_lock_proof` builds an asset lock whose credit
+//! output DET spends itself and returns its one-time key, and
 //! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
@@ -791,10 +791,17 @@ impl WalletBackend {
             .await
     }
 
-    /// Build, sign, and broadcast a payment from the wallet's default BIP-44
-    /// account to `recipients` (`(address, duffs)`). Returns the txid.
+    /// Build, sign, and broadcast a payment to `recipients` (`(address,
+    /// duffs)`), funded from the wallet's pooled accounts. Returns the txid.
     ///
-    /// One [`SecretAccess::with_secret_session`](super::SecretAccess::with_secret_session) scope wraps the whole build:
+    /// The build goes through upstream's atomic finalizer with
+    /// [`platform_wallet::SEND_FUNDING_SOURCES`] — BIP-44, BIP-32 and every
+    /// DashPay receiving account, CoinJoin excluded, change back to BIP-44 —
+    /// the same set [`Self::spend_limit_credits`] quotes Max against. A dry
+    /// run of the same build runs first, before any secret is opened, so a
+    /// payment no build can fund is refused with a typed error and no prompt.
+    ///
+    /// One [`SecretAccess::with_secret_session`](super::SecretAccess::with_secret_session) scope wraps the signing:
     /// the seed is decrypted just-in-time (one prompt for a passphrase-
     /// protected wallet, none for a no-password wallet), borrowed by the
     /// [`DetSigner`] for every input sign, and zeroized when the scope ends.
@@ -803,102 +810,91 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
-        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError;
-        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
-        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-
+        self.ensure_core_payment_builds(seed_hash, &recipients)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
-                let wallet_id = wallet.wallet_id();
-
-                // Assemble and sign under one uninterrupted hold of the
-                // wallet-manager write lock: `add_funding` reads the funding
-                // account's free UTXOs and `build_signed` reserves the ones it
-                // selects. Holding the lock across both closes the
-                // read-then-reserve window a concurrent build could otherwise use
-                // to double-select the same UTXO. The guard drops at the end of
-                // this block, before the broadcast re-acquires the lock.
-                let tx = {
-                    let mut wm = wallet.wallet_manager().write().await;
-                    let (kw_wallet, info) = wm
-                        .get_wallet_and_info_mut(&wallet_id)
-                        .ok_or(TaskError::WalletStateInconsistent)?;
-
-                    let account = kw_wallet
-                        .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
-                        .ok_or(TaskError::WalletStateInconsistent)?;
-                    let current_height = info.core_wallet.synced_height();
-                    let managed_account = info
-                        .core_wallet
-                        .accounts
-                        .standard_bip44_accounts
-                        .get_mut(&DEFAULT_BIP44_ACCOUNT)
-                        .ok_or(TaskError::WalletStateInconsistent)?;
-
-                    let mut builder = TransactionBuilder::new()
-                        .set_current_height(current_height)
-                        .set_selection_strategy(SelectionStrategy::LargestFirst)
-                        .add_funding(managed_account, account);
-                    for (address, amount) in &recipients {
-                        builder = builder.add_output(address, *amount);
-                    }
-
-                    let (tx, _fee) = builder
-                        .build_signed(&signer, |addr| {
-                            managed_account.address_derivation_path(&addr)
-                        })
-                        .await
-                        .map_err(|source| {
-                            // Give balance-specific and input-count-specific
-                            // advice only for the failures that are actually
-                            // about balance or input count — every other
-                            // `BuilderError` variant falls back to the
-                            // generic `WalletPaymentBuildFailed` message
-                            // rather than misdirecting the user to "check
-                            // your balance" for e.g. a signing failure.
-                            match source {
-                                BuilderError::InsufficientFunds {
-                                    available,
-                                    required,
-                                } => TaskError::InsufficientFunds {
-                                    available,
-                                    required,
-                                },
-                                BuilderError::TooManyInputs { count, max } => {
-                                    TaskError::WalletPaymentTooManyInputs { count, max }
-                                }
-                                other => TaskError::WalletPaymentBuildFailed {
-                                    source: Box::new(other),
-                                },
-                            }
-                        })?;
-                    tx
-                };
-
-                // Broadcast through the wallet's own `SpvBroadcaster`, releasing
-                // the build's UTXO reservation on a definitive pre-send rejection
-                // so an immediate retry can reselect those inputs. Preserves the
-                // reservation reconciliation the removed `core().send_to_addresses`
-                // performed.
-                wallet
+                // Funding and reservation happen in one critical section
+                // under the wallet-manager write lock inside upstream; the
+                // signer runs after it drops.
+                let transaction = wallet
                     .core()
-                    .broadcast_transaction_releasing_reservation(
-                        StandardAccountType::BIP44Account,
+                    .finalize_transaction(
+                        core_payment_builder(&recipients),
+                        &platform_wallet::SEND_FUNDING_SOURCES,
                         DEFAULT_BIP44_ACCOUNT,
-                        &tx,
+                        &signer,
                     )
                     .await
-                    .map_err(|e| map_core_broadcast_error(Some(tx.txid()), e))?;
-                Ok(tx.txid())
+                    .map_err(map_core_finalize_error)?;
+                let txid = transaction.transaction().txid();
+                // A definitive rejection releases the reservation on every
+                // funding account; an ambiguous outcome keeps it.
+                wallet
+                    .core()
+                    .broadcast_finalized_transaction(&transaction)
+                    .await
+                    .map_err(|e| map_core_broadcast_error(Some(txid), e))?;
+                Ok(txid)
             })
             .await
+    }
+
+    /// Refuse a payment no build can fund, with the builder's own typed
+    /// reason, by running the same pooled build unsigned and releasing it.
+    ///
+    /// Upstream's finalizer reports a too-many-inputs refusal only as text, so
+    /// this dry run is what keeps that case typed. A shortfall, or an input
+    /// count above the standard-transaction limit, gives balance or
+    /// consolidation advice; anything else falls back to the generic
+    /// payment-build error.
+    // TODO(upstream): type `BuilderError::TooManyInputs` in
+    // `CoreWallet::finalize_transaction`'s error so this dry run can go.
+    async fn ensure_core_payment_builds(
+        &self,
+        seed_hash: &WalletSeedHash,
+        recipients: &[(dash_sdk::dpp::dashcore::Address, u64)],
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let wallet_manager = wallet.wallet_manager().write().await;
+        let (key_wallet, info) = wallet_manager
+            .get_wallet_and_info(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        let requested = recipients
+            .iter()
+            .fold(0_u64, |total, (_, amount)| total.saturating_add(*amount));
+        dry_run_core_payment(key_wallet, &info.core_wallet, recipients).map_err(|source| {
+            match source {
+                BuilderError::InsufficientFunds {
+                    available,
+                    required,
+                }
+                | BuilderError::CoinSelection(SelectionError::InsufficientFunds {
+                    available,
+                    required,
+                }) => TaskError::InsufficientFunds {
+                    available,
+                    required,
+                },
+                BuilderError::CoinSelection(SelectionError::NoUtxosAvailable) => {
+                    TaskError::InsufficientFunds {
+                        available: 0,
+                        required: requested,
+                    }
+                }
+                BuilderError::TooManyInputs { count, max } => {
+                    TaskError::WalletPaymentTooManyInputs { count, max }
+                }
+                other => TaskError::WalletPaymentBuildFailed {
+                    source: Box::new(other),
+                },
+            }
+        })
     }
 
     /// Build, track, and broadcast an asset lock whose credit output DET itself
@@ -1080,6 +1076,67 @@ fn unbound_topup_lock_eligible(
     }
 }
 
+/// The unfunded builder a Core payment to `recipients` starts from, shared by
+/// the dry run and the real build so the two cannot disagree.
+fn core_payment_builder(
+    recipients: &[(dash_sdk::dpp::dashcore::Address, u64)],
+) -> TransactionBuilder {
+    recipients
+        .iter()
+        .fold(TransactionBuilder::new(), |builder, (address, amount)| {
+            builder.add_output(address, *amount)
+        })
+}
+
+/// Build the payment to `recipients` unsigned from the pooled send accounts,
+/// the way upstream's finalizer funds it, then release what it reserved.
+///
+/// The accounts are clones sharing the live `ReservationSet`, so the release
+/// MUST run on success; the owner guard frees only this build's reservation.
+fn dry_run_core_payment(
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
+    recipients: &[(dash_sdk::dpp::dashcore::Address, u64)],
+) -> Result<(), BuilderError> {
+    let mut accounts = pooled_funding_accounts(
+        wallet,
+        &info.accounts,
+        &platform_wallet::SEND_FUNDING_SOURCES,
+        DEFAULT_BIP44_ACCOUNT,
+    );
+    let mut builder =
+        core_payment_builder(recipients).set_current_height(asset_lock_builder_height(info));
+    for (managed, account) in accounts.iter_mut() {
+        builder = builder.add_funding(managed, account);
+    }
+    let (transaction, _, reservation) = builder.build_unsigned_reserved()?;
+    if let Some(token) = reservation {
+        for (managed, _) in &accounts {
+            managed.release_reservation_if_owner(&transaction, token);
+        }
+    }
+    Ok(())
+}
+
+/// Classify a failed pooled payment build. A shortfall the dry run did not
+/// see (the wallet changed in between) keeps its balance advice when upstream
+/// names both figures.
+fn map_core_finalize_error(source: platform_wallet::error::PlatformWalletError) -> TaskError {
+    match source {
+        platform_wallet::error::PlatformWalletError::CorePooledInsufficientFunds {
+            available: Some(available),
+            required: Some(required),
+            ..
+        } => TaskError::InsufficientFunds {
+            available,
+            required,
+        },
+        other => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
+    }
+}
+
 /// Classify a broadcast failure from the payment path. Pure — unit-testable.
 ///
 /// An ambiguous outcome gets its own [`TaskError::TransactionConfirmationUnknown`]
@@ -1116,7 +1173,7 @@ mod tests {
         asset_lock_max_amount_from_pool, map_core_broadcast_error, unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
-    use crate::model::fee_estimation::core_max_send_amount_duffs;
+    use crate::model::fee_estimation::estimate_core_l1_send_fee_duffs;
     use crate::wallet_backend::snapshot::DetWalletBalance;
     use dash_sdk::dpp::dashcore::ScriptBuf;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -1156,8 +1213,8 @@ mod tests {
             1,
             false,
         );
-        let max_amount = core_max_send_amount_duffs(BALANCE_DUFFS, 1, 1)
-            .expect("the balance covers the Max-send fee reserve");
+        // The balance less the model's fee estimate for one input and one output.
+        let max_amount = BALANCE_DUFFS - estimate_core_l1_send_fee_duffs(1, 1);
 
         assert_eq!(max_amount, 9_999_780);
         let (transaction, fee, _no_reservation) = TransactionBuilder::new()
@@ -1832,6 +1889,27 @@ mod tests {
             "expected WalletBackend, got: {err:?}"
         );
     }
+    /// A test backend with no wallet registered yet.
+    async fn backend_without_wallets() -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::context::AppContext>,
+        std::sync::Arc<crate::wallet_backend::WalletBackend>,
+    ) {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        app_context
+            .ensure_wallet_backend(SenderAsync::new(sender, app_context.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = app_context.wallet_backend().expect("wired backend");
+        (temp_dir, app_context, backend)
+    }
+
     /// A test backend with one registered, unfunded wallet.
     async fn backend_with_registered_wallet(
         seed_byte: u8,
@@ -2032,6 +2110,171 @@ mod tests {
                 result,
                 Err(TaskError::AssetLockTooManyInputs { count, max: 100 }) if count > 100
             ),
+            "{result:?}"
+        );
+    }
+    fn payment_recipient() -> Address {
+        Address::p2pkh(
+            &PublicKey::from_slice(&[0x02; 33]).expect("valid compressed public key"),
+            Network::Testnet,
+        )
+    }
+
+    /// Core sends pool BIP-44, BIP-32 and DashPay receiving funds, so Max
+    /// covers all of them and is exactly the largest amount the pooled
+    /// payment build accepts: one duff more is refused as a shortfall.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_is_the_largest_amount_the_pooled_build_accepts() {
+        use crate::model::spend_limit::SpendLimitKind;
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet(0x67).await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x68,
+            &[700_000, 1_234_567],
+        )
+        .await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP32Account,
+            },
+            0x69,
+            // The 100-duff output costs more to spend than it brings.
+            &[500_000, 100],
+        )
+        .await;
+
+        let max_credits = backend
+            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .await
+            .expect("Core send maximum");
+        assert_eq!(max_credits % CREDITS_PER_DUFF, 0);
+        let max_duffs = max_credits / CREDITS_PER_DUFF;
+        assert!(
+            max_duffs > 2_400_000 && max_duffs < 2_434_567,
+            "Max must cover the BIP-44 and BIP-32 funds, less the fee: {max_duffs}"
+        );
+
+        backend
+            .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), max_duffs)])
+            .await
+            .expect("the quoted Max must build");
+        let over = backend
+            .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), max_duffs + 1)])
+            .await;
+        assert!(
+            matches!(over, Err(TaskError::InsufficientFunds { .. })),
+            "one duff above Max must be a shortfall: {over:?}"
+        );
+    }
+
+    /// The quoted Max survives the real pooled finalize — signing included —
+    /// and only the broadcast, with no network here, is what stops it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_is_signed_by_the_pooled_finalizer() {
+        use crate::model::spend_limit::SpendLimitKind;
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, ctx, backend) = backend_without_wallets().await;
+        // Registered through the app, so the seed is in the vault and the
+        // signer can open it without a prompt.
+        let seed = [0x6c; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Signing test".to_string()),
+            None,
+        )
+        .expect("DET wallet");
+        let (seed_hash, _) = ctx
+            .register_wallet(
+                wallet,
+                &seed,
+                crate::model::wallet::birth_height::WalletOrigin::Fresh,
+            )
+            .expect("register wallet");
+        // Offline registration with the backend is slow; wait for it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !backend.is_wallet_registered(&seed_hash) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the wallet must register with the backend"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let platform_wallet = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("platform wallet");
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP32Account,
+            },
+            0x6d,
+            &[1_000_000, 250_000],
+        )
+        .await;
+        let max_duffs = backend
+            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .await
+            .expect("Core send maximum")
+            / CREDITS_PER_DUFF;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            backend.send_payment(&seed_hash, vec![(payment_recipient(), max_duffs)]),
+        )
+        .await
+        .expect("an offline send settles");
+        assert!(
+            matches!(
+                &result,
+                Err(TaskError::WalletBackend { source })
+                    if matches!(
+                        source.as_ref(),
+                        platform_wallet::error::PlatformWalletError::TransactionBroadcast(_)
+                    )
+            ),
+            "the pooled finalize must build and sign Max; only the broadcast may fail: {result:?}"
+        );
+    }
+
+    /// A payment no pooled build can fund is refused before any secret is
+    /// opened, with balance advice rather than a generic failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unfundable_payment_is_refused_before_signing() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet(0x6a).await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP32Account,
+            },
+            0x6b,
+            &[1_000_000],
+        )
+        .await;
+
+        let result = backend
+            .send_payment(&seed_hash, vec![(payment_recipient(), 2_000_000)])
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::InsufficientFunds { .. })),
             "{result:?}"
         );
     }

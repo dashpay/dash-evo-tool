@@ -1861,42 +1861,6 @@ mod tests {
         );
     }
 
-    /// Crosses the `send_screen` "Max" seam: the Max a Core send reserves must
-    /// come from the *spendable* set, never `total`. When the wallet holds
-    /// immature/locked funds (total > spendable), feeding `total` to the Max
-    /// math over-shoots what coin selection can spend, so the broadcast fails
-    /// with insufficient funds.
-    #[test]
-    fn core_max_reserves_against_spendable_not_total() {
-        use crate::model::fee_estimation::core_max_send_amount_duffs;
-
-        // 800 spendable, 700 immature/locked riding in `total`.
-        let balance = DetWalletBalance {
-            confirmed: 500,
-            unconfirmed: 300,
-            total: 1_500,
-        };
-
-        let max = core_max_send_amount_duffs(balance.spendable(), 1, 1)
-            .expect("spendable covers the fee");
-
-        // Max may never exceed what coin selection can actually spend.
-        assert!(
-            max <= balance.spendable(),
-            "Max {max} over-reserves against spendable {}",
-            balance.spendable()
-        );
-
-        // Reserving against `total` would let Max exceed the spendable set —
-        // the exact over-shoot this fix kills.
-        let buggy_max = core_max_send_amount_duffs(balance.total, 1, 1)
-            .expect("total trivially covers the fee");
-        assert!(
-            buggy_max > balance.spendable(),
-            "the total-based Max should over-reserve, proving the seam matters"
-        );
-    }
-
     #[test]
     fn accumulate_then_publish_surfaces_tx_history() {
         let store = SnapshotStore::new();

@@ -1777,10 +1777,10 @@ impl AppContext {
     }
 
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
-    /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
+    /// Core (L1) transaction fee shown for a send that spends every UTXO.
     ///
     /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
-    /// selection — it only sizes the fee reserved off the displayed balance.
+    /// selection or a Max amount — those come from the backend builder.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.utxo_count(seed_hash))

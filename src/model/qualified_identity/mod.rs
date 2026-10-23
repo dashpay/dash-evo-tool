@@ -3211,6 +3211,35 @@ pub(crate) mod withdrawal_key_tests {
         );
     }
 
+    /// A user identity's wallet-derived identity key still files it under
+    /// its wallet and identity index, and its key screens still report the
+    /// recorded wallet path — node key references change neither.
+    #[test]
+    fn user_identity_wallet_info_is_unchanged() {
+        let auth = key(4, Purpose::AUTHENTICATION);
+        let mut qi = build_identity(IdentityType::User, vec![auth.clone()], vec![]);
+        let path = encrypted_key_storage::WalletDerivationPath {
+            wallet_seed_hash: [0x6A; 32],
+            derivation_path: "m/9'/1'/5'/0'/0'/3'/4'".parse().unwrap(),
+        };
+        qi.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, auth.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    auth.clone(),
+                    Some(path.clone()),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(path.clone()),
+            ),
+        );
+        assert_eq!(qi.determine_wallet_info().unwrap(), Some(([0x6A; 32], 3)));
+        assert!(matches!(
+            qi.private_keys.held_private_key_data(&auth),
+            Some((_, Some(found))) if found == path
+        ));
+        assert_eq!(qi.wallet_masternode_withdrawal(auth.id()), None);
+    }
+
     #[test]
     fn wallet_held_owner_key_withdraws_through_the_wallet() {
         let mut owner = key(1, Purpose::OWNER);

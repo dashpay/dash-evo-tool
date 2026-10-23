@@ -1543,6 +1543,37 @@ mod tests {
         ));
     }
 
+    /// The fallback only fills a missing wallet path: a key whose public key
+    /// already records one (every wallet-derived user identity key) reports
+    /// that recorded path, unchanged.
+    #[test]
+    fn a_recorded_wallet_path_wins_over_the_reference_fallback() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let recorded = WalletDerivationPath {
+            wallet_seed_hash: [0x11; 32],
+            derivation_path: "m/9'/1'/5'/0'/0'/4'/0'".parse().unwrap(),
+        };
+        let reference = WalletDerivationPath {
+            wallet_seed_hash: [0x22; 32],
+            derivation_path: "m/9'/1'/3'/2'/0".parse().unwrap(),
+        };
+        let mut ks = KeyStorage::default();
+        ks.insert_at(
+            (MAIN, key.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    key.clone(),
+                    Some(recorded.clone()),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(reference),
+            ),
+        );
+        assert!(matches!(
+            ks.held_private_key_data(&key),
+            Some((_, Some(found))) if found == recorded
+        ));
+    }
+
     /// A key nothing is filed for has no placement to name and no material.
     #[test]
     fn an_unheld_key_has_no_placement_and_no_material() {

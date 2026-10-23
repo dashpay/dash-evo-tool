@@ -7,8 +7,9 @@
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::{AppState, TaskResult};
+use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
+use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::platform::Identifier;
@@ -456,6 +457,62 @@ fn a_closed_send_form_result_leaves_a_running_query_alone() {
         assert!(
             !documents(&mut harness).fetch_pending_for_test(),
             "the query took its own answer"
+        );
+    });
+}
+
+/// The contact-list reads Home dispatched while it was in view.
+fn home_contact_list_reads(harness: &App) -> Vec<BackendTaskContext> {
+    harness
+        .state()
+        .test_captured_dispatches()
+        .iter()
+        .filter(|(task, _)| {
+            matches!(task, BackendTask::DashPayTask(task)
+                if matches!(**task, DashPayTask::LoadContacts { .. }))
+        })
+        .map(|(_, context)| context.clone())
+        .collect()
+}
+
+/// Home's contact reads report to the hub even while another screen covers
+/// it, so a temporary failure there is retried after a plain Back instead of
+/// leaving Home loading for good.
+#[test]
+fn home_retries_a_contact_read_that_failed_while_covered() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        app_context.connection_status().set_masternodes_ready(true);
+        harness.state_mut().test_capture_dispatches();
+        crate::identity_home::seed_identity(&app_context, vec![], vec![]);
+        harness.run_steps(3);
+        let reads = home_contact_list_reads(&harness);
+        assert_eq!(reads.len(), 1, "Home asks for its contact list once");
+        // A reconnect drops readiness while the read is running.
+        app_context.connection_status().set_masternodes_ready(false);
+
+        let add_contact = ScreenType::DashPayAddContact.create_screen(&app_context);
+        harness.state_mut().screen_stack.push(add_contact);
+        harness.run_steps(3);
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: reads[0].clone(),
+                error: TaskError::MasternodeListNotReady {
+                    source_error: Box::new(dash_sdk::Error::Generic("syncing".into())),
+                },
+            },
+        );
+
+        // Back from Add Contact pops the screen without refreshing the hub.
+        harness.state_mut().screen_stack.pop();
+        app_context.connection_status().set_masternodes_ready(true);
+        harness.run_steps(3);
+        assert_eq!(
+            home_contact_list_reads(&harness).len(),
+            2,
+            "the hub heard of the failure and retries once the network is ready"
         );
     });
 }

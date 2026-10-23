@@ -822,6 +822,9 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         let avatar_id = seed_identity(&app_context, 1, "Avatar identity");
         seed_identity(&app_context, 2, "Initial identity");
         app_context.set_selected_identity(Some(avatar_id));
+        // The hub holds its proof-verifying reads until the masternode list is
+        // synced; these tests start on a synced network.
+        app_context.connection_status().set_masternodes_ready(true);
         let screen = IdentityHubScreen::new(&app_context);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))

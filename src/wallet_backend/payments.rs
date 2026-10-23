@@ -178,8 +178,9 @@ fn pooled_funding_accounts(
 /// draws from. The cap applies on top of the builder's own: the upstream
 /// exact-amount builder accepts up to the standard-transaction limit, so an
 /// amount only a larger lock could fund is treated as unbuildable here.
-// TODO(upstream): the exact-amount asset-lock builder should refuse more
-// inputs than `max_asset_lock_transaction_inputs` itself, as its drain does.
+// TODO(dashpay/platform#5513): the exact-amount asset-lock builder should
+// refuse more inputs than `max_asset_lock_transaction_inputs` itself, as its
+// drain does (DET follow-up draft: asset-lock-exact-input-cap).
 pub(super) struct AssetLockFundingPool {
     accounts: Vec<(ManagedCoreFundsAccount, Account)>,
     current_height: u32,
@@ -697,10 +698,11 @@ impl WalletBackend {
     /// builds and broadcasts in one call, so the second check is as close to
     /// the build as DET can get; a concurrent spend or sync landing between
     /// the two lock acquisitions can still change the selection.
-    // TODO(upstream): enforce `max_asset_lock_inputs` for `Exact` builds in
+    // TODO(dashpay/platform#5513): once upstream enforces
+    // `max_asset_lock_inputs` for `Exact` builds in
     // `broadcast_funded_asset_lock_with_operation` (its abandon arm covers
-    // only `DrainAll`), making the cap atomic with the build so this guard
-    // can go.
+    // only `DrainAll`), the cap is atomic with the build and this guard can go
+    // (DET follow-up draft: asset-lock-exact-input-cap).
     pub(super) async fn ensure_asset_lock_within_input_cap(
         &self,
         seed_hash: &WalletSeedHash,

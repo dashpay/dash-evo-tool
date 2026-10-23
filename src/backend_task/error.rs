@@ -3369,6 +3369,20 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// The Core funding of a shield lost an input conflict: another payment
+    /// spent its coins first. Upstream binds the operation to that funding, so
+    /// retrying it cannot build a replacement; a new transfer can start.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::AssetLockConflicted`.
+    #[error(
+        "This transfer did not go through because its coins were spent by another payment. Check your balance, then start a new transfer."
+    )]
+    AssetLockFundingConflicted {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.

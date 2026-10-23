@@ -109,6 +109,7 @@ mod tests {
     fn lock() -> TrackedAssetLock {
         TrackedAssetLock {
             operation_id: None,
+            operation_revision: 0,
             out_point: OutPoint::new(Txid::from_byte_array([2; 32]), 0),
             transaction: Transaction {
                 version: 3,

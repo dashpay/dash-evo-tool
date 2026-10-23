@@ -1349,6 +1349,7 @@ mod tests {
         ));
         let lock = TrackedAssetLock {
             operation_id: None,
+            operation_revision: 0,
             out_point: OutPoint::new(pending.txid, 0),
             transaction: pending.transaction.clone(),
             amount: 100,

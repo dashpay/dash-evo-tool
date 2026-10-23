@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, SecretPlaintext, WalletBackend,
-    map_shielded_op_error,
+    map_shielded_op_error, shield_capacity_exceeded_error,
 };
 
 /// Borrow the 64-byte HD seed from a resolved secret session for a shielded
@@ -215,7 +215,7 @@ impl WalletBackend {
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
+                match wallet
                     .shielded_shield_from_account(
                         &coordinator,
                         shielded_account,
@@ -225,7 +225,20 @@ impl WalletBackend {
                         &prover,
                     )
                     .await
-                    .map_err(map_shielded_op_error)
+                {
+                    Ok(()) => Ok(()),
+                    // The refusal's own figure includes the fee reserve; a
+                    // fresh plan states the maximum the user can act on.
+                    Err(
+                        source @ platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                            ..
+                        },
+                    ) => Err(shield_capacity_exceeded_error(
+                        source,
+                        wallet.shielded_shield_preflight(payment_account).await,
+                    )),
+                    Err(source) => Err(map_shielded_op_error(source)),
+                }
             })
             .await
     }

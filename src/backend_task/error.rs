@@ -453,13 +453,14 @@ pub enum TaskError {
 
     /// Shielding from Platform asked for more than the wallet's Platform
     /// addresses can fund once the shielding fee is kept back.
+    /// `max_shieldable` is the shield planner's own maximum (net of the fee
+    /// reserve), not the gross balance upstream's refusal reports.
     #[error(
-        "Your Platform balance can shield at most {available_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
-        available_dash = format_credits_as_dash(*.available)
+        "Your Platform balance can shield at most {max_shieldable_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
+        max_shieldable_dash = format_credits_as_dash(*.max_shieldable)
     )]
     ShieldFromPlatformCapacityExceeded {
-        available: u64,
-        required: u64,
+        max_shieldable: u64,
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
     },

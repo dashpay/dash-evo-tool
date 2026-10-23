@@ -1,4 +1,8 @@
 //! Identity-side username ops: availability checks and own-request status.
+//!
+//! TODO(dpns-marketplace): selling, buying and transferring usernames through
+//! the platform-wallet marketplace are not offered yet. See
+//! https://github.com/dashpay/dash-evo-tool/issues/1103
 
 use std::collections::BTreeMap;
 

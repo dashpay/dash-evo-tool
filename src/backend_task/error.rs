@@ -180,13 +180,17 @@ pub enum WalletTransactionHistoryError {
 }
 
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
+/// Shared, so one stopped task batch can report it for each of its tasks.
+#[derive(Clone)]
 pub struct BackendTaskJoinError {
-    source: tokio::task::JoinError,
+    source: std::sync::Arc<tokio::task::JoinError>,
 }
 
 impl From<tokio::task::JoinError> for BackendTaskJoinError {
     fn from(source: tokio::task::JoinError) -> Self {
-        Self { source }
+        Self {
+            source: std::sync::Arc::new(source),
+        }
     }
 }
 
@@ -2810,6 +2814,62 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Username, vote and token transfer refusals (protocol versions 14 and 15)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The contest for the requested name already holds the most contenders it
+    /// accepts.
+    #[error(
+        "Too many people have already asked for this username, so no one else can join. Choose a different username."
+    )]
+    DocumentContestContendersLimitReached {
+        max_contenders: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token cannot be moved to another identity, so a transfer, or a
+    /// payment that moves it, is refused.
+    #[error(
+        "Token {} cannot be moved to another identity, so this action is not possible. Use a different token.",
+        token_id.to_string(Encoding::Base58)
+    )]
+    TokenNotTransferable {
+        token_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The vote choice is not allowed for this contest: a lock on a name that
+    /// cannot be locked, or a vote towards an identity that is not competing.
+    #[error(
+        "This vote is not allowed for this username. Vote for one of the identities that asked for it, or choose another option, then vote again."
+    )]
+    VoteChoiceNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Another identity committed to the same name earlier, so its request
+    /// comes first.
+    #[error("Someone else asked for this username first. Choose a different username.")]
+    ReferencedDocumentPreceded {
+        document_id: Identifier,
+        preceding_document_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A token that cannot be transferred cannot be tradeable either.
+    #[error(
+        "The token at position {token_position} cannot be traded because it cannot be transferred. Allow transfers or turn trading off, then try again."
+    )]
+    NonTransferableTokenTradeable {
+        token_position: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Contract fee pots (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// The network does not keep contract fee pots yet.
@@ -2936,6 +2996,13 @@ pub enum TaskError {
         "This network does not support once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
     )]
     TokenOncePerIdentityNotSupported,
+
+    /// The token creator asked for a token that cannot be transferred, on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+    )]
+    NonTransferableTokenNotSupported,
 
     /// The identity already took its single claim of a token's
     /// once-per-identity distribution, so Platform refused another one.
@@ -4954,6 +5021,53 @@ impl From<SdkError> for TaskError {
                     ) => Some(Box::new(|source_error| {
                         TaskError::InconsistentGasFeesPayerInBatch { source_error }
                     })),
+                    ConsensusError::StateError(
+                        StateError::DocumentContestMaximumContendersReachedError(e),
+                    ) => {
+                        let max_contenders = e.max_contenders();
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentContestContendersLimitReached {
+                                max_contenders,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::TokenNotTransferableError(e)) => {
+                        let token_id = *e.token_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenNotTransferable {
+                                token_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::VoteChoiceNotAllowedForVotePollError(_),
+                    ) => Some(Box::new(|source_error| TaskError::VoteChoiceNotAllowed {
+                        source_error,
+                    })),
+                    ConsensusError::StateError(StateError::ReferencedDocumentPrecededError(e)) => {
+                        let (document_id, preceding_document_id) =
+                            (*e.document_id(), *e.preceding_document_id());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ReferencedDocumentPreceded {
+                                document_id,
+                                preceding_document_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(BasicError::NonTransferableTokenTradeableError(
+                        e,
+                    )) => {
+                        let token_position = e.token_contract_position();
+                        Some(Box::new(move |source_error| {
+                            TaskError::NonTransferableTokenTradeable {
+                                token_position,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(
                         StateError::DocumentImmutablePropertyChangedError(e),
                     ) => {
@@ -7778,6 +7892,125 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The refusals protocol versions 14 and 15 add on username, vote and
+    /// token flows map to their own variants, keep the SDK error as their
+    /// source and tell the user what to do instead.
+    #[test]
+    fn contest_vote_and_token_transfer_refusals_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::basic::data_contract::NonTransferableTokenTradeableError;
+        use dash_sdk::dpp::consensus::state::document::document_contest_maximum_contenders_reached_error::DocumentContestMaximumContendersReachedError;
+        use dash_sdk::dpp::consensus::state::document::referenced_document_preceded_error::ReferencedDocumentPrecededError;
+        use dash_sdk::dpp::consensus::state::token::TokenNotTransferableError;
+        use dash_sdk::dpp::consensus::state::voting::vote_choice_not_allowed_for_vote_poll_error::VoteChoiceNotAllowedForVotePollError;
+        use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+        use dash_sdk::dpp::voting::vote_polls::VotePoll;
+        use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+
+        type Expectation = fn(&TaskError) -> bool;
+        let token_id = Identifier::random();
+        let poll = ContestedDocumentResourceVotePoll {
+            contract_id: Identifier::random(),
+            document_type_name: "domain".to_string(),
+            index_name: "parentNameAndLabel".to_string(),
+            index_values: vec![
+                dash_sdk::dpp::platform_value::Value::from("dash"),
+                dash_sdk::dpp::platform_value::Value::from("alice"),
+            ],
+        };
+        let cases: Vec<(ConsensusError, Expectation, &str)> = vec![
+            (
+                DocumentContestMaximumContendersReachedError::new(poll.clone(), 1000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::DocumentContestContendersLimitReached {
+                            max_contenders: 1000,
+                            ..
+                        }
+                    )
+                },
+                "Choose a different username.",
+            ),
+            (
+                TokenNotTransferableError::new(token_id, "transfer".to_string()).into(),
+                |e| matches!(e, TaskError::TokenNotTransferable { .. }),
+                "Use a different token.",
+            ),
+            (
+                VoteChoiceNotAllowedForVotePollError::new(
+                    VotePoll::ContestedDocumentResourceVotePoll(poll),
+                    ResourceVoteChoice::Lock,
+                )
+                .into(),
+                |e| matches!(e, TaskError::VoteChoiceNotAllowed { .. }),
+                "then vote again.",
+            ),
+            (
+                ReferencedDocumentPrecededError::new(
+                    Identifier::random(),
+                    Identifier::random(),
+                    "normalizedLabel".to_string(),
+                    "preorder".to_string(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ReferencedDocumentPreceded { .. }),
+                "Someone else asked for this username first.",
+            ),
+            (
+                NonTransferableTokenTradeableError::new(3).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::NonTransferableTokenTradeable {
+                            token_position: 3,
+                            ..
+                        }
+                    )
+                },
+                "Allow transfers or turn trading off, then try again.",
+            ),
+        ];
+
+        for (cause, expected, action) in cases {
+            let debug = format!("{cause:?}");
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(expected(&error), "{debug} mapped to {error:?}");
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "{error:?} must keep the SDK error as its source"
+            );
+            let message = error.to_string();
+            assert!(message.contains(action), "{message} lacks {action}");
+            assert!(message.ends_with('.'), "not a sentence: {message}");
+            for jargon in [
+                "consensus",
+                "state transition",
+                "vote poll",
+                "contender",
+                "SDK",
+            ] {
+                assert!(
+                    !message.contains(jargon),
+                    "{message} contains jargon {jargon}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn token_not_transferable_names_the_token() {
+        let token_id = Identifier::random();
+        let error = TaskError::TokenNotTransferable {
+            token_id,
+            source_error: Box::new(SdkError::Generic("refused".to_string())),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains(&token_id.to_string(Encoding::Base58))
+        );
     }
 
     /// Names decoded from a node's (unproven) consensus error never reach

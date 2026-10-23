@@ -59,6 +59,9 @@ pub enum Capability {
     /// The connected platform accepts AUTHENTICATION keys below MASTER bound
     /// to a contract or a document type (contract bounds validation v2).
     ContractBoundAuthenticationKeys,
+    /// The connected platform accepts version 1 token configurations, which
+    /// can make a token non-transferable.
+    NonTransferableTokens,
 }
 
 impl Capability {
@@ -98,6 +101,20 @@ impl Capability {
                     .common_validation_methods
                     .validate_identity_public_key_contract_bounds
                     >= CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION
+            }),
+            // Upstream names no feature constant either; the newest token
+            // configuration format the version decodes is the source of truth.
+            Capability::NonTransferableTokens => PlatformVersion::get_optional(
+                ctx.platform_protocol_version(),
+            )
+            .is_some_and(|version| {
+                version
+                    .dpp
+                    .contract_versions
+                    .token_versions
+                    .token_configuration_format
+                    .max_version
+                    >= 1
             }),
         }
     }
@@ -207,6 +224,9 @@ pub enum FeatureGate {
     /// Adding an AUTHENTICATION key bound to a contract or a document type.
     /// Offered only where the connected network accepts one.
     ContractBoundAuthenticationKeys,
+    /// Creating a token that holders cannot transfer. Offered only where the
+    /// connected network accepts one.
+    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -231,6 +251,9 @@ impl FeatureGate {
             FeatureGate::ContractBoundAuthenticationKeys => &[Check::Capability(
                 Capability::ContractBoundAuthenticationKeys,
             )],
+            FeatureGate::NonTransferableTokens => {
+                &[Check::Capability(Capability::NonTransferableTokens)]
+            }
         }
     }
 
@@ -511,6 +534,7 @@ mod tests {
                 FeatureGate::TokenOncePerIdentityDistribution,
                 FeatureGate::ContractFeePots,
                 FeatureGate::ContractBoundAuthenticationKeys,
+                FeatureGate::NonTransferableTokens,
             ] {
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
                 ctx.set_platform_protocol_version(13);

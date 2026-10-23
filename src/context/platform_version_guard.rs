@@ -10,7 +10,10 @@
 //!
 //! Platform #5294 enforces GroveDB proof envelope V1 outside these tables, even
 //! for protocol 13. The snapshot does not establish wire compatibility: #5361
-//! removes legacy discovery response field2, still served by sampled mainnet nodes.
+//! removed the legacy discovery response field 2, still served by sampled
+//! mainnet nodes, and #5515 brings it back as the answer to a version 0 lookup
+//! request, checked by `verify_full_identity_by_non_unique_public_key_hash_two_proofs`.
+//! Only a live check against those nodes shows the SDK accepts their proofs.
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;

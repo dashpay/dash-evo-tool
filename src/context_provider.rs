@@ -137,11 +137,14 @@ impl ContextProvider for SpvProvider {
         let app_ctx = self.app_context()?;
 
         // Before the SPV masternode list has synced, quorum keys are not yet
-        // resolvable. A proof failure here would get the queried DAPI node
-        // banned by the SDK (`ban_failed_address: true`), so short-circuit to a
-        // `Config` "not ready" diagnostic — the same non-ban-inducing class the
-        // pre-unlock guard below uses. Any stray early proof call thus degrades
-        // gracefully instead of triggering the self-ban storm.
+        // resolvable, so answer with a typed "not ready" diagnostic that DET
+        // maps to `TaskError::MasternodeListNotReady`. This does NOT spare the
+        // queried node: the SDK wraps every provider error, `Config` included,
+        // in `Error::Proof`, treats all proof errors as retryable, and bans the
+        // node before returning (`ban_failed_address: true`; pinned by
+        // `sdk_wrapper::tests::a_proof_read_before_masternodes_are_ready_bans_the_node`).
+        // Callers must therefore hold proof-verifying reads until
+        // `masternodes_ready()`; this branch only names the failure.
         if !app_ctx.connection_status().masternodes_ready() {
             // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
             return Err(ContextProviderError::Config(

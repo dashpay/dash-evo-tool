@@ -2633,25 +2633,27 @@ mod tests {
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataIncompatible {
-                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
-                    "incompatible test fixture",
+                source: Box::new(platform_wallet_storage::WalletStorageError::Io(
+                    std::io::Error::other("incompatible test fixture"),
                 )),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                },
+                source: Box::new(
+                    platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                        ancestor: std::path::PathBuf::from("/shared"),
+                        reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                            mode: 0o777,
+                        },
+                    }
+                ),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
-                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
-                    std::io::ErrorKind::PermissionDenied,
+                source: Box::new(platform_wallet_storage::WalletStorageError::Io(
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
                 )),
             }
         ));

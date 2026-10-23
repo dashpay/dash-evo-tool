@@ -1756,7 +1756,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: Box::new(source),
+            }),
         }
     }
 
@@ -3378,6 +3380,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // The funding transaction lost a Core input conflict. Retrying the
+        // same operation cannot build a replacement, so the user starts anew.
+        other @ P::AssetLockConflicted(_) => TaskError::AssetLockFundingConflicted {
+            source: Box::new(other),
+        },
+
         // A token operation keeps its SDK cause, so it is classified like any
         // SDK error; an unclassified one still names the operation.
         P::TokenOperationFailed { operation, source } => {
@@ -3719,6 +3727,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockTransaction(_)
         | P::AssetLockNotTracked(_)
         | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockConflicted(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
@@ -4683,6 +4692,22 @@ mod tests {
         assert!(matches!(
             map_shielded_op_error(unconfirmed("future-op")),
             TaskError::WalletBackend { .. }
+        ));
+    }
+
+    /// A conflicted funding lock tells the user to start a new transfer, so it
+    /// must not fall into the generic "please retry" envelope.
+    #[test]
+    fn map_shielded_op_error_routes_a_conflicted_funding_lock() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use platform_wallet::error::PlatformWalletError as P;
+        let out_point = dash_sdk::dpp::dashcore::OutPoint::new(
+            dash_sdk::dpp::dashcore::Txid::from_byte_array([0x31; 32]),
+            0,
+        );
+        assert!(matches!(
+            map_shielded_op_error(P::AssetLockConflicted(out_point)),
+            TaskError::AssetLockFundingConflicted { .. }
         ));
     }
 

@@ -178,8 +178,9 @@ fn pooled_funding_accounts(
 /// draws from. The cap applies on top of the builder's own: the upstream
 /// exact-amount builder accepts up to the standard-transaction limit, so an
 /// amount only a larger lock could fund is treated as unbuildable here.
-// TODO(upstream): the exact-amount asset-lock builder should refuse more
-// inputs than `max_asset_lock_transaction_inputs` itself, as its drain does.
+// TODO(dashpay/platform#5513): the exact-amount asset-lock builder should
+// refuse more inputs than `max_asset_lock_transaction_inputs` itself, as its
+// drain does (DET follow-up draft: asset-lock-exact-input-cap).
 pub(super) struct AssetLockFundingPool {
     accounts: Vec<(ManagedCoreFundsAccount, Account)>,
     current_height: u32,
@@ -683,12 +684,25 @@ impl WalletBackend {
     }
 
     /// Refuse an exact-amount asset lock that would need more inputs than the
-    /// protocol accepts, before any secret is opened or anything is built.
+    /// protocol accepts.
     ///
     /// The upstream exact-amount builder enforces only the standard-transaction
     /// limit, and Dash Core silently drops a larger asset lock, leaving its
     /// inputs reserved and the lock unconfirmed. The same dry run the Max probe
     /// uses decides it; other funding kinds are left to upstream.
+    ///
+    /// Every asset-lock path runs it twice: before the secret session, so a
+    /// doomed lock never prompts, and again inside the session immediately
+    /// before the upstream build, because the wallet can change while the user
+    /// types a password. Upstream takes the wallet-manager lock itself and
+    /// builds and broadcasts in one call, so the second check is as close to
+    /// the build as DET can get; a concurrent spend or sync landing between
+    /// the two lock acquisitions can still change the selection.
+    // TODO(dashpay/platform#5513): once upstream enforces
+    // `max_asset_lock_inputs` for `Exact` builds in
+    // `broadcast_funded_asset_lock_with_operation` (its abandon arm covers
+    // only `DrainAll`), the cap is atomic with the build and this guard can go
+    // (DET follow-up draft: asset-lock-exact-input-cap).
     pub(super) async fn ensure_asset_lock_within_input_cap(
         &self,
         seed_hash: &WalletSeedHash,
@@ -970,6 +984,9 @@ impl WalletBackend {
                     | AssetLockFundingType::AssetLockAddressTopUp
                     | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
                 }
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
+                    .await?;
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let (proof, credit_output_path, out_point) = wallet
@@ -2113,6 +2130,150 @@ mod tests {
             "{result:?}"
         );
     }
+
+    /// A password prompt that, while the "user" types, spends one UTXO from
+    /// the wallet — the wallet changing between the pre-check and the build.
+    struct SpendWhilePrompting {
+        wallet: std::sync::OnceLock<std::sync::Arc<platform_wallet::PlatformWallet>>,
+        account_type: dash_sdk::dpp::key_wallet::account::AccountType,
+        spent: OutPoint,
+        password: &'static str,
+        asks: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::wallet_backend::secret_prompt::SecretPrompt for SpendWhilePrompting {
+        async fn request(
+            &self,
+            _request: crate::wallet_backend::secret_prompt::SecretPromptRequest,
+        ) -> Result<
+            crate::wallet_backend::secret_prompt::SecretPromptReply,
+            crate::wallet_backend::secret_prompt::SecretPromptCancelled,
+        > {
+            self.asks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let wallet = self.wallet.get().expect("wallet wired before the prompt");
+            let wallet_id = wallet.wallet_id();
+            let mut manager = wallet.wallet_manager().write().await;
+            let removed = manager
+                .get_wallet_info_mut(&wallet_id)
+                .and_then(|info| {
+                    info.core_wallet
+                        .accounts
+                        .funds_account_mut(&self.account_type)
+                })
+                .and_then(|account| account.utxos.remove(&self.spent));
+            assert!(removed.is_some(), "the prompt must spend the large UTXO");
+            Ok(
+                crate::wallet_backend::secret_prompt::SecretPromptReply::new(
+                    platform_wallet_storage::secrets::SecretString::new(self.password.to_string()),
+                    crate::wallet_backend::secret_prompt::RememberPolicy::None,
+                ),
+            )
+        }
+
+        fn is_interactive(&self) -> bool {
+            true
+        }
+    }
+
+    /// The cap pre-check runs before the password prompt so a doomed lock
+    /// never asks for it. The wallet can change while the user types, so
+    /// the cap is checked again right before the build: an amount that now
+    /// needs more inputs than an asset lock may carry is refused, never
+    /// built and broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_asset_lock_pushed_over_the_input_cap_while_prompting_is_refused() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const PASSWORD: &str = "cap-race-password";
+        const SMALL_DUFFS: u64 = 100_000;
+        const LARGE_DUFFS: u64 = 10_000_000;
+        // With the large UTXO about 22 inputs; without it about 121.
+        const AMOUNT_DUFFS: u64 = 12_000_000;
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let prompt = std::sync::Arc::new(SpendWhilePrompting {
+            wallet: std::sync::OnceLock::new(),
+            account_type: bip44,
+            spent: OutPoint::new(Txid::from_byte_array([0x68; 32]), 0),
+            password: PASSWORD,
+            asks: std::sync::atomic::AtomicUsize::new(0),
+        });
+        app_context.install_secret_prompt(prompt.clone());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        app_context
+            .ensure_wallet_backend(SenderAsync::new(sender, app_context.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = app_context.wallet_backend().expect("wired backend");
+        let seed = [0x67; 64];
+        let seed_hash = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Cap race test".to_string()),
+            None,
+        )
+        .expect("DET wallet")
+        .seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        crate::wallet_backend::wallet_seed_store::WalletSeedView::new(&app_context.secret_store())
+            .set_protected(
+                &seed_hash,
+                &seed,
+                &platform_wallet_storage::secrets::SecretString::new(PASSWORD.to_string()),
+            )
+            .expect("protected seed");
+        let platform_wallet = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("platform wallet");
+        prompt
+            .wallet
+            .set(std::sync::Arc::clone(&platform_wallet))
+            .unwrap_or_else(|_| panic!("wallet set once"));
+        fund_account(&platform_wallet, bip44, 0x68, &[LARGE_DUFFS]).await;
+        fund_account(&platform_wallet, bip44, 0x69, &[SMALL_DUFFS; 150]).await;
+        backend
+            .ensure_asset_lock_amount_within_input_cap(&seed_hash, AMOUNT_DUFFS)
+            .await
+            .expect("precondition: the amount fits the cap before the prompt");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            backend.create_asset_lock_proof(
+                &seed_hash,
+                AMOUNT_DUFFS,
+                platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+                0,
+            ),
+        )
+        .await
+        .expect("the refusal must not wait on the network");
+
+        assert_eq!(
+            prompt.asks.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pre-check passed, so the password was asked once"
+        );
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::AssetLockTooManyInputs { count, max: 100 }) if count > 100
+            ),
+            "{result:?}"
+        );
+    }
+
     fn payment_recipient() -> Address {
         Address::p2pkh(
             &PublicKey::from_slice(&[0x02; 33]).expect("valid compressed public key"),

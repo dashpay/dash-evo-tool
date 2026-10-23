@@ -434,10 +434,13 @@ pub enum TaskError {
     )]
     WalletPaymentTooManyInputs { count: usize, max: usize },
 
-    /// The transfer to Platform would need more individual unspent outputs
-    /// than the network accepts in one deposit transaction.
+    /// An asset lock would need more individual unspent outputs than the
+    /// network accepts in one asset-lock transaction. Shared by every
+    /// asset-lock funding path (identity registration and top-up,
+    /// Platform-address funding, shielding, direct locks), so the text names
+    /// no single operation.
     #[error(
-        "This transfer needs to combine {count} small amounts from your wallet, which is more than the {max} the network accepts in one deposit. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
+        "This amount needs to combine {count} small amounts from your wallet into one transaction, which is more than the {max} the network accepts. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
@@ -450,13 +453,14 @@ pub enum TaskError {
 
     /// Shielding from Platform asked for more than the wallet's Platform
     /// addresses can fund once the shielding fee is kept back.
+    /// `max_shieldable` is the shield planner's own maximum (net of the fee
+    /// reserve), not the gross balance upstream's refusal reports.
     #[error(
-        "Your Platform balance can shield at most {available_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
-        available_dash = format_credits_as_dash(*.available)
+        "Your Platform balance can shield at most {max_shieldable_dash} at the moment, because part of it pays the shielding fee. Use Max, or enter a smaller amount.",
+        max_shieldable_dash = format_credits_as_dash(*.max_shieldable)
     )]
     ShieldFromPlatformCapacityExceeded {
-        available: u64,
-        required: u64,
+        max_shieldable: u64,
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
@@ -3189,8 +3193,11 @@ pub enum TaskError {
     NoUtxosAvailable,
 
     /// The wallet balance is too low to cover the requested amount plus fees.
+    /// Both amounts are in duffs and are shown in Dash.
     #[error(
-        "You do not have enough Dash. You have {available} duffs but need {required} duffs. Please add more funds and retry."
+        "You do not have enough Dash. You have {available_dash} but need {required_dash}. Add more funds, or enter a smaller amount, and try again.",
+        available_dash = format_duffs_as_dash(*.available),
+        required_dash = format_duffs_as_dash(*.required)
     )]
     InsufficientFunds { available: u64, required: u64 },
 
@@ -5333,6 +5340,42 @@ mod tests {
         );
         assert!(!message.to_lowercase().contains("details"), "{message}");
         assert!(!message.to_lowercase().contains("support"), "{message}");
+    }
+
+    /// The pooled build's shortfall is the only balance check a Core send
+    /// gets, so its message states both amounts in Dash, never in duffs.
+    #[test]
+    fn insufficient_funds_message_states_amounts_in_dash() {
+        let message = TaskError::InsufficientFunds {
+            available: 50_000_000,
+            required: 100_000_000,
+        }
+        .to_string();
+        assert!(message.contains("0.5 DASH"), "{message}");
+        assert!(message.contains("1 DASH"), "{message}");
+        assert!(!message.to_lowercase().contains("duff"), "{message}");
+    }
+
+    /// The asset-lock input-cap refusal is shared by identity registration,
+    /// identity top-up, Platform-address funding, shielding and direct asset
+    /// locks, so its text must fit every one of them: it names the counts and
+    /// the fix, never a single operation.
+    #[test]
+    fn asset_lock_too_many_inputs_message_is_operation_neutral() {
+        let message = TaskError::AssetLockTooManyInputs {
+            count: 121,
+            max: 100,
+        }
+        .to_string();
+        assert!(message.contains("121"), "{message}");
+        assert!(message.contains("100"), "{message}");
+        assert!(message.contains("consolidate"), "{message}");
+        for operation_word in ["transfer", "deposit", "platform", "identity", "shield"] {
+            assert!(
+                !message.to_lowercase().contains(operation_word),
+                "must not name one operation ({operation_word}): {message}"
+            );
+        }
     }
 
     /// An unrelated generic protocol error stays the generic SDK variant.

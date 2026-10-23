@@ -30,6 +30,15 @@ Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
 
+The bridge translates into this V019 reference, not into the newest schema.
+Its staged destination is created from `033ecae.sql`, and the public
+`SqlitePersister::open` then applies every later migration to the published
+result. Those migrations rewrite existing rows (V020 drops mined Core history
+and rewinds the sync height to just below the wallet's birth height), so
+translating straight into a fully migrated database would skip them. Staged
+validation opens a copy, keeping the staged file at the reference schema the
+rebuild reads.
+
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

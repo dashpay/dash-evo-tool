@@ -432,6 +432,13 @@ pub enum TaskError {
     )]
     WalletPaymentTooManyInputs { count: usize, max: usize },
 
+    /// The transfer to Platform would need more individual unspent outputs
+    /// than the network accepts in one deposit transaction.
+    #[error(
+        "This transfer needs to combine {count} small amounts from your wallet, which is more than the {max} the network accepts in one deposit. Try a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
+    )]
+    AssetLockTooManyInputs { count: usize, max: usize },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections

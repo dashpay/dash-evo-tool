@@ -307,6 +307,8 @@ impl WalletBackend {
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -674,6 +676,8 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let identity_id = identity.id();
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -777,6 +781,8 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access

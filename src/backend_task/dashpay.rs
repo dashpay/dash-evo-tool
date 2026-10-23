@@ -40,6 +40,9 @@ fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, Dash
     })
 }
 
+// TODO(dashpay-invitations): creating and claiming DashPay invitations, and
+// withdrawing credits to a contact, are not offered yet. See
+// https://github.com/dashpay/dash-evo-tool/issues/1104
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
     LoadProfile {

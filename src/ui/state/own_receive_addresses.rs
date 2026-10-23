@@ -74,9 +74,19 @@ impl OwnReceiveAddresses {
 
     /// Take an address the backend returned. Only an address this cache asked
     /// for is kept, so another screen's request cannot redirect a payment.
-    pub fn store(&mut self, seed_hash: WalletSeedHash, kind: OwnAddressKind, address: String) {
-        if let Some(entry @ Entry::InFlight(_)) = self.entries.get_mut(&(seed_hash, kind)) {
-            *entry = Entry::Ready(address);
+    /// Returns whether it was kept.
+    pub fn store(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        kind: OwnAddressKind,
+        address: String,
+    ) -> bool {
+        match self.entries.get_mut(&(seed_hash, kind)) {
+            Some(entry @ Entry::InFlight(_)) => {
+                *entry = Entry::Ready(address);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -119,7 +129,7 @@ mod tests {
     #[test]
     fn platform_addresses_are_asked_for_separately() {
         let mut cache = OwnReceiveAddresses::default();
-        cache.store(WALLET, OwnAddressKind::Core, "unasked".into());
+        assert!(!cache.store(WALLET, OwnAddressKind::Core, "unasked".into()));
         assert_eq!(
             cache.get(&WALLET, OwnAddressKind::Core),
             None,

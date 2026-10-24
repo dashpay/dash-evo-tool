@@ -359,7 +359,9 @@ fn w10_core_cannot_pay_someone_elses_private_address() {
 #[test]
 fn w11_a_locked_wallet_asks_for_its_password_when_send_is_pressed() {
     with_isolated_data_dir(|| {
-        let mut fixture = fixture(Some("send form fixture password"));
+        // Generated per run: no wallet secret is ever committed.
+        let password = format!("{:032x}", rand::random::<u128>());
+        let mut fixture = fixture(Some(&password));
         enter(&mut fixture.screen, platform_destination(), 1.0);
         let (mut harness, observed) = harness(fixture.screen, 900.0);
 

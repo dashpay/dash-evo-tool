@@ -56,7 +56,7 @@ const P2PKH_INPUT_SIZE: usize = 148;
 
 enum AssetLockDryRun {
     Builds,
-    Rejected { available: u64 },
+    Rejected { available: u64, required: u64 },
     TooManyInputs { count: usize, max: usize },
 }
 
@@ -319,14 +319,22 @@ fn dry_run_asset_lock_amount_with_strategy(
         }
         Ok(_) => Ok(AssetLockDryRun::Builds),
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {
-            Ok(AssetLockDryRun::Rejected { available: 0 })
+            Ok(AssetLockDryRun::Rejected {
+                available: 0,
+                required: amount_duffs,
+            })
         }
         Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds {
-            available, ..
+            available,
+            required,
         }))
-        | Err(BuilderError::InsufficientFunds { available, .. }) => {
-            Ok(AssetLockDryRun::Rejected { available })
-        }
+        | Err(BuilderError::InsufficientFunds {
+            available,
+            required,
+        }) => Ok(AssetLockDryRun::Rejected {
+            available,
+            required,
+        }),
         Err(BuilderError::TooManyInputs { count, max }) => Ok(AssetLockDryRun::TooManyInputs {
             count,
             max: max.min(pool.max_inputs),
@@ -527,7 +535,7 @@ fn full_range_asset_lock_max_amount(
     }
 
     let mut high = match dry_run_asset_lock_amount(pool, MAX_MONEY.saturating_add(1))? {
-        AssetLockDryRun::Rejected { available } => available,
+        AssetLockDryRun::Rejected { available, .. } => available,
         AssetLockDryRun::Builds => MAX_MONEY,
         AssetLockDryRun::TooManyInputs { max, .. } => {
             return asset_lock_max_with_input_cap(pool, max, deadline);
@@ -790,9 +798,18 @@ impl WalletBackend {
             Ok(AssetLockDryRun::TooManyInputs { count, max }) => {
                 Err(TaskError::AssetLockTooManyInputs { count, max })
             }
-            // A shortfall or a build failure is the real build's to report,
-            // with the error it already maps.
-            Ok(AssetLockDryRun::Builds | AssetLockDryRun::Rejected { .. }) | Err(_) => Ok(()),
+            // The pool shares the live reservations, so a shortfall here is
+            // one the real build would hit too — refuse it before the unlock.
+            Ok(AssetLockDryRun::Rejected {
+                available,
+                required,
+            }) => Err(TaskError::InsufficientFunds {
+                available,
+                required,
+            }),
+            // Any other build failure is the real build's to report, with the
+            // error it already maps.
+            Ok(AssetLockDryRun::Builds) | Err(_) => Ok(()),
         }
     }
 
@@ -2212,6 +2229,42 @@ mod tests {
                 Err(TaskError::AssetLockTooManyInputs { count, max: 100 }) if count > 100
             ),
             "{result:?}"
+        );
+    }
+
+    /// An exact asset lock the wallet cannot fund is refused by the guard,
+    /// before any secret is opened, with the balance advice a shortfall
+    /// deserves — not left to fail inside the build after the unlock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaffordable_asset_lock_is_refused_before_unlocking() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const FUNDED_DUFFS: u64 = 1_000_000;
+        const AMOUNT_DUFFS: u64 = 5_000_000;
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x70,
+            &[FUNDED_DUFFS],
+        )
+        .await;
+
+        let refused = backend
+            .ensure_asset_lock_amount_within_input_cap(&seed_hash, AMOUNT_DUFFS)
+            .await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::InsufficientFunds { available, required })
+                    if available <= FUNDED_DUFFS && required >= AMOUNT_DUFFS
+            ),
+            "{refused:?}"
         );
     }
 

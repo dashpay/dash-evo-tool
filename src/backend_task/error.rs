@@ -465,6 +465,16 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// Shielding from Platform was refused and the planner can shield
+    /// nothing: no Platform address can keep the shielding fee back.
+    #[error(
+        "None of your Platform addresses can cover the shielding fee, so nothing can be shielded right now. Add funds to one of your Platform addresses, then try again."
+    )]
+    ShieldFromPlatformNothingShieldable {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections

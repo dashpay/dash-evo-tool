@@ -3294,7 +3294,8 @@ fn bip44_account0_xpub<'a>(
 /// after the refusal, since the refusal's `available` is the usable balance
 /// with the fee reserve still in it, or the whole account balance when no
 /// address can keep the reserve back. Without a plan there is no trustworthy
-/// maximum, so the refusal keeps the generic envelope. Pure — unit-testable.
+/// maximum, so the refusal keeps the generic envelope; with a plan that can
+/// shield nothing, there is no Max to point to. Pure — unit-testable.
 fn shield_capacity_exceeded_error(
     source: platform_wallet::error::PlatformWalletError,
     preflight: Result<
@@ -3303,12 +3304,13 @@ fn shield_capacity_exceeded_error(
     >,
 ) -> TaskError {
     match preflight {
-        Ok(preflight) => TaskError::ShieldFromPlatformCapacityExceeded {
-            max_shieldable: if preflight.can_shield {
-                preflight.max_shieldable_credits
-            } else {
-                0
-            },
+        Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
+            TaskError::ShieldFromPlatformCapacityExceeded {
+                max_shieldable: preflight.max_shieldable_credits,
+                source: Box::new(source),
+            }
+        }
+        Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
             source: Box::new(source),
         },
         Err(_) => TaskError::WalletBackend {
@@ -4752,9 +4754,10 @@ mod tests {
     }
 
     /// When no address can keep the fee reserve back, upstream reports the
-    /// whole account balance, but nothing at all can be shielded.
+    /// whole account balance, but nothing at all can be shielded — so the
+    /// message says so instead of pointing at a Max of zero.
     #[test]
-    fn a_shield_with_no_fee_bearing_address_states_a_zero_maximum() {
+    fn a_shield_with_no_fee_bearing_address_says_nothing_can_be_shielded() {
         use platform_wallet::error::PlatformWalletError as P;
         const BALANCE: u64 = 50_000_000_000;
         const RESERVE: u64 = 100_000_000_000;
@@ -4772,13 +4775,13 @@ mod tests {
         assert!(
             matches!(
                 mapped,
-                TaskError::ShieldFromPlatformCapacityExceeded {
-                    max_shieldable: 0,
-                    ..
-                }
+                TaskError::ShieldFromPlatformNothingShieldable { .. }
             ),
             "{mapped:?}"
         );
+        let message = mapped.to_string();
+        assert!(!message.contains("Max"), "{message}");
+        assert!(message.contains("nothing can be shielded"), "{message}");
     }
 
     /// Without a fresh plan there is no trustworthy maximum to state, so the

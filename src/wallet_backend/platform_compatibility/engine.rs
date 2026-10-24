@@ -767,9 +767,6 @@ fn row_digest(row: &rusqlite::Row<'_>, cols: usize) -> rusqlite::Result<[u8; 32]
 
 /// Every `target` row matching `target_filter` must equal, on `cols`, a `source` row
 /// selected by `source_filter`. Rows may be dropped; none may be added or changed.
-///
-/// Source rows are kept as [`row_digest`]s, so memory grows by 32 bytes per row
-/// rather than with record blobs, scripts and InstantLocks.
 fn rows_retained(
     source: &Connection,
     target: &Connection,
@@ -778,10 +775,40 @@ fn rows_retained(
     source_filter: &str,
     target_filter: &str,
 ) -> Result<(), UpgradeError> {
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>();
+    rows_retained_as(
+        source,
+        target,
+        table,
+        &names,
+        cols,
+        source_filter,
+        target_filter,
+    )
+}
+
+/// [`rows_retained`] against the `source` rows as `source_exprs` shape them: each
+/// expression yields the value expected in the matching `cols` column.
+///
+/// Source rows are kept as [`row_digest`]s, so memory grows by 32 bytes per row
+/// rather than with record blobs, scripts and InstantLocks.
+fn rows_retained_as(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    source_exprs: &[String],
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    if source_exprs.len() != cols.len() {
+        return Err(UpgradeError::Verification);
+    }
     let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
+    let exprs = source_exprs.join(",");
     let mut original = std::collections::HashSet::new();
     let mut stmt = source.prepare(&format!(
-        "SELECT {names} FROM {}{source_filter}",
+        "SELECT {exprs} FROM {}{source_filter}",
         quote(table)
     ))?;
     let mut rows = stmt.query([])?;
@@ -1029,11 +1056,22 @@ fn upgrade_with_hook_locked(
             // come from the original: nothing is invented or altered otherwise.
             "core_transactions" if resets_core => {
                 rows_retained(&source, &target, table, &cols, &filter, "height IS NULL")?;
-                rows_retained(
+                // A kept mined row is its original with exactly the migration's
+                // stripping applied; any other value means something else ran.
+                let stripped = cols
+                    .iter()
+                    .map(|c| match c.as_str() {
+                        "block_hash" | "block_time" | "record_blob" => "NULL".to_owned(),
+                        "finalized" => "0".to_owned(),
+                        c => quote(c),
+                    })
+                    .collect::<Vec<_>>();
+                rows_retained_as(
                     &source,
                     &target,
                     table,
-                    &["wallet_id", "txid", "height"].map(String::from),
+                    &stripped,
+                    &cols,
                     &filter,
                     "height IS NOT NULL",
                 )?;

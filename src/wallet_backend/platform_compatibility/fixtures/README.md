@@ -31,8 +31,9 @@ to be mined (stripping block details from the mined transactions funding them),
 and rewinds each filter checkpoint to at most birth height minus one (minimum
 zero). Loading may then drop pending spends whose authorization fails. The bridge
 recognizes the migration by name, checks the checkpoint rewind, accepts any Core
-rows that remain unchanged from the original (only stripped block details on mined
-transactions), and requires every non-Core row to be preserved. The original
+rows that remain unchanged from the original, except that each kept mined
+transaction must be stripped exactly as the migration does (no block hash, block
+time or record, not finalized), and requires every non-Core row to be preserved. The original
 backup retains the pre-rescan Core data; the app rebuilds confirmed Core history
 through SPV. A different V019 migration history, such as the unmerged `c0425f7`
 accounting schema, is not recognized by this bridge.

@@ -565,8 +565,8 @@ fn build_withdrawals_result(
 impl AppContext {
     /// Fetches the current epoch — authenticated by proof — and adopts its
     /// fee multiplier and protocol version. The only path by which the fee
-    /// multiplier cache takes a network value, and fee estimates follow it,
-    /// so it must never come from an unproven source.
+    /// multiplier cache changes: document action fee agreements are signed
+    /// against it, so it must never come from an unproven source.
     pub(crate) async fn refresh_current_epoch(
         &self,
         sdk: &Sdk,

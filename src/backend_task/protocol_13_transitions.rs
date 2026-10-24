@@ -11,6 +11,8 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::config::DataContractConfig;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::v0::DocumentActionFeeAgreementV0;
 use dash_sdk::dpp::document::{Document, DocumentV0};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -233,4 +235,28 @@ async fn a_document_is_created_in_the_protocol_13_encoding() {
         !matches!(base, DocumentBaseTransition::V2(_)),
         "protocol 13 cannot decode {base:?}"
     );
+}
+
+/// A fee agreement cannot be encoded for a protocol 13 network: building
+/// fails locally instead of producing a transition every node rejects.
+#[tokio::test]
+async fn a_fee_agreement_is_refused_on_protocol_13() {
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let options = StateTransitionCreationOptions {
+        action_fee_agreement: Some(DocumentActionFeeAgreement::V0(
+            DocumentActionFeeAgreementV0 {
+                owner: 5,
+                moderators: 0,
+                fee_multiplier: None,
+            },
+        )),
+        ..Default::default()
+    };
+
+    assert!(
+        options
+            .validate_base_carries_action_fee_agreement(platform_version)
+            .is_err()
+    );
+    assert!(create_note(platform_version, Some(options)).await.is_err());
 }

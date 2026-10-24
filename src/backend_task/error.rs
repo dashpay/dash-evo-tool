@@ -2867,6 +2867,30 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // indexOnly documents (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The network does not accept the delete of an indexOnly entry yet.
+    #[error(
+        "This network does not support deleting entries of this document type yet. Try again after the network upgrades."
+    )]
+    IndexOnlyDeleteNotSupported,
+
+    /// An action other than a delete by values was asked of an indexOnly
+    /// entry: such entries are rebuilt from the network's indexes and can
+    /// only be deleted, by the values they were created with.
+    #[error(
+        "Entries of this document type are read-only: they cannot be edited, replaced, transferred or sold. To remove one, select it from the fetched entries and delete it."
+    )]
+    IndexOnlyDocumentReadOnly,
+
+    /// The values an indexOnly delete was asked with would be refused.
+    #[error(transparent)]
+    IndexOnlyDeleteRefused {
+        #[from]
+        source: crate::model::index_only_document::IndexOnlyDeleteError,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Contract fee pots (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// The network does not keep contract fee pots yet.

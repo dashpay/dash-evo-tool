@@ -3,12 +3,16 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::fee_estimation::{
     ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT, DocumentActionFeeQuote,
     document_action_fee_quote,
 };
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::index_only_document::{
+    IndexOnlyDeleteError, IndexOnlyDeleteValues, is_index_only, validate_index_only_delete,
+};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -150,6 +154,11 @@ pub struct DocumentActionScreen {
 
     // Delete-specific
     pub fetched_documents: IndexMap<Identifier, Option<Document>>,
+    /// The fetched entry of an indexOnly type selected for deletion.
+    index_only_entry: Option<Document>,
+    /// The values the selected indexOnly entry is deleted by, as editable
+    /// JSON (prefilled from the fetched entry).
+    index_only_values_input: String,
 
     // Fee tracking
     pub completed_fee_result: Option<FeeResult>,
@@ -160,7 +169,8 @@ pub struct DocumentActionScreen {
     /// Whether to pay a document type's optional token cost. Off, the action
     /// carries no token payment and its gas is paid in credits instead.
     pay_optional_token_cost: bool,
-    /// The confirmation of a document action fee, open while the user decides.
+    /// The confirmation of a document action fee or of an indexOnly delete,
+    /// open while the user decides.
     action_fee_confirmation: Option<PendingActionFeeConfirmation>,
     /// The action fee agreement the next built action carries.
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
@@ -169,6 +179,22 @@ pub struct DocumentActionScreen {
 /// Shown when the selected identity holds no key this device can sign the
 /// chosen document action with.
 const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+
+/// Shown for an action other than a delete on an indexOnly document type.
+const INDEX_ONLY_READ_ONLY_NOTICE: &str = "Entries of this document type are rebuilt from the network's indexes and are read-only: they cannot be edited, replaced, transferred or sold. To remove an entry, use Delete Document.";
+
+/// How an indexOnly entry is deleted, above its delete form.
+const INDEX_ONLY_DELETE_INTRO: &str = "Entries of this document type are rebuilt from the network's indexes. They are read-only, and an entry is deleted by the values it was created with, not by its ID. Fetch your entries and select the one to delete.";
+
+/// Shown instead of the indexOnly delete form on a network without it.
+const INDEX_ONLY_DELETE_UNSUPPORTED: &str = "This network does not support deleting entries of this document type yet. Try again after the network upgrades.";
+
+/// Above the editable values of the selected indexOnly entry.
+const INDEX_ONLY_VALUES_HINT: &str = "These are the values the network returned for this entry. If some were not returned, add them exactly as the entry was created with.";
+
+/// The confirmation of an indexOnly delete: Platform matches the entry by
+/// its values and refuses a mismatch only after the fee is paid.
+const INDEX_ONLY_DELETE_WARNING: &str = "This entry is deleted by its values, not by its ID. If any value differs from what the entry was created with, the network refuses the delete and the fee is still charged. Check the values before you continue.";
 
 /// An open contract fee confirmation and the action it was opened for: the
 /// action is built, fee agreement included, when the dialog opens, and that
@@ -230,6 +256,8 @@ impl DocumentActionScreen {
             identities_map,
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
+            index_only_entry: None,
+            index_only_values_input: String::new(),
             completed_fee_result: None,
             refresh_banner: None,
             pay_optional_token_cost: true,
@@ -268,6 +296,7 @@ impl DocumentActionScreen {
         self.price_input.clear();
         self.recipient_id_input.clear();
         self.fetched_documents.clear();
+        self.clear_index_only_entry();
     }
 
     fn render_contract_and_type_selection(&mut self, ui: &mut Ui) {
@@ -315,6 +344,7 @@ impl DocumentActionScreen {
     fn signing_scope_changed(&mut self) {
         self.no_documents_found = false;
         self.fetched_documents.clear();
+        self.clear_index_only_entry();
         if let Some(identity) = &self.selected_identity {
             self.selected_key = auto_selected_document_key(
                 identity,
@@ -393,6 +423,19 @@ impl DocumentActionScreen {
     }
 
     fn render_action_specific_inputs(&mut self, ui: &mut Ui) -> AppAction {
+        if self.selected_type_is_index_only() {
+            return match self.action_type {
+                DocumentActionType::Delete => self.render_index_only_delete_inputs(ui),
+                _ => {
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(INDEX_ONLY_READ_ONLY_NOTICE)
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
+                    AppAction::None
+                }
+            };
+        }
         match self.action_type {
             DocumentActionType::Create => AppAction::None, // Handled separately
             DocumentActionType::Delete => self.render_delete_inputs(ui),
@@ -444,34 +487,8 @@ impl DocumentActionScreen {
 
         // Check if we can fetch owned documents
         if self.fetched_documents.is_empty() {
-            if let Some(qid) = &self.selected_identity {
-                let doc_type = self
-                    .selected_document_type
-                    .as_ref()
-                    .expect("Document type should be selected");
-                let doc_type_name = doc_type.name();
-                if doc_type.indexes().iter().any(|i| {
-                    i.1.properties
-                        .first()
-                        .expect("Expected at least one property")
-                        .name
-                        == "$ownerId"
-                }) {
-                    let contract = self
-                        .selected_contract
-                        .as_ref()
-                        .expect("Contract should be selected")
-                        .contract
-                        .clone();
-                    let mut query = DocumentQuery::new(contract, doc_type_name)
-                        .expect("Failed to create document query");
-                    query = query.with_where(WhereClause {
-                        field: "$ownerId".to_string(),
-                        operator: dash_sdk::drive::query::WhereOperator::Equal,
-                        value: dash_sdk::dpp::platform_value::Value::Identifier(
-                            qid.identity.id().into(),
-                        ),
-                    });
+            if self.selected_identity.is_some() {
+                if let Some(query) = self.owned_documents_query() {
                     ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
                     ui.add_space(10.0);
                     if ui.button("Fetch Owned Documents").clicked() {
@@ -560,6 +577,157 @@ impl DocumentActionScreen {
             self.render_token_cost_info(ui, &doc_type.clone());
         }
         action |= self.render_broadcast_button(ui);
+        action
+    }
+
+    /// The query for the selected identity's documents of the selected type,
+    /// when the type has an index starting with `$ownerId`.
+    fn owned_documents_query(&self) -> Option<DocumentQuery> {
+        let identity = self.selected_identity.as_ref()?;
+        let doc_type = self.selected_document_type.as_ref()?;
+        let contract = self.selected_contract.as_ref()?;
+        let owner_indexed = doc_type.indexes().values().any(|index| {
+            index
+                .properties
+                .first()
+                .is_some_and(|property| property.name == "$ownerId")
+        });
+        if !owner_indexed {
+            return None;
+        }
+        let query = DocumentQuery::new(contract.contract.clone(), doc_type.name()).ok()?;
+        Some(query.with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: dash_sdk::drive::query::WhereOperator::Equal,
+            value: Value::Identifier(identity.identity.id().into()),
+        }))
+    }
+
+    fn selected_type_is_index_only(&self) -> bool {
+        self.selected_document_type
+            .as_ref()
+            .is_some_and(|doc_type| is_index_only(doc_type.as_ref()))
+    }
+
+    /// Whether this screen deletes an entry of an indexOnly type.
+    fn is_index_only_delete(&self) -> bool {
+        self.action_type == DocumentActionType::Delete && self.selected_type_is_index_only()
+    }
+
+    fn clear_index_only_entry(&mut self) {
+        self.index_only_entry = None;
+        self.index_only_values_input.clear();
+    }
+
+    /// Selects a fetched indexOnly entry for deletion, prefilling the values
+    /// it is deleted by.
+    fn select_index_only_entry(&mut self, document: Document) {
+        self.index_only_values_input = IndexOnlyDeleteValues::from_document(&document).to_json();
+        self.index_only_entry = Some(document);
+    }
+
+    /// The values the selected indexOnly entry is deleted by, checked the
+    /// way the backend checks them.
+    fn index_only_delete_values(&self) -> Result<IndexOnlyDeleteValues, IndexOnlyDeleteError> {
+        let values = IndexOnlyDeleteValues::from_json(&self.index_only_values_input)?;
+        if let Some(doc_type) = &self.selected_document_type {
+            validate_index_only_delete(
+                doc_type.as_ref(),
+                &values,
+                self.app_context.platform_version(),
+            )?;
+        }
+        Ok(values)
+    }
+
+    fn render_index_only_delete_inputs(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.heading("3. Select the entry to delete:");
+        ui.add_space(10.0);
+        ui.label(INDEX_ONLY_DELETE_INTRO);
+        ui.add_space(10.0);
+
+        if !FeatureGate::IndexOnlyDocumentDelete.is_available(&self.app_context) {
+            ui.label(
+                RichText::new(INDEX_ONLY_DELETE_UNSUPPORTED)
+                    .color(DashColors::warning_color(dark_mode)),
+            );
+            return action;
+        }
+
+        match self.owned_documents_query() {
+            Some(query) => {
+                if ui.button("Fetch My Entries").clicked() {
+                    self.clear_index_only_entry();
+                    self.broadcast_status = BroadcastStatus::Fetching;
+                    self.set_fetching_banner(ui.ctx(), "Fetching your entries...");
+                    action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
+                        DocumentTask::FetchDocuments(query),
+                    )));
+                }
+            }
+            None => {
+                ui.label("Your entries cannot be fetched: this document type has no index that starts with the owner.");
+            }
+        }
+
+        let mut selected = None;
+        if !self.fetched_documents.is_empty() {
+            ui.add_space(10.0);
+            for document in self.fetched_documents.values().flatten() {
+                let doc_id_str = document.id().to_string(Encoding::Base58);
+                ui.horizontal(|ui| {
+                    ui.label(&doc_id_str);
+                    ui.label(
+                        RichText::new("Read-only entry")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    if ui.button("Select").clicked() {
+                        selected = Some(document.clone());
+                    }
+                });
+            }
+        }
+        if let Some(document) = selected {
+            self.select_index_only_entry(document);
+        }
+
+        if self.no_documents_found {
+            ui.add_space(10.0);
+            ui.label("No entries found.");
+        }
+        if self.broadcast_status == BroadcastStatus::Fetching {
+            ui.add_space(10.0);
+            ui.spinner();
+        }
+
+        if self.index_only_entry.is_some() {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            ui.heading("4. Check the values of the entry:");
+            ui.add_space(10.0);
+            ui.label(INDEX_ONLY_VALUES_HINT);
+            ui.add_space(10.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.index_only_values_input)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_rows(8)
+                    .desired_width(f32::INFINITY),
+            );
+            if let Err(error) = self.index_only_delete_values() {
+                ui.add_space(5.0);
+                ui.label(
+                    RichText::new(error.to_string()).color(DashColors::error_color(dark_mode)),
+                );
+            }
+            ui.add_space(10.0);
+            if let Some(doc_type) = &self.selected_document_type {
+                self.render_token_cost_info(ui, &doc_type.clone());
+            }
+            action |= self.render_broadcast_button(ui);
+        }
         action
     }
 
@@ -1049,14 +1217,14 @@ impl DocumentActionScreen {
         };
 
         if ComponentStyles::add_primary_button(ui, button_text).clicked() && self.can_broadcast() {
-            match action_fee {
-                // A contract fee is paid only with the user's explicit
-                // agreement to the amount shown.
-                Some(quote) => self.open_action_fee_confirmation(quote),
-                None => {
-                    self.agreed_action_fee = None;
-                    action = self.dispatch_document_action(ui.ctx());
-                }
+            // A contract fee is paid only with the user's explicit agreement
+            // to the amount shown, and an indexOnly delete only once the user
+            // was told a mismatched value is refused after the fee is paid.
+            if action_fee.is_some() || self.is_index_only_delete() {
+                self.open_action_fee_confirmation(action_fee);
+            } else {
+                self.agreed_action_fee = None;
+                action = self.dispatch_document_action(ui.ctx());
             }
         }
 
@@ -1087,23 +1255,21 @@ impl DocumentActionScreen {
         action
     }
 
-    /// Ask the user to agree to the contract fee `quote` before the action is
-    /// sent.
+    /// Ask the user to agree to the contract fee `quote`, and to an indexOnly
+    /// delete, before the action is sent.
     /// The action is built now, carrying the quoted agreement, and the dialog
     /// blocks the form behind it, so what the user confirms is what is sent.
-    fn open_action_fee_confirmation(&mut self, quote: DocumentActionFeeQuote) {
-        self.agreed_action_fee = Some(quote.agreement);
+    fn open_action_fee_confirmation(&mut self, quote: Option<DocumentActionFeeQuote>) {
+        self.agreed_action_fee = quote.as_ref().map(|quote| quote.agreement);
         let task = self.create_document_action();
         self.agreed_action_fee = None;
         if task == BackendTask::None {
             return;
         }
+        let (title, text) =
+            confirmation_title_and_text(quote.as_ref(), self.is_index_only_delete());
         self.action_fee_confirmation = Some(PendingActionFeeConfirmation {
-            dialog: ConfirmationDialog::new(
-                "Confirm contract fee".to_string(),
-                action_fee_confirmation_text(&quote),
-            )
-            .blocks_input(true),
+            dialog: ConfirmationDialog::new(title.to_string(), text).blocks_input(true),
             task,
         });
     }
@@ -1214,6 +1380,9 @@ impl DocumentActionScreen {
     }
 
     fn create_delete_task(&self) -> BackendTask {
+        if self.is_index_only_delete() {
+            return self.create_index_only_delete_task();
+        }
         let document_id =
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
 
@@ -1226,6 +1395,38 @@ impl DocumentActionScreen {
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             action_fee_agreement: self.agreed_action_fee,
             document_id,
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
+            token_payment_info,
+        }))
+    }
+
+    fn create_index_only_delete_task(&self) -> BackendTask {
+        let Some(entry) = &self.index_only_entry else {
+            return BackendTask::None;
+        };
+        let values = match self.index_only_delete_values() {
+            Ok(values) => values,
+            Err(error) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    error.to_string(),
+                    crate::ui::MessageType::Error,
+                );
+                return BackendTask::None;
+            }
+        };
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
+        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
+
+        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteIndexOnlyDocument {
+            action_fee_agreement: self.agreed_action_fee,
+            document_id: entry.id(),
+            values,
             document_type: doc_type.clone(),
             data_contract: Arc::new(contract.contract.clone()),
             qualified_identity: identity.clone(),
@@ -1750,6 +1951,12 @@ impl DocumentActionScreen {
     }
 
     fn can_broadcast(&self) -> bool {
+        if self.selected_type_is_index_only() {
+            return self.is_index_only_delete()
+                && self.index_only_entry.is_some()
+                && FeatureGate::IndexOnlyDocumentDelete.is_available(&self.app_context)
+                && self.index_only_delete_values().is_ok();
+        }
         if matches!(
             self.action_type,
             DocumentActionType::Create | DocumentActionType::Replace
@@ -2124,6 +2331,25 @@ fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
 /// then reach), and that it comes on top of the network fee. The pricing is
 /// read from the agreement itself, so a fee too small to show the tolerance
 /// after rounding is still described as following network fees.
+/// The title and text of the confirmation shown before a document action
+/// that charges a contract fee (`quote`) or deletes an indexOnly entry.
+fn confirmation_title_and_text(
+    quote: Option<&DocumentActionFeeQuote>,
+    index_only_delete: bool,
+) -> (&'static str, String) {
+    match (quote, index_only_delete) {
+        (Some(quote), true) => (
+            "Confirm contract fee",
+            format!(
+                "{}\n\n{INDEX_ONLY_DELETE_WARNING}",
+                action_fee_confirmation_text(quote)
+            ),
+        ),
+        (Some(quote), false) => ("Confirm contract fee", action_fee_confirmation_text(quote)),
+        (None, _) => ("Delete this entry?", INDEX_ONLY_DELETE_WARNING.to_string()),
+    }
+}
+
 fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
     let fee = format_credits_as_dash(quote.total);
     let recipients = match (quote.owner, quote.moderators) {
@@ -2481,7 +2707,7 @@ mod tests {
         screen.document_id_input = shown.to_string(Encoding::Base58);
 
         let quote = quote(ActionFeePricing::Fixed, 1_000, 0);
-        screen.open_action_fee_confirmation(quote);
+        screen.open_action_fee_confirmation(Some(quote));
         // The form behind the dialog changes before the user confirms.
         screen.document_id_input = Identifier::new([0x22; 32]).to_string(Encoding::Base58);
 
@@ -2568,6 +2794,151 @@ mod tests {
             "{} to its moderators",
             format_credits_as_dash(quote.moderators)
         )));
+    }
+
+    /// A screen for `action` on the indexOnly `like` type, with an identity
+    /// and a key that can sign it, on a network at `protocol_version`.
+    fn index_only_screen(
+        action: DocumentActionType,
+        protocol_version: u32,
+    ) -> (tempfile::TempDir, DocumentActionScreen) {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_platform_protocol_version(protocol_version);
+        let contract = QualifiedContract {
+            contract: crate::model::index_only_document::test_fixtures::index_only_contract(),
+            alias: None,
+        };
+        let like = owned_document_type(&contract, "like");
+        let key = auth_key(1, like.security_level_requirement(), None);
+        let mut screen = DocumentActionScreen::new(context, None, action);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(like);
+        screen.selected_identity = Some(identity_holding(std::slice::from_ref(&key)));
+        screen.selected_key = Some(key);
+        (dir, screen)
+    }
+
+    /// A fetched `like` entry, rebuilt with the id the network computes.
+    fn like_entry() -> Document {
+        DocumentV0 {
+            id: Identifier::new([0x33; 32]),
+            owner_id: Identifier::new([0xD0; 32]),
+            properties: BTreeMap::from([("postId".to_string(), Value::Identifier([7; 32]))]),
+            ..Default::default()
+        }
+        .into()
+    }
+
+    /// Replace, transfer, purchase and set price are never offered for an
+    /// indexOnly type, even with a document at hand.
+    #[test]
+    fn index_only_entries_are_read_only() {
+        for action in [
+            DocumentActionType::Replace,
+            DocumentActionType::Transfer,
+            DocumentActionType::Purchase,
+            DocumentActionType::SetPrice,
+        ] {
+            let (_dir, mut screen) = index_only_screen(action.clone(), 14);
+            screen.original_doc = Some(like_entry());
+            screen.document_id_input = like_entry().id().to_string(Encoding::Base58);
+            screen.recipient_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+            screen.price_input = "10".to_string();
+            screen.fetched_price = Some(10);
+            assert!(!screen.can_broadcast(), "{action:?} must not be offered");
+        }
+    }
+
+    /// Selecting a fetched entry prefills its values, and the delete sent
+    /// names the entry by them.
+    #[test]
+    fn an_index_only_entry_is_deleted_by_its_values() {
+        let (_dir, mut screen) = index_only_screen(DocumentActionType::Delete, 14);
+        assert!(!screen.can_broadcast(), "nothing selected yet");
+        screen.select_index_only_entry(like_entry());
+        assert!(screen.can_broadcast());
+
+        let task = screen.create_document_action();
+        let BackendTask::DocumentTask(task) = task else {
+            panic!("a document task, got {task:?}");
+        };
+        let DocumentTask::DeleteIndexOnlyDocument {
+            document_id,
+            values,
+            ..
+        } = *task
+        else {
+            panic!("a delete by values");
+        };
+        assert_eq!(document_id, Identifier::new([0x33; 32]));
+        use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
+        let mut carried = values.values;
+        owned_document_type(screen.selected_contract.as_ref().unwrap(), "like")
+            .as_ref()
+            .sanitize_document_properties(&mut carried);
+        assert_eq!(
+            carried.get("postId").and_then(|v| v.to_identifier().ok()),
+            Some(Identifier::new([7; 32]))
+        );
+    }
+
+    /// Values edited into a delete Platform would refuse are not sent.
+    #[test]
+    fn edited_values_are_checked_before_the_delete_is_offered() {
+        let (_dir, mut screen) = index_only_screen(DocumentActionType::Delete, 14);
+        screen.select_index_only_entry(like_entry());
+        screen.index_only_values_input = "{}".to_string();
+        assert!(!screen.can_broadcast(), "postId is required");
+        screen.index_only_values_input = "not json".to_string();
+        assert!(!screen.can_broadcast());
+    }
+
+    #[test]
+    fn an_index_only_delete_is_not_offered_below_protocol_14() {
+        let (_dir, mut screen) = index_only_screen(DocumentActionType::Delete, 13);
+        screen.select_index_only_entry(like_entry());
+        assert!(!screen.can_broadcast());
+    }
+
+    /// The confirmation says in plain words that a value differing from the
+    /// original entry is refused after the fee is paid; other actions keep
+    /// their own confirmation text.
+    #[test]
+    fn the_index_only_delete_confirmation_warns_about_mismatched_values() {
+        let (_, text) = confirmation_title_and_text(None, true);
+        assert!(text.contains("differs from what the entry was created with"));
+        assert!(text.contains("the fee is still charged"));
+
+        let quote = quote(ActionFeePricing::Fixed, 1_000, 0);
+        let (_, text) = confirmation_title_and_text(Some(&quote), true);
+        assert!(text.contains(&action_fee_confirmation_text(&quote)));
+        assert!(text.contains(INDEX_ONLY_DELETE_WARNING));
+
+        let (_, text) = confirmation_title_and_text(Some(&quote), false);
+        assert!(!text.contains(INDEX_ONLY_DELETE_WARNING));
+    }
+
+    /// A stored document type keeps its delete by id.
+    #[test]
+    fn a_stored_document_type_is_still_deleted_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_platform_protocol_version(14);
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let key = auth_key(1, domain.security_level_requirement(), None);
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(domain);
+        screen.selected_identity = Some(identity_holding(std::slice::from_ref(&key)));
+        screen.selected_key = Some(key);
+        screen.document_id_input = Identifier::new([0x11; 32]).to_string(Encoding::Base58);
+        assert!(screen.can_broadcast());
+        let BackendTask::DocumentTask(task) = screen.create_document_action() else {
+            panic!("a document task");
+        };
+        assert!(matches!(*task, DocumentTask::DeleteDocument { .. }));
     }
 
     /// Action fees and token costs are declared per transition, so every

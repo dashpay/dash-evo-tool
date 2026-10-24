@@ -17,6 +17,7 @@ use dash_sdk::{
         data_contract::{
             TokenConfiguration, TokenContractPosition,
             associated_token::{
+                token_configuration::accessors::v1::TokenConfigurationV1Setters,
                 token_configuration::v0::TokenConfigurationV0,
                 token_configuration_convention::TokenConfigurationConvention,
                 token_configuration_localization::{
@@ -96,6 +97,9 @@ pub struct TokenContractParams {
     pub groups: BTreeMap<GroupContractPosition, Group>,
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     pub marketplace_rules: ChangeControlRules,
+    /// Whether holders may move the token to another identity. `false` needs
+    /// a version 1 token configuration (protocol version 14).
+    pub transferable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +250,19 @@ impl AppContext {
         Ok(make_success(FeeResult::estimated_only(estimated_fee)))
     }
 
+    /// A token that cannot be transferred needs a version 1 token
+    /// configuration, which only decodes on networks that accept it; refuse it
+    /// elsewhere before anything is signed.
+    fn ensure_transferability_supported(&self, transferable: bool) -> Result<(), TaskError> {
+        if transferable
+            || crate::context::feature_gate::FeatureGate::NonTransferableTokens.is_available(self)
+        {
+            Ok(())
+        } else {
+            Err(TaskError::NonTransferableTokenNotSupported)
+        }
+    }
+
     pub async fn run_token_task(
         self: &Arc<Self>,
         task: TokenTask,
@@ -258,6 +275,7 @@ impl AppContext {
                 signing_key,
                 params,
             } => {
+                self.ensure_transferability_supported(params.transferable)?;
                 params
                     .contract_keywords
                     .iter()
@@ -670,6 +688,7 @@ impl AppContext {
             groups,
             document_schemas,
             marketplace_rules,
+            transferable,
         } = params;
 
         // 1) Create the V1 struct first to get the contract ID
@@ -769,7 +788,11 @@ impl AppContext {
             trade_mode_change_rules: marketplace_rules,
         });
 
-        let token_config = TokenConfiguration::V0(token_config_v0);
+        let mut token_config = TokenConfiguration::V0(token_config_v0);
+        // Upgrades to a version 1 configuration only for a token that cannot
+        // be transferred, so a transferable token keeps the format every
+        // network accepts.
+        token_config.set_transferable(transferable);
 
         // 7) Insert this token config at position 0
         contract_v1
@@ -784,6 +807,23 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token that cannot be transferred is refused until the network
+    /// accepts one; a transferable token always passes.
+    #[test]
+    fn non_transferable_tokens_need_a_network_that_accepts_them() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        ctx.set_platform_protocol_version(13);
+        assert!(ctx.ensure_transferability_supported(true).is_ok());
+        assert!(matches!(
+            ctx.ensure_transferability_supported(false),
+            Err(TaskError::NonTransferableTokenNotSupported)
+        ));
+        ctx.set_platform_protocol_version(14);
+        assert!(ctx.ensure_transferability_supported(false).is_ok());
+    }
 
     #[tokio::test]
     async fn token_lookup_timeout_is_typed_and_actionable() {

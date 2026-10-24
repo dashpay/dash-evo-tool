@@ -806,6 +806,15 @@ As a user, I want to remove an identity from this device from the identity's own
 
 ---
 
+### IDN-024: Signing avoids keys that cannot sign [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the app to sign with a key that can actually sign the action, so that my actions are not refused because of an expired, used-up or out-of-scope key.
+
+- Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
+- Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
+- Where the user picks the key, limited and expired keys stay selectable, and the key list and selection show a warning explaining the limit. Keys bound to another contract or document type are not offered.
+
 ## DPNS (DPN)
 
 ### DPN-001: Register a username [Implemented]

@@ -6,6 +6,7 @@
 //! a fresh one arrives.
 
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::spend_limit::SpendLimitKind;
 use crate::model::wallet::WalletSeedHash;
@@ -25,6 +26,9 @@ enum Phase {
         max_credits: u64,
     },
     Failed,
+    /// Another transaction from the wallet is in progress; no limit is
+    /// offered until the revision changes.
+    Busy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,7 +58,7 @@ impl SpendLimitCache {
             && state.revision == revision
         {
             match state.phase {
-                Phase::Loaded { .. } | Phase::Failed => return None,
+                Phase::Loaded { .. } | Phase::Failed | Phase::Busy => return None,
                 Phase::InFlight { started_at, .. }
                     if started_at.elapsed() < SPEND_LIMIT_REQUEST_DEADLINE =>
                 {
@@ -124,6 +128,33 @@ impl SpendLimitCache {
         max_credits: u64,
     ) {
         self.settle(seed_hash, kind, request_id, Phase::Loaded { max_credits });
+    }
+
+    /// Whether the wallet reported another transaction in progress for
+    /// `revision`, so no limit is offered.
+    pub fn is_busy(&self, seed_hash: &WalletSeedHash, kind: SpendLimitKind, revision: u64) -> bool {
+        matches!(
+            self.states.get(&(*seed_hash, kind)),
+            Some(State {
+                revision: busy_for,
+                phase: Phase::Busy,
+            }) if *busy_for == revision
+        )
+    }
+
+    /// Record why the awaited request returned no limit.
+    pub fn mark_request_error(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        kind: SpendLimitKind,
+        request_id: u64,
+        error: &TaskError,
+    ) {
+        let phase = match error {
+            TaskError::SpendInProgress => Phase::Busy,
+            _ => Phase::Failed,
+        };
+        self.settle(seed_hash, kind, request_id, phase);
     }
 
     /// Record that the awaited request failed.

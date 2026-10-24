@@ -939,7 +939,9 @@ impl WalletSendScreen {
         let Some((seed_hash, kind, revision)) = self.spend_limit_target() else {
             return;
         };
-        if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+        if self.spend_limits.is_busy(&seed_hash, kind, revision) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
             ui.label("The available amount could not be checked.");
             if ui.button("Retry available amount check").clicked() {
                 self.spend_limits.invalidate();
@@ -964,7 +966,9 @@ impl WalletSendScreen {
 
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
-        if failed {
+        if self.asset_lock_balance.is_busy(&seed_hash) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {
             ui.label("Checking the available amount…");
@@ -5169,7 +5173,7 @@ impl ScreenLike for WalletSendScreen {
         self.spend_limits.invalidate();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
             self.pending_send.clear();
@@ -5179,14 +5183,16 @@ impl ScreenLike for WalletSendScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
-            self.spend_limits.mark_failed(seed_hash, kind, request_id);
+            self.spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error);
         }
     }
 
@@ -6868,6 +6874,62 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// While another transaction from the wallet is in progress, the backend
+    /// quotes no Max; the form offers none and says why, without a Retry
+    /// that could only get the same answer, and asks again only once the
+    /// wallet's quote revision moves.
+    #[test]
+    fn core_send_offers_no_max_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(&context, &TaskError::SpendInProgress);
+
+        assert!(
+            screen.request_spend_limit().is_none(),
+            "the same wallet state must not be re-quoted"
+        );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_spend_limit_status(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let caption = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)
+                    .include_labels(),
+            )
+            .count();
+        assert_eq!(caption, 1, "the form must say why Max is unavailable");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none(),
+            "retrying cannot help while the transaction is in progress"
+        );
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        assert_eq!(
+            harness
+                .state()
+                .amount
+                .as_ref()
+                .map(Amount::value)
+                .unwrap_or(0),
+            0,
+            "Max must offer nothing"
         );
     }
 

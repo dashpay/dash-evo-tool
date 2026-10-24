@@ -103,10 +103,13 @@ impl AddNewIdentityScreen {
         let Some(seed_hash) = seed_hash else {
             return action;
         };
+        let busy = self.asset_lock_balance.is_busy(&seed_hash);
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
         let loading = self.asset_lock_quote_is_loading(&seed_hash);
-        if failed || loading {
-            ui.label(if failed {
+        if busy || failed || loading {
+            ui.label(if busy {
+                crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE
+            } else if failed {
                 "The available amount could not be checked."
             } else {
                 "Checking the available amount…"

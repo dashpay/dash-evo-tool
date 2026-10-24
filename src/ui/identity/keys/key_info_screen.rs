@@ -29,6 +29,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::host_offer;
+use crate::ui::components::message_banner::{BannerHandle, OptionBannerExt};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
@@ -140,6 +141,8 @@ pub struct KeyInfoScreen {
     raise_form_error: Option<String>,
     /// A limits raise is in flight; the form is disabled until it settles.
     raise_in_flight: bool,
+    /// The progress banner of the raise in flight, cleared when it settles.
+    raise_banner: Option<BannerHandle>,
     /// The confirmation of a quoted raise, open while the user decides.
     raise_confirmation: Option<ConfirmationDialog>,
     /// The raise the open confirmation shows; the one dispatched on confirm.
@@ -292,6 +295,7 @@ impl ScreenLike for KeyInfoScreen {
                 ref key,
             } if identity_id == self.identity.identity.id() && key.id() == self.key.id() => {
                 self.raise_in_flight = false;
+                self.raise_banner.take_and_clear();
                 self.raise_budget_input = None;
                 self.raise_budget = None;
                 self.raise_days_input.clear();
@@ -349,6 +353,7 @@ impl ScreenLike for KeyInfoScreen {
         }
         if context.raise_key_limits_target() == Some((self.identity.identity.id(), self.key.id())) {
             self.raise_in_flight = false;
+            self.raise_banner.take_and_clear();
             // A refused raise may have stored the key as Platform holds it:
             // show that, so the next quote starts from it.
             self.reload_identity();
@@ -943,11 +948,10 @@ impl KeyInfoScreen {
     /// raise, legacy recovery) to `action`, the frame's action so far.
     fn queued_requests(&mut self, mut action: AppAction) -> AppAction {
         if let Some(raise) = self.pending_raise.take() {
-            action |=
-                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
-                    identity: Box::new(self.identity.clone()),
-                    raise,
-                }));
+            action |= self.owned_request(BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits {
+                identity: Box::new(self.identity.clone()),
+                raise,
+            }));
         }
 
         // Legacy recovery: the passive check goes out once per opened screen,
@@ -971,7 +975,7 @@ impl KeyInfoScreen {
         {
             if matches!(action, AppAction::None) {
                 self.remaining_budget = RemainingBudget::Loading;
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
+                action = self.owned_request(BackendTask::IdentityTask(
                     IdentityTask::FetchKeyRemainingBudgets {
                         identity_id: self.identity.identity.id(),
                         key_ids: vec![self.key.id()],
@@ -983,6 +987,13 @@ impl KeyInfoScreen {
         }
 
         action
+    }
+
+    /// Dispatch `task` with a context, so its result comes back to this
+    /// screen even if another screen covers it before the task finishes.
+    fn owned_request(&self, task: BackendTask) -> AppAction {
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     pub fn new(
@@ -1044,6 +1055,7 @@ impl KeyInfoScreen {
             raise_days_input: String::new(),
             raise_form_error: None,
             raise_in_flight: false,
+            raise_banner: None,
             raise_confirmation: None,
             quoted_raise: None,
             pending_raise: None,
@@ -1243,13 +1255,7 @@ impl KeyInfoScreen {
             Some(ConfirmationStatus::Confirmed) => {
                 self.raise_confirmation = None;
                 if let Some(raise) = self.quoted_raise.take() {
-                    self.raise_in_flight = true;
-                    self.pending_raise = Some(raise);
-                    MessageBanner::set_global(
-                        ui.ctx(),
-                        "Raising the key's limits. Please wait.",
-                        MessageType::Info,
-                    );
+                    self.start_raise(raise);
                 }
             }
             Some(ConfirmationStatus::Canceled) => {
@@ -1258,6 +1264,20 @@ impl KeyInfoScreen {
             }
             None => {}
         }
+    }
+
+    /// Queue the confirmed `raise` for dispatch and say it is under way.
+    fn start_raise(&mut self, raise: KeyLimitsRaise) {
+        self.raise_in_flight = true;
+        self.pending_raise = Some(raise);
+        self.raise_banner.take_and_clear();
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Raising the key's limits. Please wait.",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.raise_banner = Some(handle);
     }
 
     /// The Raise Limits form as a quoted raise of `key`, signed by
@@ -3014,14 +3034,105 @@ mod tests {
             .await;
     }
 
-    /// Whether `action` asks Platform for the remaining budget of a key.
+    /// Whether `action` asks Platform for the remaining budget of a key, with
+    /// a dispatch context so the result comes back to this screen.
     fn requests_budget(action: &AppAction) -> bool {
         matches!(
             action,
-            AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::FetchKeyRemainingBudgets { .. }
-            ))
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::IdentityTask(IdentityTask::FetchKeyRemainingBudgets { .. }),
+                ..
+            }
         )
+    }
+
+    /// The Raise Limits progress banner stays while the raise is in flight and
+    /// goes once it settles, whether it succeeded or failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_raise_progress_banner_goes_when_the_raise_settles() {
+        use crate::ui::components::message_banner::global_banner_texts;
+        const PROGRESS: &str = "Raising the key's limits. Please wait.";
+
+        let (app_context, _dir) = offline_ctx().await;
+        let ctx = app_context.egui_ctx().clone();
+        let budgeted = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xB8, &[(budgeted.clone(), [0x13; 32])]);
+        let identity_id = identity.identity.id();
+        let mut screen = KeyInfoScreen::new(identity, budgeted.clone(), None, &app_context);
+        let raise = KeyLimitsRaise {
+            key_id: budgeted.id(),
+            seen_total_budget: Some(5_000),
+            seen_expires_at: None,
+            total_budget: Some(10_000),
+            expires_at: None,
+            signing_key_id: 0,
+        };
+        let shows_progress = || global_banner_texts(&ctx).iter().any(|t| t == PROGRESS);
+
+        // Settled by success.
+        screen.start_raise(raise);
+        assert!(shows_progress());
+        screen.display_task_result(BackendTaskSuccessResult::IdentityKeyLimitsRaised {
+            identity_id,
+            key: budgeted.clone(),
+        });
+        assert!(!shows_progress(), "got {:?}", global_banner_texts(&ctx));
+
+        // Settled by an error.
+        screen.start_raise(raise);
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.queued_requests(AppAction::None)
+        else {
+            panic!("the raise goes out with a context");
+        };
+        screen.display_backend_task_error(&context, &TaskError::NoKeyLimitsSigningKey);
+        assert!(!shows_progress(), "got {:?}", global_banner_texts(&ctx));
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The budget read and a limits raise carry a dispatch context, so their
+    /// results reach Key Info even if another screen covers it meanwhile.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn key_limit_requests_come_back_to_this_screen() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let budgeted = public_key(1, Purpose::AUTHENTICATION).with_limits(Some(5_000), None);
+        let identity = identity_with(0xB7, &[(budgeted.clone(), [0x12; 32])]);
+        let mut screen = KeyInfoScreen::new(identity, budgeted.clone(), None, &app_context);
+
+        let read = screen.queued_requests(AppAction::None);
+        assert!(requests_budget(&read), "got {read:?}");
+
+        screen.pending_raise = Some(KeyLimitsRaise {
+            key_id: budgeted.id(),
+            seen_total_budget: Some(5_000),
+            seen_expires_at: None,
+            total_budget: Some(10_000),
+            expires_at: None,
+            signing_key_id: 0,
+        });
+        let raise = screen.queued_requests(AppAction::None);
+        assert!(
+            matches!(
+                raise,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits { .. }),
+                    ..
+                }
+            ),
+            "got {raise:?}"
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
     }
 
     /// Regression: on an install with the previous version's identities, the

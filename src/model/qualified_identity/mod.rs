@@ -27,7 +27,6 @@ use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -1159,19 +1158,26 @@ impl QualifiedIdentity {
     }
 
     /// The key to sign document transitions on `document_type` with, within
-    /// `scope`: a live AUTHENTICATION key at the document type's required
-    /// security level whose contract bounds permit `scope`, unlimited keys first
-    /// (see [`crate::model::identity_key_usability`]).
+    /// `scope`: a live AUTHENTICATION key at a level the type accepts
+    /// ([`document_security_levels`]) whose contract bounds permit `scope`,
+    /// unlimited keys first (see [`crate::model::identity_key_usability`]).
+    /// The level the type requires is preferred; a stronger key signs only
+    /// when no key at that level qualifies.
     pub fn document_signing_key(
         &self,
         scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
-        self.signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &[document_type.security_level_requirement()],
-            scope,
-        ))
+        document_security_levels(*document_type)
+            .iter()
+            .rev()
+            .find_map(|level| {
+                self.signing_key_now(KeyRequirements::new(
+                    Purpose::AUTHENTICATION,
+                    std::slice::from_ref(level),
+                    scope,
+                ))
+            })
     }
 
     /// The key to sign an action on document type `document_type_name` of
@@ -3367,6 +3373,7 @@ mod protocol_v14_compat_tests {
     use super::*;
     use crate::model::identity_key_usability::SigningScope;
     use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+    use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
@@ -3469,6 +3476,85 @@ mod protocol_v14_compat_tests {
                 .iter()
                 .any(|caveat| matches!(caveat, KeyCaveat::Expired { .. })),
             "the stale copy alone would say expired"
+        );
+    }
+
+    /// Platform accepts a stronger key than a document type requires, so a
+    /// CRITICAL key signs a HIGH document type when no HIGH key is held; a
+    /// MASTER key never does.
+    #[test]
+    fn document_signing_key_accepts_a_stronger_key_than_required() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::{KeyType, Purpose};
+
+        let pv = PlatformVersion::latest();
+        let dpns = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            pv,
+        )
+        .expect("the DPNS contract");
+        let preorder: DocumentTypeRef = dpns.document_type_for_name("preorder").expect("preorder");
+        assert_eq!(preorder.security_level_requirement(), SecurityLevel::HIGH);
+
+        let auth_key = |id: KeyID, level: SecurityLevel| {
+            let mut key = IdentityPublicKey::random_key(id, Some(u64::from(id)), pv);
+            key.set_purpose(Purpose::AUTHENTICATION);
+            key.set_security_level(level);
+            key.set_key_type(KeyType::ECDSA_SECP256K1);
+            key
+        };
+        let all = [
+            auth_key(1, SecurityLevel::MASTER),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ];
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        qi.private_keys = Default::default();
+        for key in &all {
+            qi.private_keys
+                .insert_non_encrypted(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: key.clone(),
+                            in_wallet_at_derivation_path: None,
+                        },
+                        [key.id() as u8; 32],
+                    ),
+                )
+                .expect("a free slot");
+        }
+        qi.identity
+            .set_public_keys(all.iter().map(|key| (key.id(), key.clone())).collect());
+        let scope = SigningScope::ContractWide {
+            contract_id: dpns.id(),
+        };
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(2),
+            "the CRITICAL key, never the MASTER key"
+        );
+
+        // A key at the required level is still preferred over a stronger one.
+        let high = auth_key(3, SecurityLevel::HIGH);
+        qi.private_keys
+            .insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
+                (
+                    QualifiedIdentityPublicKey {
+                        identity_public_key: high.clone(),
+                        in_wallet_at_derivation_path: None,
+                    },
+                    [high.id() as u8; 32],
+                ),
+            )
+            .expect("a free slot");
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(high.id(), high);
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "the HIGH key the type asks for"
         );
     }
 

@@ -2648,6 +2648,18 @@ pub enum TaskError {
     )]
     NoKeyLimitsSigningKey,
 
+    /// A key limits update was accepted on the network, but storing the
+    /// updated key on this device afterward failed. The broadcast and the
+    /// local write cannot be atomic; this reports the change as made rather
+    /// than as failed, so the user does not retry a change already applied.
+    #[error(
+        "The key's new limits are set on the network, but they could not be saved on this device. Refresh the identity to load them."
+    )]
+    KeyLimitsRaisedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// Platform refused a key whose expiry is not in the future.
     #[error(
         "The key's expiry is already in the past, so the network refused the change. Choose a later expiry, then try again."
@@ -2894,6 +2906,17 @@ pub enum TaskError {
         "Claiming contract fees needs a critical authentication key that is not limited to a contract. Add such a key to this identity, then try again."
     )]
     NoFeeClaimSigningKey,
+
+    /// A fee claim was paid out on the network, but storing the claimant's
+    /// new balance on this device afterward failed. Reported as paid out
+    /// rather than as failed, so the user does not retry a claim already made.
+    #[error(
+        "The fees were paid out, but the identity's new balance could not be saved on this device. Refresh the identity to see its new balance."
+    )]
+    ContractFeesClaimedButBalanceNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
 
     /// The claiming identity is not a recipient of the pot.
     #[error(

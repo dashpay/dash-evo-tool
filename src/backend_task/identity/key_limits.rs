@@ -137,15 +137,32 @@ impl AppContext {
             )
             .await?;
 
-        let stored_key = updated.clone();
-        self.edit_local_qualified_identity(&identity_id, move |fresh| {
-            fresh.identity.add_public_key(stored_key);
-            Ok(())
-        })?;
+        self.persist_raised_key(&identity_id, updated.clone())?;
 
         Ok(BackendTaskSuccessResult::IdentityKeyLimitsRaised {
             identity_id,
             key: updated,
+        })
+    }
+}
+
+impl AppContext {
+    /// Store `key`, whose limits the network has just raised, on the record of
+    /// `identity_id`. The raise is already on the network, so a failure here
+    /// is reported as [`TaskError::KeyLimitsRaisedButNotSaved`], not as a
+    /// failed raise.
+    fn persist_raised_key(
+        &self,
+        identity_id: &Identifier,
+        key: dash_sdk::dpp::identity::IdentityPublicKey,
+    ) -> Result<(), TaskError> {
+        self.edit_local_qualified_identity(identity_id, move |fresh| {
+            fresh.identity.add_public_key(key);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|source| TaskError::KeyLimitsRaisedButNotSaved {
+            source: Box::new(source),
         })
     }
 }
@@ -222,6 +239,28 @@ pub(super) mod tests {
 
     /// Protocol versions below 14: not known yet (0), and mainnet's 13.
     const PRE_V14_PROTOCOL_VERSIONS: [u32; 2] = [0, 13];
+
+    /// A raise the network accepted is reported as made, not as failed, when
+    /// storing the raised key on this device fails afterward.
+    #[test]
+    fn a_raise_that_cannot_be_saved_is_reported_as_made() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let identity = user_identity();
+        let key = dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+            1,
+            Some(1),
+            PlatformVersion::latest(),
+        );
+
+        // Nothing is stored for this identity, so the write fails.
+        let result = ctx.persist_raised_key(&identity.identity.id(), key);
+
+        assert!(
+            matches!(result, Err(TaskError::KeyLimitsRaisedButNotSaved { .. })),
+            "got {result:?}"
+        );
+    }
 
     /// Before protocol version 14 is confirmed, no limits update is built or
     /// broadcast: an older network cannot decode it.

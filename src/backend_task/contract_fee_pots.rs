@@ -8,6 +8,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::contract_fee_pots::{SeatedModerators, has_elected_moderation};
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -29,8 +30,9 @@ fn fee_claim_key_requirements() -> KeyRequirements<'static> {
 }
 
 impl AppContext {
-    /// Both fee pots of `contract_id`. A contract nobody has paid fees to
-    /// reads as two empty pots.
+    /// Both fee pots of `contract_id`, with the seated moderation team that
+    /// claims an elected contract's moderators pot. A contract nobody has paid
+    /// fees to reads as two empty pots.
     pub(super) async fn fetch_contract_fee_pots(
         &self,
         sdk: &Sdk,
@@ -39,12 +41,27 @@ impl AppContext {
         if !FeatureGate::ContractFeePots.is_available(self) {
             return Err(TaskError::ContractFeePotsNotSupported);
         }
+        // A contract saved here without elected moderation has no seated
+        // team, so its team is not read. One not saved here is read anyway.
+        let elected = self
+            .get_unqualified_contract_by_id(&contract_id)
+            .ok()
+            .flatten()
+            .is_none_or(|contract| has_elected_moderation(&contract));
         // Only the pots are proved. The response metadata's epoch is not
         // signed, so nothing is decided from it.
-        let pots = ContractFeePots::fetch(sdk, contract_id).await?;
+        let (pots, seated_moderators) =
+            tokio::join!(ContractFeePots::fetch(sdk, contract_id), async {
+                if elected {
+                    read_seated_moderators(sdk, contract_id).await
+                } else {
+                    SeatedModerators::NotSeated
+                }
+            });
         Ok(BackendTaskSuccessResult::ContractFeePots {
             contract_id,
-            pots: pots.unwrap_or_default(),
+            pots: pots?.unwrap_or_default(),
+            seated_moderators,
         })
     }
 
@@ -74,10 +91,7 @@ impl AppContext {
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
         if let Some(balance) = claimant_balance {
-            self.edit_local_qualified_identity(&identity_id, |fresh| {
-                fresh.identity.set_balance(balance);
-                Ok(())
-            })?;
+            self.persist_claimant_balance(&identity_id, balance)?;
         }
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {
@@ -89,9 +103,74 @@ impl AppContext {
     }
 }
 
+impl AppContext {
+    /// Store `balance`, the claimant's balance after a claim the network
+    /// paid out, on the record of `identity_id`. The claim is already paid
+    /// out, so a failure here is reported as
+    /// [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not as a failed
+    /// claim.
+    fn persist_claimant_balance(
+        &self,
+        identity_id: &Identifier,
+        balance: dash_sdk::dpp::fee::Credits,
+    ) -> Result<(), TaskError> {
+        self.edit_local_qualified_identity(identity_id, |fresh| {
+            fresh.identity.set_balance(balance);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|source| TaskError::ContractFeesClaimedButBalanceNotSaved {
+            source: Box::new(source),
+        })
+    }
+}
+
+/// The seated moderation team of `contract_id`, its leader and active
+/// members: who Platform lets claim an elected contract's moderators pot.
+///
+/// A failed read is not an error of the pots read: the pots still show, and
+/// the claim is left to Platform to accept or refuse.
+async fn read_seated_moderators(sdk: &Sdk, contract_id: Identifier) -> SeatedModerators {
+    match sdk.fetch_moderation_team(contract_id).await {
+        Ok(None) => SeatedModerators::NotSeated,
+        Ok(Some(team)) => {
+            let mut members = team.members;
+            members.insert(team.leader_id);
+            SeatedModerators::Seated(members)
+        }
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                %contract_id,
+                "Could not read the seated moderation team; leaving moderator claims to Platform"
+            );
+            SeatedModerators::Unknown
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A claim the network paid out is reported as paid out, not as failed,
+    /// when storing the claimant's new balance on this device fails.
+    #[test]
+    fn a_claim_whose_balance_cannot_be_saved_is_reported_as_paid_out() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        // Nothing is stored for this identity, so the write fails.
+        let result = ctx.persist_claimant_balance(&Identifier::random(), 1_000);
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
+            ),
+            "got {result:?}"
+        );
+    }
 
     /// Before protocol version 14 is confirmed nothing is read or claimed:
     /// an older network has no fee pots.

@@ -5535,6 +5535,16 @@ mod tests {
             None,
             "a quote made against the old balance must not back Max"
         );
+        // The form's Amount field and Auto read the same quote.
+        let source = screen.selected_source.clone().expect("source");
+        let destination = screen.validated_destination.clone();
+        assert_eq!(
+            screen
+                .amount_limits_for(&source, destination.as_ref())
+                .max_credits,
+            None,
+            "the Amount field must not offer the stale quote as Max"
+        );
         assert!(
             matches!(
                 screen.request_spend_limit(),

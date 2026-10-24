@@ -1125,13 +1125,14 @@ impl AppContext {
         self.system_contracts.get(self.platform_version())
     }
 
-    /// The system contracts as `platform_version` defines them, for a caller
-    /// that verifies at a version other than [`Self::platform_version`].
+    /// The system contracts exactly as `platform_version` defines them, for a
+    /// caller that verifies at a version other than [`Self::platform_version`].
+    /// Fails rather than serving another version's contracts.
     pub(crate) fn system_contracts_at(
         &self,
         platform_version: &PlatformVersion,
-    ) -> Arc<SystemContracts> {
-        self.system_contracts.get(platform_version)
+    ) -> Result<Arc<SystemContracts>, Box<dash_sdk::dpp::ProtocolError>> {
+        self.system_contracts.try_get(platform_version)
     }
 
     /// The platform version of the connected network, once its protocol

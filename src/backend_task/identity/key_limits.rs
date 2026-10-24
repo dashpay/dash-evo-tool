@@ -15,7 +15,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::platform::Identity;
 use dash_sdk::platform::identity_keys_remaining_budgets::{
@@ -23,6 +23,7 @@ use dash_sdk::platform::identity_keys_remaining_budgets::{
 };
 use dash_sdk::platform::transition::update_identity_key_limits::UpdateIdentityKeyLimits;
 use dash_sdk::platform::{Fetch, Identifier};
+use dash_sdk::query_types::IdentityBalance;
 
 use super::BackendTaskSuccessResult;
 
@@ -137,27 +138,53 @@ impl AppContext {
             )
             .await?;
 
-        self.persist_raised_key(&identity_id, updated.clone())?;
-
-        Ok(BackendTaskSuccessResult::IdentityKeyLimitsRaised {
-            identity_id,
-            key: updated,
-        })
+        // The update paid a fee, but its proof holds only the rewritten key:
+        // read the balance after it, proved, so the stored identity does not
+        // overstate what later fees can draw on.
+        let balance = IdentityBalance::fetch(sdk, identity_id)
+            .await
+            .map_err(TaskError::from);
+        self.finish_raise(identity_id, updated, balance)
     }
 }
 
 impl AppContext {
-    /// Store `key`, whose limits the network has just raised, on the record of
-    /// `identity_id`. The raise is already on the network, so a failure here
-    /// is reported as [`TaskError::KeyLimitsRaisedButNotSaved`], not as a
-    /// failed raise.
+    /// Store the outcome of a raise the network accepted: `key` as rewritten,
+    /// and `balance`, the identity's balance read after the update.
+    fn finish_raise(
+        &self,
+        identity_id: Identifier,
+        key: dash_sdk::dpp::identity::IdentityPublicKey,
+        balance: Result<Option<Credits>, TaskError>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let (balance, balance_error) = match balance {
+            Ok(Some(balance)) => (Some(balance), None),
+            Ok(None) => (None, Some(None)),
+            Err(error) => (None, Some(Some(Box::new(error)))),
+        };
+        self.persist_raised_key(&identity_id, key.clone(), balance)?;
+        // The raise is made and its key stored; only the balance is stale.
+        if let Some(source) = balance_error {
+            return Err(TaskError::KeyLimitsRaisedButBalanceNotRefreshed { source });
+        }
+        Ok(BackendTaskSuccessResult::IdentityKeyLimitsRaised { identity_id, key })
+    }
+
+    /// Store `key`, whose limits the network has just raised, and `balance`,
+    /// when read, on the record of `identity_id`, in one write. The raise is
+    /// already on the network, so a failure here is reported as
+    /// [`TaskError::KeyLimitsRaisedButNotSaved`], not as a failed raise.
     fn persist_raised_key(
         &self,
         identity_id: &Identifier,
         key: dash_sdk::dpp::identity::IdentityPublicKey,
+        balance: Option<Credits>,
     ) -> Result<(), TaskError> {
         self.edit_local_qualified_identity(identity_id, move |fresh| {
             fresh.identity.add_public_key(key);
+            if let Some(balance) = balance {
+                fresh.identity.set_balance(balance);
+            }
             Ok(())
         })
         .map(|_| ())
@@ -240,6 +267,98 @@ pub(super) mod tests {
     /// Protocol versions below 14: not known yet (0), and mainnet's 13.
     const PRE_V14_PROTOCOL_VERSIONS: [u32; 2] = [0, 13];
 
+    /// A raise the network accepted stores the rewritten key and the balance
+    /// read after it, so the stored balance reflects the update's fee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_raise_stores_the_key_and_the_balance_after_its_fee() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let staged = stage_identity_with_vaulted_keys([0xA1; 32], [0xB1; 32]).await;
+        let ctx = &staged.ctx;
+        let stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read")
+            .expect("staged");
+        let key = dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+            7,
+            Some(7),
+            PlatformVersion::latest(),
+        )
+        .with_limits(Some(9_000), None);
+        let before = stored.identity.balance();
+
+        let result = ctx.finish_raise(staged.id, key.clone(), Ok(Some(before + 1_234)));
+
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::IdentityKeyLimitsRaised { .. })
+            ),
+            "got {result:?}"
+        );
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read")
+            .expect("staged");
+        assert_eq!(after.identity.balance(), before + 1_234);
+        assert_eq!(
+            after
+                .identity
+                .public_keys()
+                .get(&key.id())
+                .and_then(|k| k.total_budget()),
+            Some(9_000)
+        );
+    }
+
+    /// A balance that cannot be read after an accepted raise does not make the
+    /// raise a failure: the key is stored, and the user is told to refresh.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unread_balance_after_a_raise_still_stores_the_key() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+
+        let staged = stage_identity_with_vaulted_keys([0xA2; 32], [0xB2; 32]).await;
+        let ctx = &staged.ctx;
+        let stored = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read")
+            .expect("staged");
+        let key = dash_sdk::dpp::identity::IdentityPublicKey::random_key(
+            7,
+            Some(7),
+            PlatformVersion::latest(),
+        )
+        .with_limits(Some(9_000), None);
+
+        for balance in [Err(TaskError::IdentityNotFoundLocally), Ok(None)] {
+            let result = ctx.finish_raise(staged.id, key.clone(), balance);
+            assert!(
+                matches!(
+                    result,
+                    Err(TaskError::KeyLimitsRaisedButBalanceNotRefreshed { .. })
+                ),
+                "got {result:?}"
+            );
+        }
+        let after = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read")
+            .expect("staged");
+        assert_eq!(
+            after
+                .identity
+                .public_keys()
+                .get(&key.id())
+                .and_then(|k| k.total_budget()),
+            Some(9_000)
+        );
+        assert_eq!(after.identity.balance(), stored.identity.balance());
+    }
+
     /// A raise the network accepted is reported as made, not as failed, when
     /// storing the raised key on this device fails afterward.
     #[test]
@@ -254,7 +373,7 @@ pub(super) mod tests {
         );
 
         // Nothing is stored for this identity, so the write fails.
-        let result = ctx.persist_raised_key(&identity.identity.id(), key);
+        let result = ctx.persist_raised_key(&identity.identity.id(), key, Some(1));
 
         assert!(
             matches!(result, Err(TaskError::KeyLimitsRaisedButNotSaved { .. })),

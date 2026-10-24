@@ -33,7 +33,16 @@ fn resolve_data_contract(
     data_contract_id: &Identifier,
     platform_version: &PlatformVersion,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-    let system_contracts = app_ctx.system_contracts_at(platform_version);
+    // Never another version's contracts: the verifier would check the proof
+    // against the wrong schema.
+    let system_contracts = app_ctx
+        .system_contracts_at(platform_version)
+        .map_err(|error| {
+            ContextProviderError::DataContractFailure(format!(
+                "system contracts for protocol version {} could not be loaded: {error}",
+                platform_version.protocol_version
+            ))
+        })?;
     let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
         &system_contracts.dpns,
         &system_contracts.dashpay,
@@ -261,5 +270,29 @@ mod data_contract_tests {
                 .expect("a cached system contract");
             assert_eq!(*resolved, expected, "protocol {protocol_version}");
         }
+    }
+
+    /// A version whose system contracts cannot be loaded is refused, not
+    /// answered with the set loaded for another version.
+    #[test]
+    fn system_contracts_that_cannot_load_at_the_requested_version_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let dpns_id = SystemDataContract::DPNS.id();
+        // Load a set first, so a fallback would have something to serve.
+        let latest = PlatformVersion::latest();
+        assert!(matches!(
+            resolve_data_contract(&ctx, &dpns_id, latest),
+            Ok(Some(_))
+        ));
+
+        let mut unloadable = latest.clone();
+        unloadable.protocol_version = u32::MAX;
+        let resolved = resolve_data_contract(&ctx, &dpns_id, &unloadable);
+
+        assert!(
+            matches!(resolved, Err(ContextProviderError::DataContractFailure(_))),
+            "got {resolved:?}"
+        );
     }
 }

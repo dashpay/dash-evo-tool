@@ -217,23 +217,28 @@ impl GroupActionsScreen {
                                 });
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(self.get_token_event_type(token_event));
+                                        ui.label(Self::get_token_event_type(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(self.get_token_event_info(token_event));
+                                        ui.label(Self::get_token_event_info(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(self.get_token_event_note(token_event));
+                                        ui.label(Self::get_token_event_note(token_event));
                                         ui.add_space(30.0);
                                     });
                                 });
                                 row.col(|ui| {
+                                    if !Self::supports_token_event_action(token_event) {
+                                        ui.add_enabled(false, egui::Button::new("Take Action"))
+                                            .on_hover_text("This action cannot be signed here. Use another token client.");
+                                        return;
+                                    }
                                     if ComponentStyles::add_primary_button(
                                         ui,
                                         "Take Action",
@@ -291,7 +296,7 @@ impl GroupActionsScreen {
         action
     }
 
-    fn get_token_event_type(&self, token_event: &TokenEvent) -> &'static str {
+    fn get_token_event_type(token_event: &TokenEvent) -> &'static str {
         match token_event {
             TokenEvent::Mint(..) => "Mint",
             TokenEvent::Burn(..) => "Burn",
@@ -304,10 +309,17 @@ impl GroupActionsScreen {
             TokenEvent::ConfigUpdate(..) => "ConfigUpdate",
             TokenEvent::ChangePriceForDirectPurchase(..) => "ChangePrice",
             TokenEvent::DirectPurchase(..) => "DirectPurchase",
+            TokenEvent::Shield(..) => "Shield",
+            TokenEvent::Unshield(..) => "Unshield",
+            TokenEvent::ShieldedTransfer => "ShieldedTransfer",
+            TokenEvent::MintToPool(..) => "MintToPool",
+            TokenEvent::BurnFromPool(..) => "BurnFromPool",
+            TokenEvent::ClaimToPool(..) => "ClaimToPool",
+            TokenEvent::DirectPurchaseToPool(..) => "DirectPurchaseToPool",
         }
     }
 
-    fn get_token_event_info(&self, token_event: &TokenEvent) -> String {
+    fn get_token_event_info(token_event: &TokenEvent) -> String {
         match token_event {
             TokenEvent::Mint(amount, identifier, _) => format!("{} to {}", amount, identifier),
             TokenEvent::Burn(amount, burn_from, _) => format!("{} from {}", amount, burn_from),
@@ -323,13 +335,25 @@ impl GroupActionsScreen {
             TokenEvent::EmergencyAction(action, _) => format!("{:?}", action),
             TokenEvent::ConfigUpdate(change_item, _) => format!("{:?}", change_item),
             TokenEvent::ChangePriceForDirectPurchase(schedule, _) => format!("{:?}", schedule),
-            TokenEvent::DirectPurchase(amount, credits) => {
+            TokenEvent::DirectPurchase(amount, credits)
+            | TokenEvent::DirectPurchaseToPool(amount, credits) => {
                 format!("{} for {} credits", amount, credits)
+            }
+            TokenEvent::Shield(amount) | TokenEvent::ClaimToPool(amount) => {
+                format!("{amount} to the shielded pool")
+            }
+            TokenEvent::Unshield(identifier, amount) => format!("{amount} to {identifier}"),
+            TokenEvent::ShieldedTransfer => "The amount and participants are private.".to_string(),
+            TokenEvent::MintToPool(amount, digest, _) => {
+                format!("{amount} to the shielded pool; action digest {digest}")
+            }
+            TokenEvent::BurnFromPool(amount, digest, _) => {
+                format!("{amount} from the shielded pool; action digest {digest}")
             }
         }
     }
 
-    fn get_token_event_note(&self, token_event: &TokenEvent) -> String {
+    fn get_token_event_note(token_event: &TokenEvent) -> String {
         match token_event {
             TokenEvent::Mint(_, _, note_opt)
             | TokenEvent::Burn(_, _, note_opt)
@@ -339,14 +363,34 @@ impl GroupActionsScreen {
             | TokenEvent::Claim(_, _, note_opt)
             | TokenEvent::EmergencyAction(_, note_opt)
             | TokenEvent::ConfigUpdate(_, note_opt)
-            | TokenEvent::ChangePriceForDirectPurchase(_, note_opt) => {
+            | TokenEvent::ChangePriceForDirectPurchase(_, note_opt)
+            | TokenEvent::MintToPool(_, _, note_opt)
+            | TokenEvent::BurnFromPool(_, _, note_opt) => {
                 note_opt.clone().unwrap_or_default().to_string()
             }
             TokenEvent::Transfer(_, public_note, _, _, _) => {
                 public_note.clone().unwrap_or_default().to_string()
             }
-            TokenEvent::DirectPurchase(_, _) => String::new(),
+            TokenEvent::DirectPurchase(_, _)
+            | TokenEvent::Shield(_)
+            | TokenEvent::Unshield(_, _)
+            | TokenEvent::ShieldedTransfer
+            | TokenEvent::ClaimToPool(_)
+            | TokenEvent::DirectPurchaseToPool(_, _) => String::new(),
         }
+    }
+
+    fn supports_token_event_action(token_event: &TokenEvent) -> bool {
+        !matches!(
+            token_event,
+            TokenEvent::Shield(_)
+                | TokenEvent::Unshield(_, _)
+                | TokenEvent::ShieldedTransfer
+                | TokenEvent::MintToPool(_, _, _)
+                | TokenEvent::BurnFromPool(_, _, _)
+                | TokenEvent::ClaimToPool(_)
+                | TokenEvent::DirectPurchaseToPool(_, _)
+        )
     }
 
     /// On click of the "Take Action" button
@@ -612,5 +656,52 @@ impl ScreenLike for GroupActionsScreen {
 
         action |= central_panel_action;
         action
+    }
+}
+
+#[cfg(test)]
+mod sdk_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn shielded_events_are_displayed_without_offering_transparent_actions() {
+        let identity = Identifier::from([7; 32]);
+        for (event, label, detail, note) in [
+            (TokenEvent::Shield(12), "Shield", "12", ""),
+            (TokenEvent::Unshield(identity, 13), "Unshield", "13", ""),
+            (
+                TokenEvent::ShieldedTransfer,
+                "ShieldedTransfer",
+                "private",
+                "",
+            ),
+            (
+                TokenEvent::MintToPool(14, identity, Some("mint note".into())),
+                "MintToPool",
+                "action digest",
+                "mint note",
+            ),
+            (
+                TokenEvent::BurnFromPool(15, identity, Some("burn note".into())),
+                "BurnFromPool",
+                "action digest",
+                "burn note",
+            ),
+            (TokenEvent::ClaimToPool(16), "ClaimToPool", "16", ""),
+            (
+                TokenEvent::DirectPurchaseToPool(17, 18),
+                "DirectPurchaseToPool",
+                "17 for 18",
+                "",
+            ),
+        ] {
+            assert_eq!(GroupActionsScreen::get_token_event_type(&event), label);
+            assert!(GroupActionsScreen::get_token_event_info(&event).contains(detail));
+            assert_eq!(GroupActionsScreen::get_token_event_note(&event), note);
+            assert!(!GroupActionsScreen::supports_token_event_action(&event));
+        }
+        assert!(GroupActionsScreen::supports_token_event_action(
+            &TokenEvent::Mint(12, identity, None)
+        ));
     }
 }

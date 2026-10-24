@@ -259,7 +259,8 @@ impl AppContext {
             // Unreachable from here — the caller builds only the two modes
             // above — but this is a funds path, so an upstream funding mode
             // this path cannot build fails closed instead of panicking.
-            AssetLockFunding::DrainAccountBalance { .. } => {
+            AssetLockFunding::DrainAccountBalance { .. }
+            | AssetLockFunding::DrainWalletBalance { .. } => {
                 return Err(TaskError::TopUpFundingMethodUnsupported);
             }
         };

@@ -612,7 +612,7 @@ impl WalletBackend {
         let max_inputs = self.asset_lock_input_cap();
         // Read before the lock: an operation starting meanwhile leaves this
         // quote stale rather than current.
-        let spend_key = self.inner.spend_activity.quote_key(seed_hash);
+        let spend_key = self.spend_quote_key(seed_hash)?;
         // Every dry run performs one reservation read→reserve→release cycle.
         // Keep them all under the same exclusive boundary as real builds.
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
@@ -675,6 +675,10 @@ impl WalletBackend {
         };
         match kind {
             SpendLimitKind::CoreSend => {
+                // The UI keys this quote on the revision it read before
+                // dispatch, so an operation opening after this check leaves
+                // the result stale rather than current.
+                self.spend_quote_key(seed_hash)?;
                 let upper_duffs = wallet
                     .core()
                     .pooled_max_sendable(
@@ -890,7 +894,7 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        let spend = self.begin_core_spend(seed_hash);
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_core_payment_builds(seed_hash, &recipients)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -899,8 +903,6 @@ impl WalletBackend {
             .with_secret_session(&scope, async |session| {
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
-                // Reservations are taken from here on.
-                spend.mark();
                 // Funding and reservation happen in one critical section
                 // under the wallet-manager write lock inside upstream; the
                 // signer runs after it drops.
@@ -914,8 +916,6 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(map_core_finalize_error)?;
-                // The inputs are reserved now, before the broadcast settles.
-                spend.mark();
                 let txid = transaction.transaction().txid();
                 // A definitive rejection releases the reservation on every
                 // funding account; an ambiguous outcome keeps it.
@@ -1015,7 +1015,7 @@ impl WalletBackend {
     > {
         use platform_wallet::AssetLockFundingType;
 
-        let spend = self.begin_core_spend(seed_hash);
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
             .await?;
         // One held-seed scope covers account provisioning, the funding-input
@@ -1059,8 +1059,6 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
                     .await?;
-                // Reservations are taken from here on.
-                spend.mark();
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let (proof, credit_output_path, out_point) = wallet
@@ -2334,6 +2332,53 @@ mod tests {
             ),
             "{refused:?}"
         );
+    }
+
+    /// While an operation that can reserve Core inputs is in flight, its
+    /// reservation lands at an instant no quote can see, so neither Max is
+    /// quoted: both report the operation instead of a number, without a dry
+    /// run. Once it ends, both quote again under a new key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_max_is_quoted_while_a_reserving_operation_is_in_flight() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x72,
+            &[1_000_000],
+        )
+        .await;
+        let core_kind = crate::model::spend_limit::SpendLimitKind::CoreSend;
+
+        let spend = backend.begin_core_spend(&seed_hash);
+        let core = backend.spend_limit_credits(&seed_hash, core_kind).await;
+        assert!(matches!(core, Err(TaskError::SpendInProgress)), "{core:?}");
+        let lock = backend.asset_lock_max_amount(&seed_hash).await;
+        assert!(
+            matches!(lock, Err(TaskError::SpendInProgress)),
+            "{:?}",
+            lock.map(|quote| quote.amount_duffs)
+        );
+        let in_flight_key = backend.core_send_quote_revision(&seed_hash);
+        drop(spend);
+
+        assert_ne!(backend.core_send_quote_revision(&seed_hash), in_flight_key);
+        let core = backend
+            .spend_limit_credits(&seed_hash, core_kind)
+            .await
+            .expect("Core Max after the operation");
+        assert!(core > 0, "{core}");
+        let lock = backend
+            .asset_lock_max_amount(&seed_hash)
+            .await
+            .expect("asset-lock Max after the operation");
+        assert!(lock.amount_duffs > 0, "{}", lock.amount_duffs);
     }
 
     /// An exact asset lock the wallet cannot fund is refused by the guard,

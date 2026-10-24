@@ -1060,7 +1060,7 @@ impl ScreenLike for TopUpIdentityScreen {
         self.reload_identity();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         // Only the top-up's own failure releases the screen; an unrelated
         // error must leave a running top-up blocked.
         if self.top_up_context.owns(context) {
@@ -1070,10 +1070,11 @@ impl ScreenLike for TopUpIdentityScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         let selected_seed_hash = self

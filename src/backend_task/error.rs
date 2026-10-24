@@ -442,6 +442,12 @@ pub enum TaskError {
     )]
     AssetLockTooManyInputs { count: usize, max: usize },
 
+    /// The wallet's available amount is not quoted while another operation
+    /// that can take or release its Core inputs is in progress: until it
+    /// reserves them, no quote can see what it will take.
+    #[error("{}", crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)]
+    SpendInProgress,
+
     /// The wallet could not quote the largest amount an operation accepts.
     #[error("The wallet's available amount could not be checked. Wait a moment and try again.")]
     SpendLimitQueryFailed {

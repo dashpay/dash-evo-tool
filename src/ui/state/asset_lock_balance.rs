@@ -1,6 +1,7 @@
 //! Per-screen cache of live asset-lock builder maximum amounts.
 
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::AssetLockInputState;
@@ -49,6 +50,9 @@ struct LoadedQuote {
 
 struct FailedRequest {
     key: RequestKey,
+    /// Another transaction from the wallet was in progress: nothing to
+    /// retry, the key moves when it finishes.
+    busy: bool,
 }
 
 /// Preserves result ordering within one generation sequence without making old
@@ -162,6 +166,9 @@ impl AssetLockBalanceCache {
                 failed
                     .key
                     .matches(snapshot_generation, &inputs, utxo_revision)
+                    // A transaction in progress keeps the composition's spend
+                    // key until it finishes; generation churn cannot end it.
+                    || (failed.busy && failed.key.matches_composition(&inputs, utxo_revision))
             })
             // Composition-keyed (not generation-keyed) on purpose: SPV event
             // churn republishes the same composition under new generations and
@@ -227,7 +234,10 @@ impl AssetLockBalanceCache {
                     if state.mismatched_replies >= MAX_CONSECUTIVE_MISMATCHED_REPLIES {
                         // Surface the dead end as a failed check so the UI
                         // offers Retry instead of an indefinite loading state.
-                        state.failed = Some(FailedRequest { key: in_flight_key });
+                        state.failed = Some(FailedRequest {
+                            key: in_flight_key,
+                            busy: false,
+                        });
                     }
                 } else {
                     state.mismatched_replies = 0;
@@ -238,12 +248,36 @@ impl AssetLockBalanceCache {
         }
     }
 
+    /// Record why one in-flight wallet query returned no maximum: another
+    /// transaction in progress offers none until the key moves, anything
+    /// else is retryable.
+    pub fn mark_request_error(
+        &mut self,
+        seed_hash: &WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+        error: &TaskError,
+    ) {
+        let busy = matches!(error, TaskError::SpendInProgress);
+        self.settle_failed(seed_hash, snapshot_generation, request_id, busy);
+    }
+
     /// Mark one in-flight wallet query retryable after a backend failure.
     pub fn mark_loading_failed(
         &mut self,
         seed_hash: &WalletSeedHash,
         snapshot_generation: u64,
         request_id: u64,
+    ) {
+        self.settle_failed(seed_hash, snapshot_generation, request_id, false);
+    }
+
+    fn settle_failed(
+        &mut self,
+        seed_hash: &WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+        busy: bool,
     ) {
         let Some(state) = self.states.get_mut(seed_hash) else {
             return;
@@ -258,8 +292,16 @@ impl AssetLockBalanceCache {
                 &in_flight_key.inputs,
                 in_flight_key.revision,
             ) {
-                state.failed = Some(FailedRequest { key: in_flight_key });
-                state.retry_available = true;
+                state.failed = Some(FailedRequest {
+                    key: in_flight_key,
+                    busy,
+                });
+                state.retry_available = !busy;
+                if busy {
+                    // A quote from before the transaction began must not be
+                    // shown as the available amount.
+                    state.loaded = None;
+                }
             }
         }
     }
@@ -288,14 +330,25 @@ impl AssetLockBalanceCache {
 
     /// Whether the query failed and needs an explicit retry.
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
-        self.states.get(seed_hash).is_some_and(|state| {
-            state.failed.as_ref().is_some_and(|failed| {
-                failed.key.matches(
-                    state.request_key.generation,
-                    &state.request_key.inputs,
-                    state.request_key.revision,
-                )
-            })
+        self.current_failure(seed_hash)
+            .is_some_and(|failed| !failed.busy)
+    }
+
+    /// Whether the wallet reported another transaction in progress for the
+    /// current state, so no maximum is offered until it finishes.
+    pub fn is_busy(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.current_failure(seed_hash)
+            .is_some_and(|failed| failed.busy)
+    }
+
+    fn current_failure(&self, seed_hash: &WalletSeedHash) -> Option<&FailedRequest> {
+        let state = self.states.get(seed_hash)?;
+        state.failed.as_ref().filter(|failed| {
+            failed.key.matches(
+                state.request_key.generation,
+                &state.request_key.inputs,
+                state.request_key.revision,
+            )
         })
     }
 
@@ -310,7 +363,9 @@ impl AssetLockBalanceCache {
 
     /// Explain why validation cannot use a builder quote yet.
     pub fn validation_unavailable_message(&self, seed_hash: &WalletSeedHash) -> &'static str {
-        if self.is_failed(seed_hash) {
+        if self.is_busy(seed_hash) {
+            crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE
+        } else if self.is_failed(seed_hash) {
             FAILED_VALIDATION_MESSAGE
         } else {
             LOADING_VALIDATION_MESSAGE
@@ -566,6 +621,57 @@ mod tests {
                 .is_none(),
             "the replacement result must deduplicate its own generation and signal"
         );
+    }
+
+    /// A reply that another transaction is in progress offers no maximum —
+    /// not even the last one — and no Retry, and is asked again only once the
+    /// wallet's spend key moves the composition.
+    #[test]
+    fn asset_lock_balance_cache_offers_nothing_while_another_transaction_is_in_progress() {
+        let seed_hash = [0x32; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let earlier = request(&mut cache, seed_hash, 7, 1_000, 1);
+        store(&mut cache, seed_hash, 7, earlier, 900, 1_000, 1);
+        let in_progress = snapshot_inputs(1_000, 1).with_spend_key(1);
+        let busy_request = match cache.ensure_requested(seed_hash, 7, in_progress.clone(), 1) {
+            Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                request_id, ..
+            })) => request_id,
+            other => panic!("expected a re-query, got {other:?}"),
+        };
+
+        cache.mark_request_error(
+            &seed_hash,
+            7,
+            busy_request,
+            &crate::backend_task::error::TaskError::SpendInProgress,
+        );
+
+        assert!(cache.is_busy(&seed_hash));
+        assert!(!cache.is_failed(&seed_hash));
+        assert!(!cache.should_offer_retry(&seed_hash));
+        assert_eq!(
+            cache.get(&seed_hash),
+            None,
+            "the earlier quote is not shown"
+        );
+        assert_eq!(cache.get_current(&seed_hash, &in_progress), None);
+        assert_eq!(
+            cache.validation_unavailable_message(&seed_hash),
+            crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE
+        );
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 8, in_progress.clone(), 1)
+                .is_none(),
+            "nothing is asked again while the transaction is in progress"
+        );
+        let finished = snapshot_inputs(1_000, 1).with_spend_key(2);
+        assert!(
+            cache.ensure_requested(seed_hash, 8, finished, 1).is_some(),
+            "the finished transaction's key asks again"
+        );
+        assert!(!cache.is_busy(&seed_hash));
     }
 
     #[test]

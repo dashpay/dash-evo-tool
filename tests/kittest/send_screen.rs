@@ -127,7 +127,7 @@ fn assert_route(
 
         assert!(
             harness.query_by_label(button_label).is_some(),
-            "expected send button label {button_label:?}"
+            "the send button always reads {button_label:?}"
         );
         harness.state_mut().validate_and_send_for_test()
     })
@@ -169,7 +169,7 @@ fn routes_core_wallet_to_core_address() {
     let action = assert_route(
         SourceSelection::CoreWallet,
         ValidatedAddress::Core(destination.clone()),
-        "Send DASH",
+        "Send",
         None,
     );
     let Ok(AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
@@ -194,7 +194,7 @@ fn routes_core_wallet_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Fund Platform Address",
+        "Send",
         Some(0),
     )
     .expect_err("offline Core wallet has no spendable snapshot balance");
@@ -217,7 +217,7 @@ fn routes_platform_addresses_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Transfer Credits",
+        "Send",
         None,
     )
     .expect("Platform transfer task");
@@ -239,7 +239,7 @@ fn routes_platform_addresses_to_core_address() {
     let action = assert_route(
         SourceSelection::PlatformAddresses(source),
         ValidatedAddress::Core(destination),
-        "Withdraw to Wallet",
+        "Send",
         None,
     )
     .expect("Platform withdrawal task");
@@ -263,7 +263,7 @@ fn routes_shielded_pool_to_shielded_address() {
     let action = assert_route(
         SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS),
         ValidatedAddress::Shielded(destination),
-        "Private Send",
+        "Send",
         None,
     )
     .expect("shielded transfer task");
@@ -290,7 +290,7 @@ fn routes_shielded_pool_to_platform_address() {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
-        "Unshield Credits",
+        "Send",
         None,
     )
     .expect("unshield task");

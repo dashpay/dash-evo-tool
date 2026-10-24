@@ -6,7 +6,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use super::storage_failure::StorageFailure;
 
 const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
-const TARGET_SCHEMA: &str = include_str!("fixtures/e3cd7cf.sql");
+const TARGET_SCHEMA: &str = include_str!("fixtures/033ecae.sql");
 const HISTORY: &str = "refinery_schema_history";
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 
@@ -740,6 +740,7 @@ fn allowed_columns(
             "winner_mined_height",
         ],
         "core_sync_state" => &["chainlock_height"],
+        "asset_locks" => &["operation_id"],
         _ => &[],
     };
     let expected_removed: &[&str] = if table == "identities" {

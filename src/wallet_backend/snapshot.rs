@@ -766,6 +766,21 @@ impl SnapshotStore {
         }
     }
 
+    pub(super) fn unconfirm_instant_locked(&self, wallet_id: &WalletId, txids: &[Txid]) {
+        let Ok(mut log) = self.tx_log.lock() else {
+            return;
+        };
+        if let Some(transactions) = log.get_mut(wallet_id) {
+            for txid in txids {
+                if let Some(tx) = transactions.get_mut(txid) {
+                    tx.status = TransactionStatus::InstantSendLocked;
+                    tx.height = None;
+                    tx.block_hash = None;
+                }
+            }
+        }
+    }
+
     /// Upgrade a previously-accumulated record's status to
     /// `InstantSendLocked`.
     ///
@@ -1030,7 +1045,6 @@ impl SnapshotStore {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -1038,6 +1052,7 @@ mod tests {
     };
     use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
     use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     fn seed(n: u8) -> WalletSeedHash {
         [n; 32]
@@ -1962,6 +1977,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn truncated_chain_clears_block_evidence_but_preserves_instant_lock() {
+        let store = SnapshotStore::new();
+        let mut rec = record(2, 300);
+        rec.context = TransactionContext::InChainLockedBlock(BlockInfo::new(
+            10,
+            BlockHash::from_byte_array([1; 32]),
+            123,
+        ));
+        let txid = rec.txid;
+        store.accumulate_transactions(&wid(5), [&rec]);
+        store.accumulate_transactions(&wid(6), [&rec]);
+        store.unconfirm_instant_locked(&wid(5), &[txid]);
+        publish_tx_only(&store, seed(5), wid(5));
+        publish_tx_only(&store, seed(6), wid(6));
+        let snap = store.snapshot(&seed(5));
+        assert_eq!(
+            snap.transactions[0].status,
+            TransactionStatus::InstantSendLocked
+        );
+        assert_eq!(snap.transactions[0].height, None);
+        assert_eq!(snap.transactions[0].block_hash, None);
+        assert_eq!(
+            store.snapshot(&seed(6)).transactions[0].status,
+            TransactionStatus::ChainLocked
+        );
+    }
+
     /// A block confirmation may race the InstantLock notification. If the
     /// stronger status already landed first, the InstantLock must not
     /// regress it back to `InstantSendLocked`.
@@ -2244,9 +2287,9 @@ mod tests {
     fn addr(n: u8) -> Address {
         let mut sk_bytes = [1u8; 32];
         sk_bytes[31] = n.max(1);
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&sk_bytes).unwrap();
-        let pubkey = PublicKey::new(sk.public_key(&secp));
+
+        let sk = SecretKey::from_secret_bytes(sk_bytes).unwrap();
+        let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

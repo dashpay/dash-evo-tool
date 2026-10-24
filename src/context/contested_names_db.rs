@@ -21,6 +21,7 @@ use crate::model::dpns_voting::{
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetScope, KvAdapterError};
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -120,12 +121,7 @@ impl StoredContestedName {
         self.locked || self.awarded_to.is_some()
     }
 
-    fn to_contested_name(&self, network: Network) -> ContestedName {
-        let join_window = crate::model::dpns::contest_durations(
-            network,
-            crate::context::default_platform_version(&network),
-        )
-        .join;
+    fn to_contested_name(&self, join_window: Duration) -> ContestedName {
         let awarded_to_id = self.awarded_to.map(Identifier::from);
 
         // Match pre-C6 semantics: state is computed from the latest
@@ -234,7 +230,15 @@ impl AppContext {
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
             match kv.get::<StoredContestedName>(DetScope::Global, &key) {
-                Ok(Some(stored)) => out.push(stored.to_contested_name(self.network)),
+                Ok(Some(stored)) => out.push(
+                    stored.to_contested_name(
+                        crate::model::dpns::contest_durations(
+                            self.network,
+                            self.platform_version(),
+                        )
+                        .join,
+                    ),
+                ),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(
                     key = %key,
@@ -262,7 +266,13 @@ impl AppContext {
                 Ok(Some(stored)) => match stored.end_time {
                     Some(t) if t <= current_timestamp => {}
                     _ => {
-                        let contest = stored.to_contested_name(self.network);
+                        let contest = stored.to_contested_name(
+                            crate::model::dpns::contest_durations(
+                                self.network,
+                                self.platform_version(),
+                            )
+                            .join,
+                        );
                         if !contest.is_unread() {
                             out.push(contest);
                         }
@@ -1421,13 +1431,29 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
+    fn to_contested_name_uses_the_supplied_protocol_join_window() {
+        let stored = StoredContestedName {
+            contestants: vec![contestant(1, Some(now_ms() - 60_000))],
+            ..Default::default()
+        };
+        assert_eq!(
+            stored.to_contested_name(Duration::from_secs(120)).state,
+            ContestState::Joinable
+        );
+        assert_eq!(
+            stored.to_contested_name(Duration::from_secs(30)).state,
+            ContestState::Ongoing
+        );
+    }
+
+    #[test]
     fn to_contested_name_reports_won_by_when_awarded() {
         let stored = StoredContestedName {
             normalized_contested_name: "dash".to_string(),
             awarded_to: Some([7u8; 32]),
             ..Default::default()
         };
-        let cn = stored.to_contested_name(Network::Testnet);
+        let cn = stored.to_contested_name(Duration::from_secs(45 * 60));
         assert_eq!(cn.state, ContestState::WonBy(Identifier::from([7u8; 32])));
         assert_eq!(cn.awarded_to, Some(Identifier::from([7u8; 32])));
     }
@@ -1439,7 +1465,7 @@ mod tests {
             locked: true,
             ..Default::default()
         };
-        let cn = stored.to_contested_name(Network::Testnet);
+        let cn = stored.to_contested_name(Duration::from_secs(45 * 60));
         assert_eq!(cn.state, ContestState::Locked);
         assert!(cn.awarded_to.is_none());
     }
@@ -1455,7 +1481,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            stored.to_contested_name(Network::Testnet).state,
+            stored.to_contested_name(Duration::from_secs(45 * 60)).state,
             ContestState::Locked
         );
     }
@@ -1469,7 +1495,7 @@ mod tests {
             contestants: vec![contestant(1, None), contestant(2, None)],
             ..Default::default()
         };
-        let cn = stored.to_contested_name(Network::Testnet);
+        let cn = stored.to_contested_name(Duration::from_secs(45 * 60));
         assert_eq!(cn.state, ContestState::Unknown);
         assert_eq!(cn.contestants.as_ref().map(Vec::len), Some(2));
     }
@@ -1482,7 +1508,7 @@ mod tests {
             contestants: vec![contestant(3, Some(100))],
             ..Default::default()
         };
-        let cn = stored.to_contested_name(Network::Testnet);
+        let cn = stored.to_contested_name(Duration::from_secs(45 * 60));
         let mapped = &cn.contestants.unwrap()[0];
         assert_eq!(mapped.id, Identifier::from([3u8; 32]));
         assert_eq!(mapped.name, "name-3");
@@ -1685,8 +1711,8 @@ mod tests {
         use dash_sdk::dpp::block::block_info::BlockInfo;
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         let (_temp_dir, context, _history) = cold_history(3);
-        let document_type = context
-            .dpns_contract
+        let dpns_contract = context.dpns_contract();
+        let document_type = dpns_contract
             .document_type_for_name("domain")
             .expect("domain document type");
         let answer = |winner| Contenders {

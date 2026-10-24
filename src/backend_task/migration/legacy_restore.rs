@@ -365,12 +365,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn review_regression_restore_counts_unreadable_protected_keys() {
         use crate::model::wallet::single_key::ClosedSingleKey;
-        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey, secp256k1::Secp256k1};
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
         let raw = [0x39; 32];
         let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
-        let public = PublicKey::new(private.inner.public_key(&Secp256k1::new()));
+        let public = PublicKey::new(private.inner.public_key());
         let address = Address::p2pkh(&public, ctx.network).to_string();
         let password = format!("test-password-{}", dir.path().display());
         let envelope = ClosedSingleKey::encrypt_private_key(&raw, &password).unwrap();

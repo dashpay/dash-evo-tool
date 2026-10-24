@@ -5,10 +5,10 @@ use crate::context::{AppContext, DpnsVoteRefreshResults, MAX_CONCURRENT_DPNS_VOT
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGettersV0;
 use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::platform::{FetchMany, Identifier};
+use dash_sdk::query_types::ResourceVoteWithCount;
 use futures::{StreamExt, stream};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -91,7 +91,7 @@ async fn fetch_votes_for_voter(
     let mut votes = BTreeMap::new();
     let mut start_at = None;
     loop {
-        let page = ResourceVote::fetch_many(
+        let page = ResourceVoteWithCount::fetch_many(
             sdk,
             ContestedResourceVotesGivenByIdentityQuery {
                 identity_id: voter_id,
@@ -106,7 +106,10 @@ async fn fetch_votes_for_voter(
         let last_key = page.last().map(|(id, _)| id.to_buffer());
         for (poll_id, vote) in page {
             if let Some(vote) = vote {
-                votes.insert(poll_id.to_buffer(), vote.resource_vote_choice());
+                votes.insert(
+                    poll_id.to_buffer(),
+                    vote.resource_vote.resource_vote_choice(),
+                );
             }
         }
         if page_len < usize::from(VOTE_QUERY_PAGE_SIZE) {

@@ -11,7 +11,6 @@ use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::core_script::CoreScript;
@@ -27,11 +26,11 @@ const ONE_DASH_CREDITS: u64 = CREDITS_PER_DUFF * 100_000_000;
 fn core_address() -> Address {
     let secret_key = loop {
         let bytes: [u8; 32] = rand::random();
-        if let Ok(key) = SecretKey::from_slice(&bytes) {
+        if let Ok(key) = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(bytes) {
             break key;
         }
     };
-    let public_key = PublicKey::new(secret_key.public_key(&Secp256k1::new()));
+    let public_key = PublicKey::new(secret_key.public_key());
     Address::p2pkh(&public_key, Network::Testnet)
 }
 

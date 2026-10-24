@@ -21,25 +21,41 @@ pub(crate) const MASTERNODE_LIST_NOT_READY_DETAIL: &str =
 
 /// Resolve a data contract by ID: check cached system contracts first, then DB.
 ///
+/// System contracts are served as `platform_version` defines them: the proof
+/// verifier passes the version it verifies with, which during an upgrade can
+/// be newer than the SDK's stored version.
+///
 /// All system contracts are listed in `cached` — adding a new one is a single
 /// array edit. The array size is tied to [`SYSTEM_CONTRACT_COUNT`] so the
 /// compiler enforces completeness.
 fn resolve_data_contract(
     app_ctx: &AppContext,
     data_contract_id: &Identifier,
+    platform_version: &PlatformVersion,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
+    // Never another version's contracts: the verifier would check the proof
+    // against the wrong schema.
+    let system_contracts = app_ctx
+        .system_contracts_at(platform_version)
+        .map_err(|error| {
+            ContextProviderError::DataContractFailure(format!(
+                "system contracts for protocol version {} could not be loaded: {error}",
+                platform_version.protocol_version
+            ))
+        })?;
     let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
-        &app_ctx.dpns_contract,
-        &app_ctx.dashpay_contract,
-        &app_ctx.token_history_contract,
-        &app_ctx.withdraws_contract,
-        &app_ctx.keyword_search_contract,
+        &system_contracts.dpns,
+        &system_contracts.dashpay,
+        &system_contracts.token_history,
+        &system_contracts.withdrawals,
+        &system_contracts.keyword_search,
     ];
 
-    for contract in &cached {
-        if data_contract_id == &contract.id() {
-            return Ok(Some(Arc::clone(contract)));
-        }
+    if let Some(contract) = cached
+        .into_iter()
+        .find(|contract| data_contract_id == &contract.id())
+    {
+        return Ok(Some(Arc::clone(contract)));
     }
 
     // K/V fallback for user-added / non-system contracts
@@ -107,10 +123,10 @@ impl ContextProvider for SpvProvider {
     fn get_data_contract(
         &self,
         data_contract_id: &Identifier,
-        _platform_version: &PlatformVersion,
+        platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
         let app_ctx = self.app_context()?;
-        resolve_data_contract(&app_ctx, data_contract_id)
+        resolve_data_contract(&app_ctx, data_contract_id, platform_version)
     }
 
     fn get_token_configuration(
@@ -171,7 +187,7 @@ impl ContextProvider for SpvProvider {
                 core_chain_locked_height,
             ))
         })
-        .map_err(|e| ContextProviderError::Generic(e.to_string()))
+        .map_err(quorum_lookup_error)
     }
 
     fn get_platform_activation_height(
@@ -185,5 +201,98 @@ impl ContextProvider for SpvProvider {
             Network::Testnet => 1_090_319,
             Network::Devnet | Network::Regtest => 1,
         })
+    }
+}
+
+fn quorum_lookup_error(error: crate::backend_task::error::TaskError) -> ContextProviderError {
+    match error {
+        crate::backend_task::error::TaskError::WalletBackend { source } => {
+            source.quorum_lookup_context_error()
+        }
+        other => ContextProviderError::Generic(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod quorum_error_tests {
+    use super::*;
+    use crate::backend_task::error::TaskError;
+    use dash_sdk::dpp::dashcore::sml::llmq_entry_verification::{
+        LLMQEntryVerificationSkipStatus, LLMQEntryVerificationStatus,
+    };
+
+    #[test]
+    fn unverified_local_quorum_does_not_blame_the_dapi_endpoint() {
+        let error = TaskError::WalletBackend {
+            source: Arc::new(
+                platform_wallet::error::PlatformWalletError::QuorumNotVerified {
+                    quorum_type: 6,
+                    quorum_hash: [0xab; 32],
+                    status: LLMQEntryVerificationStatus::Skipped(
+                        LLMQEntryVerificationSkipStatus::NotMarkedForVerification,
+                    ),
+                },
+            ),
+        };
+        assert!(matches!(
+            quorum_lookup_error(error),
+            ContextProviderError::QuorumSourceUnavailable(_)
+        ));
+    }
+
+    #[test]
+    fn unrelated_quorum_lookup_errors_are_not_reclassified_as_readiness() {
+        assert!(matches!(
+            quorum_lookup_error(TaskError::NoIdentitiesFound),
+            ContextProviderError::Generic(_)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod data_contract_tests {
+    use super::*;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    /// The proof verifier asks for a contract at the version it verifies
+    /// with, which during an upgrade can be newer than the SDK's stored
+    /// version. A system contract is served as that version defines it.
+    #[test]
+    fn system_contracts_resolve_at_the_requested_platform_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        for protocol_version in [13, 14] {
+            let platform_version = PlatformVersion::get(protocol_version).expect("known version");
+            let expected =
+                load_system_data_contract(SystemDataContract::Dashpay, platform_version).unwrap();
+            let resolved = resolve_data_contract(&ctx, &expected.id(), platform_version)
+                .expect("lookup")
+                .expect("a cached system contract");
+            assert_eq!(*resolved, expected, "protocol {protocol_version}");
+        }
+    }
+
+    /// A version whose system contracts cannot be loaded is refused, not
+    /// answered with the set loaded for another version.
+    #[test]
+    fn system_contracts_that_cannot_load_at_the_requested_version_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let dpns_id = SystemDataContract::DPNS.id();
+        // Load a set first, so a fallback would have something to serve.
+        let latest = PlatformVersion::latest();
+        assert!(matches!(
+            resolve_data_contract(&ctx, &dpns_id, latest),
+            Ok(Some(_))
+        ));
+
+        let mut unloadable = latest.clone();
+        unloadable.protocol_version = u32::MAX;
+        let resolved = resolve_data_contract(&ctx, &dpns_id, &unloadable);
+
+        assert!(
+            matches!(resolved, Err(ContextProviderError::DataContractFailure(_))),
+            "got {resolved:?}"
+        );
     }
 }

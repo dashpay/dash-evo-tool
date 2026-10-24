@@ -1,36 +1,36 @@
 use crate::app::TaskResult;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::document::DocumentTask;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
-use crate::model::masternode_input::decode_identity_id;
 use crate::model::dpns_voting::{
     DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
 };
-use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use crate::model::grovestark_prover::ProofDataOutput;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function;
 use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -38,15 +38,15 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use grovestark::GroveSTARKTask;
+use migration::MigrationTask;
+use shielded::ShieldedTask;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use migration::MigrationTask;
-use shielded::ShieldedTask;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -60,6 +60,8 @@ pub mod grovestark;
 pub mod identity;
 pub mod migration;
 pub mod platform_info;
+#[cfg(test)]
+mod protocol_13_transitions;
 pub mod register_contract;
 pub mod shielded;
 pub mod system_task;
@@ -810,7 +812,7 @@ pub enum BackendTaskSuccessResult {
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
         TokenAmount,
-        IntervalEvaluationExplanation,
+        distribution_function::evaluate_interval::IntervalEvaluationExplanation,
     ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
@@ -1430,7 +1432,7 @@ impl AppContext {
                 Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
-                Arc::clone(self).reinit_core_client_and_sdk()?;
+                self.rebuild_connection().await?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {

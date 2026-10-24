@@ -27,6 +27,9 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform accepts version 1 token configurations, which
+    /// can make a token non-transferable.
+    NonTransferableTokens,
 }
 
 /// The connected network's protocol version, when this build defines it.
@@ -55,6 +58,19 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
+            // Upstream names no feature constant either; the newest token
+            // configuration format the version decodes is the source of truth.
+            Capability::NonTransferableTokens => {
+                known_protocol_version(ctx).is_some_and(|version| {
+                    version
+                        .dpp
+                        .contract_versions
+                        .token_versions
+                        .token_configuration_format
+                        .max_version
+                        >= 1
+                })
+            }
         }
     }
 }
@@ -150,6 +166,9 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Creating a token that holders cannot transfer. Offered only where the
+    /// connected network accepts one.
+    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -166,6 +185,9 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::NonTransferableTokens => {
+                &[Check::Capability(Capability::NonTransferableTokens)]
+            }
         }
     }
 
@@ -435,6 +457,25 @@ mod tests {
         }
     }
 
+    /// Protocol version 14 features stay closed below version 14 and before
+    /// the network's version is known, whatever the role.
+    #[test]
+    fn protocol_v14_gates_follow_the_connected_version() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            // One entry per protocol version 14 gate this build offers.
+            let gates = [FeatureGate::NonTransferableTokens];
+            for gate in gates {
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                ctx.set_platform_protocol_version(13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                ctx.set_platform_protocol_version(14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+                ctx.set_platform_protocol_version(0);
+            }
+        }
+    }
+
     /// A protocol version this build does not define closes every protocol
     /// capability: nothing here knows that version's rules. The newest
     /// version this build defines keeps them open.
@@ -442,7 +483,10 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol];
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::NonTransferableTokens,
+        ];
 
         ctx.set_platform_protocol_version(LATEST_VERSION);
         for capability in capabilities {

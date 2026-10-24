@@ -17,6 +17,7 @@ use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::token::validate_contract_keyword;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -610,6 +611,9 @@ impl TokensScreen {
                                         });
                                         ui.end_row();
 
+                                        self.transferable_row(ui);
+                                        ui.end_row();
+
                                         self.history_row(ui);
                                         ui.end_row();
 
@@ -1171,7 +1175,46 @@ impl TokensScreen {
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
+            transferable: self.parse_transferable()?,
         })
+    }
+
+    /// Whether holders may transfer the token. A token that cannot be
+    /// transferred needs protocol version 14, so a network that does not
+    /// accept it yet is refused here rather than by Platform after the fee is
+    /// paid.
+    fn parse_transferable(&self) -> Result<bool, String> {
+        if !self.transferable_input
+            && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
+        {
+            return Err(
+                "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+                    .to_string(),
+            );
+        }
+        Ok(self.transferable_input)
+    }
+
+    /// The "holders can send this token" option. Offered only where the
+    /// connected network accepts tokens that cannot be transferred.
+    fn transferable_row(&mut self, ui: &mut egui::Ui) {
+        let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
+        if !available {
+            self.transferable_input = true;
+        }
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(available, |ui| {
+                StyledCheckbox::new(
+                    &mut self.transferable_input,
+                    "Holders can send this token to other identities",
+                )
+                .show(ui)
+                .on_disabled_hover_text(
+                    "The connected network does not accept tokens that cannot be transferred yet.",
+                );
+            });
+            crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
+        });
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {

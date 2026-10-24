@@ -47,6 +47,9 @@ const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
 /// search — measured from when the blocking task starts running, so total
 /// exclusive wallet access is bounded by this plus setup overhead.
 const ASSET_LOCK_PROBE_LOCK_HOLD_DEADLINE: Duration = Duration::from_secs(5);
+/// How long the Core-send Max search may hold the wallet-manager write lock
+/// when reserved inputs make upstream's quote unbuildable.
+const CORE_SEND_MAX_PROBE_LOCK_HOLD_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_DRAIN_SEARCH_DOUBLINGS: u32 = 40;
 const P2PKH_CREDIT_OUTPUT_SCRIPT_LEN: usize = 25;
 const P2PKH_INPUT_SIZE: usize = 148;
@@ -646,8 +649,10 @@ impl WalletBackend {
     ///
     /// Both quotes come from upstream and price the same rules the real build
     /// applies: a Core send pools the accounts `SEND_FUNDING_SOURCES` names,
-    /// with no change and the input cap; shielding from Platform follows the
-    /// shield planner's address order, minimum input and input-count limit.
+    /// with no change and the input cap, narrowed to what the build accepts
+    /// around inputs other builds have reserved; shielding from Platform
+    /// follows the shield planner's address order, minimum input and
+    /// input-count limit.
     pub async fn spend_limit_credits(
         &self,
         seed_hash: &WalletSeedHash,
@@ -658,16 +663,20 @@ impl WalletBackend {
             source: Arc::new(source),
         };
         match kind {
-            SpendLimitKind::CoreSend => wallet
-                .core()
-                .pooled_max_sendable(
-                    &platform_wallet::SEND_FUNDING_SOURCES,
-                    DEFAULT_BIP44_ACCOUNT,
-                    None,
-                )
-                .await
-                .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
-                .map_err(quote_failed),
+            SpendLimitKind::CoreSend => {
+                let upper_duffs = wallet
+                    .core()
+                    .pooled_max_sendable(
+                        &platform_wallet::SEND_FUNDING_SOURCES,
+                        DEFAULT_BIP44_ACCOUNT,
+                        None,
+                    )
+                    .await
+                    .map_err(quote_failed)?;
+                self.core_send_max_within_reservations(&wallet, upper_duffs)
+                    .await
+                    .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
+            }
             SpendLimitKind::ShieldFromPlatform => wallet
                 // The payment account `ShieldFromBalance` shields from.
                 .shielded_shield_preflight(super::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT)
@@ -681,6 +690,43 @@ impl WalletBackend {
                 })
                 .map_err(quote_failed),
         }
+    }
+
+    /// Narrow upstream's Core-send quote to what the pooled build accepts now.
+    ///
+    /// `pooled_max_sendable` counts inputs another in-flight build has
+    /// reserved, which can only make the real ceiling lower. The quote is
+    /// confirmed with the same reservation-aware dry run a send runs; when a
+    /// reservation bites, the largest amount that builds is searched for
+    /// below it, under the wallet-manager write lock and a deadline that
+    /// settles on the largest amount already proven.
+    // TODO(upstream): make `CoreWallet::pooled_max_sendable` leave out
+    // reserved inputs so this search can go (no dashpay/platform issue yet).
+    async fn core_send_max_within_reservations(
+        &self,
+        wallet: &platform_wallet::PlatformWallet,
+        upper_duffs: u64,
+    ) -> Result<u64, TaskError> {
+        if upper_duffs == 0 {
+            return Ok(0);
+        }
+        let wallet_id = wallet.wallet_id();
+        let network = self.inner.network;
+        let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let deadline = ProbeDeadline::after(CORE_SEND_MAX_PROBE_LOCK_HOLD_DEADLINE);
+            let (key_wallet, info) = wallet_manager
+                .get_wallet_and_info(&wallet_id)
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            Ok(largest_core_payment_at_most(
+                key_wallet,
+                &info.core_wallet,
+                network,
+                upper_duffs,
+                &deadline,
+            ))
+        })
+        .await?
     }
 
     /// Refuse an exact-amount asset lock that would need more inputs than the
@@ -1133,6 +1179,45 @@ fn dry_run_core_payment(
         }
     }
     Ok(())
+}
+
+/// The largest single payment of at most `upper_duffs` the pooled send
+/// build accepts now, reservations included. Buildability falls with the
+/// amount, so a binary search finds it; when `deadline` expires first, the
+/// largest amount already proven to build is returned, never a guess.
+fn largest_core_payment_at_most(
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
+    network: dash_sdk::dpp::dashcore::Network,
+    upper_duffs: u64,
+    deadline: &ProbeDeadline,
+) -> u64 {
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    // Any P2PKH output prices the same: the size, not the payee, sets the fee.
+    let recipient = dash_sdk::dpp::dashcore::Address::new(
+        network,
+        dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+            dash_sdk::dpp::dashcore::PubkeyHash::all_zeros(),
+        ),
+    );
+    let builds =
+        |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).is_ok();
+    if builds(upper_duffs) {
+        return upper_duffs;
+    }
+    let (mut low, mut high) = (0, upper_duffs - 1);
+    while low < high {
+        if deadline.expired() {
+            break;
+        }
+        let candidate = low + (high - low).div_ceil(2);
+        if builds(candidate) {
+            low = candidate;
+        } else {
+            high = candidate - 1;
+        }
+    }
+    low
 }
 
 /// Classify a failed pooled payment build. A shortfall the dry run did not
@@ -1928,9 +2013,7 @@ mod tests {
     }
 
     /// A test backend with one registered, unfunded wallet.
-    async fn backend_with_registered_wallet(
-        seed_byte: u8,
-    ) -> (
+    async fn backend_with_registered_wallet() -> (
         tempfile::TempDir,
         std::sync::Arc<crate::context::AppContext>,
         std::sync::Arc<crate::wallet_backend::WalletBackend>,
@@ -1949,7 +2032,8 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
-        let seed = [seed_byte; 64];
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2019,7 +2103,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x61).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2056,7 +2140,7 @@ mod tests {
         const CAP: u64 = 100;
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x63).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2093,7 +2177,7 @@ mod tests {
         const UTXO_DUFFS: u64 = 100_000;
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x65).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2137,7 +2221,7 @@ mod tests {
         wallet: std::sync::OnceLock<std::sync::Arc<platform_wallet::PlatformWallet>>,
         account_type: dash_sdk::dpp::key_wallet::account::AccountType,
         spent: OutPoint,
-        password: &'static str,
+        password: String,
         asks: std::sync::atomic::AtomicUsize,
     }
 
@@ -2165,7 +2249,7 @@ mod tests {
             assert!(removed.is_some(), "the prompt must spend the large UTXO");
             Ok(
                 crate::wallet_backend::secret_prompt::SecretPromptReply::new(
-                    platform_wallet_storage::secrets::SecretString::new(self.password.to_string()),
+                    platform_wallet_storage::secrets::SecretString::new(self.password.clone()),
                     crate::wallet_backend::secret_prompt::RememberPolicy::None,
                 ),
             )
@@ -2187,7 +2271,6 @@ mod tests {
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-        const PASSWORD: &str = "cap-race-password";
         const SMALL_DUFFS: u64 = 100_000;
         const LARGE_DUFFS: u64 = 10_000_000;
         // With the large UTXO about 22 inputs; without it about 121.
@@ -2197,13 +2280,16 @@ mod tests {
             standard_account_type: StandardAccountType::BIP44Account,
         };
 
+        // Generated per run: no wallet secret is ever committed.
+        let password = hex::encode(rand::random::<[u8; 16]>());
+        let seed: [u8; 64] = rand::random();
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let prompt = std::sync::Arc::new(SpendWhilePrompting {
             wallet: std::sync::OnceLock::new(),
             account_type: bip44,
             spent: OutPoint::new(Txid::from_byte_array([0x68; 32]), 0),
-            password: PASSWORD,
+            password: password.clone(),
             asks: std::sync::atomic::AtomicUsize::new(0),
         });
         app_context.install_secret_prompt(prompt.clone());
@@ -2213,7 +2299,6 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
-        let seed = [0x67; 64];
         let seed_hash = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2230,7 +2315,7 @@ mod tests {
             .set_protected(
                 &seed_hash,
                 &seed,
-                &platform_wallet_storage::secrets::SecretString::new(PASSWORD.to_string()),
+                &platform_wallet_storage::secrets::SecretString::new(password),
             )
             .expect("protected seed");
         let platform_wallet = backend
@@ -2291,7 +2376,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x67).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2338,6 +2423,69 @@ mod tests {
         );
     }
 
+    /// Inputs reserved by another in-flight build cannot fund this send, so
+    /// Max is what the reservation-aware pooled build accepts now — not
+    /// upstream's quote, which counts reserved inputs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_leaves_out_inputs_reserved_by_another_build() {
+        use crate::model::spend_limit::SpendLimitKind;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const RESERVED_DUFFS: u64 = 1_234_567;
+        const FREE_DUFFS: u64 = 700_000;
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, bip44, 0x6f, &[FREE_DUFFS, RESERVED_DUFFS]).await;
+        // Another build takes the large input and has not broadcast yet.
+        {
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let account = manager
+                .get_wallet_and_info(&wallet_id)
+                .and_then(|(key_wallet, _)| key_wallet.accounts.account_of_type(bip44))
+                .expect("funding account keys")
+                .clone();
+            let managed = manager
+                .get_wallet_info_mut(&wallet_id)
+                .and_then(|info| info.core_wallet.accounts.funds_account_mut(&bip44))
+                .expect("managed funding account");
+            let (_, _, reservation) = TransactionBuilder::new()
+                .set_current_height(200)
+                .set_selection_strategy(SelectionStrategy::LargestFirst)
+                .add_output(&payment_recipient(), 1_000_000)
+                .add_funding(managed, &account)
+                .build_unsigned_reserved()
+                .expect("in-flight build");
+            assert!(reservation.is_some(), "the in-flight build holds its input");
+        }
+
+        let max_duffs = backend
+            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .await
+            .expect("Core send maximum")
+            / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+
+        assert!(
+            max_duffs > 0 && max_duffs < FREE_DUFFS,
+            "Max must come from the unreserved input only: {max_duffs}"
+        );
+        backend
+            .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), max_duffs)])
+            .await
+            .expect("the quoted Max must build around the reservation");
+        let over = backend
+            .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), max_duffs + 1)])
+            .await;
+        assert!(
+            matches!(over, Err(TaskError::InsufficientFunds { .. })),
+            "one duff above Max must be a shortfall: {over:?}"
+        );
+    }
+
     /// The quoted Max survives the real pooled finalize — signing included —
     /// and only the broadcast, with no network here, is what stops it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2349,7 +2497,8 @@ mod tests {
         let (_dir, ctx, backend) = backend_without_wallets().await;
         // Registered through the app, so the seed is in the vault and the
         // signer can open it without a prompt.
-        let seed = [0x6c; 64];
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2419,7 +2568,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x6a).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {

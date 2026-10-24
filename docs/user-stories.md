@@ -490,9 +490,10 @@ As a user, I want to transfer identity credits to a Platform address from the Se
 
 As a user, I want a "Max" button on a Core-to-Core send that fills in the largest amount I can actually send so that I can empty a wallet in one go without the transaction failing on fees.
 
-- "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
+- "Max" sets the amount to the largest payment the wallet's send build accepts now: it pools the transparent accounts a send draws on (BIP-44, BIP-32 and DashPay receiving funds, never CoinJoin), leaves out inputs another send is still using, and accounts for the network fee and the most inputs one transaction may carry. Nothing is offered until that amount has been checked.
 - The fee reserved is shown next to the amount.
 - When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+- The send itself is checked by the same build, not by the displayed balance, so an amount Max offered is never refused because that display lags behind.
 
 ### SND-015: Unshield credits to a Platform address [Implemented]
 **Persona:** Jordan
@@ -521,7 +522,7 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 
 - "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — both derive from the same builder quote, including for an amount typed in by hand rather than produced by the Max button. When the wallet's spendable inputs change after a quote, Max steps back to "Checking the available amount…" and validation waits for a fresh quote rather than accepting a stale ceiling.
 - While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
-- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses the send build's own quote and is not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
 ### SND-018: A payment with an unverified outcome resolves itself [Implemented]
@@ -892,9 +893,9 @@ As a user, I want to register a username for one of my identities so that others
 
 - Started from the identity (Profile ▸ Usernames ▸ Get another username, Home checklist, or header). No identity picker; the signing key is chosen automatically, and Power users can change it under Advanced.
 - When the identity cannot register from this device, the disabled button says why and what helps: add a key when the identity has no suitable key; restore keys in place when an earlier version of the app saved the key; use Restore from Previous Version in Settings when the app was updated but nothing is offered in place; otherwise enter the key under the identity's keys. When the key comes from a wallet that is not on this device, the button is disabled and says to import that wallet again; a wallet that is on this device but locked does not disable it.
-- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · taken · locked for good · request window closed · already requested by this identity · can't check. Only the first three allow continuing. Contested and locked names are never reported as available.
-- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee (read from the network: 0.2 DASH before protocol 14, 0.1 DASH from 14) is never returned, and a lock vote means no one gets the name.
-- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. A low balance offers Top up and returns with the name kept. Availability is re-checked on Pay.
+- Availability is checked live before paying: available · needs a community vote · others already asked (joinable until a shown time) · vote already full · taken · locked for good · request window closed · already requested by this identity · can't check. Only "available", "needs a community vote" and "others already asked" allow continuing. Contested and locked names are never reported as available. From protocol 14 a vote holding the most requests the network accepts is reported as full, and registering into it is refused before anything is paid.
+- Names that need a vote show a consent step: other people can ask during the join window (7 days on Mainnet, 45 minutes on Testnet), the vote lasts 14 days (90 minutes on Testnet) even without a rival, the community vote fee is never returned, and a lock vote means no one gets the name. The fee shown is the fund to join that vote now, read from the network: 0.2 DASH before protocol 14; from 14, 0.1 DASH, doubling once the vote holds 250 requests and again for every 50 more.
+- The confirm step shows the registration fee, the community vote fee, the total, and the identity balance it is paid from. Where the DPNS contract picks the first request for a name, the balance must also hold the network's small name-admission reserve (0.001 DASH) on top of the fees; a balance without it is turned away before anything is paid. A low balance offers Top up and returns with the name kept. Availability and the community vote fee are re-checked on Pay; a fee that changed since it was approved is refused as changed terms.
 - Changing the name, identity, network or fees invalidates the payment review and vote consent. The backend rejects an unapproved community vote fee before spending funds.
 - The registration fee shown is the balance the network needs for both registration steps, which is above what it then charges. An identity that holds less than the total cannot pay and is refused before anything is sent, so the first step is never paid for a registration the second step would turn down.
 - While registration runs, a full-window blocking progress overlay prevents a duplicate submission.

@@ -252,17 +252,27 @@ impl WalletSendScreen {
                 let headroom =
                     shield_from_balance_fee_headroom(self.app_context.platform_version());
                 let fee = format_credits_as_dash(headroom);
-                let max =
-                    self.spend_limit_for(source, dest_kind, SpendLimitKind::ShieldFromPlatform);
-                if max.is_none() {
-                    quote = self.spend_limit_quote_state(source, dest_kind);
+                match self.spend_limit_for(source, dest_kind, SpendLimitKind::ShieldFromPlatform) {
+                    // No address can keep the fee back: a zero Max would only
+                    // fill in an amount the form refuses.
+                    Some(0) => (
+                        None,
+                        Some(format!(
+                            "None of your Platform addresses can cover the shielding fee of approximately {fee}, so nothing can be shielded right now."
+                        )),
+                    ),
+                    max => {
+                        if max.is_none() {
+                            quote = self.spend_limit_quote_state(source, dest_kind);
+                        }
+                        (
+                            max,
+                            Some(format!(
+                                "A shielding fee of approximately {fee} is reserved from your balance."
+                            )),
+                        )
+                    }
                 }
-                (
-                    max,
-                    Some(format!(
-                        "A shielding fee of approximately {fee} is reserved from your balance."
-                    )),
-                )
             }
             SourceSelection::PlatformAddresses(addresses) => {
                 // Exclude the destination from the inputs (it cannot pay itself).

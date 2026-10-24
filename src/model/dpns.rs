@@ -85,6 +85,17 @@ pub fn username_contest_max_contenders(platform_version: &PlatformVersion) -> Op
         .then_some(platform_version.system_limits.max_contenders_per_contest)
 }
 
+/// Whether the fund to join a username vote at `platform_version` grows with
+/// the requests it already holds. Before protocol 14 every request pays the
+/// base fund, however many came first.
+pub fn username_contest_fund_depends_on_contenders(platform_version: &PlatformVersion) -> bool {
+    platform_version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_contenders_per_fund_doubling
+        != 0
+}
+
 /// How long a DPNS name contest runs and how long others may join it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContestDurations {
@@ -378,6 +389,21 @@ mod tests {
             assert_eq!(
                 username_contest_max_contenders(pv),
                 Some(pv.system_limits.max_contenders_per_contest),
+                "protocol {version}"
+            );
+        }
+    }
+
+    /// The fund to join a vote is flat before protocol 14 and grows with
+    /// the requests from then on.
+    #[test]
+    fn username_contest_fund_grows_with_requests_from_protocol_14() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert!(!username_contest_fund_depends_on_contenders(pv13));
+        for version in [14, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("version");
+            assert!(
+                username_contest_fund_depends_on_contenders(pv),
                 "protocol {version}"
             );
         }

@@ -111,22 +111,38 @@ impl AppContext {
         )
         .await;
 
-        if distribution_type == TokenDistributionType::OncePerIdentity
-            && let Some(token_id) = token_id
-            && let Some(claimed_at_ms) =
-                once_per_identity_claim_time(&result, proved_claim_time, now_ms())
-            && let Err(error) =
-                self.record_once_per_identity_claim(&token_id, &claimer_id, claimed_at_ms)
-        {
-            // A failed write only loses the hint, never the claim.
-            tracing::warn!(
-                %token_id,
-                %claimer_id,
-                ?error,
-                "Could not remember a once-per-identity token claim"
-            );
+        match token_id {
+            Some(token_id) if distribution_type == TokenDistributionType::OncePerIdentity => {
+                settle_once_per_identity_claim(result, proved_claim_time, now_ms(), |at| {
+                    self.record_once_per_identity_claim(&token_id, &claimer_id, at)
+                })
+            }
+            _ => result,
         }
-        result
+    }
+}
+
+/// The outcome of a once-per-identity claim attempt, after recording a
+/// successful claim with `record` at its claim time.
+///
+/// The claim cannot be undone, and the record is what keeps the screen from
+/// offering it again, so a failed record turns the success into
+/// [`TaskError::TokensClaimedButClaimNotRecorded`]: the user learns the claim
+/// was made and is not invited to try it again.
+fn settle_once_per_identity_claim(
+    result: Result<BackendTaskSuccessResult, TaskError>,
+    proved_claim_time: Option<u64>,
+    now_ms: u64,
+    record: impl FnOnce(u64) -> Result<(), TaskError>,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    match once_per_identity_claim_time(&result, proved_claim_time, now_ms) {
+        Some(claimed_at_ms) => match record(claimed_at_ms) {
+            Ok(()) => result,
+            Err(source) => Err(TaskError::TokensClaimedButClaimNotRecorded {
+                source: Box::new(source),
+            }),
+        },
+        None => result,
     }
 }
 
@@ -171,6 +187,43 @@ mod tests {
             Some(9),
             "the local clock when the document carries no time"
         );
+    }
+
+    /// A claim that succeeded but could not be recorded is reported as made
+    /// and not recorded, not as a plain success the device then forgets.
+    #[test]
+    fn a_claim_that_cannot_be_recorded_says_so() {
+        let mut recorded_at = None;
+        let settled = settle_once_per_identity_claim(claimed(), Some(7), 9, |at| {
+            recorded_at = Some(at);
+            Err(TaskError::IdentityNotFoundLocally)
+        });
+
+        assert_eq!(recorded_at, Some(7));
+        assert!(
+            matches!(
+                settled,
+                Err(TaskError::TokensClaimedButClaimNotRecorded { .. })
+            ),
+            "got {settled:?}"
+        );
+    }
+
+    /// A recorded claim keeps its success; a failed claim is passed on and
+    /// records nothing.
+    #[test]
+    fn a_recorded_claim_or_a_failed_claim_is_passed_on() {
+        let settled = settle_once_per_identity_claim(claimed(), Some(7), 9, |_| Ok(()));
+        assert!(matches!(
+            settled,
+            Ok(BackendTaskSuccessResult::ClaimedTokens(_))
+        ));
+
+        let settled =
+            settle_once_per_identity_claim(Err(TaskError::MasterKeyNotFound), Some(7), 9, |_| {
+                panic!("a failed claim records nothing")
+            });
+        assert!(matches!(settled, Err(TaskError::MasterKeyNotFound)));
     }
 
     /// An "already claimed" refusal is unproven node output: never recorded,

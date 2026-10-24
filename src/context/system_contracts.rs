@@ -59,20 +59,31 @@ impl SystemContractsCache {
         }
     }
 
-    /// The set for `platform_version`, reloaded if the cached one was built
-    /// for another version. A failed reload keeps the cached set.
-    pub(crate) fn get(&self, platform_version: &PlatformVersion) -> Arc<SystemContracts> {
+    /// The set for exactly `platform_version`, reloaded if the cached one was
+    /// built for another version. A failed reload is an error, never the set
+    /// of another version: what verifies a proof must not mix schemas.
+    pub(crate) fn try_get(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Result<Arc<SystemContracts>, Box<ProtocolError>> {
         let cached = self.current.load_full();
         if cached.protocol_version == platform_version.protocol_version {
-            return cached;
+            return Ok(cached);
         }
-        match SystemContracts::load(platform_version) {
-            Ok(fresh) => {
-                let fresh = Arc::new(fresh);
-                self.current.store(Arc::clone(&fresh));
-                fresh
-            }
+        let fresh = Arc::new(SystemContracts::load(platform_version)?);
+        self.current.store(Arc::clone(&fresh));
+        Ok(fresh)
+    }
+
+    /// The set for `platform_version`, for the app's own reads (names,
+    /// documents, forms). A failed reload keeps the cached set, so the app
+    /// keeps working on its last loaded contracts; proof verification uses
+    /// [`Self::try_get`] instead.
+    pub(crate) fn get(&self, platform_version: &PlatformVersion) -> Arc<SystemContracts> {
+        match self.try_get(platform_version) {
+            Ok(contracts) => contracts,
             Err(error) => {
+                let cached = self.current.load_full();
                 let version = platform_version.protocol_version;
                 if self.failed_version.swap(version, Ordering::Relaxed) != version {
                     tracing::error!(
@@ -119,6 +130,20 @@ mod tests {
             *cache.get(v14).withdrawals,
             load_system_data_contract(SystemDataContract::Withdrawals, v14).unwrap()
         );
+    }
+
+    /// A version whose contracts cannot be loaded is an error for the exact
+    /// lookup; the app's lookup keeps the set it has.
+    #[test]
+    fn an_unloadable_version_fails_the_exact_lookup() {
+        let v13 = version(13);
+        let cache = SystemContractsCache::new(SystemContracts::load(v13).unwrap());
+        let mut unloadable = v13.clone();
+        unloadable.protocol_version = u32::MAX;
+
+        assert!(cache.try_get(&unloadable).is_err());
+        assert_eq!(cache.get(&unloadable).protocol_version, 13);
+        assert!(Arc::ptr_eq(&cache.get(v13), &cache.try_get(v13).unwrap()));
     }
 
     /// The same version serves the cached set itself, not a reload.

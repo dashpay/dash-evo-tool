@@ -890,7 +890,7 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        let _spend = self.begin_core_spend(seed_hash);
+        let spend = self.begin_core_spend(seed_hash);
         self.ensure_core_payment_builds(seed_hash, &recipients)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -899,6 +899,8 @@ impl WalletBackend {
             .with_secret_session(&scope, async |session| {
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
+                // Reservations are taken from here on.
+                spend.mark();
                 // Funding and reservation happen in one critical section
                 // under the wallet-manager write lock inside upstream; the
                 // signer runs after it drops.
@@ -912,6 +914,8 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(map_core_finalize_error)?;
+                // The inputs are reserved now, before the broadcast settles.
+                spend.mark();
                 let txid = transaction.transaction().txid();
                 // A definitive rejection releases the reservation on every
                 // funding account; an ambiguous outcome keeps it.
@@ -1011,7 +1015,7 @@ impl WalletBackend {
     > {
         use platform_wallet::AssetLockFundingType;
 
-        let _spend = self.begin_core_spend(seed_hash);
+        let spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
             .await?;
         // One held-seed scope covers account provisioning, the funding-input
@@ -1055,6 +1059,8 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
                     .await?;
+                // Reservations are taken from here on.
+                spend.mark();
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let (proof, credit_output_path, out_point) = wallet

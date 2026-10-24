@@ -1125,6 +1125,15 @@ impl AppContext {
         self.system_contracts.get(self.platform_version())
     }
 
+    /// The system contracts as `platform_version` defines them, for a caller
+    /// that verifies at a version other than [`Self::platform_version`].
+    pub(crate) fn system_contracts_at(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Arc<SystemContracts> {
+        self.system_contracts.get(platform_version)
+    }
+
     /// The platform version of the connected network, once its protocol
     /// version has been fetched; [`Self::platform_version`] until then, or for
     /// a protocol version this build does not know.

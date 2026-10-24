@@ -165,9 +165,10 @@ fn assert_validation_error(
 /// reaches the backend, whose pooled build refuses a real shortfall.
 #[test]
 fn routes_core_wallet_to_core_address() {
+    let destination = core_address();
     let action = assert_route(
         SourceSelection::CoreWallet,
-        ValidatedAddress::Core(core_address()),
+        ValidatedAddress::Core(destination.clone()),
         "Send",
         None,
     );
@@ -179,7 +180,9 @@ fn routes_core_wallet_to_core_address() {
         panic!("a Core-to-Core send must reach the backend: {action:?}");
     };
     assert_eq!(request.recipients.len(), 1);
+    assert_eq!(request.recipients[0].address, destination.to_string());
     assert_eq!(request.recipients[0].amount_duffs, 100_000_000);
+    assert_eq!(request.override_fee, None);
 }
 
 #[test]

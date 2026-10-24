@@ -5,9 +5,10 @@
 use crate::app::AppAction;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::contract_fee_pots::{SeatedModerators, pot_claimants};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
@@ -40,6 +41,7 @@ enum FeePotsState {
     Loaded {
         contract_id: Identifier,
         pots: ContractFeePots,
+        seated_moderators: SeatedModerators,
     },
     /// The read failed; the banner says why.
     Failed(Identifier),
@@ -170,9 +172,32 @@ impl ContractFeePotsScreen {
 
     fn fetch_pots(&mut self, contract_id: Identifier) -> AppAction {
         self.pots = FeePotsState::Loading(contract_id);
-        AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+        self.owned_request(BackendTask::ContractTask(Box::new(
             ContractTask::FetchContractFeePots(contract_id),
         )))
+    }
+
+    /// The request that pays out `pot` of `contract_id` to `identity`.
+    fn claim_request(
+        &self,
+        contract_id: Identifier,
+        pot: ContractFeePot,
+        identity: &QualifiedIdentity,
+    ) -> AppAction {
+        self.owned_request(BackendTask::ContractTask(Box::new(
+            ContractTask::ClaimContractFees {
+                contract_id,
+                pot,
+                identity: Box::new(identity.clone()),
+            },
+        )))
+    }
+
+    /// Dispatch `task` with a context, so its result and error come back to
+    /// this screen even if another screen covers it before the task finishes.
+    fn owned_request(&self, task: BackendTask) -> AppAction {
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network());
+        AppAction::BackendTaskWithContext { task, context }
     }
 
     fn contract_matches_search(&self, contract: &QualifiedContract) -> bool {
@@ -198,6 +223,7 @@ impl ContractFeePotsScreen {
         contract: &QualifiedContract,
         pot: ContractFeePot,
         state: &ContractFeePotState,
+        seated_moderators: &SeatedModerators,
     ) -> AppAction {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(match pot {
@@ -215,13 +241,13 @@ impl ContractFeePotsScreen {
             None => "Never claimed".to_string(),
         });
 
-        let recipients = pot.recipients(&contract.contract);
+        let claimants = pot_claimants(pot, &contract.contract, seated_moderators);
         let claimant = self
             .selected_identity
             .as_ref()
-            .filter(|identity| recipients.contains(&identity.identity.id()));
+            .filter(|identity| claimants.includes(&identity.identity.id()));
         let disabled_reason = claim_blocked_reason(ClaimGate {
-            has_recipients: !recipients.is_empty(),
+            has_recipients: claimants.any(),
             identity_selected: self.selected_identity.is_some(),
             identity_receives: claimant.is_some(),
             credits: state.credits,
@@ -243,13 +269,7 @@ impl ContractFeePotsScreen {
                 MessageBanner::set_global(ui.ctx(), "Claiming the fees...", MessageType::Info);
             handle.with_elapsed();
             self.progress_banner = Some(handle);
-            action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                ContractTask::ClaimContractFees {
-                    contract_id: contract.contract.id(),
-                    pot,
-                    identity: Box::new(identity.clone()),
-                },
-            )));
+            action = self.claim_request(contract.contract.id(), pot, identity);
         }
         ui.end_row();
         action
@@ -281,12 +301,29 @@ impl ScreenLike for ContractFeePotsScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, _context: &BackendTaskContext, error: &TaskError) {
+        // The claim was paid out though its balance was not saved: re-read
+        // the pots so the emptied pot shows and no retry is invited.
+        if matches!(
+            error,
+            TaskError::ContractFeesClaimedButBalanceNotSaved { .. }
+        ) {
+            self.pots = FeePotsState::NotLoaded;
+        }
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ContractFeePots { contract_id, pots }
-                if self.pots == FeePotsState::Loading(contract_id) =>
-            {
-                self.pots = FeePotsState::Loaded { contract_id, pots };
+            BackendTaskSuccessResult::ContractFeePots {
+                contract_id,
+                pots,
+                seated_moderators,
+            } if self.pots == FeePotsState::Loading(contract_id) => {
+                self.pots = FeePotsState::Loaded {
+                    contract_id,
+                    pots,
+                    seated_moderators,
+                };
             }
             BackendTaskSuccessResult::ContractFeesClaimed {
                 contract_id,
@@ -418,7 +455,11 @@ impl ScreenLike for ContractFeePotsScreen {
                         inner_action |= self.fetch_pots(contract_id);
                     }
                 }
-                FeePotsState::Loaded { pots, .. } => {
+                FeePotsState::Loaded {
+                    pots,
+                    seated_moderators,
+                    ..
+                } => {
                     egui::Grid::new("contract_fee_pots_grid")
                         .num_columns(4)
                         .spacing([16.0, 8.0])
@@ -434,12 +475,14 @@ impl ScreenLike for ContractFeePotsScreen {
                                 &contract,
                                 ContractFeePot::Owner,
                                 &pots.owner,
+                                &seated_moderators,
                             );
                             inner_action |= self.render_pot_row(
                                 ui,
                                 &contract,
                                 ContractFeePot::Moderators,
                                 &pots.moderators,
+                                &seated_moderators,
                             );
                         });
                     ui.add_space(8.0);
@@ -498,10 +541,77 @@ mod tests {
             FeePotsState::Loaded {
                 contract_id: id,
                 pots: ContractFeePots::default(),
+                seated_moderators: SeatedModerators::NotSeated,
             }
             .contract_id(),
             Some(id)
         );
+    }
+
+    /// The pots read and a claim carry a dispatch context, so their results
+    /// and errors reach this screen even if another screen covers it.
+    #[test]
+    fn fee_pot_requests_come_back_to_this_screen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ContractFeePotsScreen::new(&app_context);
+        let contract_id = Identifier::random();
+
+        let read = screen.fetch_pots(contract_id);
+        assert!(
+            matches!(
+                &read,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::ContractTask(task),
+                    ..
+                } if matches!(**task, ContractTask::FetchContractFeePots(id) if id == contract_id)
+            ),
+            "got {read:?}"
+        );
+
+        let identity = crate::backend_task::identity::key_limits_test_identity();
+        let claim = screen.claim_request(contract_id, ContractFeePot::Owner, &identity);
+        assert!(
+            matches!(
+                &claim,
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::ContractTask(task),
+                    ..
+                } if matches!(**task, ContractTask::ClaimContractFees { .. })
+            ),
+            "got {claim:?}"
+        );
+    }
+
+    /// A claim paid out whose balance could not be saved re-reads the pots,
+    /// so the emptied pot shows and no retry is invited.
+    #[test]
+    fn a_paid_out_claim_that_was_not_saved_rereads_the_pots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ContractFeePotsScreen::new(&app_context);
+        let contract_id = Identifier::random();
+        screen.pots = FeePotsState::Loaded {
+            contract_id,
+            pots: ContractFeePots::default(),
+            seated_moderators: SeatedModerators::NotSeated,
+        };
+        screen.claim_in_flight = Some(ContractFeePot::Owner);
+        let identity = crate::backend_task::identity::key_limits_test_identity();
+        let AppAction::BackendTaskWithContext { context, .. } =
+            screen.claim_request(contract_id, ContractFeePot::Owner, &identity)
+        else {
+            panic!("the claim goes out with a context");
+        };
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::ContractFeesClaimedButBalanceNotSaved {
+                source: Box::new(TaskError::IdentityNotFoundLocally),
+            },
+        );
+
+        assert_eq!(screen.pots, FeePotsState::NotLoaded);
     }
 
     fn claimable() -> ClaimGate {

@@ -2564,6 +2564,62 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Document action fees, moderation and gas sponsorship (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
+    /// A document action's fee agreement is missing or names another fee
+    /// than the document type declares; refused before anything is signed.
+    #[error(transparent)]
+    ActionFeeAgreement {
+        #[from]
+        source: crate::model::fee_estimation::ActionFeeAgreementError,
+    },
+
+    /// The document type charges an action fee and the transition carried no
+    /// agreement to it.
+    #[error(
+        "This contract charges a fee for this action, and the request did not include your agreement to it. Try again and confirm the contract fee when asked."
+    )]
+    DocumentActionFeeNotAgreed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The fee the transition agreed to differs from the one the document
+    /// type declares, typically because the contract changed meanwhile.
+    #[error(
+        "The contract fee for this action is not the one you agreed to, because the contract changed. Reload the contract to see its current fee, then try again."
+    )]
+    DocumentActionFeeChanged {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Network fees rose past the increase the fee agreement tolerates.
+    /// Reported only after a proved epoch refresh updated the cached fee
+    /// multiplier; the node-reported multipliers here are unproven and are
+    /// never adopted (see `DocumentActionFeeMultiplierNotRefreshed`).
+    #[error(
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The contract fee has been updated to the current network fees. Try again to see and confirm the new amount."
+    )]
+    DocumentActionFeeMultiplierRose {
+        known_fee_multiplier_permille: u64,
+        current_fee_multiplier_permille: u64,
+        increase_tolerance_percent: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document action was refused because network fees rose, and the
+    /// proved refresh of the current fees failed, so the cached fee
+    /// multiplier (and the next quote) keeps its previous value.
+    #[error(
+        "Network fees rose by more than {increase_tolerance_percent}% since you confirmed the contract fee, so the network refused the action. The current network fees could not be loaded, so the contract fee could not be updated. Check your connection, wait a moment, and then try again."
+    )]
+    DocumentActionFeeMultiplierNotRefreshed {
+        increase_tolerance_percent: u16,
+        /// Why the proved epoch refresh failed.
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The identity is banned on the contract.
     #[error(
         "This identity is banned from contract {} and cannot act on its documents. Use a different identity for this contract.",
@@ -4548,6 +4604,33 @@ impl From<SdkError> for TaskError {
                         Some(Box::new(move |source_error| {
                             TaskError::SigningKeyContractBoundForNonBatch {
                                 key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeAgreementNotSetError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeeNotAgreed { source_error }
+                    })),
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeAgreementMismatchError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeeChanged { source_error }
+                    })),
+                    ConsensusError::StateError(
+                        StateError::DocumentActionFeeMultiplierNotToleratedError(e),
+                    ) => {
+                        let (known, current, tolerance) = (
+                            e.known_fee_multiplier_permille(),
+                            e.current_fee_multiplier_permille(),
+                            e.increase_tolerance_percent(),
+                        );
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentActionFeeMultiplierRose {
+                                known_fee_multiplier_permille: known,
+                                current_fee_multiplier_permille: current,
+                                increase_tolerance_percent: tolerance,
                                 source_error,
                             }
                         }))
@@ -7107,6 +7190,9 @@ mod tests {
             ContractUserBannedError, ContractUserSuspendedError,
         };
         use dash_sdk::dpp::consensus::state::document::{
+            document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError,
+            document_action_fee_agreement_not_set_error::DocumentActionFeeAgreementNotSetError,
+            document_action_fee_multiplier_not_tolerated_error::DocumentActionFeeMultiplierNotToleratedError,
             document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
@@ -7115,9 +7201,32 @@ mod tests {
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
+            AgreedFeeMultiplier, DocumentActionFeeAgreement,
+        };
+        use dash_sdk::dpp::data_contract::document_type::action_fees::{
+            ActionFeePricing, DocumentActionFee,
+        };
         use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
+        let fee = DocumentActionFee {
+            owner: 1_000,
+            moderators: 0,
+        };
+        let agreed = AgreedFeeMultiplier {
+            known_permille: 1000,
+            increase_tolerance_percent: 20,
+        };
+        let agreement = DocumentActionFeeAgreement::for_declared_fee(
+            ActionFeePricing::FeeMultiplier,
+            DocumentActionFee {
+                owner: 900,
+                moderators: 0,
+            },
+            agreed,
+        );
+
         type Expectation = fn(&TaskError) -> bool;
         let cases: Vec<(ConsensusError, Expectation)> = vec![
             (PublicKeyExpiredError::new(3, 1_000, 2_000).into(), |e| {
@@ -7159,6 +7268,47 @@ mod tests {
                     TaskError::SigningKeyContractBoundForNonBatch { key_id: 7, .. }
                 )
             }),
+            (
+                DocumentActionFeeAgreementNotSetError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    ActionFeePricing::FeeMultiplier,
+                    fee,
+                )
+                .into(),
+                |e| matches!(e, TaskError::DocumentActionFeeNotAgreed { .. }),
+            ),
+            (
+                DocumentActionFeeAgreementMismatchError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    ActionFeePricing::FeeMultiplier,
+                    fee,
+                    &agreement,
+                )
+                .into(),
+                |e| matches!(e, TaskError::DocumentActionFeeChanged { .. }),
+            ),
+            (
+                DocumentActionFeeMultiplierNotToleratedError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    agreed,
+                    1_500,
+                )
+                .into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::DocumentActionFeeMultiplierRose {
+                            known_fee_multiplier_permille: 1000,
+                            current_fee_multiplier_permille: 1_500,
+                            increase_tolerance_percent: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
             (
                 ContractUserBannedError::new(contract_id, identity_id).into(),
                 |e| matches!(e, TaskError::ContractUserBanned { .. }),

@@ -2,12 +2,10 @@ use crate::backend_task::error::TaskError;
 use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::secp256k1::Message;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoAcceptProofData {
@@ -141,13 +139,7 @@ pub async fn generate_auto_accept_proof(
     // Get wallet seed for HD derivation - use ENCRYPTION key (ECDSA_SECP256K1) as per DIP-15
     // The auto-accept proof uses HD derivation from the wallet, and ENCRYPTION keys are ECDSA_SECP256K1
     let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::ENCRYPTION,
-            HashSet::from([SecurityLevel::MEDIUM]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
-        )
+        .auto_accept_proof_key()
         .ok_or(DashPayError::MissingEncryptionKey)?;
 
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
@@ -280,13 +272,7 @@ pub async fn verify_auto_accept_proof(
     // Derive expected pubkey from our seed and key index (timestamp)
     // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
     let signing_key = our_identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::ENCRYPTION,
-            HashSet::from([SecurityLevel::MEDIUM]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
-        )
+        .auto_accept_proof_key()
         .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.

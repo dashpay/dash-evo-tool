@@ -17,6 +17,7 @@ use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::token::validate_contract_keyword;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -235,6 +236,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                SigningScope::NonBatch,
                             );
                             let after_id = self
                                 .selected_identity

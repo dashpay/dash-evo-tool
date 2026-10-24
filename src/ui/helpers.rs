@@ -1,3 +1,5 @@
+use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyCaveat, SigningScope, key_caveats, now_ms};
 use crate::ui::theme::ResponseExt;
 use std::sync::Arc;
 
@@ -149,16 +151,7 @@ pub fn compute_allowed_security_levels(
 ) -> Vec<SecurityLevel> {
     match (transaction_type, document_type) {
         (TransactionType::DocumentAction, Some(doc_type)) => {
-            let required_level = doc_type.security_level_requirement();
-            let allowed_range = SecurityLevel::CRITICAL as u8..=required_level as u8;
-            [
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]
-            .into_iter()
-            .filter(|level| allowed_range.contains(&(*level as u8)))
-            .collect()
+            crate::model::identity_key_usability::document_security_levels(doc_type.as_ref())
         }
         _ => transaction_type.allowed_security_levels(),
     }
@@ -485,7 +478,9 @@ fn render_key_combo(
     allowed_purposes: &[Purpose],
     allowed_security_levels: &[SecurityLevel],
     is_dev_mode: bool,
+    scope: SigningScope<'_>,
 ) {
+    let now = now_ms();
     ComboBox::from_id_salt(combo_id)
         .width(width)
         .selected_text(
@@ -500,7 +495,9 @@ fn render_key_combo(
                 return;
             };
             for key_ref in qi.private_keys.identity_public_keys() {
-                let key = &key_ref.1.identity_public_key;
+                // The stored copy may predate a limits raise: judge, label and
+                // hand on the key as the identity holds it now.
+                let key = qi.live_public_key(&key_ref.1.identity_public_key);
 
                 // Platform rejects signing with a disabled key, so never offer one
                 // — not even in dev mode, where the override only relaxes purpose and
@@ -524,6 +521,17 @@ fn render_key_combo(
                 } else {
                     format_key_label(key)
                 };
+                let caveats = key_caveats(key, scope, now);
+                if !offered_for_manual_choice(&caveats) {
+                    continue;
+                }
+                // A key Platform may refuse stays selectable (the user may know
+                // better, e.g. a contract group that covers this contract), but
+                // its entry says why it may not work.
+                let label = match caveats.first() {
+                    Some(caveat) => format!("{label} ({tag})", tag = key_caveat_tag(caveat)),
+                    None => label,
+                };
 
                 if kui
                     .selectable_label(selected_key.as_ref() == Some(key), label)
@@ -533,6 +541,75 @@ fn render_key_combo(
                 }
             }
         });
+
+    if let (Some(qi), Some(selected)) = (identity, selected_key.as_ref()) {
+        let live = qi.live_public_key(selected);
+        if live != selected {
+            *selected_key = Some(live.clone());
+        }
+    }
+    if let Some(key) = selected_key.as_ref() {
+        render_key_caveats(ui, &key_caveats(key, scope, now));
+    }
+}
+
+/// Whether a key with `caveats` is offered for the user to pick: every key
+/// but one whose bounds tie it to another contract or document type, which
+/// Platform is certain to refuse here. Expired and limited keys stay on
+/// offer with their warning; the user may know better.
+fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
+    !caveats
+        .iter()
+        .any(|caveat| matches!(caveat, KeyCaveat::OutOfBounds))
+}
+
+/// A one- or two-word tag for a key list entry, naming the most severe caveat.
+fn key_caveat_tag(caveat: &KeyCaveat) -> &'static str {
+    match caveat {
+        KeyCaveat::Disabled => "disabled",
+        KeyCaveat::Expired { .. } => "expired",
+        KeyCaveat::OutOfBounds => "other contract",
+        KeyCaveat::ContractGroupBound { .. } => "contract group",
+        KeyCaveat::Budgeted { .. } => "spending limit",
+        KeyCaveat::Expiring { .. } => "expires",
+    }
+}
+
+/// The user-facing explanation of a key caveat: what it means and what to do.
+pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
+    match caveat {
+        KeyCaveat::Disabled => "This key is disabled, so the network will reject anything signed with it. Choose another key.".to_string(),
+        KeyCaveat::Expired { expired_at } => format!(
+            "This key expired on {date}, so the network will reject anything signed with it. Choose another key.",
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expired_at)
+        ),
+        KeyCaveat::OutOfBounds => "This key can only sign for a different contract or document type, so the network will reject this action. Choose another key.".to_string(),
+        KeyCaveat::ContractGroupBound { group_id } => format!(
+            "This key can only sign for the contracts in contract group {group_id}. If this contract is not in that group, the network rejects the action. Choose another key if you are not sure.",
+            group_id = group_id.to_string(Encoding::Base58)
+        ),
+        KeyCaveat::Budgeted { total_budget } => format!(
+            "This key has a lifetime spending limit of {amount}. Once the limit is used up, the network rejects actions signed with it. Its details page shows how much is left.",
+            amount = format_credits_as_dash(*total_budget)
+        ),
+        KeyCaveat::Expiring { expires_at } => format!(
+            "This key stops working on {date}.",
+            date = crate::model::datetime::local_date_time_from_unix_millis(*expires_at)
+        ),
+    }
+}
+
+/// Renders the caveats of the selected signing key under a key chooser.
+fn render_key_caveats(ui: &mut Ui, caveats: &[KeyCaveat]) {
+    let dark_mode = ui.style().visuals.dark_mode;
+    for caveat in caveats {
+        let color = if caveat.blocks_signing() {
+            DashColors::error_color(dark_mode)
+        } else {
+            DashColors::warning_color(dark_mode)
+        };
+        ui.label(egui::RichText::new(key_caveat_message(caveat)).color(color));
+    }
 }
 
 /// Renders a centered title + description block (used above success-screen buttons).
@@ -560,12 +637,15 @@ fn render_info_section(ui: &mut Ui, title: &str, description: &str) {
     );
 }
 
+/// `scope` is what the chosen key will sign, for the contract-bounds warning
+/// under the chooser.
 pub fn add_key_chooser(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
+    scope: SigningScope<'_>,
 ) -> AppAction {
     add_key_chooser_with_doc_type(
         ui,
@@ -574,6 +654,7 @@ pub fn add_key_chooser(
         selected_key,
         transaction_type,
         None,
+        scope,
     )
 }
 
@@ -586,6 +667,7 @@ pub fn add_key_chooser_with_doc_type(
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
+    scope: SigningScope<'_>,
 ) -> AppAction {
     let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let mut action = AppAction::None;
@@ -619,6 +701,7 @@ pub fn add_key_chooser_with_doc_type(
                 &allowed_purposes,
                 &allowed_security_levels,
                 is_dev_mode,
+                scope,
             );
         });
     }
@@ -634,6 +717,7 @@ pub fn add_identity_key_chooser<'a, T>(
     selected_identity: &mut Option<QualifiedIdentity>,
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
+    scope: SigningScope<'_>,
 ) -> AppAction
 where
     T: Iterator<Item = &'a QualifiedIdentity>,
@@ -646,10 +730,12 @@ where
         selected_key,
         transaction_type,
         None,
+        scope,
     )
 }
 
 /// Identity key chooser that filters keys based on transaction type, document type and dev mode
+#[allow(clippy::too_many_arguments)]
 pub fn add_identity_key_chooser_with_doc_type<'a, T>(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -658,6 +744,7 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
     selected_key: &mut Option<IdentityPublicKey>,
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
+    scope: SigningScope<'_>,
 ) -> AppAction
 where
     T: Iterator<Item = &'a QualifiedIdentity>,
@@ -731,6 +818,7 @@ where
                         &allowed_purposes,
                         &allowed_security_levels,
                         is_dev_mode,
+                        scope,
                     );
                 }
             });
@@ -1106,6 +1194,33 @@ pub fn show_group_token_success_screen_with_fee(
 
 #[cfg(test)]
 mod tests {
+    /// Regression: a key bound to another contract or document type was
+    /// offered, though its bounds prove Platform refuses it here. Expired and
+    /// limited keys stay on offer (IDN-024), with their warning.
+    #[test]
+    fn the_manual_chooser_leaves_out_keys_bound_elsewhere() {
+        use super::{KeyCaveat, offered_for_manual_choice};
+        assert!(!offered_for_manual_choice(&[KeyCaveat::OutOfBounds]));
+        assert!(!offered_for_manual_choice(&[
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::OutOfBounds,
+        ]));
+        for kept in [
+            KeyCaveat::Expired { expired_at: 1 },
+            KeyCaveat::Budgeted { total_budget: 5 },
+            KeyCaveat::Expiring { expires_at: 9 },
+            KeyCaveat::ContractGroupBound {
+                group_id: dash_sdk::platform::Identifier::new([3; 32]),
+            },
+        ] {
+            assert!(
+                offered_for_manual_choice(std::slice::from_ref(&kept)),
+                "{kept:?}"
+            );
+        }
+        assert!(offered_for_manual_choice(&[]));
+    }
+
     use super::*;
 
     fn outside_press() -> egui::RawInput {

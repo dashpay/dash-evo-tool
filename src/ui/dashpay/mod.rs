@@ -24,6 +24,22 @@ use chrono::{LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::platform::Identifier;
 
+/// The wallet holding the key `identity` signs a `document_type_name` DashPay
+/// document with, for the unlock prompt. `None` when no key qualifies or no
+/// wallet derives it.
+pub(crate) fn dashpay_action_wallet(
+    identity: &crate::model::qualified_identity::QualifiedIdentity,
+    app_context: &AppContext,
+    document_type_name: &str,
+) -> Option<std::sync::Arc<std::sync::RwLock<crate::model::wallet::Wallet>>> {
+    let key = identity.document_action_signing_key(
+        &app_context.dashpay_contract(),
+        document_type_name,
+        None,
+    );
+    crate::ui::identity::wallet_for_signing_key(identity, key)
+}
+
 /// Persist a contact's DET-local private memo (nickname / notes / hidden flag)
 /// to the WalletBackend k/v sidecar — the single save path shared by the
 /// contact list, contact details, and profile-viewer inline editors.
@@ -140,4 +156,27 @@ pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> 
             .inner
         })
         .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the unlock prompt looked for a DPNS signing key, so an
+    /// identity whose only key is bound to DashPay got no wallet to unlock.
+    #[test]
+    fn the_unlock_wallet_follows_a_key_bound_to_dashpay() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: app_context.dashpay_contract().id(),
+            },
+        );
+
+        let resolved = dashpay_action_wallet(&identity, &app_context, "contactRequest");
+        assert!(resolved.is_some_and(|resolved| std::sync::Arc::ptr_eq(&resolved, &wallet)));
+    }
 }

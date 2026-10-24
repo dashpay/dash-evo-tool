@@ -14,10 +14,12 @@ use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
+use dash_sdk::dpp::consensus::signature::SignatureError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
@@ -2500,6 +2502,66 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Signing key refusals (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The signing key's expiry time has passed.
+    #[error(
+        "The key used to sign this action expired and can no longer sign. Choose a different key, or add a new key to this identity, then try again."
+    )]
+    SigningKeyExpired {
+        key_id: KeyID,
+        /// When the key expired, in milliseconds since the Unix epoch.
+        expired_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The signing key has spent its whole budget.
+    #[error(
+        "The key used to sign this action has used up its spending limit and can no longer sign. Raise the key's spending limit or choose a different key, then try again."
+    )]
+    SigningKeyBudgetExhausted {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The action costs more than the signing key's remaining budget.
+    #[error(
+        "This action costs {required_dash}, but the key used to sign it has only {remaining_dash} of its spending limit left. Raise the key's spending limit or choose a different key, then try again.",
+        required_dash = format_credits_as_dash(*.required_budget),
+        remaining_dash = format_credits_as_dash(*.remaining_budget)
+    )]
+    SigningKeyBudgetExceeded {
+        key_id: KeyID,
+        remaining_budget: Credits,
+        required_budget: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed something outside its contract bounds.
+    #[error(
+        "The key used to sign this action is limited to other contracts or documents, so it cannot sign this one. Choose a different key, then try again."
+    )]
+    SigningKeyOutOfContractBounds {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed an action that is not a document or token
+    /// operation.
+    #[error(
+        "The key used to sign this action is limited to one contract, so it cannot sign this kind of action. Choose a key that is not limited to a contract, then try again."
+    )]
+    SigningKeyContractBoundForNonBatch {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Document action fees, moderation and gas sponsorship (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// The identity is banned on the contract.
@@ -4433,6 +4495,61 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(SignatureError::PublicKeyExpiredError(e)) => {
+                        let (key_id, expired_at_ms) = (e.public_key_id(), e.expires_at());
+                        Some(Box::new(move |source_error| TaskError::SigningKeyExpired {
+                            key_id,
+                            expired_at_ms,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyBudgetExhaustedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExhausted {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyBudgetExceededError(e),
+                    ) => {
+                        let (key_id, remaining_budget, required_budget) =
+                            (e.public_key_id(), e.remaining_budget(), e.required_budget());
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExceeded {
+                                key_id,
+                                remaining_budget,
+                                required_budget,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyOutOfBoundsError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyOutOfContractBounds {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyNonBatchError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyContractBoundForNonBatch {
+                                key_id,
+                                source_error,
+                            }
                         }))
                     }
                     ConsensusError::StateError(StateError::ContractUserBannedError(e)) => {
@@ -6975,13 +7092,17 @@ mod tests {
         })
     }
 
-    /// The protocol-version-14 refusals of contract and document authoring map
-    /// to their own variants, keep the SDK error as their source, and read as
-    /// complete sentences free of protocol jargon.
+    /// The protocol-version-14 refusals of signing keys and of contract and
+    /// document authoring map to their own variants, keep the SDK error as
+    /// their source, and read as complete sentences free of protocol jargon.
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
+        use dash_sdk::dpp::consensus::signature::{
+            ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
+            PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
+        };
         use dash_sdk::dpp::consensus::state::contract_moderation::{
             ContractUserBannedError, ContractUserSuspendedError,
         };
@@ -6990,6 +7111,7 @@ mod tests {
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
         use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
@@ -6998,6 +7120,45 @@ mod tests {
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         type Expectation = fn(&TaskError) -> bool;
         let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (PublicKeyExpiredError::new(3, 1_000, 2_000).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyExpired {
+                        key_id: 3,
+                        expired_at_ms: 1_000,
+                        ..
+                    }
+                )
+            }),
+            (PublicKeyBudgetExhaustedError::new(4).into(), |e| {
+                matches!(e, TaskError::SigningKeyBudgetExhausted { key_id: 4, .. })
+            }),
+            (
+                IdentityPublicKeyBudgetExceededError::new(identity_id, 5, 10, 20).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::SigningKeyBudgetExceeded {
+                            key_id: 5,
+                            remaining_budget: 10,
+                            required_budget: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (ContractBoundedKeyOutOfBoundsError::new(6).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyOutOfContractBounds { key_id: 6, .. }
+                )
+            }),
+            (ContractBoundedKeyNonBatchError::new(7).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyContractBoundForNonBatch { key_id: 7, .. }
+                )
+            }),
             (
                 ContractUserBannedError::new(contract_id, identity_id).into(),
                 |e| matches!(e, TaskError::ContractUserBanned { .. }),
@@ -7185,6 +7346,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn budget_exceeded_names_both_amounts_in_dash() {
+        let error = TaskError::SigningKeyBudgetExceeded {
+            key_id: 1,
+            remaining_budget: 50_000_000_000,
+            required_budget: 100_000_000_000,
+            source_error: Box::new(SdkError::Generic("budget".to_string())),
+        };
+        let message = error.to_string();
+        assert!(message.contains("costs 1 DASH"), "got: {message}");
+        assert!(message.contains("only 0.5 DASH"), "got: {message}");
     }
 
     #[test]

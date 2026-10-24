@@ -14,6 +14,11 @@ use dash_sdk::dpp::version::feature_initial_protocol_versions::{
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
+/// The contract bounds validation version (upstream
+/// `validate_identity_public_key_contract_bounds`) from which AUTHENTICATION
+/// keys below MASTER may be bound to a contract or a document type.
+const CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION: u16 = 2;
+
 /// Authentication keys with a budget or an expiry, and the
 /// `IdentityKeyLimitsUpdate` transition that raises them, activate together at
 /// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
@@ -38,6 +43,9 @@ pub enum Capability {
     /// The connected platform accepts authentication keys with a budget or an
     /// expiry, and the transition that raises them.
     IdentityKeyLimits,
+    /// The connected platform accepts AUTHENTICATION keys below MASTER bound
+    /// to a contract or a document type (contract bounds validation v2).
+    ContractBoundAuthenticationKeys,
 }
 
 /// The connected network's protocol version, when this build defines it.
@@ -68,6 +76,19 @@ impl Capability {
             },
             Capability::IdentityKeyLimits => {
                 known_protocol_version_at_least(ctx, KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION)
+            }
+            // Upstream names no feature constant; the validation version that
+            // admits bound authentication keys is the source of truth.
+            Capability::ContractBoundAuthenticationKeys => {
+                known_protocol_version(ctx).is_some_and(|version| {
+                    version
+                        .drive_abci
+                        .validation_and_processing
+                        .state_transitions
+                        .common_validation_methods
+                        .validate_identity_public_key_contract_bounds
+                        >= CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION
+                })
             }
         }
     }
@@ -167,6 +188,9 @@ pub enum FeatureGate {
     /// Adding a key with a budget or an expiry, and raising those limits.
     /// Offered only where the connected network accepts them.
     IdentityKeyLimits,
+    /// Adding an AUTHENTICATION key bound to a contract or a document type.
+    /// Offered only where the connected network accepts one.
+    ContractBoundAuthenticationKeys,
 }
 
 impl FeatureGate {
@@ -184,6 +208,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
+            FeatureGate::ContractBoundAuthenticationKeys => &[Check::Capability(
+                Capability::ContractBoundAuthenticationKeys,
+            )],
         }
     }
 
@@ -459,12 +486,17 @@ mod tests {
     fn protocol_v14_gates_follow_the_connected_version() {
         for role in ROLES {
             let (_tmp, ctx) = ctx_with_role(role);
-            let gate = FeatureGate::IdentityKeyLimits;
-            assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-            ctx.set_platform_protocol_version(13);
-            assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-            ctx.set_platform_protocol_version(14);
-            assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+            for gate in [
+                FeatureGate::IdentityKeyLimits,
+                FeatureGate::ContractBoundAuthenticationKeys,
+            ] {
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                ctx.set_platform_protocol_version(13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                ctx.set_platform_protocol_version(14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+                ctx.set_platform_protocol_version(0);
+            }
         }
     }
 
@@ -475,7 +507,11 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol, Capability::IdentityKeyLimits];
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::IdentityKeyLimits,
+            Capability::ContractBoundAuthenticationKeys,
+        ];
 
         ctx.set_platform_protocol_version(LATEST_VERSION);
         for capability in capabilities {

@@ -308,6 +308,8 @@ pub enum UsernameAvailability {
     Locked,
     /// This identity already asked for the name; the request is in the vote.
     AlreadyRequested,
+    /// The vote already holds the most requests the network accepts.
+    ContestFull,
 }
 
 impl UsernameAvailability {

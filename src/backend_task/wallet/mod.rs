@@ -310,6 +310,13 @@ pub enum WalletTask {
         snapshot_generation: u64,
         request_id: u64,
     },
+    /// Quote the largest amount the upstream builder for `kind` accepts from
+    /// this wallet right now — the amount behind that operation's "Max".
+    GetSpendLimit {
+        seed_hash: WalletSeedHash,
+        kind: crate::model::spend_limit::SpendLimitKind,
+        request_id: u64,
+    },
     /// Fund Platform addresses from a tracked asset lock identified by its
     /// credit-output outpoint. The proof and credit-output key are recovered
     /// from the upstream `AssetLockManager` and the wallet's funding

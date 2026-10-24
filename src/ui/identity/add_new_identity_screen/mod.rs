@@ -14,12 +14,8 @@ use crate::backend_task::identity::{
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
-};
-use crate::model::fee_estimation::{
-    format_credits_as_dash, format_duffs_as_dash, identity_create_min_funding_duffs,
-};
+use crate::model::asset_lock::asset_lock_user_amount_range;
+use crate::model::fee_estimation::{format_credits_as_dash, identity_create_min_funding_duffs};
 use crate::model::secret::Secret;
 use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -33,9 +29,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identity::funding_common::{
-    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, default_funding_state,
-    deposit_event_outcome, funding_method_after_switch, max_amount_after_fee_reserve,
-    network_fee_refusal, receive_deposit_ceiling_duffs, required_deposit_credits,
+    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, asset_lock_amount_refusal,
+    default_funding_state, deposit_event_outcome, funding_method_after_switch,
+    max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, required_deposit_credits,
     required_wallet_credits, show_network_fee_minimum, spendable_covers_minimum,
     step_after_task_failure,
 };
@@ -1127,8 +1123,10 @@ impl AddNewIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
-                let Some(max_amount) = self.current_validation_ceiling_duffs(funding_method) else {
-                    let seed_hash = selected_wallet.read_recover().seed_hash();
+                let seed_hash = selected_wallet.read_recover().seed_hash();
+                // Busy withholds only Max; the backend decides the amount.
+                let max_amount = self.current_validation_ceiling_duffs(funding_method);
+                if max_amount.is_none() && !self.asset_lock_balance.is_busy(&seed_hash) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         self.asset_lock_balance
@@ -1136,36 +1134,16 @@ impl AddNewIdentityScreen {
                         MessageType::Warning,
                     );
                     return AppAction::None;
-                };
-                let identity_fee_duffs = self.creation_reserve_duffs();
-                if let Some(message) = network_fee_refusal(
+                }
+                if let Some(message) = asset_lock_amount_refusal(
                     amount,
                     max_amount,
-                    identity_fee_duffs,
+                    self.creation_reserve_duffs(),
                     self.minimum_creation_duffs(),
                 ) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         message,
-                        MessageType::Warning,
-                    );
-                    return AppAction::None;
-                }
-                if let Err(error) =
-                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
-                {
-                    let maximum_amount_duffs = match error {
-                        AssetLockAmountError::Overflow => max_amount,
-                        AssetLockAmountError::ExceedsMaximum {
-                            maximum_amount_duffs,
-                        } => maximum_amount_duffs,
-                    };
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!(
-                            "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                            format_duffs_as_dash(maximum_amount_duffs)
-                        ),
                         MessageType::Warning,
                     );
                     return AppAction::None;
@@ -1385,14 +1363,15 @@ impl ScreenLike for AddNewIdentityScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         let selected_seed_hash = self
@@ -2406,6 +2385,55 @@ mod funding_method_tests {
                  Enter at least 0.002085 DASH and try again."
                     .to_string()
             ]
+        );
+    }
+
+    /// Busy withholds only Max: the form stays usable, an explicit amount is
+    /// dispatched for the backend to decide, and the network-fee minimum is
+    /// still checked locally.
+    #[test]
+    fn an_explicit_amount_is_dispatched_while_another_transaction_is_in_progress() {
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x67);
+        *screen.funding_method.write_recover() = FundingMethod::UseWalletBalance;
+        let (generation, inputs, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(
+            screen
+                .asset_lock_balance
+                .ensure_requested(seed_hash, generation, inputs, revision),
+        );
+        screen.asset_lock_balance.mark_request_error(
+            &seed_hash,
+            generation,
+            request_id,
+            &TaskError::SpendInProgress,
+        );
+        assert!(step_shows(
+            &mut screen,
+            wallet_step,
+            crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE
+        ));
+        assert!(
+            step_shows(
+                &mut screen,
+                wallet_step,
+                "The network fee is taken from this amount"
+            ),
+            "the amount field must stay usable"
+        );
+
+        set_funding_duffs(&mut screen, ONE_KEY_FEE_DUFFS);
+        let action = screen.register_identity_clicked(FundingMethod::UseWalletBalance);
+        assert!(
+            matches!(action, AppAction::BackendTask(_)),
+            "expected a dispatched registration, got {action:?}"
+        );
+
+        set_funding_duffs(&mut screen, ONE_KEY_FEE_DUFFS - 1);
+        let action = screen.register_identity_clicked(FundingMethod::UseWalletBalance);
+        assert!(
+            matches!(action, AppAction::None),
+            "an amount below the network fee is still refused, got {action:?}"
         );
     }
 

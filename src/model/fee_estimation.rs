@@ -32,7 +32,9 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
-/// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
+/// Keep contested document creation within its contest's base fund — the
+/// moderation fund for a moderation election, the contested document fund
+/// otherwise — without auto-quoting a larger fund to join a crowded contest.
 pub fn document_create_contest_fund_cap(
     document_type: dash_sdk::dpp::data_contract::document_type::DocumentTypeRef<'_>,
     document: &dash_sdk::dpp::document::Document,
@@ -44,9 +46,12 @@ pub fn document_create_contest_fund_cap(
     use dash_sdk::dpp::document::DocumentV0Getters;
     let mut document = document.clone();
     document_type.regenerate_generated_properties(document.properties_mut(), platform_version)?;
+    use dash_sdk::dpp::voting::vote_polls::VotePoll;
     Ok(document_type
         .contested_vote_poll_for_document(&document, platform_version)?
-        .map(|_| contest_fee_credits(platform_version)))
+        .map(|VotePoll::ContestedDocumentResourceVotePoll(vote_poll)| {
+            vote_poll.required_vote_resolution_fund(platform_version)
+        }))
 }
 
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
@@ -933,6 +938,46 @@ pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
         .contested_document_vote_resolution_fund_required_amount
 }
 
+/// Balance an identity must hold, beyond the fee, for Platform to admit the
+/// name document of a username registration, in credits. Never charged.
+///
+/// A name document type declaring a `chooseFirst` lookup (DPNS from contract
+/// version 3) makes Platform scan competing preorders when it writes the name.
+/// Before admitting it, Platform reserves the most that scan may bill: the
+/// credits per competitor of the fee schedule times the competitors it may
+/// read. A balance covering the fee but not this reserve is turned away after
+/// the first document was already paid for. Zero for a type without
+/// `chooseFirst`.
+///
+/// The two hashes Platform also reserves for the lookup cost a few thousand
+/// credits and sit inside the margin of
+/// [`PlatformFeeEstimator::estimate_username_registration`].
+pub fn username_name_admission_reserve_credits(
+    name_document_type: DocumentTypeRef<'_>,
+    platform_version: &PlatformVersion,
+) -> Credits {
+    let declares_choose_first = name_document_type
+        .reference_declarations()
+        .filter_map(|(_, reference)| reference.target())
+        .flat_map(|target| target.leaves())
+        .filter_map(|leaf| leaf.as_any_document_reference())
+        .any(|declaration| {
+            declaration
+                .lookup
+                .is_some_and(|lookup| lookup.choose_first.is_some())
+        });
+    if !declares_choose_first {
+        return 0;
+    }
+    platform_version
+        .fee_version
+        .document_reference
+        .choose_first_credits_per_candidate
+        .saturating_mul(u64::from(
+            platform_version.system_limits.max_choose_first_candidates,
+        ))
+}
+
 /// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
 pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
@@ -1285,46 +1330,6 @@ pub fn estimate_asset_lock_core_fee_duffs(num_inputs: usize) -> u64 {
     estimate_core_l1_send_fee_duffs(num_inputs, 2)
 }
 
-/// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
-/// the whole balance minus the estimated L1 network fee.
-///
-/// Returns `None` when the balance does not cover the estimated fee (i.e.
-/// nothing is left to send). Callers should disable "Max" and show a calm
-/// message in that case rather than producing an amount that would fail.
-///
-/// `num_inputs` is the wallet's UTXO count and `num_outputs` the recipient
-/// count; both are passed through to [`estimate_core_l1_send_fee_duffs`].
-pub fn core_max_send_amount_duffs(
-    balance_duffs: u64,
-    num_inputs: usize,
-    num_outputs: usize,
-) -> Option<u64> {
-    let fee = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
-    let spendable = balance_duffs.checked_sub(fee)?;
-    (spendable > 0).then_some(spendable)
-}
-
-/// The duffs a Core "Max" send must reserve for the L1 network fee — the
-/// difference between the spendable balance and [`core_max_send_amount_duffs`].
-///
-/// Returns `None` in lockstep with `core_max_send_amount_duffs`: when the
-/// spendable balance cannot cover the fee there is no valid Max to reserve
-/// against, so callers disable "Max" rather than show a reserve for a send
-/// that would fail.
-///
-/// `spendable_duffs` MUST be the spendable balance (confirmed + unconfirmed),
-/// never the headline `total` — `total` counts immature coinbase and locked
-/// CoinJoin funds the upstream `CoinSelector` rejects, so reserving against it
-/// over-shoots the selectable set and the broadcast fails.
-pub fn core_max_send_reserve_duffs(
-    spendable_duffs: u64,
-    num_inputs: usize,
-    num_outputs: usize,
-) -> Option<u64> {
-    let max = core_max_send_amount_duffs(spendable_duffs, num_inputs, num_outputs)?;
-    Some(spendable_duffs.saturating_sub(max))
-}
-
 /// Compute the exact shielded fee for a given number of Orchard actions.
 ///
 /// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
@@ -1343,20 +1348,15 @@ pub fn shielded_fee_for_actions(
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
-/// Fee headroom (credits) to reserve from the platform balance when shielding
-/// from it, so a "Max" amount still leaves enough to pay the shield's platform
-/// fee. `ShieldFromBalance` needs the shield fee on top of the shielded amount
-/// out of the same balance, so this must reserve the two-action shielded fee
-/// (scaled by the network multiplier) — not the far smaller plain
-/// platform-transfer estimate. Falls back to `0` if the active protocol version
-/// has no shielded-fee formula (the backend re-validates before dispatch).
-pub fn shield_from_balance_fee_headroom(
-    platform_version: &PlatformVersion,
-    fee_multiplier_permille: u64,
-) -> u64 {
-    let base_fee = shielded_fee_for_actions(2, platform_version).unwrap_or(0);
-    let multiplier = fee_multiplier_permille.max(1000);
-    base_fee.saturating_mul(multiplier) / 1000
+/// Balance (credits) shielding from Platform keeps back for its fee: the
+/// upstream shield planner's versioned reserve, which the fee-paying input
+/// retains unclaimed. The planner derives the Max it accepts from this same
+/// value, so a hint or preview built on it matches what the build does; the
+/// actual fee is lower, and the rest stays on the Platform address. `0` when
+/// the protocol version has no shielded-fee formula (the backend re-validates
+/// before dispatch).
+pub fn shield_from_balance_fee_headroom(platform_version: &PlatformVersion) -> u64 {
+    platform_wallet::shield_fee_reserve_credits(platform_version).unwrap_or(0)
 }
 
 /// How far above the fee multiplier the user saw a document action fee may be
@@ -1690,6 +1690,33 @@ mod tests {
                 None
             );
         }
+    }
+
+    /// A moderation election pays the moderation fund, not the contested
+    /// document fund every other contest pays.
+    #[test]
+    fn document_contest_cap_uses_the_moderation_fund_for_a_moderation_election() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        let pv = PlatformVersion::latest();
+        let contract =
+            load_system_data_contract(SystemDataContract::ModerationCharters, pv).unwrap();
+        let elected_charter = contract.document_type_for_name("electedCharter").unwrap();
+        let document = Document::V0(DocumentV0 {
+            properties: [("targetContractId".to_string(), Value::Identifier([3; 32]))].into(),
+            ..Default::default()
+        });
+        let fund_fees = &pv.fee_version.vote_resolution_fund_fees;
+        assert_ne!(
+            fund_fees.moderation_vote_resolution_fund_required_amount,
+            fund_fees.contested_document_vote_resolution_fund_required_amount
+        );
+        assert_eq!(
+            document_create_contest_fund_cap(elected_charter, &document, pv).unwrap(),
+            Some(fund_fees.moderation_vote_resolution_fund_required_amount)
+        );
     }
 
     #[test]
@@ -2082,6 +2109,31 @@ mod tests {
         }
     }
 
+    /// DPNS from contract version 3 picks the first preorder of a name, and
+    /// Platform admits the name document only with 0.001 DASH held beyond its
+    /// fee for that scan. Earlier contracts need no such reserve.
+    #[test]
+    fn username_name_admission_reserve_follows_the_contract_choose_first_rule() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        for (version, expected) in [(14, 0), (15, 100_000_000)] {
+            let pv = PlatformVersion::get(version).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+            let domain = contract.document_type_for_name("domain").unwrap();
+            assert_eq!(
+                username_name_admission_reserve_credits(domain, pv),
+                expected,
+                "protocol {version}"
+            );
+            let preorder = contract.document_type_for_name("preorder").unwrap();
+            assert_eq!(
+                username_name_admission_reserve_credits(preorder, pv),
+                0,
+                "protocol {version}: the preorder has no chooseFirst lookup"
+            );
+        }
+    }
+
     #[test]
     fn username_registration_estimate_follows_the_fee_multiplier() {
         let base = PlatformFeeEstimator::new().estimate_username_registration(29, false);
@@ -2183,53 +2235,6 @@ mod tests {
                 "estimate {estimate} must cover raw fee {raw_size} for {inputs} inputs"
             );
         }
-    }
-
-    #[test]
-    fn test_core_max_send_amount_subtracts_fee() {
-        // Balance well above the fee: spendable = balance - fee.
-        let balance = 1_000_000_u64;
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-        assert_eq!(
-            core_max_send_amount_duffs(balance, 1, 1),
-            Some(balance - fee)
-        );
-    }
-
-    #[test]
-    fn test_core_max_send_amount_edge_balance_at_or_below_fee() {
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-
-        // Balance exactly equal to the fee: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(fee, 1, 1), None);
-        // Balance below the fee: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(fee - 1, 1, 1), None);
-        // Zero balance: nothing left to send.
-        assert_eq!(core_max_send_amount_duffs(0, 1, 1), None);
-
-        // One duff above the fee: exactly one spendable duff.
-        assert_eq!(core_max_send_amount_duffs(fee + 1, 1, 1), Some(1));
-    }
-
-    #[test]
-    fn test_core_max_send_reserve_complements_send_amount() {
-        // Reserve + send amount must reconstitute the spendable balance, and the
-        // reserve equals the estimated fee whenever a Max exists.
-        let spendable = 1_000_000_u64;
-        let fee = estimate_core_l1_send_fee_duffs(3, 1);
-        let send = core_max_send_amount_duffs(spendable, 3, 1).expect("covers fee");
-        let reserve = core_max_send_reserve_duffs(spendable, 3, 1).expect("covers fee");
-        assert_eq!(send + reserve, spendable);
-        assert_eq!(reserve, fee);
-    }
-
-    #[test]
-    fn test_core_max_send_reserve_none_when_balance_below_fee() {
-        let fee = estimate_core_l1_send_fee_duffs(1, 1);
-        // In lockstep with core_max_send_amount_duffs: no Max → no reserve.
-        assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
-        assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
-        assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
     }
 
     /// What the network takes from a Core wallet funding that is shielded, by
@@ -2361,33 +2366,19 @@ mod tests {
     }
 
     #[test]
-    fn shield_from_balance_headroom_reserves_shielded_fee_not_transfer_fee() {
+    fn shield_from_balance_headroom_is_the_planner_fee_reserve() {
         let platform_version = PlatformVersion::latest();
         let base_fee = shielded_fee_for_actions(2, platform_version).expect("known version");
+        let headroom = shield_from_balance_fee_headroom(platform_version);
 
-        // At the minimum (1000‰) multiplier the headroom equals the base fee.
-        let headroom = shield_from_balance_fee_headroom(platform_version, 1000);
-        assert_eq!(headroom, base_fee);
-
-        // It must reserve the full shielded fee (>50M), an order of magnitude
-        // above the plain platform-transfer estimate — under-reserving here is
-        // what got a Max shield-from-platform rejected upstream.
-        assert!(
-            headroom > 50_000_000,
-            "shield-from-balance headroom must reserve the shielded fee: {headroom}"
+        // The planner keeps twice the two-action minimum fee on its fee-paying
+        // input; reserving less offers a Max the planner refuses.
+        assert_eq!(
+            headroom,
+            platform_wallet::shield_fee_reserve_credits(platform_version).expect("known version")
         );
+        assert_eq!(headroom, base_fee * 2);
         assert!(headroom > PlatformFeeEstimator::new().estimate_credit_transfer());
-
-        // Headroom scales with the multiplier and a sub-1000 multiplier is
-        // clamped up to 1000 so we never under-reserve.
-        assert_eq!(
-            shield_from_balance_fee_headroom(platform_version, 500),
-            base_fee
-        );
-        assert_eq!(
-            shield_from_balance_fee_headroom(platform_version, 2000),
-            base_fee.saturating_mul(2000) / 1000
-        );
     }
 
     #[test]

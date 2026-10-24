@@ -15,7 +15,9 @@ use crate::model::dpns_usernames::{
     UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
     registration_key_status,
 };
-use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
+use crate::model::fee_estimation::{
+    contest_fee_credits, format_credits_as_dash, username_name_admission_reserve_credits,
+};
 use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -89,6 +91,20 @@ struct RegistrationReview {
     needs_vote: bool,
     registration_fee: u64,
     contest_fee: u64,
+    /// Held on the balance while the network checks the name; not charged.
+    admission_reserve: u64,
+}
+
+impl RegistrationReview {
+    /// What the registration charges.
+    fn total(&self) -> u64 {
+        self.registration_fee.saturating_add(self.contest_fee)
+    }
+
+    /// The balance the identity needs before the registration can start.
+    fn required_balance(&self) -> u64 {
+        self.total().saturating_add(self.admission_reserve)
+    }
 }
 
 pub struct RegisterDpnsNameScreen {
@@ -115,6 +131,8 @@ pub struct RegisterDpnsNameScreen {
     /// Label of the availability check in flight. One check runs at a time, so a
     /// failure always belongs to this label.
     check_in_flight: Option<String>,
+    /// The community vote fee the last answered check quoted, by label.
+    contest_fund_quote: Option<(String, u64)>,
 }
 
 impl RegisterDpnsNameScreen {
@@ -137,6 +155,7 @@ impl RegisterDpnsNameScreen {
             registration_context: PendingRequest::default(),
             registration_error_handled: false,
             check_in_flight: None,
+            contest_fund_quote: None,
         };
         screen.reload_identity();
         screen
@@ -236,8 +255,26 @@ impl RegisterDpnsNameScreen {
             .estimate_username_registration(self.label().chars().count(), needs_vote)
     }
 
-    fn contest_fee(&self) -> u64 {
-        contest_fee_credits(self.app_context.sdk_platform_version())
+    /// The community vote fee quoted for the label currently typed, once its
+    /// check has answered. It grows with the requests already in the vote.
+    fn contest_fee(&self) -> Option<u64> {
+        self.contest_fund_quote
+            .as_ref()
+            .filter(|(label, _)| label == self.label())
+            .map(|(_, contest_fund)| *contest_fund)
+    }
+
+    fn admission_reserve(&self) -> u64 {
+        self.app_context
+            .dpns_contract()
+            .document_type_for_name("domain")
+            .map(|domain| {
+                username_name_admission_reserve_credits(
+                    domain,
+                    self.app_context.sdk_platform_version(),
+                )
+            })
+            .unwrap_or(0)
     }
 
     /// Restart the debounce after the typed label changed.
@@ -300,10 +337,11 @@ impl RegisterDpnsNameScreen {
             needs_vote: availability.needs_vote(),
             registration_fee: self.registration_fee(availability.needs_vote()),
             contest_fee: if availability.needs_vote() {
-                self.contest_fee()
+                self.contest_fee()?
             } else {
                 0
             },
+            admission_reserve: self.admission_reserve(),
         })
     }
 
@@ -316,6 +354,7 @@ impl RegisterDpnsNameScreen {
             return;
         };
         let needs_vote = review.needs_vote;
+        let contest_fee = review.contest_fee;
         self.review = Some(review);
         if !needs_vote {
             self.step = Step::Confirm;
@@ -329,7 +368,7 @@ impl RegisterDpnsNameScreen {
             self.label(),
             durations.total,
             durations.join,
-            self.contest_fee(),
+            contest_fee,
         );
         self.consent_dialog = Some(
             ConfirmationDialog::new(
@@ -529,10 +568,14 @@ impl RegisterDpnsNameScreen {
         let Some(identity) = self.selected_qualified_identity.clone() else {
             return action;
         };
+        let total = review.total();
+        let required_balance = review.required_balance();
+        let admission_reserve = review.admission_reserve;
+        let contest_fee_raised =
+            review.contest_fee > contest_fee_credits(self.app_context.sdk_platform_version());
         let name = review.label;
         let needs_vote = review.needs_vote;
         let registration_fee = review.registration_fee;
-        let total = registration_fee.saturating_add(review.contest_fee);
         let balance = identity.identity.balance();
 
         ui.heading("Review and pay");
@@ -583,6 +626,18 @@ impl RegisterDpnsNameScreen {
                     ))
                     .color(DashColors::text_secondary(dark_mode)),
                 );
+                if admission_reserve > 0 {
+                    ui.label(
+                        RichText::new(username_copy::admission_reserve_line(admission_reserve))
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                }
+                if contest_fee_raised {
+                    ui.label(
+                        RichText::new(username_copy::raised_contest_fee_line())
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                }
             });
 
         if self.app_context.user_role().at_least(UserRole::Power) {
@@ -645,7 +700,7 @@ impl RegisterDpnsNameScreen {
             }
         }
 
-        let missing = total.saturating_sub(balance);
+        let missing = required_balance.saturating_sub(balance);
         if missing > 0 {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -803,11 +858,16 @@ impl ScreenLike for RegisterDpnsNameScreen {
             return;
         }
         self.op_overlay.take_and_clear();
-        if let TaskError::UsernameNoLongerAvailable { availability } = error {
+        let refused_as = match error {
+            TaskError::UsernameNoLongerAvailable { availability } => Some(*availability),
+            TaskError::UsernameContestFull { .. } => Some(UsernameAvailability::ContestFull),
+            _ => None,
+        };
+        if let Some(availability) = refused_as {
             self.step = Step::Choose;
             self.availability = Availability::Row {
                 label: self.label().to_owned(),
-                row: AvailabilityRow::Known(*availability),
+                row: AvailabilityRow::Known(availability),
             };
             self.registration_error_handled = true;
         } else if matches!(
@@ -869,12 +929,14 @@ impl ScreenLike for RegisterDpnsNameScreen {
             BackendTaskSuccessResult::UsernameAvailability {
                 label,
                 availability,
+                contest_fund,
             } => {
                 if self.check_in_flight.as_ref() == Some(&label) {
                     self.check_in_flight = None;
                 }
                 if matches!(&self.availability, Availability::Row { label: current, .. } if *current == label)
                 {
+                    self.contest_fund_quote = Some((label.clone(), contest_fund));
                     self.availability = Availability::Row {
                         label,
                         row: AvailabilityRow::Known(availability),
@@ -1011,6 +1073,33 @@ mod tests {
         assert!(screen.op_overlay.is_none());
     }
 
+    /// A vote that filled up before Pay landed sends the screen back to the
+    /// name, showing it as full instead of a separate error banner.
+    #[test]
+    fn a_vote_full_at_pay_time_is_shown_on_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        let context = BackendTaskContext::for_dispatch(&BackendTask::ContestedResourceTask(
+            crate::backend_task::contested_names::ContestedResourceTask::QueryDPNSContests,
+        ));
+        screen.registration_context.track(context.clone());
+        screen.name_input = "alice".to_owned();
+        screen.step = Step::Submitting;
+        screen.raise_progress_overlay(ctx.egui_ctx());
+        let error = TaskError::UsernameContestFull {
+            max_contenders: 1_000,
+        };
+        screen.display_backend_task_error(&context, &error);
+        assert!(screen.display_task_error(&error), "no separate banner");
+        assert_eq!(screen.step, Step::Choose);
+        assert_eq!(
+            screen.current_availability(),
+            Some(UsernameAvailability::ContestFull)
+        );
+        assert!(screen.op_overlay.is_none());
+    }
+
     /// The page keeps a snapshot of the identity. A wallet imported while it is
     /// open must lift the refusal: the snapshot is read again before refusing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1121,10 +1210,12 @@ mod tests {
         );
     }
 
-    /// USR-TC-035: on a protocol 14 network the confirm step charges the
-    /// 0.1 DASH community vote fee and adds it to the registration fee.
+    /// USR-TC-035: the confirm step charges the community vote fee the
+    /// availability check quoted for the typed name: the 0.1 DASH base on a
+    /// protocol 14 network, or a doubled fund once the vote holds 250
+    /// requests. Nothing is offered before the quote arrives.
     #[test]
-    fn confirm_fees_follow_the_network_protocol_version() {
+    fn confirm_charges_the_quoted_community_vote_fee() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
         let pv14 = dash_sdk::dpp::version::PlatformVersion::get(14).expect("PV14");
@@ -1134,8 +1225,85 @@ mod tests {
                 .build()
                 .expect("mock sdk"),
         ));
-        let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
-        assert_eq!(screen.contest_fee(), 10_000_000_000);
-        assert_eq!(format_credits_as_dash(screen.contest_fee()), "0.1 DASH");
+        let base = contest_fee_credits(pv14);
+        assert_eq!(format_credits_as_dash(base), "0.1 DASH");
+        let mut screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+        screen.selected_qualified_identity = Some(
+            crate::context::test_support::user_identity_with_signing_key(
+                [1; 32].into(),
+                ctx.network,
+                false,
+            ),
+        );
+        screen.name_input = "alice".to_owned();
+        let checking = || Availability::Row {
+            label: "alice".to_owned(),
+            row: AvailabilityRow::Checking,
+        };
+        let joinable = UsernameAvailability::Joinable {
+            contenders: 251,
+            join_end: u64::MAX,
+        };
+        screen.availability = Availability::Row {
+            label: "alice".to_owned(),
+            row: AvailabilityRow::Known(joinable),
+        };
+        assert_eq!(screen.payment_review(), None, "no quote yet");
+
+        for contest_fund in [base, base * 2] {
+            screen.availability = checking();
+            screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {
+                label: "alice".to_owned(),
+                availability: joinable,
+                contest_fund,
+            });
+            let review = screen
+                .payment_review()
+                .expect("a joinable name can be reviewed");
+            assert_eq!(review.contest_fee, contest_fund);
+            assert_eq!(review.total(), review.registration_fee + contest_fund);
+        }
+
+        screen.name_input = "alicia".to_owned();
+        assert_eq!(
+            screen.contest_fee(),
+            None,
+            "a quote is for its own name only"
+        );
+    }
+
+    /// A DPNS contract that picks the first preorder of a name makes the
+    /// network hold 0.001 DASH beyond the fees before it accepts the name, so
+    /// the confirm step asks for that much more than it charges.
+    #[test]
+    fn confirm_requires_the_name_admission_reserve_beyond_the_charge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        for (version, reserve) in [(14, 0), (15, 100_000_000)] {
+            let pv = dash_sdk::dpp::version::PlatformVersion::get(version).expect("version");
+            ctx.sdk.store(Arc::new(
+                dash_sdk::SdkBuilder::new_mock()
+                    .with_version(pv)
+                    .build()
+                    .expect("mock sdk"),
+            ));
+            let screen = RegisterDpnsNameScreen::new(&ctx, RegisterDpnsNameSource::Identities);
+            assert_eq!(screen.admission_reserve(), reserve, "protocol {version}");
+            let review = RegistrationReview {
+                label: "alice-123".to_owned(),
+                identity_id: dash_sdk::platform::Identifier::from([7; 32]),
+                network: ctx.network,
+                needs_vote: false,
+                registration_fee: 90_000_000,
+                contest_fee: 0,
+                admission_reserve: screen.admission_reserve(),
+            };
+            assert_eq!(review.total(), 90_000_000, "protocol {version}");
+            assert_eq!(
+                review.required_balance(),
+                90_000_000 + reserve,
+                "protocol {version}"
+            );
+        }
     }
 }

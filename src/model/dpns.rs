@@ -17,7 +17,7 @@ use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
-use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::version::{FeatureVersion, PlatformVersion};
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
 
 /// The immediate result of submitting a DPNS registration document.
@@ -39,16 +39,7 @@ pub fn classify_dpns_registration_outcome(
     label: &str,
     platform_version: &PlatformVersion,
 ) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
-    let text = |value: &str| Value::Text(value.to_string());
-    let properties = BTreeMap::from([
-        ("label".to_string(), text(strip_dash_suffix(label))),
-        (
-            "normalizedLabel".to_string(),
-            text(&normalize_dpns_label(label)),
-        ),
-        ("parentDomainName".to_string(), text("dash")),
-        ("normalizedParentDomainName".to_string(), text("dash")),
-    ]);
+    let properties = dpns_name_fields(label);
     match document_type
         .contested_vote_poll_for_document_properties(&properties, platform_version)
         .map_err(Box::new)?
@@ -58,6 +49,51 @@ pub fn classify_dpns_registration_outcome(
         }
         None => Ok(DpnsRegistrationOutcome::Registered),
     }
+}
+
+/// The name fields a `domain` document for `label` carries: the ones a
+/// contest on the name is decided by.
+fn dpns_name_fields(label: &str) -> BTreeMap<String, Value> {
+    let text = |value: &str| Value::Text(value.to_string());
+    BTreeMap::from([
+        ("label".to_string(), text(strip_dash_suffix(label))),
+        (
+            "normalizedLabel".to_string(),
+            text(&normalize_dpns_label(label)),
+        ),
+        ("parentDomainName".to_string(), text("dash")),
+        ("normalizedParentDomainName".to_string(), text("dash")),
+    ])
+}
+
+/// The most requests a username vote accepts at `platform_version`, or
+/// `None` while the network accepts any number.
+///
+/// Platform counts a contest's requests from the document-create state
+/// validation that introduced the cap (protocol 14); earlier validation never
+/// reads it, though the limit tables carry it.
+pub fn username_contest_max_contenders(platform_version: &PlatformVersion) -> Option<u16> {
+    /// The document-create state validation that counts a contest's requests.
+    const CONTENDER_COUNTING_CREATE_VALIDATION: FeatureVersion = 2;
+    let create_validation = platform_version
+        .drive_abci
+        .validation_and_processing
+        .state_transitions
+        .batch_state_transition
+        .document_create_transition_state_validation;
+    (create_validation >= CONTENDER_COUNTING_CREATE_VALIDATION)
+        .then_some(platform_version.system_limits.max_contenders_per_contest)
+}
+
+/// Whether the fund to join a username vote at `platform_version` grows with
+/// the requests it already holds. Before protocol 14 every request pays the
+/// base fund, however many came first.
+pub fn username_contest_fund_depends_on_contenders(platform_version: &PlatformVersion) -> bool {
+    platform_version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_contenders_per_fund_doubling
+        != 0
 }
 
 /// How long a DPNS name contest runs and how long others may join it.
@@ -337,6 +373,38 @@ mod tests {
                 outcome_for(label) == DpnsRegistrationOutcome::PendingCommunityVote,
                 is_contested_label(label),
                 "{label}"
+            );
+        }
+    }
+
+    /// The cap follows the network's own validation: none before protocol
+    /// 14, whose validation never counts requests; the limit table's value
+    /// from then on.
+    #[test]
+    fn username_contest_cap_follows_the_create_validation() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert_eq!(username_contest_max_contenders(pv13), None);
+        for version in [14, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("version");
+            assert_eq!(
+                username_contest_max_contenders(pv),
+                Some(pv.system_limits.max_contenders_per_contest),
+                "protocol {version}"
+            );
+        }
+    }
+
+    /// The fund to join a vote is flat before protocol 14 and grows with
+    /// the requests from then on.
+    #[test]
+    fn username_contest_fund_grows_with_requests_from_protocol_14() {
+        let pv13 = PlatformVersion::get(13).expect("PV13");
+        assert!(!username_contest_fund_depends_on_contenders(pv13));
+        for version in [14, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("version");
+            assert!(
+                username_contest_fund_depends_on_contenders(pv),
+                "protocol {version}"
             );
         }
     }

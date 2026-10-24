@@ -146,7 +146,13 @@ impl AppContext {
                 // only supplies the wallet's address→path index for signing.
                 let path_index = self.platform_path_index(&seed_hash)?;
                 backend
-                    .shield_from_balance(&seed_hash, &path_index, 0, 0, amount)
+                    .shield_from_balance(
+                        &seed_hash,
+                        &path_index,
+                        0,
+                        crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
+                        amount,
+                    )
                     .await?;
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;

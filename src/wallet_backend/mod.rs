@@ -62,6 +62,7 @@ pub mod single_key;
 pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
+mod spend_activity;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
@@ -312,6 +313,10 @@ impl StartLatch {
 /// always operated account 0; multi-account support is out of P2 scope.
 const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 
+/// The Platform Payment account shielding from Platform draws on. Its Max is
+/// quoted against the same account.
+pub(crate) const SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT: u32 = 0;
+
 /// Number of times [`WalletBackend::resolve_registered_wallet`] re-probes the
 /// upstream wallet manager before concluding a wallet is genuinely absent.
 /// Tolerates the brief window where a concurrent registration has created the
@@ -501,6 +506,9 @@ struct Inner {
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
     task_result_sender: SenderAsync<TaskResult>,
+    /// Operations that can take or release Core input reservations; keys the
+    /// Max quotes. See [`spend_activity`].
+    spend_activity: Arc<spend_activity::SpendActivity>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -724,6 +732,7 @@ impl WalletBackend {
                 start_latch: StartLatch::default(),
                 coordinator_gate,
                 task_result_sender,
+                spend_activity: Arc::default(),
             }),
         };
 
@@ -2892,7 +2901,35 @@ impl WalletBackend {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> (u64, AssetLockInputState, u64) {
-        self.inner.snapshots.asset_lock_probe_snapshot(seed_hash)
+        let (generation, inputs, revision) =
+            self.inner.snapshots.asset_lock_probe_snapshot(seed_hash);
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
+        (generation, inputs.with_spend_key(spend_key), revision)
+    }
+
+    /// The revision a Core send Max quote is made against: the published
+    /// wallet state and the operations that can move its reservations.
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        let generation = self.inner.snapshots.asset_lock_probe_snapshot(seed_hash).0;
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
+        generation ^ spend_key.rotate_left(32)
+    }
+
+    /// The key a Max quote made now for `seed_hash` is valid under, or
+    /// [`TaskError::SpendInProgress`] while an operation that can reserve its
+    /// Core inputs is open.
+    fn spend_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        let state = self.inner.spend_activity.quote_state(seed_hash);
+        if state.busy {
+            return Err(TaskError::SpendInProgress);
+        }
+        Ok(state.key)
+    }
+
+    /// Mark an operation that can take or release Core input reservations
+    /// on `seed_hash` for as long as the returned guard lives.
+    fn begin_core_spend(&self, seed_hash: &WalletSeedHash) -> spend_activity::SpendGuard {
+        self.inner.spend_activity.begin(seed_hash)
     }
 
     /// Full transaction history for the wallet (event-sourced).
@@ -3285,6 +3322,36 @@ fn bip44_account0_xpub<'a>(
         .map(|a| a.account_xpub)
 }
 
+/// Classify upstream's refusal to shield more than the Platform addresses can
+/// fund, stating the planner's own maximum from `preflight` — a plan taken
+/// after the refusal, since the refusal's `available` is the usable balance
+/// with the fee reserve still in it, or the whole account balance when no
+/// address can keep the reserve back. Without a plan there is no trustworthy
+/// maximum, so the refusal keeps the generic envelope; with a plan that can
+/// shield nothing, there is no Max to point to. Pure — unit-testable.
+fn shield_capacity_exceeded_error(
+    source: platform_wallet::error::PlatformWalletError,
+    preflight: Result<
+        platform_wallet::ShieldedShieldPreflight,
+        platform_wallet::error::PlatformWalletError,
+    >,
+) -> TaskError {
+    match preflight {
+        Ok(preflight) if preflight.can_shield && preflight.max_shieldable_credits > 0 => {
+            TaskError::ShieldFromPlatformCapacityExceeded {
+                max_shieldable: preflight.max_shieldable_credits,
+                source: Box::new(source),
+            }
+        }
+        Ok(_) => TaskError::ShieldFromPlatformNothingShieldable {
+            source: Box::new(source),
+        },
+        Err(_) => TaskError::WalletBackend {
+            source: Arc::new(source),
+        },
+    }
+}
+
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
 /// [`TaskError`] variant.
 ///
@@ -3331,6 +3398,14 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     // Exhaustive match — no `_` arm.
     match e {
         P::ShieldedNotBound => TaskError::ShieldedNotBound,
+
+        // Only shielding from Platform raises this, and
+        // `WalletBackend::shield_from_balance` intercepts it first through
+        // [`shield_capacity_exceeded_error`]: its `available` is a gross
+        // balance, not a maximum the user can act on.
+        other @ P::PlatformShieldCapacityExceeded { .. } => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
 
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
         other @ (P::FinalityTimeout(_)
@@ -3452,7 +3527,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
-        | P::PlatformShieldCapacityExceeded { .. }
         | P::CorePooledInsufficientFunds { .. }
         | P::InsufficientIdentityCredits { .. }
         | P::IdentityDiscoveryIncomplete { .. }
@@ -4653,6 +4727,113 @@ mod tests {
             decoded.account_xpub.encode(),
             a.encode(),
             "bincode round-trip must preserve the account xpub encoding"
+        );
+    }
+
+    fn shield_preflight(
+        usable_balance_credits: u64,
+        fee_reserve_credits: u64,
+    ) -> platform_wallet::ShieldedShieldPreflight {
+        let max_shieldable_credits = usable_balance_credits.saturating_sub(fee_reserve_credits);
+        platform_wallet::ShieldedShieldPreflight {
+            can_shield: max_shieldable_credits > 0,
+            account_balance_credits: usable_balance_credits,
+            usable_balance_credits,
+            fee_reserve_credits,
+            max_shieldable_credits,
+            reason: None,
+        }
+    }
+
+    /// Upstream's capacity refusal reports the usable balance, which still
+    /// holds the fee reserve. The user is shown the planner's own maximum.
+    #[test]
+    fn a_shield_above_capacity_states_the_planner_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const USABLE: u64 = 300_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: USABLE,
+                required: USABLE + RESERVE,
+            },
+            Ok(shield_preflight(USABLE, RESERVE)),
+        );
+
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformCapacityExceeded {
+                    max_shieldable,
+                    ..
+                } if max_shieldable == USABLE - RESERVE
+            ),
+            "{mapped:?}"
+        );
+        let message = mapped.to_string();
+        assert!(
+            message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE - RESERVE
+            )),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&crate::model::fee_estimation::format_credits_as_dash(
+                USABLE
+            )),
+            "{message}"
+        );
+    }
+
+    /// When no address can keep the fee reserve back, upstream reports the
+    /// whole account balance, but nothing at all can be shielded — so the
+    /// message says so instead of pointing at a Max of zero.
+    #[test]
+    fn a_shield_with_no_fee_bearing_address_says_nothing_can_be_shielded() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const BALANCE: u64 = 50_000_000_000;
+        const RESERVE: u64 = 100_000_000_000;
+        let mut preflight = shield_preflight(0, RESERVE);
+        preflight.account_balance_credits = BALANCE;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: BALANCE,
+                required: 1 + RESERVE,
+            },
+            Ok(preflight),
+        );
+
+        assert!(
+            matches!(
+                mapped,
+                TaskError::ShieldFromPlatformNothingShieldable { .. }
+            ),
+            "{mapped:?}"
+        );
+        let message = mapped.to_string();
+        assert!(!message.contains("Max"), "{message}");
+        assert!(message.contains("nothing can be shielded"), "{message}");
+    }
+
+    /// Without a fresh plan there is no trustworthy maximum to state, so the
+    /// refusal falls back to the generic wallet envelope rather than a guess.
+    #[test]
+    fn a_shield_capacity_refusal_without_a_plan_states_no_maximum() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let mapped = shield_capacity_exceeded_error(
+            P::PlatformShieldCapacityExceeded {
+                available: 7,
+                required: 9,
+            },
+            Err(P::ShieldedNotBound),
+        );
+
+        assert!(
+            matches!(mapped, TaskError::WalletBackend { .. }),
+            "{mapped:?}"
         );
     }
 

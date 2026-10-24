@@ -307,6 +307,9 @@ impl WalletBackend {
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
+        let _spend = self.begin_core_spend(seed_hash);
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -319,6 +322,9 @@ impl WalletBackend {
                     .expose_hd_seed()
                     .ok_or(TaskError::WalletStateInconsistent)?;
                 self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
+                    .await?;
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
@@ -674,6 +680,9 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let identity_id = identity.id();
+        let _spend = self.begin_core_spend(seed_hash);
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -691,6 +700,9 @@ impl WalletBackend {
                 // immediate-top-up race the reconcile subtask can lose.
                 // Seed-free and idempotent.
                 self.ensure_identity_managed(seed_hash, identity, identity_index)
+                    .await?;
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
@@ -777,6 +789,9 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
+        let _spend = self.begin_core_spend(seed_hash);
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -785,6 +800,9 @@ impl WalletBackend {
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let address_signer =
                     DetPlatformSigner::from_held(seed, self.inner.network, path_index);
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;

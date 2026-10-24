@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, SecretPlaintext, WalletBackend,
-    map_shielded_op_error,
+    map_shielded_op_error, shield_capacity_exceeded_error,
 };
 
 /// Borrow the 64-byte HD seed from a resolved secret session for a shielded
@@ -158,10 +158,16 @@ impl WalletBackend {
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        let _spend = self.begin_core_spend(seed_hash);
+        self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+            .await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // The wallet may have changed during the prompt.
+                self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -204,6 +210,26 @@ impl WalletBackend {
         amount: u64,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        // The planner's verdict, before any prompt: an amount above its
+        // maximum is refused with the maximum it can shield. A failed read
+        // leaves the verdict to the planner inside the build.
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        if let Ok(preflight) = wallet.shielded_shield_preflight(payment_account).await {
+            let max_shieldable = if preflight.can_shield {
+                preflight.max_shieldable_credits
+            } else {
+                0
+            };
+            if amount > max_shieldable {
+                // The refusal the planner itself would give for this amount.
+                let source =
+                    platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                        available: preflight.usable_balance_credits,
+                        required: amount.saturating_add(preflight.fee_reserve_credits),
+                    };
+                return Err(shield_capacity_exceeded_error(source, Ok(preflight)));
+            }
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -213,7 +239,7 @@ impl WalletBackend {
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
+                match wallet
                     .shielded_shield_from_account(
                         &coordinator,
                         shielded_account,
@@ -223,7 +249,20 @@ impl WalletBackend {
                         &prover,
                     )
                     .await
-                    .map_err(map_shielded_op_error)
+                {
+                    Ok(()) => Ok(()),
+                    // The refusal's own figure includes the fee reserve; a
+                    // fresh plan states the maximum the user can act on.
+                    Err(
+                        source @ platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                            ..
+                        },
+                    ) => Err(shield_capacity_exceeded_error(
+                        source,
+                        wallet.shielded_shield_preflight(payment_account).await,
+                    )),
+                    Err(source) => Err(map_shielded_op_error(source)),
+                }
             })
             .await
     }

@@ -2415,6 +2415,44 @@ mod tests {
         assert!(lock.amount_duffs > 0, "{}", lock.amount_duffs);
     }
 
+    /// Busy withholds only the Max quotes: an explicit amount started while
+    /// another reserving operation is open still gets the reservation-aware
+    /// dry run, not `SpendInProgress`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_explicit_amount_is_checked_while_a_reserving_operation_is_in_flight() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x74,
+            &[1_000_000],
+        )
+        .await;
+        let _other_operation = backend.begin_core_spend(&seed_hash);
+
+        backend
+            .ensure_asset_lock_amount_within_input_cap(&seed_hash, 500_000)
+            .await
+            .expect("an affordable explicit asset lock passes");
+        backend
+            .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), 500_000)])
+            .await
+            .expect("an affordable explicit payment passes");
+        let short = backend
+            .ensure_asset_lock_amount_within_input_cap(&seed_hash, 5_000_000)
+            .await;
+        assert!(
+            matches!(short, Err(TaskError::InsufficientFunds { .. })),
+            "{short:?}"
+        );
+    }
+
     /// A P2SH output is two bytes smaller than a P2PKH one, so the payment
     /// to a P2SH address can be larger by that much fee. Its Max is quoted
     /// for that script and is exactly the largest amount the build accepts.

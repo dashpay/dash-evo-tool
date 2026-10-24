@@ -216,13 +216,13 @@ impl AddNewIdentityScreen {
                 }
                 return action;
             };
-            let busy = self.asset_lock_balance.is_busy(&seed_hash);
             let failed = self.asset_lock_balance.is_failed(&seed_hash);
             let loading = self.asset_lock_quote_is_loading(&seed_hash);
-            if busy || failed || loading {
-                ui.label(if busy {
-                    crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE
-                } else if failed {
+            if self.asset_lock_balance.is_busy(&seed_hash) {
+                // Only Max is withheld: the form stays usable for an explicit amount.
+                ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+            } else if failed || loading {
+                ui.label(if failed {
                     "The available amount could not be checked."
                 } else {
                     "Checking the available amount…"

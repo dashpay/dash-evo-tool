@@ -8,10 +8,7 @@ use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipient};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
-    validate_asset_lock_amount,
-};
+use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, estimate_address_funding_fee_from_transition,
@@ -34,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
+use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, asset_lock_amount_refusal};
 use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
@@ -859,6 +856,20 @@ impl WalletSendScreen {
             .unwrap_or(0)
     }
 
+    /// The builder ceiling an explicit asset-lock amount is checked against:
+    /// `None` while another transaction from the wallet is in progress, when
+    /// only Max is withheld and the backend decides the amount.
+    fn asset_lock_validation_ceiling(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<u64>, String> {
+        match self.asset_lock_max_amount(seed_hash) {
+            Ok(ceiling) => Ok(Some(ceiling)),
+            Err(_) if self.asset_lock_balance.is_busy(seed_hash) => Ok(None),
+            Err(message) => Err(message),
+        }
+    }
+
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
         let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
         self.asset_lock_balance
@@ -1362,28 +1373,14 @@ impl WalletSendScreen {
             &destination,
         )
         .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             platform_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Platform),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
@@ -2116,20 +2113,11 @@ impl WalletSendScreen {
                 }
                 .to_string()
             })?;
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) =
+            asset_lock_amount_refusal(amount_duffs, asset_lock_max, platform_fee_duffs, None)
         {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
+            return Err(message);
         }
 
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -2156,28 +2144,14 @@ impl WalletSendScreen {
             .fee_estimator()
             .estimate_identity_topup()
             .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             identity_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Identity),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, identity_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         // Resolve identity from destination
@@ -6974,6 +6948,51 @@ mod tests {
                 }))
             ),
             "a P2PKH destination needs its own quote"
+        );
+    }
+
+    /// Busy withholds only Max: an explicit asset-lock amount still reaches
+    /// the backend, whose reservation-aware dry run and the build decide it.
+    #[test]
+    fn an_explicit_asset_lock_amount_is_sent_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(0.5));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(
+            task @ BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                snapshot_generation,
+                request_id,
+                ..
+            }),
+        ) = screen.request_asset_lock_max_amount()
+        else {
+            panic!("the asset-lock form must ask for the builder ceiling");
+        };
+        let _ = task;
+        screen.asset_lock_balance.mark_request_error(
+            &seed_hash,
+            snapshot_generation,
+            request_id,
+            &TaskError::SpendInProgress,
+        );
+
+        let action = screen.send_core_to_shielded(seed_hash);
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
+                        amount_duffs: 50_000_000,
+                        ..
+                    }
+                )))
+            ),
+            "an explicit amount must reach the backend: {action:?}"
         );
     }
 

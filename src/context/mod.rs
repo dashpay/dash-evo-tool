@@ -164,6 +164,15 @@ impl DpnsVoteDispatchCoordinator {
     }
 }
 
+/// What epoch adoption is keyed on. See [`AppContext::adopt_epoch`].
+#[derive(Debug, Default)]
+struct EpochAdoption {
+    /// The connection generation, bumped by every rebuild.
+    generation: u64,
+    /// The index of the last adopted proved epoch on this generation.
+    epoch_index: Option<EpochIndex>,
+}
+
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
@@ -318,9 +327,9 @@ pub struct AppContext {
     /// Updated alongside fee_multiplier when epoch info is fetched.
     /// 0 means not yet fetched from the network.
     platform_protocol_version: AtomicU32,
-    /// The index of the last proved epoch whose fee multiplier and protocol
-    /// version were adopted; `None` until one is. See [`Self::adopt_epoch`].
-    adopted_epoch_index: Mutex<Option<EpochIndex>>,
+    /// The connection generation and the last adopted proved epoch. See
+    /// [`Self::adopt_epoch`] and [`Self::reset_connection_state`].
+    epoch_adoption: Mutex<EpochAdoption>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -540,7 +549,7 @@ impl AppContext {
         };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(address_list, network, spv_provider.clone(), 0) {
+        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
             Ok(sdk) => sdk,
             Err(e) => {
                 tracing::error!("Failed to initialize SDK: {e}");
@@ -646,7 +655,7 @@ impl AppContext {
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
             platform_protocol_version: AtomicU32::new(0),
-            adopted_epoch_index: Mutex::new(None),
+            epoch_adoption: Mutex::new(EpochAdoption::default()),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1183,45 +1192,106 @@ impl AppContext {
         }
     }
 
-    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
-    /// updated `NetworkConfig` from `self.config`.
+    /// The generation of the connection to the network: bumped each time the
+    /// connection is rebuilt. An epoch read captures it before it is sent, so
+    /// [`Self::adopt_epoch`] can drop a read the old connection answered.
+    pub(crate) fn connection_generation(&self) -> u64 {
+        self.epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+    }
+
     /// Adopt the fee multiplier and protocol version of the proved epoch
-    /// `epoch_index`, unless an epoch newer than it was adopted already.
-    /// Returns whether it was adopted.
+    /// `epoch_index`, read on connection `generation`. Returns whether it was
+    /// adopted.
     ///
-    /// Epoch reads run concurrently (platform info, fee refusals) and can
-    /// finish out of order, so a late, older epoch is ignored. The protocol
-    /// version only moves up. The lock covers the comparison and both stores,
-    /// so two adoptions cannot interleave; nothing is awaited under it.
+    /// Dropped when the connection was rebuilt since the read was sent, or
+    /// when an epoch newer than it was adopted already: epoch reads run
+    /// concurrently (platform info, fee refusals) and can finish out of
+    /// order. The protocol version only moves up. The lock covers the checks
+    /// and both stores, so an adoption and a rebuild cannot interleave;
+    /// nothing is awaited under it.
     pub(crate) fn adopt_epoch(
         &self,
+        generation: u64,
         epoch_index: EpochIndex,
         fee_multiplier_permille: u64,
         protocol_version: u32,
     ) -> bool {
-        let mut adopted = self
-            .adopted_epoch_index
+        let mut adoption = self
+            .epoch_adoption
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if adopted.is_some_and(|adopted| epoch_index < adopted) {
+        if generation != adoption.generation
+            || adoption
+                .epoch_index
+                .is_some_and(|adopted| epoch_index < adopted)
+        {
             return false;
         }
-        *adopted = Some(epoch_index);
+        adoption.epoch_index = Some(epoch_index);
         self.set_fee_multiplier_permille(fee_multiplier_permille);
         self.raise_platform_protocol_version(protocol_version);
         true
     }
 
-    /// Forget which epoch was adopted, so the next proved epoch is adopted
-    /// whatever its index: the connection was rebuilt and may reach a network
-    /// whose epochs restarted (a reset devnet).
-    pub(crate) fn forget_adopted_epoch(&self) {
-        *self
-            .adopted_epoch_index
+    /// Raise the protocol version to `protocol_version`, proved on connection
+    /// `generation`; dropped if the connection was rebuilt since. Returns
+    /// whether it was applied.
+    pub(crate) fn raise_platform_protocol_version_on(
+        &self,
+        generation: u64,
+        protocol_version: u32,
+    ) -> bool {
+        let adoption = self
+            .epoch_adoption
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation != adoption.generation {
+            return false;
+        }
+        self.raise_platform_protocol_version(protocol_version);
+        true
     }
 
+    /// Forget everything learned from the connection being replaced: bump the
+    /// generation, so reads still in flight on it are dropped, forget the
+    /// adopted epoch, and put the protocol version back to unknown and the
+    /// fee multiplier to the default. The new endpoints may serve another
+    /// protocol version or a reset devnet; capabilities stay closed until the
+    /// new connection proves its epoch.
+    pub(crate) fn reset_connection_state(&self) {
+        let mut adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adoption.generation += 1;
+        adoption.epoch_index = None;
+        self.set_fee_multiplier_permille(PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE);
+        self.set_platform_protocol_version(0);
+    }
+
+    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
+    /// the new connection's epoch, so its protocol version and fee multiplier
+    /// are known again. A failed epoch read only leaves them unknown until
+    /// the next one; it does not fail the rebuild.
+    pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
+        Arc::clone(self).reinit_core_client_and_sdk()?;
+        let sdk = self.sdk.load_full();
+        if let Err(error) = self.refresh_current_epoch(&sdk).await {
+            tracing::warn!(
+                %error,
+                "Could not read the current epoch after rebuilding the connection; \
+                 protocol features stay closed until the next read"
+            );
+        }
+        Ok(())
+    }
+
+    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+    /// updated `NetworkConfig` from `self.config`, and forget the state
+    /// learned from the old connection ([`Self::reset_connection_state`]).
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
@@ -1254,25 +1324,21 @@ impl AppContext {
         };
 
         let provider = self.spv_context_provider.read()?.clone();
-        // Carry the version the current SDK reached, so the replacement does
-        // not build at the network minimum until its first proven response.
-        let carried_protocol_version = self.sdk.load().protocol_version_number();
-        let new_sdk = initialize_sdk(
-            address_list,
-            self.network,
-            provider,
-            carried_protocol_version,
-        )
-        .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        // Like a cold start: the network minimum, raised by the new
+        // connection's first proven response. Nothing learned from the old
+        // endpoints is carried over.
+        let new_sdk = initialize_sdk(address_list, self.network, provider)
+            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
 
         // 4. Swap in the new SDK and client
         {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
         }
+        // Swapped before the reset: a read that sees the new generation then
+        // also sees the new SDK.
         self.sdk.store(Arc::new(new_sdk));
-        // The new endpoints may reach a network whose epochs restarted.
-        self.forget_adopted_epoch();
+        self.reset_connection_state();
 
         // Rebind the provider to hold the new AppContext reference.
         // bind_app_context also registers the provider with the SDK.

@@ -1508,7 +1508,7 @@ impl AppContext {
                 Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
-                Arc::clone(self).reinit_core_client_and_sdk()?;
+                self.rebuild_connection().await?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {

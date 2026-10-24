@@ -901,7 +901,7 @@ impl WalletSendScreen {
             (SourceSelection::CoreWallet, AddressKind::Core) => Some((
                 seed_hash,
                 SpendLimitKind::CoreSend,
-                self.app_context.asset_lock_probe_snapshot(&seed_hash).0,
+                self.app_context.core_send_quote_revision(&seed_hash),
             )),
             _ => None,
         }

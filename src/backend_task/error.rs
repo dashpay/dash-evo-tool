@@ -2622,6 +2622,18 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// A key limits update was accepted on the network and the updated key
+    /// is stored on this device, but the identity's balance after the fee
+    /// could not be read. The stored balance is the one before the update.
+    /// `source` is `None` when Platform reported no balance for the identity.
+    #[error(
+        "The key's new limits are set, but the identity's new balance could not be read. Refresh the identity to see its balance."
+    )]
+    KeyLimitsRaisedButBalanceNotRefreshed {
+        #[source]
+        source: Option<Box<TaskError>>,
+    },
+
     /// Platform refused a key whose expiry is not in the future.
     #[error(
         "The key's expiry is already in the past, so the network refused the change. Choose a later expiry, then try again."

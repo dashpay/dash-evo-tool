@@ -473,6 +473,12 @@ impl WalletSendScreen {
                 ui,
                 format!("Auto: no single balance in {wallet} covers {amount} plus the fee."),
             ),
+            Some(AutoSource::NoFunds) if self.route.auto_busy => status_line(
+                ui,
+                format!(
+                    "Auto: another transaction from {wallet} is still in progress. Wait for it to finish, or choose a balance under Pay from."
+                ),
+            ),
             Some(AutoSource::NoFunds) if foreign_private => status_line(
                 ui,
                 "Auto: only your private balance can pay a private address, and it holds nothing.",
@@ -1315,6 +1321,10 @@ impl WalletSendScreen {
                 );
                 None
             }
+            Some(AmountProblem::NoFunds) if self.route.auto_busy => {
+                inline_warning(ui, crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+                None
+            }
             Some(AmountProblem::NoFunds) if self.paying_identities().is_empty() => {
                 inline_warning(
                     ui,
@@ -1656,6 +1666,7 @@ impl WalletSendScreen {
         if self.route.refusal.is_some() || self.selected_source.is_none() {
             return Some(match self.route.auto {
                 Some(AutoSource::Checking { .. }) => "Checking the available amount…",
+                Some(AutoSource::NoFunds) if self.route.auto_busy => "Fix the highlighted field.",
                 Some(AutoSource::NoFunds) => "Add funds to this wallet first.",
                 _ => "Fix the highlighted field.",
             });

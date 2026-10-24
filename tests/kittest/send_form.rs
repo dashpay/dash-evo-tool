@@ -667,3 +667,58 @@ fn w8_summary_details_say_the_addresses_are_paid_from() {
         );
     });
 }
+
+const SPEND_IN_PROGRESS: &str = "Another transaction from this wallet is still in progress.";
+
+#[test]
+fn a_busy_core_source_withholds_only_max() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            0.5,
+        );
+        fixture.screen.mark_core_send_busy_for_test();
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label_contains("Core ·").click();
+        harness.run();
+
+        assert!(has(&harness, SPEND_IN_PROGRESS), "the form says why");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none()
+        );
+
+        harness.get_by_label("Max").click();
+        harness.run();
+
+        assert!(
+            !has(&harness, "Checking the available amount…"),
+            "a busy wallet is not a pending quote"
+        );
+        assert!(!has(&harness, "Enter an amount."), "the typed amount stays");
+        assert!(
+            send_responds(&mut harness),
+            "an explicit amount is not blocked"
+        );
+    });
+}
+
+#[test]
+fn auto_passes_over_a_busy_core_source() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            1.0,
+        );
+        fixture.screen.mark_core_send_busy_for_test();
+        let (harness, _) = harness(fixture.screen, 900.0);
+
+        assert!(!has(&harness, "Auto: checking balances…"));
+        assert!(has(&harness, "Auto: paying from Platform"));
+    });
+}

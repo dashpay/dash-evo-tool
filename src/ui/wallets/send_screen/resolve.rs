@@ -18,6 +18,9 @@ pub(super) enum QuoteState {
     Ready,
     Pending,
     Failed,
+    /// Another transaction from the wallet is in progress: no Max is
+    /// offered until it finishes, and nothing is asked again meanwhile.
+    Busy,
 }
 
 /// What the Amount field may offer for one source and destination.
@@ -44,6 +47,8 @@ impl AmountLimits {
             (Some(max), _) => CandidateMax::Ready(max),
             (None, QuoteState::Pending) => CandidateMax::Pending,
             (None, QuoteState::Failed) => CandidateMax::Failed,
+            // Unknown until the other transaction finishes: Auto passes it over.
+            (None, QuoteState::Busy) => CandidateMax::Unavailable,
             (None, QuoteState::Ready) => CandidateMax::Ready(0),
         }
     }
@@ -72,6 +77,9 @@ pub(super) struct RouteView {
     pub auto: Option<AutoSource>,
     /// Max-with-Auto's outcome, when Pay from is Auto and Max is on.
     pub auto_max: Option<AutoMax>,
+    /// Auto passed over a balance because another transaction from the
+    /// wallet is in progress.
+    pub auto_busy: bool,
     /// The destination Auto resolved against.
     pub destination: Option<AutoDestination>,
     pub destination_status: DestinationStatus,
@@ -134,6 +142,8 @@ impl WalletSendScreen {
                         if max.is_none() {
                             quote = if self.asset_lock_balance.is_failed(&seed_hash) {
                                 QuoteState::Failed
+                            } else if self.asset_lock_balance.is_busy(&seed_hash) {
+                                QuoteState::Busy
                             } else {
                                 QuoteState::Pending
                             };
@@ -359,6 +369,11 @@ impl WalletSendScreen {
                 if self.spend_limits.is_failed(&seed_hash, kind, revision) =>
             {
                 QuoteState::Failed
+            }
+            Some((seed_hash, kind, revision))
+                if self.spend_limits.is_busy(&seed_hash, kind, revision) =>
+            {
+                QuoteState::Busy
             }
             Some(_) => QuoteState::Pending,
             None => QuoteState::Ready,
@@ -716,25 +731,31 @@ impl WalletSendScreen {
         }
     }
 
-    /// Spendable maxima of the balances Auto may choose from.
-    fn candidate_maxima(&self, destination: &AutoDestination) -> CandidateMaxima {
+    /// Spendable maxima of the balances Auto may choose from, and whether
+    /// any was passed over because the wallet is busy.
+    fn candidate_maxima(&self, destination: &AutoDestination) -> (CandidateMaxima, bool) {
         if self.selected_wallet.is_none() {
-            return CandidateMaxima::default();
+            return (CandidateMaxima::default(), false);
         }
         let platform = self.platform_source_addresses();
         if destination.kind.is_none() {
             // No destination yet: a preview from the balances.
-            return CandidateMaxima {
+            let maxima = CandidateMaxima {
                 core: CandidateMax::Ready(self.get_core_balance().saturating_mul(CREDITS_PER_DUFF)),
                 platform: CandidateMax::Ready(platform.iter().map(|(_, _, b)| *b).sum()),
                 shielded: CandidateMax::Unavailable,
             };
+            return (maxima, false);
         }
         let several = self.form.has_several_recipients();
         let destination_value = self.validated_destination.as_ref();
+        let busy = std::cell::Cell::new(false);
         let max_of = |source: &SourceSelection| {
-            self.amount_limits_for(source, destination_value)
-                .candidate_max()
+            let limits = self.amount_limits_for(source, destination_value);
+            if limits.quote == QuoteState::Busy {
+                busy.set(true);
+            }
+            limits.candidate_max()
         };
         // Several recipients: Core rows are paid from Core, Platform rows from
         // Platform; no other route carries several outputs.
@@ -756,11 +777,12 @@ impl WalletSendScreen {
             }
             _ => CandidateMax::Unavailable,
         };
-        CandidateMaxima {
+        let maxima = CandidateMaxima {
             core,
             platform,
             shielded,
-        }
+        };
+        (maxima, busy.get())
     }
 
     /// The source for a balance kind Auto chose.
@@ -790,7 +812,8 @@ impl WalletSendScreen {
         if !identity_sender {
             let source = match self.form.pay_from() {
                 PayFrom::Auto => {
-                    let maxima = self.candidate_maxima(&destination);
+                    let (maxima, busy) = self.candidate_maxima(&destination);
+                    view.auto_busy = busy;
                     if self.form.max_intent() && destination.kind.is_some() {
                         let outcome = resolve_auto_max(&destination, &maxima);
                         let source = match &outcome {

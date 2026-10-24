@@ -3147,6 +3147,29 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
+    /// Answers the Core send quote with "another transaction is in
+    /// progress", as the backend does while a build holds reservations.
+    pub fn mark_core_send_busy_for_test(&mut self) {
+        let Some((seed_hash, kind, revision)) =
+            self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
+        else {
+            return;
+        };
+        if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
+            .spend_limits
+            .ensure_requested(seed_hash, kind, revision)
+        {
+            self.spend_limits.mark_request_error(
+                seed_hash,
+                kind,
+                request_id,
+                &TaskError::SpendInProgress,
+            );
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
     /// Whether a confirmation dialog is waiting.
     pub fn has_send_confirmation_for_test(&self) -> bool {
         self.send_confirmation.is_some()

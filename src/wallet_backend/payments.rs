@@ -2294,6 +2294,42 @@ mod tests {
         );
     }
 
+    /// A shield from Platform above what the planner can shield is refused
+    /// before the wallet is unlocked, with the planner's own verdict — here,
+    /// a wallet with no Platform balance can shield nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shield_above_the_planner_maximum_is_refused_before_unlocking() {
+        let (_dir, _ctx, backend, seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let det_wallet = crate::model::wallet::Wallet::new_from_seed(
+            rand::random(),
+            Network::Testnet,
+            None,
+            None,
+        )
+        .expect("DET wallet");
+        let path_index =
+            crate::wallet_backend::PlatformPathIndex::from_wallet(&det_wallet, Network::Testnet);
+
+        let refused = backend
+            .shield_from_balance(
+                &seed_hash,
+                &path_index,
+                0,
+                crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
+                100_000_000_000,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::ShieldFromPlatformNothingShieldable { .. })
+            ),
+            "{refused:?}"
+        );
+    }
+
     /// An exact asset lock the wallet cannot fund is refused by the guard,
     /// before any secret is opened, with the balance advice a shortfall
     /// deserves — not left to fail inside the build after the unlock.

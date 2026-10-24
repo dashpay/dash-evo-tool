@@ -1,349 +1,26 @@
+//! Contact details (DIP-0015 `contactInfo`).
+//!
+//! platform-wallet writes and syncs the identity's `contactInfo` documents.
+//! This module keeps the paginated document fetch the read of older,
+//! legacy-key documents uses, and turns a field-level update into the full
+//! set of details platform-wallet publishes.
+
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::dashpay::errors::DashPayError;
-use crate::backend_task::error::{ContactInfoReadError, TaskError};
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{
-    AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
-    validate_contact_note,
-};
+use crate::model::dashpay::{ContactDetails, ContactInfoUpdate, validate_contact_note};
 use crate::model::qualified_identity::QualifiedIdentity;
-use aes_gcm::aes::Aes256;
-use aes_gcm::aes::cipher::{BlockCipherEncrypt, KeyInit};
-use bip39::rand::{SeedableRng, rngs::StdRng};
-use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
+use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{
-    Document as DppDocument, DocumentV0, DocumentV0Getters, DocumentV0Setters,
-};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::{Bytes32, Value};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
-use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use dash_sdk::platform::{DocumentQuery, Identifier};
 use dash_sdk::query_types::Documents;
-use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData as UpstreamPrivateData;
+use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData;
 use platform_wallet::wallet::identity::crypto::contact_info::encode_private_data_bounded;
-use std::collections::{BTreeMap, HashSet};
+use platform_wallet::wallet::identity::network::ContactInfoPublishOutcome;
 use std::future::Future;
 use std::sync::Arc;
-use zeroize::Zeroizing;
-
-// ContactInfo private data structure
-#[derive(Debug, Clone, Default)]
-pub struct ContactInfoPrivateData {
-    pub version: u32,
-    pub alias_name: Option<String>,
-    pub note: Option<String>,
-    pub display_hidden: bool,
-    pub accepted_accounts: Vec<u32>,
-}
-
-impl ContactInfoPrivateData {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The plaintext floor platform-wallet pads to with zero bytes, so that
-    /// IV (16) + AES-CBC ciphertext reaches the contract's 48-byte minimum.
-    /// Older versions of this client padded to 16 bytes, starting with a zero.
-    const MIN_PLAINTEXT_SIZE: usize = 17;
-
-    /// Encode for encryption with platform-wallet's DIP-15 codec, so every
-    /// client that uses it reads what this one writes.
-    pub fn serialize(&self) -> Result<Vec<u8>, TaskError> {
-        let alias_len = self.alias_name.as_deref().map_or(0, str::len);
-        if alias_len > u8::MAX as usize {
-            return Err(DashPayError::ContactInfoValidationFailed {
-                errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
-            }
-            .into());
-        }
-        validate_contact_note(self.note.as_deref().unwrap_or_default())?;
-        encode_private_data_bounded(&UpstreamPrivateData {
-            alias_name: self.alias_name.clone(),
-            note: self.note.clone(),
-            display_hidden: self.display_hidden,
-            accepted_accounts: self.accepted_accounts.clone(),
-        })
-        .map_err(|source| TaskError::DashPayContactInfoEncoding {
-            source: Box::new(source),
-        })
-    }
-
-    /// Parse the plaintext produced by [`serialize`](Self::serialize).
-    ///
-    /// Returns `None` for a truncated or non-canonical v0 payload, invalid
-    /// UTF-8, or an unsupported version. The only accepted trailing bytes are
-    /// zero padding up to [`Self::MIN_PLAINTEXT_SIZE`].
-    /// Stricter than platform-wallet's reader: a write must never drop fields
-    /// it cannot read.
-    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
-        if version != 0 {
-            return None;
-        }
-        let mut pos = 4;
-
-        // A Bitcoin CompactSize length, in its shortest encoding only.
-        let take_compact_size = |pos: &mut usize| -> Option<usize> {
-            let field = |width: usize| bytes.get(*pos + 1..*pos + 1 + width);
-            let (value, width): (u64, usize) = match *bytes.get(*pos)? {
-                0xFD => (u16::from_le_bytes(field(2)?.try_into().ok()?).into(), 3),
-                0xFE => (u32::from_le_bytes(field(4)?.try_into().ok()?).into(), 5),
-                0xFF => (u64::from_le_bytes(field(8)?.try_into().ok()?), 9),
-                n => (n.into(), 1),
-            };
-            let shortest = match width {
-                3 => 0xFD,
-                5 => 0x1_0000,
-                9 => 0x1_0000_0000,
-                _ => 0,
-            };
-            if value < shortest {
-                return None;
-            }
-            *pos += width;
-            usize::try_from(value).ok()
-        };
-        let take_string = |pos: &mut usize| -> Option<Option<String>> {
-            let len = take_compact_size(pos)?;
-            let raw = bytes.get(*pos..pos.checked_add(len)?)?;
-            *pos += len;
-            if len == 0 {
-                Some(None)
-            } else {
-                Some(Some(std::str::from_utf8(raw).ok()?.to_owned()))
-            }
-        };
-        let alias_name = take_string(&mut pos)?;
-        let note = take_string(&mut pos)?;
-
-        let display_hidden = match *bytes.get(pos)? {
-            0 => false,
-            1 => true,
-            _ => return None,
-        };
-        pos += 1;
-
-        let count = take_compact_size(&mut pos)?;
-        let accepted_accounts = (0..count)
-            .map(|_| {
-                let raw = bytes.get(pos..pos + 4)?;
-                pos += 4;
-                Some(u32::from_le_bytes(raw.try_into().ok()?))
-            })
-            .collect::<Option<Vec<u32>>>()?;
-
-        if pos < bytes.len()
-            && (bytes.len() > Self::MIN_PLAINTEXT_SIZE
-                || bytes[pos..].iter().any(|byte| *byte != 0))
-        {
-            return None;
-        }
-
-        Some(Self {
-            version,
-            alias_name,
-            note,
-            display_hidden,
-            accepted_accounts,
-        })
-    }
-}
-
-/// Apply an explicit whole-document update to the payload already on Platform.
-fn apply_contact_info_update(
-    update: ContactInfoUpdate,
-    existing: Option<&Document>,
-    private_data_key: &[u8; 32],
-) -> Result<ContactInfoPrivateData, TaskError> {
-    let preserves_existing = matches!(update.display_hidden, ContactInfoField::Preserve)
-        || matches!(update.nickname, ContactInfoField::Preserve)
-        || matches!(update.note, ContactInfoField::Preserve)
-        || matches!(update.accepted_accounts, AcceptedAccounts::Preserve);
-
-    let mut data = if preserves_existing {
-        read_contact_info_private_data(existing, private_data_key, update.unreadable)?
-    } else {
-        ContactInfoPrivateData::new()
-    };
-
-    if let ContactInfoField::Replace(nickname) = update.nickname {
-        data.alias_name = nickname;
-    }
-    if let ContactInfoField::Replace(note) = update.note {
-        data.note = note;
-    }
-    if let ContactInfoField::Replace(hidden) = update.display_hidden {
-        data.display_hidden = hidden;
-    }
-    if let AcceptedAccounts::Replace(accounts) = update.accepted_accounts {
-        data.accepted_accounts = accounts;
-    }
-    Ok(data)
-}
-
-fn read_contact_info_private_data(
-    existing: Option<&Document>,
-    private_data_key: &[u8; 32],
-    unreadable: UnreadableContactInfoPolicy,
-) -> Result<ContactInfoPrivateData, TaskError> {
-    let Some(existing) = existing else {
-        return Ok(ContactInfoPrivateData::new());
-    };
-    let Some(value) = existing.properties().get("privateData") else {
-        return Ok(ContactInfoPrivateData::new());
-    };
-    let result = match value {
-        Value::Bytes(encrypted) => {
-            super::contacts::decrypt_private_data(encrypted, private_data_key)
-                .map_err(|_| ContactInfoReadError::DecryptFailed)
-                .and_then(|plaintext| {
-                    ContactInfoPrivateData::deserialize(&plaintext)
-                        .ok_or(ContactInfoReadError::DeserializeFailed)
-                })
-        }
-        _ => Err(ContactInfoReadError::UnexpectedPrivateDataType),
-    };
-
-    match (result, unreadable) {
-        (Ok(data), _) => Ok(data),
-        (Err(_), UnreadableContactInfoPolicy::Overwrite) => Ok(ContactInfoPrivateData::new()),
-        (Err(source), UnreadableContactInfoPolicy::Abort) => {
-            Err(TaskError::DashPayContactInfoRead { source })
-        }
-    }
-}
-
-/// Derive the DIP-0015 contactInfo encryption keys for `identity`, fetching
-/// the wallet's HD seed just-in-time through the [`SecretAccess`] chokepoint.
-///
-/// The seed is obtained per-operation via
-/// [`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
-/// keyed by the identity's DashPay wallet seed hash, and the BIP-32
-/// derivation runs inside the closure through the shared
-/// [`derive_contact_info_encryption_keys`](crate::wallet_backend::derive_contact_info_encryption_keys)
-/// helper — the raw seed never enters this layer.
-#[allow(clippy::type_complexity)]
-async fn derive_contact_info_keys(
-    app_context: &Arc<AppContext>,
-    identity: &QualifiedIdentity,
-    derivation_index: u32,
-) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError> {
-    let seed_hash = identity
-        .dashpay_wallet_seed_hash()
-        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-    let network = identity.network;
-
-    app_context
-        .wallet_backend()?
-        .secret_access()
-        .with_secret(
-            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-            |plaintext| {
-                let seed = plaintext
-                    .expose_hd_seed()
-                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                crate::wallet_backend::derive_contact_info_encryption_keys(
-                    seed,
-                    network,
-                    derivation_index,
-                )
-            },
-        )
-        .await
-}
-
-/// Encrypt toUserId using AES-256-ECB as specified by DIP-0015.
-///
-/// DIP-0015 mandates ECB mode for encToUserId encryption because:
-/// 1. The toUserId is derived from SHA256, making it appear random (no patterns)
-/// 2. Keys are never reused (unique per contact via hardened BIP32 derivation)
-/// 3. The data is fixed-size (32 bytes = exactly 2 AES blocks)
-///
-/// These properties eliminate typical ECB vulnerabilities (pattern leakage).
-/// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
-fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    let cipher = Aes256::new(key.into());
-
-    // The 32-byte ID is exactly two 16-byte AES blocks; encrypt each in place (ECB).
-    let mut encrypted = *user_id;
-    let (blocks, _) = encrypted.as_chunks_mut::<16>();
-    for block in blocks {
-        cipher.encrypt_block(block.into());
-    }
-
-    Ok(encrypted)
-}
-
-/// Decrypt toUserId using AES-256-ECB as specified by DIP-0015.
-///
-/// See `encrypt_to_user_id` for the rationale behind ECB mode usage per DIP-0015.
-fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aes::cipher::BlockCipherDecrypt;
-
-    let mut decrypted: [u8; 32] = encrypted
-        .try_into()
-        .map_err(|_| "Invalid encrypted user ID length".to_string())?;
-
-    let cipher = Aes256::new(key.into());
-
-    // The 32-byte ciphertext is exactly two 16-byte AES blocks; decrypt each in place (ECB).
-    let (blocks, _) = decrypted.as_chunks_mut::<16>();
-    for block in blocks {
-        cipher.decrypt_block(block.into());
-    }
-
-    Ok(decrypted)
-}
-
-// Encrypt private data using AES-256-CBC
-fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::block_padding::Pkcs7;
-    type Aes256CbcEnc = cbc::Encryptor<aes_gcm::aes::Aes256>;
-
-    // Generate random IV (16 bytes)
-    let mut rng = StdRng::from_entropy();
-    let mut iv = [0u8; 16];
-    use bip39::rand::RngCore;
-    rng.fill_bytes(&mut iv);
-
-    // Pad data to multiple of 16 bytes and encrypt
-    let cipher = Aes256CbcEnc::new(key.into(), &iv.into());
-
-    // Allocate buffer with padding
-    let mut buffer = vec![0u8; data.len() + 16]; // Extra space for padding
-    buffer[..data.len()].copy_from_slice(data);
-
-    let encrypted = cipher
-        .encrypt_padded::<Pkcs7>(&mut buffer, data.len())
-        .map_err(|e| format!("Encryption failed: {:?}", e))?;
-
-    // Combine IV and encrypted data
-    let mut result = Vec::with_capacity(16 + encrypted.len());
-    result.extend_from_slice(&iv);
-    result.extend_from_slice(encrypted);
-
-    Ok(result)
-}
-
-struct ExistingContactInfo {
-    document: Document,
-    derivation_index: u32,
-    enc_user_id_key: Zeroizing<[u8; 32]>,
-    private_data_key: Zeroizing<[u8; 32]>,
-}
-
-struct ContactInfoLookup {
-    existing: Option<ExistingContactInfo>,
-    next_derivation_index: u32,
-}
-
-type ContactInfoKeys = (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>);
 
 const CONTACT_INFO_PAGE_SIZE: usize = 100;
 
@@ -379,188 +56,17 @@ where
     Ok(documents)
 }
 
-fn contact_info_derivation_index(document: &Document) -> Option<u32> {
-    document
-        .properties()
-        .get("derivationEncryptionKeyIndex")
-        .and_then(|value| value.to_integer::<u32>().ok())
-}
-
-fn has_contact_info_key_material(document: &Document) -> bool {
-    contact_info_derivation_index(document).is_some()
-        && document
-            .properties()
-            .get("rootEncryptionKeyIndex")
-            .and_then(|value| value.to_integer::<u32>().ok())
-            .is_some()
-        && matches!(
-            document.properties().get("encToUserId"),
-            Some(Value::Bytes(_))
-        )
-}
-
-fn find_existing_contact_info<F>(
-    documents: Vec<Document>,
-    contact_user_id: Identifier,
-    mut derive_keys: F,
-) -> Option<ExistingContactInfo>
-where
-    F: FnMut(u32) -> Result<ContactInfoKeys, TaskError>,
-{
-    for document in documents {
-        let Some(derivation_index) = contact_info_derivation_index(&document) else {
-            continue;
-        };
-        if !has_contact_info_key_material(&document) {
-            continue;
-        }
-
-        let Ok((enc_user_id_key, private_data_key)) = derive_keys(derivation_index) else {
-            continue;
-        };
-        let Some(Value::Bytes(enc_user_id)) = document.properties().get("encToUserId") else {
-            continue;
-        };
-        if decrypt_to_user_id(enc_user_id, &enc_user_id_key).ok()
-            == Some(contact_user_id.to_buffer())
-        {
-            return Some(ExistingContactInfo {
-                document,
-                derivation_index,
-                enc_user_id_key,
-                private_data_key,
-            });
-        }
-    }
-
-    None
-}
-
-async fn scan_contact_info_documents<F, Fut>(
-    documents: Vec<Document>,
-    contact_user_id: Identifier,
-    with_key_session: F,
-) -> Result<ContactInfoLookup, TaskError>
-where
-    F: FnOnce(Vec<Document>, Identifier) -> Fut,
-    Fut: Future<Output = Result<Option<ExistingContactInfo>, TaskError>>,
-{
-    let next_derivation_index = documents
-        .iter()
-        .filter_map(contact_info_derivation_index)
-        .fold(0u32, |next, index| next.max(index.saturating_add(1)));
-    let existing = if documents.iter().any(has_contact_info_key_material) {
-        with_key_session(documents, contact_user_id).await?
-    } else {
-        None
-    };
-
-    Ok(ContactInfoLookup {
-        existing,
-        next_derivation_index,
-    })
-}
-
-async fn lookup_contact_info(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    identity: &QualifiedIdentity,
-    contact_user_id: Identifier,
-) -> Result<ContactInfoLookup, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
-    let identity_id = identity.identity.id();
-    let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
-        DashPayError::QueryCreation {
-            query_target: "DashPay contactInfo",
-            source: Box::new(e.into()),
-        }
-    })?;
-    query = query.with_where(WhereClause {
-        field: "$ownerId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
-    });
-    query = query.with_order_by(OrderClause {
-        field: "$updatedAt".to_string(),
-        ascending: true,
-    });
-    let existing_docs = fetch_all_contact_info_documents(query, |page_query| async move {
-        Document::fetch_many(sdk, page_query)
-            .await
-            .map_err(TaskError::from)
-    })
-    .await?;
-    let documents = existing_docs.into_values().flatten().collect();
-    scan_contact_info_documents(
-        documents,
-        contact_user_id,
-        |documents, contact_user_id| async move {
-            let seed_hash = identity
-                .dashpay_wallet_seed_hash()
-                .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-            let network = identity.network;
-
-            app_context
-                .wallet_backend()?
-                .secret_access()
-                .with_secret_session(
-                    &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                    async |session| {
-                        let plaintext = session.plaintext();
-                        let seed = plaintext
-                            .expose_hd_seed()
-                            .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                        Ok(find_existing_contact_info(
-                            documents,
-                            contact_user_id,
-                            |derivation_index| {
-                                crate::wallet_backend::derive_contact_info_encryption_keys(
-                                    seed,
-                                    network,
-                                    derivation_index,
-                                )
-                            },
-                        ))
-                    },
-                )
-                .await
-        },
-    )
-    .await
-}
-
-pub(super) async fn contact_info_is_hidden(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    identity: &QualifiedIdentity,
-    contact_user_id: Identifier,
-    unreadable: UnreadableContactInfoPolicy,
-) -> Result<bool, TaskError> {
-    let lookup = lookup_contact_info(app_context, sdk, identity, contact_user_id).await?;
-    let Some(existing) = lookup.existing else {
-        return Ok(false);
-    };
-    Ok(read_contact_info_private_data(
-        Some(&existing.document),
-        &existing.private_data_key,
-        unreadable,
-    )?
-    .display_hidden)
-}
-
-/// Write the `contactInfo` document for `contact_user_id`, creating it when the
-/// identity has none yet and replacing it otherwise.
+/// Save `update` for `contact_user_id` through platform-wallet.
 ///
-/// The document is written whole, so `update` explicitly chooses which fields
-/// are preserved and which fields are replaced. Nicknames and notes are limited
-/// to 255 UTF-8 bytes; the encoded payload must also fit the contract size limit.
+/// Every field the update preserves keeps the value the contacts list shows;
+/// see [`super::contacts::shown_contact_details`]. Notes are limited to 255 UTF-8
+/// bytes, and the details must fit the document size limit.
 ///
 /// # Errors
 ///
-/// Fails when a preserved payload is present but unreadable, when the contact's
-/// encryption keys cannot be derived, when an encoded field exceeds its v0 or
-/// contract limit, when the identity has no usable authentication key, or when
-/// the state transition is rejected.
+/// Fails when the details are too large, when the identity was not loaded
+/// from its wallet, when the contact is not established, or when the sync or
+/// the publish fails.
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -568,240 +74,189 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let write_guard = app_context
-        .contact_info_writes
-        .acquire(identity.identity.id())
-        .await;
-    create_or_update_contact_info_locked(
+    let owner = identity.identity.id();
+    let _write_guard = app_context.contact_info_writes.acquire(owner).await;
+    let ops = PlatformSaveOps {
         app_context,
         sdk,
-        identity,
-        contact_user_id,
-        update,
-        &write_guard,
-    )
-    .await
+        backend: app_context.wallet_backend()?,
+        identity: &identity,
+        contact_id: contact_user_id,
+    };
+    let published = save_contact_details(&ops, &update).await?;
+    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated {
+        identity: owner,
+        contact_id: contact_user_id,
+        published,
+    })
 }
 
-/// Write while the caller holds the owner's lock across its reads and decisions.
-/// Request actions acquire their request lock before this owner lock.
-pub(super) async fn create_or_update_contact_info_locked(
+/// Read the details shown for `contact_id`, the ones a contact details
+/// editor starts from.
+///
+/// # Errors
+///
+/// As for [`shown_details_for`].
+pub async fn load_contact_details(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    contact_user_id: Identifier,
-    update: ContactInfoUpdate,
-    _write_guard: &tokio::sync::OwnedMutexGuard<()>,
+    contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
-    let identity_id = identity.identity.id();
-    let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
-    let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
-        match lookup.existing {
-            Some(existing) => (
-                Some(existing.document),
-                existing.derivation_index,
-                existing.enc_user_id_key,
-                existing.private_data_key,
-            ),
-            None => {
-                let derivation_index = lookup.next_derivation_index;
-                let (enc_user_id_key, private_data_key) =
-                    derive_contact_info_keys(app_context, &identity, derivation_index).await?;
-                (None, derivation_index, enc_user_id_key, private_data_key)
-            }
-        };
-
-    // Encrypt toUserId
-    let encrypted_user_id = encrypt_to_user_id(&contact_user_id.to_buffer(), &enc_user_id_key)
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    let private_data =
-        apply_contact_info_update(update, found_existing_doc.as_ref(), &private_data_key)?;
-
-    // Encrypt private data
-    let encrypted_private_data =
-        encrypt_private_data(&private_data.serialize()?, &private_data_key)
-            .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    let validation = crate::backend_task::dashpay::validation::validate_contact_info_field_sizes(
-        &encrypted_user_id,
-        &encrypted_private_data,
-    );
-    if !validation.is_valid {
-        return Err(TaskError::DashPay(
-            DashPayError::ContactInfoValidationFailed {
-                errors: validation.errors,
-            },
-        ));
-    }
-
-    // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
-    // Platform accepts all for document state transitions.
-    let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]),
-            KeyType::all_key_types().into(),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
-
-    // Create document properties
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "encToUserId".to_string(),
-        Value::Bytes(encrypted_user_id.to_vec()),
-    );
-    properties.insert(
-        "rootEncryptionKeyIndex".to_string(),
-        Value::U32(signing_key.id()),
-    );
-    properties.insert(
-        "derivationEncryptionKeyIndex".to_string(),
-        Value::U32(derivation_index),
-    );
-    properties.insert(
-        "privateData".to_string(),
-        Value::Bytes(encrypted_private_data),
-    );
-
-    if let Some(existing_doc) = found_existing_doc {
-        // Update existing document
-        let mut updated_doc = existing_doc.clone();
-
-        // Update properties
-        for (key, value) in properties {
-            updated_doc.set(&key, value);
-        }
-
-        // Bump revision
-        updated_doc.bump_revision();
-
-        // Create replacement transition
-        use dash_sdk::platform::documents::transitions::DocumentReplaceTransitionBuilder;
-        let mut builder = DocumentReplaceTransitionBuilder::new(
-            dashpay_contract,
-            "contactInfo".to_string(),
-            updated_doc,
-        );
-
-        // Add state transition options if available
-        let maybe_options = app_context.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .document_replace(builder, signing_key, &identity)
-            .await?;
-
-        // Log the proof-verified document for audit trail
-        match result {
-            dash_sdk::platform::documents::transitions::DocumentReplaceResult::Document(doc) => {
-                tracing::info!(
-                    "Contact info updated: doc_id={}, revision={:?}",
-                    doc.id(),
-                    doc.revision()
-                );
-            }
-        }
-    } else {
-        // Create new contactInfo document
-        let mut rng = StdRng::from_entropy();
-        let entropy = Bytes32::random_with_rng(&mut rng);
-
-        let document_id = Document::generate_document_id_v0(
-            &dashpay_contract.id(),
-            &identity_id,
-            "contactInfo",
-            entropy.as_slice(),
-        );
-
-        let document = DppDocument::V0(DocumentV0 {
-            id: document_id,
-            owner_id: identity_id,
-            creator_id: None,
-            properties,
-            revision: Some(1),
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
-
-        let mut builder = DocumentCreateTransitionBuilder::new(
-            dashpay_contract,
-            "contactInfo".to_string(),
-            document,
-            entropy
-                .as_slice()
-                .try_into()
-                .expect("entropy should be 32 bytes"),
-        );
-
-        // Add state transition options if available
-        let maybe_options = app_context.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk.document_create(builder, signing_key, &identity).await?;
-
-        // Log the proof-verified document for audit trail
-        match result {
-            dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
-                tracing::info!(
-                    "Contact info created: doc_id={}, revision={:?}",
-                    doc.id(),
-                    doc.revision()
-                );
-            }
-        }
-    }
-
-    Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated {
-        identity: identity_id,
-        contact_id: contact_user_id,
+    let backend = app_context.wallet_backend()?;
+    let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
+    Ok(BackendTaskSuccessResult::DashPayContactDetails {
+        identity: identity.identity.id(),
+        contact_id,
+        details,
     })
+}
+
+/// The details shown for `contact_id`, with the precedence of
+/// [`super::contacts::shown_contact_details`]: published, then
+/// platform-wallet's on this device, then a legacy-key document.
+///
+/// # Errors
+///
+/// Fails when the details sync, the document fetch, or reading the published
+/// or legacy documents fails (a cancelled password prompt included), rather
+/// than guessing: a save keeps every field it does not replace from this.
+async fn shown_details_for(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    backend: &WalletBackend,
+    identity: &QualifiedIdentity,
+    contact_id: &Identifier,
+) -> Result<ContactDetails, TaskError> {
+    let owner = identity.identity.id();
+    backend.dashpay_sync_contact_infos(&owner).await?;
+    let local = backend
+        .dashpay_contact_details(&owner)
+        .await
+        .remove(contact_id);
+    let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
+    let published = stored.published?.remove(contact_id);
+    let legacy = stored.legacy?;
+    let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
+        || super::contacts::holds_details(published.as_ref(), local.as_ref());
+    let legacy = legacy
+        .get(contact_id)
+        .map(super::contacts::ContactData::details);
+    Ok(super::contacts::shown_contact_details(
+        published,
+        local,
+        synced_before,
+        legacy,
+    ))
+}
+
+/// The reads and writes one contact details save performs, behind a trait so
+/// their order and failures can be driven in tests.
+trait SaveOps {
+    /// The details shown for the contact now; the fields an update keeps.
+    fn current(&self) -> impl Future<Output = Result<ContactDetails, TaskError>> + Send;
+    fn publish(
+        &self,
+        details: ContactDetails,
+    ) -> impl Future<Output = Result<ContactInfoPublishOutcome, TaskError>> + Send;
+    /// Record that platform-wallet holds the contact's details, so a legacy
+    /// document no longer stands in for them.
+    fn mark_synced(&self) -> Result<(), TaskError>;
+}
+
+/// Save `update` and return whether the details reached Platform.
+///
+/// # Errors
+///
+/// Nothing is written when the current details cannot be read (a cancelled
+/// password prompt included): a field the update keeps would otherwise be
+/// saved from a guess. A save whose synced record fails is reported as
+/// failed, since the old legacy details would show again on reload.
+async fn save_contact_details<O: SaveOps>(
+    ops: &O,
+    update: &ContactInfoUpdate,
+) -> Result<bool, TaskError> {
+    let details = update.apply_to(ops.current().await?);
+
+    validate_contact_note(details.note.as_deref().unwrap_or_default())?;
+    // The bound platform-wallet enforces, checked before it saves anything.
+    encode_private_data_bounded(&ContactInfoPrivateData {
+        alias_name: details.nickname.clone(),
+        note: details.note.clone(),
+        display_hidden: details.hidden,
+        accepted_accounts: Vec::new(),
+    })
+    .map_err(|source| TaskError::DashPayContactInfoEncoding {
+        source: Box::new(source),
+    })?;
+
+    let outcome = ops.publish(details).await?;
+    ops.mark_synced()?;
+    match outcome {
+        ContactInfoPublishOutcome::Published => Ok(true),
+        ContactInfoPublishOutcome::DeferredUntilTwoContacts => Ok(false),
+        // The write checks for a wallet identity index before platform-wallet
+        // runs, so this is reached only if the two disagree.
+        ContactInfoPublishOutcome::SkippedWatchOnly => {
+            Err(TaskError::ContactInfoIdentityNotFromWallet)
+        }
+    }
+}
+
+struct PlatformSaveOps<'a> {
+    app_context: &'a Arc<AppContext>,
+    sdk: &'a Sdk,
+    backend: Arc<WalletBackend>,
+    identity: &'a QualifiedIdentity,
+    contact_id: Identifier,
+}
+
+impl SaveOps for PlatformSaveOps<'_> {
+    async fn current(&self) -> Result<ContactDetails, TaskError> {
+        shown_details_for(
+            self.app_context,
+            self.sdk,
+            &self.backend,
+            self.identity,
+            &self.contact_id,
+        )
+        .await
+    }
+
+    async fn publish(
+        &self,
+        details: ContactDetails,
+    ) -> Result<ContactInfoPublishOutcome, TaskError> {
+        // TODO: preserved fields come from `current()`'s read; upstream set_contact_info has no expected-revision check, so a newer edit from another device in between is overwritten.
+        self.backend
+            .dashpay_set_contact_info(self.identity, &self.contact_id, details)
+            .await
+    }
+
+    fn mark_synced(&self) -> Result<(), TaskError> {
+        self.backend
+            .dashpay_mark_details_synced(&self.identity.identity.id(), &self.contact_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::document::{
+        Document as DppDocument, DocumentV0, DocumentV0Getters, DocumentV0Setters,
+    };
+    use dash_sdk::dpp::platform_value::Value;
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
-    use std::cell::Cell;
-    use std::collections::VecDeque;
+    use dash_sdk::platform::Document;
+    use std::collections::{BTreeMap, VecDeque};
     use std::future::ready;
+    use zeroize::Zeroizing;
 
     const KEY: [u8; 32] = [7u8; 32];
-    const OTHER_KEY: [u8; 32] = [9u8; 32];
 
-    /// DIP-15 `encToUserId` known-answer vector: AES-256-ECB(key = 00..1f,
-    /// pt = 40..5f), generated independently with Python `cryptography` 46
-    /// (OpenSSL). Pins interoperability across `aes` / `aes-gcm` bumps.
-    #[test]
-    fn to_user_id_ecb_matches_golden_vector() {
-        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
-        let user_id: [u8; 32] = std::array::from_fn(|i| 0x40 + i as u8);
-        let expected = "a37edf3f975abaef937b62c78d5bb157974b412738e50f45c7f9db25413f274b";
-
-        let encrypted = encrypt_to_user_id(&user_id, &key).expect("encrypt");
-        assert_eq!(hex::encode(encrypted), expected);
-        let decrypted = decrypt_to_user_id(&encrypted, &key).expect("decrypt");
-        assert_eq!(decrypted, user_id);
+    fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> [u8; 32] {
+        platform_encryption::encrypt_enc_to_user_id(key, user_id)
     }
 
     fn id(byte: u8) -> Identifier {
@@ -821,46 +276,6 @@ mod tests {
         );
         docs.shift_remove(&id(99));
         assert_eq!(next_contact_info_page(&docs), None);
-    }
-
-    /// A stored `contactInfo` document whose `privateData` holds `accounts`,
-    /// encrypted exactly the way [`create_or_update_contact_info`] writes it.
-    fn stored_contact_info(accounts: Vec<u32>, key: &[u8; 32]) -> Document {
-        let private_data = ContactInfoPrivateData {
-            version: 0,
-            alias_name: Some("Bao".to_string()),
-            note: None,
-            display_hidden: true,
-            accepted_accounts: accounts,
-        };
-        let encrypted = encrypt_private_data(&private_data.serialize().expect("serialize"), key)
-            .expect("encrypt");
-
-        contact_info_document(Some(Value::Bytes(encrypted)))
-    }
-
-    fn contact_info_document(private_data: Option<Value>) -> Document {
-        let mut properties = BTreeMap::new();
-        if let Some(private_data) = private_data {
-            properties.insert("privateData".to_string(), private_data);
-        }
-        DppDocument::V0(DocumentV0 {
-            id: id(1),
-            owner_id: id(2),
-            creator_id: None,
-            properties,
-            revision: Some(1),
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        })
     }
 
     fn lookup_contact_info_document(
@@ -896,104 +311,6 @@ mod tests {
             transferred_at_core_block_height: None,
             contract_version: None,
         })
-    }
-
-    #[tokio::test]
-    async fn contact_info_scan_uses_one_secret_session_for_many_documents() {
-        let contact_user_id = id(200);
-        let encrypted_other_id = encrypt_to_user_id(&id(201).to_buffer(), &KEY).expect("encrypt");
-        let documents = (0..=CONTACT_INFO_PAGE_SIZE)
-            .map(|index| {
-                lookup_contact_info_document(index as u8, index as u32, encrypted_other_id)
-            })
-            .collect();
-        let sessions = Cell::new(0);
-        let derivations = Cell::new(0);
-
-        let lookup =
-            scan_contact_info_documents(documents, contact_user_id, |documents, target| {
-                sessions.set(sessions.get() + 1);
-                ready(Ok(find_existing_contact_info(documents, target, |_| {
-                    derivations.set(derivations.get() + 1);
-                    Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
-                })))
-            })
-            .await
-            .expect("scan");
-
-        assert!(lookup.existing.is_none());
-        assert_eq!(lookup.next_derivation_index, 101);
-        assert_eq!(derivations.get(), 101);
-        assert_eq!(sessions.get(), 1, "the entire scan uses one unlock session");
-    }
-
-    #[test]
-    fn contact_info_scan_stops_deriving_after_target_match() {
-        let contact_user_id = id(210);
-        let encrypted_target =
-            encrypt_to_user_id(&contact_user_id.to_buffer(), &KEY).expect("encrypt target");
-        let encrypted_other =
-            encrypt_to_user_id(&id(211).to_buffer(), &KEY).expect("encrypt other");
-        let documents = vec![
-            lookup_contact_info_document(1, 3, encrypted_target),
-            lookup_contact_info_document(2, 4, encrypted_other),
-        ];
-        let mut derived_indices = Vec::new();
-
-        let existing = find_existing_contact_info(documents, contact_user_id, |index| {
-            derived_indices.push(index);
-            Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
-        });
-
-        assert!(existing.is_some());
-        assert_eq!(derived_indices, vec![3]);
-    }
-
-    #[tokio::test]
-    async fn contact_info_scan_skips_late_hardened_index_and_keeps_high_water_mark() {
-        const SEED: [u8; 64] = [42; 64];
-        const MATCH_INDEX: u32 = 7;
-        const UNDERIVABLE_INDEX: u32 = 1 << 31;
-
-        let contact_user_id = id(220);
-        let (target_key, _) = crate::wallet_backend::derive_contact_info_encryption_keys(
-            &SEED,
-            dash_sdk::dpp::dashcore::Network::Testnet,
-            MATCH_INDEX,
-        )
-        .expect("derive target key");
-        let encrypted_target =
-            encrypt_to_user_id(&contact_user_id.to_buffer(), &target_key).expect("encrypt target");
-        let documents = vec![
-            lookup_contact_info_document(1, MATCH_INDEX, encrypted_target),
-            lookup_contact_info_document(2, UNDERIVABLE_INDEX, [0; 32]),
-        ];
-        let sessions = Cell::new(0);
-
-        let lookup =
-            scan_contact_info_documents(documents, contact_user_id, |documents, target| {
-                sessions.set(sessions.get() + 1);
-                ready(Ok(find_existing_contact_info(documents, target, |index| {
-                    crate::wallet_backend::derive_contact_info_encryption_keys(
-                        &SEED,
-                        dash_sdk::dpp::dashcore::Network::Testnet,
-                        index,
-                    )
-                })))
-            })
-            .await
-            .expect("the late underivable document must not abort the matched lookup");
-
-        assert_eq!(
-            lookup.existing.map(|existing| existing.derivation_index),
-            Some(MATCH_INDEX)
-        );
-        assert_eq!(
-            lookup.next_derivation_index,
-            UNDERIVABLE_INDEX + 1,
-            "the on-chain coordinate still advances the public high-water mark"
-        );
-        assert_eq!(sessions.get(), 1);
     }
 
     #[tokio::test]
@@ -1033,71 +350,117 @@ mod tests {
         assert_eq!(documents.keys().last().copied(), Some(id(101)));
     }
 
-    /// DIP-15 writes string lengths as CompactSize, where 253 and longer take a
-    /// three-byte prefix. Other platform-wallet clients must read what this
-    /// client writes, and this client what they write.
+    /// The fee estimate covers the largest details platform-wallet accepts.
     #[test]
-    fn contact_details_round_trip_with_the_platform_wallet_codec() {
-        use platform_wallet::wallet::identity::crypto as upstream;
-        for len in [0, 252, 253, 255] {
-            let text = (len > 0).then(|| "x".repeat(len));
-            let ours = ContactInfoPrivateData {
-                version: 0,
-                alias_name: text.clone(),
-                note: text.clone(),
-                display_hidden: true,
-                accepted_accounts: vec![0, 3],
-            };
-            let theirs = upstream::ContactInfoPrivateData {
-                alias_name: text.clone(),
-                note: text.clone(),
-                display_hidden: true,
-                accepted_accounts: vec![0, 3],
-            };
-
-            let decoded = upstream::decode_private_data(&ours.serialize().expect("serialize"));
-            assert_eq!(
-                decoded.ok(),
-                Some(theirs.clone()),
-                "platform-wallet reads {len} bytes"
-            );
-
-            let parsed =
-                ContactInfoPrivateData::deserialize(&upstream::encode_private_data(&theirs))
-                    .unwrap_or_else(|| {
-                        panic!("this client reads {len} bytes from platform-wallet")
-                    });
-            assert_eq!(parsed.alias_name, text);
-            assert_eq!(parsed.note, text);
-            assert!(parsed.display_hidden);
-            assert_eq!(parsed.accepted_accounts, vec![0, 3]);
-        }
-    }
-
-    #[test]
-    fn contact_info_fee_estimate_covers_preserved_accounts() {
+    fn contact_info_fee_estimate_covers_the_largest_details() {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         let estimator = PlatformFeeEstimator::new();
         for len in [0, 252, 253, 255] {
-            for accounts in [0, 1, 16, 252, 253, 400, 500] {
-                let text = (len > 0).then(|| "x".repeat(len));
-                let data = ContactInfoPrivateData {
-                    alias_name: text.clone(),
-                    note: text,
-                    accepted_accounts: (0..accounts).collect(),
-                    ..Default::default()
-                };
-                let Ok(encoded) = data.serialize() else {
-                    continue;
-                };
-                let encrypted = encrypt_private_data(&encoded, &KEY).unwrap();
-                assert!(
-                    estimator.estimate_contact_info_write()
-                        >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
-                    "{len}-byte fields and {accounts} accounts"
-                );
+            let text = (len > 0).then(|| "x".repeat(len));
+            let encoded = encode_private_data_bounded(&ContactInfoPrivateData {
+                alias_name: text.clone(),
+                note: text,
+                display_hidden: true,
+                accepted_accounts: Vec::new(),
+            })
+            .expect("within the bound");
+            let encrypted = platform_encryption::encrypt_private_data(&KEY, &[0; 16], &encoded);
+            assert!(
+                estimator.estimate_contact_info_write()
+                    >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
+                "{len}-byte fields"
+            );
+        }
+    }
+
+    struct ScriptedSave {
+        current: std::sync::Mutex<Option<Result<ContactDetails, TaskError>>>,
+        mark_fails: bool,
+        published: std::sync::Mutex<Vec<ContactDetails>>,
+    }
+
+    impl ScriptedSave {
+        fn new(current: Result<ContactDetails, TaskError>, mark_fails: bool) -> Self {
+            Self {
+                current: std::sync::Mutex::new(Some(current)),
+                mark_fails,
+                published: std::sync::Mutex::new(Vec::new()),
             }
         }
+    }
+
+    impl SaveOps for ScriptedSave {
+        async fn current(&self) -> Result<ContactDetails, TaskError> {
+            self.current.lock().unwrap().take().expect("read once")
+        }
+
+        async fn publish(
+            &self,
+            details: ContactDetails,
+        ) -> Result<ContactInfoPublishOutcome, TaskError> {
+            self.published.lock().unwrap().push(details);
+            Ok(ContactInfoPublishOutcome::DeferredUntilTwoContacts)
+        }
+
+        fn mark_synced(&self) -> Result<(), TaskError> {
+            if self.mark_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// A cancelled password prompt while reading the current details stops
+    /// the save: a note-only save must not overwrite the nickname or the
+    /// hidden flag with empty values it never read.
+    #[tokio::test]
+    async fn an_unreadable_baseline_writes_nothing() {
+        let ops = ScriptedSave::new(Err(TaskError::SecretPromptCancelled), false);
+
+        let result = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into()))).await;
+
+        assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
+        assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// A save whose synced record fails is not reported as saved: on reload
+    /// the old legacy details would show again.
+    #[tokio::test]
+    async fn a_failed_synced_record_fails_the_save() {
+        let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
+
+        let result =
+            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashpaySidecarStorage { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_save_keeps_the_fields_it_does_not_replace() {
+        let current = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        let ops = ScriptedSave::new(Ok(current.clone()), false);
+
+        let published = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into())))
+            .await
+            .expect("saved");
+
+        assert!(!published, "deferred until two contacts");
+        assert_eq!(
+            *ops.published.lock().unwrap(),
+            vec![ContactDetails {
+                note: Some("n".into()),
+                ..current
+            }]
+        );
     }
 
     fn contact_details_page(documents: impl IntoIterator<Item = Document>) -> Documents {
@@ -1110,15 +473,78 @@ mod tests {
     /// A stored contactInfo for `contact` whose note platform-wallet wrote.
     fn saved_note_document(document_id: u8, contact: Identifier, note: &str) -> Document {
         use platform_wallet::wallet::identity::crypto as upstream;
-        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY).expect("encrypt");
+        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY);
         let mut document = lookup_contact_info_document(document_id, document_id.into(), user_id);
         let plaintext = upstream::encode_private_data(&upstream::ContactInfoPrivateData {
             note: Some(note.to_string()),
             ..Default::default()
         });
-        let private_data = encrypt_private_data(&plaintext, &KEY).expect("encrypt");
+        let private_data = platform_encryption::encrypt_private_data(&KEY, &[5; 16], &plaintext);
         document.set("privateData", Value::Bytes(private_data));
         document
+    }
+
+    /// The legacy details read from `documents` with keys from `derive_keys`.
+    async fn legacy_load<D, DF>(
+        documents: Vec<Document>,
+        derive_keys: D,
+    ) -> Result<std::collections::HashMap<Identifier, super::super::contacts::ContactData>, TaskError>
+    where
+        D: FnMut(u32) -> DF,
+        DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
+    {
+        let contract =
+            load_system_data_contract(SystemDataContract::Dashpay, PlatformVersion::latest())
+                .expect("DashPay contract fixture");
+        let query = DocumentQuery::new(contract, "contactInfo").expect("contactInfo query");
+        let mut page = Some(contact_details_page(documents));
+        super::super::contacts::load_contact_details(
+            query,
+            |_| ready(Ok::<_, TaskError>(page.take().unwrap_or_default())),
+            derive_keys,
+        )
+        .await
+    }
+
+    /// A cancelled password prompt for the legacy keys fails the read, so a
+    /// save does not keep a legacy-only nickname or hidden flag as empty.
+    #[tokio::test]
+    async fn a_cancelled_legacy_key_prompt_fails_the_read() {
+        let result = legacy_load(vec![saved_note_document(1, id(201), "n")], |_| {
+            ready(Err(TaskError::SecretPromptCancelled))
+        })
+        .await;
+
+        assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
+    }
+
+    /// A document whose own key index cannot be derived is skipped; the rest
+    /// still load.
+    #[tokio::test]
+    async fn an_underivable_legacy_document_is_skipped() {
+        let (readable, unreadable) = (id(201), id(202));
+        let mut bad = saved_note_document(2, unreadable, "x");
+        bad.set("derivationEncryptionKeyIndex", Value::U32(u32::MAX));
+        let details = legacy_load(vec![saved_note_document(1, readable, "n"), bad], |index| {
+            ready(if index == u32::MAX {
+                Err(TaskError::ContactKeyDerivationFailed {
+                    source: Box::new(
+                        dash_sdk::dpp::key_wallet::bip32::ChildNumber::from_hardened_idx(index)
+                            .expect_err("out of range"),
+                    ),
+                })
+            } else {
+                Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))
+            })
+        })
+        .await
+        .expect("loaded");
+
+        assert_eq!(
+            details.get(&readable).and_then(|c| c.note.as_deref()),
+            Some("n")
+        );
+        assert!(!details.contains_key(&unreadable));
     }
 
     /// The details loaded from `pages`, and whether every page was asked for
@@ -1156,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn the_contact_details_load_reads_every_page() {
         let contact = id(201);
-        let other = encrypt_to_user_id(&id(202).to_buffer(), &KEY).expect("encrypt");
+        let other = encrypt_to_user_id(&id(202).to_buffer(), &KEY);
         let first_page = contact_details_page(
             (1..=100).map(|byte| lookup_contact_info_document(byte, byte.into(), other)),
         );
@@ -1172,299 +598,21 @@ mod tests {
         assert!(ordered, "pages follow the order the write lookup uses");
     }
 
-    /// With two documents for one contact, the load shows the one a save
-    /// rewrites: the first in that order.
+    /// With two readable documents for one contact, the newer one is shown:
+    /// pages are ordered by `$updatedAt`, oldest first.
     #[tokio::test]
-    async fn the_contact_details_load_shows_the_document_a_save_rewrites() {
+    async fn the_contact_details_load_shows_the_newest_document() {
         let contact = id(201);
         let page = contact_details_page([
-            saved_note_document(1, contact, "kept"),
-            saved_note_document(2, contact, "stale"),
+            saved_note_document(1, contact, "older"),
+            saved_note_document(2, contact, "newer"),
         ]);
 
         let (details, _) = load_details(vec![page]).await;
 
         assert_eq!(
             details.get(&contact).and_then(|c| c.note.as_deref()),
-            Some("kept")
+            Some("newer")
         );
-    }
-
-    #[test]
-    fn private_data_round_trips_every_accepted_account() {
-        let original = ContactInfoPrivateData {
-            version: 0,
-            alias_name: Some("Bao".to_string()),
-            note: Some("Met at the meetup".to_string()),
-            display_hidden: true,
-            accepted_accounts: vec![0, 3, 17],
-        };
-
-        let parsed = ContactInfoPrivateData::deserialize(&original.serialize().expect("serialize"))
-            .expect("a document this client wrote must parse back");
-
-        assert_eq!(parsed.alias_name.as_deref(), Some("Bao"));
-        assert_eq!(parsed.note.as_deref(), Some("Met at the meetup"));
-        assert!(parsed.display_hidden);
-        assert_eq!(
-            parsed.accepted_accounts,
-            vec![0, 3, 17],
-            "every accepted account must survive the round trip, not just the first"
-        );
-    }
-
-    #[test]
-    fn private_data_round_trips_through_the_minimum_size_padding() {
-        // An empty private data is padded up to the contract's minimum size —
-        // the padding must not be mistaken for a field.
-        let original = ContactInfoPrivateData::new();
-        let parsed = ContactInfoPrivateData::deserialize(&original.serialize().expect("serialize"))
-            .expect("padded plaintext must parse");
-
-        assert_eq!(parsed.alias_name, None);
-        assert_eq!(parsed.note, None);
-        assert!(!parsed.display_hidden);
-        assert!(parsed.accepted_accounts.is_empty());
-    }
-
-    #[test]
-    fn truncated_private_data_is_not_parsed_as_a_shorter_list() {
-        let bytes = ContactInfoPrivateData {
-            version: 0,
-            alias_name: None,
-            note: None,
-            display_hidden: false,
-            accepted_accounts: vec![1, 2, 3],
-        }
-        .serialize()
-        .expect("serialize");
-
-        // Chop the final account in half: the list declares three, so a parser
-        // that returned the two it could read would silently drop an account.
-        assert!(
-            ContactInfoPrivateData::deserialize(&bytes[..bytes.len() - 2]).is_none(),
-            "a truncated account list must not parse as a shorter one"
-        );
-    }
-
-    #[test]
-    fn unsupported_private_data_version_requires_confirmation() {
-        let mut bytes = ContactInfoPrivateData::new()
-            .serialize()
-            .expect("serialize");
-        bytes[..4].copy_from_slice(&1_u32.to_le_bytes());
-
-        assert!(
-            ContactInfoPrivateData::deserialize(&bytes).is_none(),
-            "a future payload version must not be rewritten as though it were version zero"
-        );
-    }
-
-    #[test]
-    fn invalid_utf8_is_not_treated_as_an_absent_contact_detail() {
-        let mut bytes = ContactInfoPrivateData::new()
-            .serialize()
-            .expect("serialize");
-        bytes[4] = 1;
-        bytes[5] = 0xff;
-
-        assert!(
-            ContactInfoPrivateData::deserialize(&bytes).is_none(),
-            "an unreadable nickname must not silently become an empty nickname"
-        );
-    }
-
-    #[test]
-    fn unknown_visibility_encoding_requires_confirmation() {
-        let mut bytes = ContactInfoPrivateData::new()
-            .serialize()
-            .expect("serialize");
-        bytes[6] = 2;
-
-        assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
-    }
-
-    #[test]
-    fn trailing_extension_bytes_require_confirmation() {
-        let mut bytes = ContactInfoPrivateData {
-            version: 0,
-            alias_name: Some("123456789".to_string()),
-            note: None,
-            display_hidden: false,
-            accepted_accounts: Vec::new(),
-        }
-        .serialize()
-        .expect("serialize without minimum-size padding");
-        assert_eq!(bytes.len(), ContactInfoPrivateData::MIN_PLAINTEXT_SIZE);
-        bytes.push(42);
-
-        assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
-    }
-
-    #[test]
-    fn contact_info_padding_rejects_nonzero_bytes_after_the_sentinel() {
-        let canonical = ContactInfoPrivateData::new()
-            .serialize()
-            .expect("serialize");
-        for length in [16, ContactInfoPrivateData::MIN_PLAINTEXT_SIZE] {
-            assert!(ContactInfoPrivateData::deserialize(&canonical[..length]).is_some());
-            for offset in 9..length {
-                let mut malformed = canonical[..length].to_vec();
-                malformed[offset] = 42;
-                assert!(
-                    ContactInfoPrivateData::deserialize(&malformed).is_none(),
-                    "nonzero padding at {offset} in {length} bytes must require confirmation"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn minimum_size_padding_requires_the_sentinel() {
-        let mut bytes = ContactInfoPrivateData::new()
-            .serialize()
-            .expect("serialize");
-        bytes[8] = 1;
-
-        assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
-    }
-
-    #[test]
-    fn contact_info_note_preserves_a_concurrent_visibility_change() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
-        let data = apply_contact_info_update(
-            ContactInfoUpdate::note(Some("New note".into())),
-            Some(&existing),
-            &KEY,
-        )
-        .unwrap();
-        assert!(
-            data.display_hidden,
-            "note edits must keep the latest stored visibility"
-        );
-        assert_eq!(data.note.as_deref(), Some("New note"));
-        assert_eq!(data.alias_name.as_deref(), Some("Bao"));
-        assert_eq!(data.accepted_accounts, vec![0, 4, 9]);
-    }
-
-    #[test]
-    fn visibility_update_preserves_every_unrelated_stored_field() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
-        let data =
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY)
-                .expect("stored details must be readable");
-
-        assert_eq!(data.alias_name.as_deref(), Some("Bao"));
-        assert_eq!(data.note, None);
-        assert!(!data.display_hidden);
-        assert_eq!(data.accepted_accounts, vec![0, 4, 9]);
-    }
-
-    #[test]
-    fn replace_overwrites_whatever_the_document_stored() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
-
-        let data = apply_contact_info_update(
-            ContactInfoUpdate::replace_all(None, None, false, vec![2]),
-            Some(&existing),
-            &OTHER_KEY,
-        )
-        .expect("an explicit full replacement does not read stored data");
-
-        assert_eq!(data.accepted_accounts, vec![2]);
-        assert_eq!(data.alias_name, None);
-    }
-
-    #[test]
-    fn preserving_a_contact_with_no_stored_document_yields_no_accounts() {
-        let data = apply_contact_info_update(ContactInfoUpdate::visibility(false), None, &KEY)
-            .expect("a first-ever contactInfo has nothing to preserve");
-
-        assert!(data.accepted_accounts.is_empty());
-    }
-
-    #[test]
-    fn unreadable_private_data_aborts_the_write() {
-        let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
-
-        // A wrong-key AES-CBC decrypt is unauthenticated: PKCS7 unpadding usually
-        // rejects it (DecryptFailed), but ~1/256 the random IV yields valid
-        // padding and the garbage plaintext fails to parse (DeserializeFailed).
-        // Both are the "present but unreadable" abort this test asserts.
-        assert!(
-            matches!(
-                apply_contact_info_update(
-                    ContactInfoUpdate::visibility(false),
-                    Some(&existing),
-                    &KEY,
-                ),
-                Err(TaskError::DashPayContactInfoRead {
-                    source: ContactInfoReadError::DecryptFailed
-                        | ContactInfoReadError::DeserializeFailed,
-                })
-            ),
-            "an undecryptable present payload must abort before it can be overwritten"
-        );
-    }
-
-    #[test]
-    fn confirmed_overwrite_is_the_only_escape_hatch_for_unreadable_private_data() {
-        use crate::model::dashpay::ContactInfoUpdate;
-
-        let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
-        let update = ContactInfoUpdate::visibility(false);
-
-        // Wrong-key decrypt aborts as either DecryptFailed or (≈1/256, on a
-        // random IV that passes PKCS7 unpadding) DeserializeFailed.
-        assert!(matches!(
-            apply_contact_info_update(update.clone(), Some(&existing), &KEY),
-            Err(TaskError::DashPayContactInfoRead {
-                source: ContactInfoReadError::DecryptFailed
-                    | ContactInfoReadError::DeserializeFailed,
-            })
-        ));
-
-        let replaced =
-            apply_contact_info_update(update.overwrite_unreadable(), Some(&existing), &KEY)
-                .expect("a confirmed overwrite must let the contact be unhidden");
-        assert_eq!(replaced.alias_name, None);
-        assert_eq!(replaced.note, None);
-        assert!(!replaced.display_hidden);
-        assert!(replaced.accepted_accounts.is_empty());
-    }
-
-    #[test]
-    fn missing_private_data_is_safe_to_treat_as_empty() {
-        let existing = contact_info_document(None);
-        let data =
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY)
-                .expect("an absent payload contains no details to lose");
-
-        assert!(data.accepted_accounts.is_empty());
-    }
-
-    #[test]
-    fn unexpected_private_data_type_requires_confirmation() {
-        let existing = contact_info_document(Some(Value::Text("unknown".to_string())));
-
-        assert!(matches!(
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY,),
-            Err(TaskError::DashPayContactInfoRead {
-                source: ContactInfoReadError::UnexpectedPrivateDataType,
-            })
-        ));
-    }
-
-    #[test]
-    fn undecodable_private_data_aborts_the_write() {
-        let encrypted = encrypt_private_data(&[0, 0, 0, 0], &KEY).expect("encrypt malformed data");
-        let existing = contact_info_document(Some(Value::Bytes(encrypted)));
-
-        assert!(matches!(
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY,),
-            Err(TaskError::DashPayContactInfoRead {
-                source: ContactInfoReadError::DeserializeFailed,
-            })
-        ));
     }
 }

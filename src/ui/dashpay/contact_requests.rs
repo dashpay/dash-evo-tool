@@ -4,7 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::dashpay::{UnreadableContactInfoPolicy, contact_request_recipient};
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -65,7 +65,6 @@ pub struct ContactRequests {
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
     reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
-    overwrite_confirmation_dialog: Option<ConfirmationDialog>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -92,7 +91,6 @@ impl ContactRequests {
             has_fetched_requests: false,
             accept_confirmation_dialog: None,
             reject_confirmation_dialog: None,
-            overwrite_confirmation_dialog: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -159,7 +157,6 @@ impl ContactRequests {
             self.pending_profile_fetches.clear();
             self.request_in_flight = None;
             self.request_task_in_flight = None;
-            self.overwrite_confirmation_dialog = None;
             self.loading = false;
         }
     }
@@ -382,7 +379,6 @@ impl ContactRequests {
                     let request_task = DashPayTask::RejectContactRequest {
                         identity: identity.clone(),
                         request_id: request.request_id,
-                        unreadable: UnreadableContactInfoPolicy::Abort,
                     };
                     self.request_task_in_flight = Some(request_task.clone());
                     let task = BackendTask::DashPayTask(Box::new(request_task));
@@ -392,36 +388,6 @@ impl ContactRequests {
                 self.reject_confirmation_dialog = None;
             } else if response.inner.dialog_response == Some(ConfirmationStatus::Canceled) {
                 self.reject_confirmation_dialog = None;
-            }
-        }
-
-        if let Some(dialog) = &mut self.overwrite_confirmation_dialog {
-            match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) => {
-                    if let Some(DashPayTask::RejectContactRequest {
-                        identity,
-                        request_id,
-                        ..
-                    }) = self.request_task_in_flight.take()
-                    {
-                        let retry = DashPayTask::RejectContactRequest {
-                            identity,
-                            request_id,
-                            unreadable: UnreadableContactInfoPolicy::Overwrite,
-                        };
-                        self.request_task_in_flight = Some(retry.clone());
-                        self.loading = true;
-                        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(retry)));
-                    }
-                    self.overwrite_confirmation_dialog = None;
-                }
-                Some(ConfirmationStatus::Canceled) => {
-                    self.request_in_flight = None;
-                    self.request_task_in_flight = None;
-                    self.loading = false;
-                    self.overwrite_confirmation_dialog = None;
-                }
-                None => {}
             }
         }
 
@@ -907,23 +873,6 @@ impl ScreenLike for ContactRequests {
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         let matches_request =
             request_error_id(error).is_some_and(|id| self.request_in_flight.as_ref() == Some(id));
-        if matches_request
-            && is_contact_info_read_error(error)
-            && matches!(
-                self.request_task_in_flight,
-                Some(DashPayTask::RejectContactRequest { .. })
-            )
-        {
-            self.overwrite_confirmation_dialog = Some(
-                ConfirmationDialog::new(
-                    "Replace saved contact details?",
-                    "This contact's saved details cannot be read. Continuing will decline the request and clear the saved nickname, note, and accepted-account settings. You cannot undo this change.",
-                )
-                .confirm_text(Some("Replace saved details"))
-                .danger_mode(true),
-            );
-            return true;
-        }
         if matches_request {
             self.request_in_flight = None;
             self.request_task_in_flight = None;
@@ -1112,14 +1061,6 @@ fn request_error_id(error: &TaskError) -> Option<&Identifier> {
         TaskError::DashPayContactRequestActionFailed { request_id, .. } => Some(request_id),
         _ => None,
     }
-}
-
-fn is_contact_info_read_error(error: &TaskError) -> bool {
-    matches!(
-        error,
-        TaskError::DashPayContactRequestActionFailed { source, .. }
-            if matches!(source.as_ref(), TaskError::DashPayContactInfoRead { .. })
-    )
 }
 
 /// Map a typed accept/reject error onto the screen-local error category that

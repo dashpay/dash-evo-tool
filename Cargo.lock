@@ -2120,6 +2120,7 @@ dependencies = [
  "native-dialog",
  "nix",
  "objc2 0.6.4",
+ "platform-encryption",
  "platform-wallet",
  "platform-wallet-storage",
  "qrcode",

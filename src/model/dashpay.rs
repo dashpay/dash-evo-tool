@@ -96,45 +96,33 @@ pub struct StoredProfile {
     pub updated_at: i64,
 }
 
-/// What a `contactInfo` write does to the contact's accepted-accounts list.
-///
-/// A `contactInfo` document is always written whole, so every write decides the
-/// fate of the accounts the user has already accepted. A caller with no opinion
-/// on them — unhiding a contact, renaming one — says [`Preserve`] and keeps the
-/// stored list; only a caller that owns the list says [`Replace`].
-///
-/// [`Preserve`]: AcceptedAccounts::Preserve
-/// [`Replace`]: AcceptedAccounts::Replace
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum AcceptedAccounts {
-    /// Keep the accounts already stored in the contact's `contactInfo`.
-    #[default]
-    Preserve,
-    /// Overwrite the stored accounts with exactly these.
-    Replace(Vec<u32>),
-}
-
-/// What a whole-document write does to one optional contact detail.
+/// What a contact details write does to one optional detail.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ContactInfoField<T> {
-    /// Keep the value already stored in the encrypted payload.
+    /// Keep the value currently saved for the contact.
     #[default]
     Preserve,
     /// Store this value, including `None` when clearing an optional field.
     Replace(T),
 }
 
-/// How a write handles a present encrypted payload this client cannot read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UnreadableContactInfoPolicy {
-    /// Abort before overwriting data this client cannot preserve.
-    #[default]
-    Abort,
-    /// Replace the unreadable payload after the user explicitly confirms.
-    Overwrite,
+/// The private details an identity keeps about one contact: its nickname,
+/// note, and whether it is hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContactDetails {
+    pub nickname: Option<String>,
+    pub note: Option<String>,
+    pub hidden: bool,
 }
 
-/// Explicit field-by-field intent for a whole encrypted `contactInfo` write.
+impl ContactDetails {
+    /// Whether nothing is saved for the contact.
+    pub fn is_empty(&self) -> bool {
+        self.nickname.is_none() && self.note.is_none() && !self.hidden
+    }
+}
+
+/// Explicit field-by-field intent for a contact details write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactInfoUpdate {
     /// Nickname update intent.
@@ -143,10 +131,6 @@ pub struct ContactInfoUpdate {
     pub note: ContactInfoField<Option<String>>,
     /// Visibility update intent.
     pub display_hidden: ContactInfoField<bool>,
-    /// Accepted-account update intent.
-    pub accepted_accounts: AcceptedAccounts,
-    /// Policy for a present payload that cannot be read.
-    pub unreadable: UnreadableContactInfoPolicy,
 }
 
 impl ContactInfoUpdate {
@@ -156,8 +140,6 @@ impl ContactInfoUpdate {
             nickname: ContactInfoField::Preserve,
             note: ContactInfoField::Preserve,
             display_hidden: ContactInfoField::Replace(display_hidden),
-            accepted_accounts: AcceptedAccounts::Preserve,
-            unreadable: UnreadableContactInfoPolicy::Abort,
         }
     }
 
@@ -175,21 +157,49 @@ impl ContactInfoUpdate {
         nickname: Option<String>,
         note: Option<String>,
         display_hidden: bool,
-        accepted_accounts: Vec<u32>,
     ) -> Self {
         Self {
             nickname: ContactInfoField::Replace(nickname),
             note: ContactInfoField::Replace(note),
             display_hidden: ContactInfoField::Replace(display_hidden),
-            accepted_accounts: AcceptedAccounts::Replace(accepted_accounts),
-            unreadable: UnreadableContactInfoPolicy::Abort,
         }
     }
 
-    /// Allow replacement of unreadable stored data after explicit confirmation.
-    pub fn overwrite_unreadable(mut self) -> Self {
-        self.unreadable = UnreadableContactInfoPolicy::Overwrite;
-        self
+    /// Replace only the fields that differ between `opened`, the details an
+    /// editor started from, and `edited`, what the user left in it; every
+    /// other field keeps the latest saved value.
+    ///
+    /// An editor that starts from a local copy must save this way: replacing
+    /// a field the user did not touch would overwrite a newer value saved
+    /// from another device with the local copy's older one.
+    pub fn edits(opened: &ContactDetails, edited: ContactDetails) -> Self {
+        fn field<T: PartialEq>(opened: &T, edited: T) -> ContactInfoField<T> {
+            if *opened == edited {
+                ContactInfoField::Preserve
+            } else {
+                ContactInfoField::Replace(edited)
+            }
+        }
+        Self {
+            nickname: field(&opened.nickname, edited.nickname),
+            note: field(&opened.note, edited.note),
+            display_hidden: field(&opened.hidden, edited.hidden),
+        }
+    }
+
+    /// The details to save: `current` with this update's replacements.
+    pub fn apply_to(&self, current: ContactDetails) -> ContactDetails {
+        fn pick<T: Clone>(field: &ContactInfoField<T>, current: T) -> T {
+            match field {
+                ContactInfoField::Preserve => current,
+                ContactInfoField::Replace(value) => value.clone(),
+            }
+        }
+        ContactDetails {
+            nickname: pick(&self.nickname, current.nickname),
+            note: pick(&self.note, current.note),
+            hidden: pick(&self.display_hidden, current.hidden),
+        }
     }
 }
 
@@ -529,13 +539,72 @@ mod tests {
             ContactInfoField::Replace(Some("Met at the meetup".into()))
         );
         assert_eq!(update.nickname, ContactInfoField::Preserve);
-        assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
         assert_eq!(update.display_hidden, ContactInfoField::Preserve);
-        assert_eq!(update.unreadable, UnreadableContactInfoPolicy::Abort);
 
         let cleared = ContactInfoUpdate::note(None);
         assert_eq!(cleared.note, ContactInfoField::Replace(None));
         assert_eq!(cleared.display_hidden, ContactInfoField::Preserve);
+    }
+
+    /// A write keeps every detail it does not replace.
+    #[test]
+    fn an_update_keeps_the_details_it_does_not_replace() {
+        let current = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("old".into()),
+            hidden: true,
+        };
+        assert_eq!(
+            ContactInfoUpdate::note(Some("new".into())).apply_to(current.clone()),
+            ContactDetails {
+                note: Some("new".into()),
+                ..current.clone()
+            }
+        );
+        assert_eq!(
+            ContactInfoUpdate::visibility(false).apply_to(current.clone()),
+            ContactDetails {
+                hidden: false,
+                ..current.clone()
+            }
+        );
+        assert_eq!(
+            ContactInfoUpdate::replace_all(None, None, false).apply_to(current),
+            ContactDetails::default()
+        );
+    }
+
+    /// Only the fields an editor changed are replaced.
+    #[test]
+    fn edits_replace_only_the_changed_fields() {
+        let opened = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: false,
+        };
+        assert_eq!(
+            ContactInfoUpdate::edits(&opened, opened.clone()),
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Preserve,
+                note: ContactInfoField::Preserve,
+                display_hidden: ContactInfoField::Preserve,
+            }
+        );
+        assert_eq!(
+            ContactInfoUpdate::edits(
+                &opened,
+                ContactDetails {
+                    nickname: None,
+                    note: Some("n".into()),
+                    hidden: false,
+                }
+            ),
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Replace(None),
+                note: ContactInfoField::Replace(Some("n".into())),
+                display_hidden: ContactInfoField::Preserve,
+            }
+        );
     }
 
     #[test]

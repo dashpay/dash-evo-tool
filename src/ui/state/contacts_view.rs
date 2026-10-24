@@ -69,9 +69,8 @@ pub struct ContactsState {
     /// Notes the hub saved, shown over lists that may not hold them yet.
     confirmed_notes: HashMap<(Network, Identifier, Identifier), ConfirmedNote>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
-    /// offer a way back. Declining or cancelling a request hides that person,
-    /// so without this list a contact could only be recovered from the legacy
-    /// DashPay screen.
+    /// offer a way back; without this list a hidden contact could only be
+    /// recovered from the legacy DashPay screen.
     hidden: Vec<ContactData>,
     /// Whether the hidden-contacts section is expanded.
     show_hidden: bool,
@@ -104,7 +103,9 @@ pub struct ContactsState {
 ///   was confirmed. A list from that load or an earlier one, or from no load,
 ///   predates the save: it shows `note` whatever it holds.
 /// - A list from a later load shows `note` only while it still holds
-///   `lagging`, the note a read behind the save can return.
+///   `lagging`, the note a read behind the save can return. A save kept on
+///   this device has none: a later list already reflects it, so a different
+///   note there is a published one, which wins.
 /// - Retired by: a list holding `note`; a later list holding anything other
 ///   than `lagging`; another screen's successful write to the contact; the
 ///   hub's next confirmed save of it (replaced).
@@ -486,8 +487,9 @@ impl ContactsState {
         &mut self.detail
     }
 
-    /// Settle a confirmed contact details write `owner` ran on `network`.
-    /// Returns whether one was running. After a note save the listed contact
+    /// Settle a confirmed contact details write `owner` ran on `network`;
+    /// `published` when it reached Platform rather than staying on this
+    /// device. Returns whether one was running. After a note save the listed contact
     /// shows the stored note right away when the lists belong to that owner on
     /// that network, without waiting for the reload; see [`ConfirmedNote`].
     pub fn finish_contact_info_write(
@@ -495,6 +497,7 @@ impl ContactsState {
         network: Network,
         owner: &Identifier,
         contact_id: &Identifier,
+        published: bool,
     ) -> bool {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
@@ -511,12 +514,13 @@ impl ContactsState {
             None
         };
         // The list read last, else the note the edit started from: lists of
-        // another identity are on screen when the save lands.
-        let lagging = Some(
+        // another identity are on screen when the save lands. A save kept on
+        // this device has none; no read lags behind it.
+        let lagging = published.then(|| {
             listed
                 .as_ref()
-                .map_or(before, |contact| contact.note.clone()),
-        );
+                .map_or(before, |contact| contact.note.clone())
+        });
         self.confirmed_notes.insert(
             (network, *owner, *contact_id),
             ConfirmedNote {
@@ -741,7 +745,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Met at the meetup".into();
         assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -749,7 +753,7 @@ mod tests {
         );
         assert!(!state.detail().is_dirty(&id(7)));
         assert!(
-            !state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)),
+            !state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true),
             "a save settles only once"
         );
     }
@@ -766,7 +770,7 @@ mod tests {
             state.select_contact(&id(7));
             *state.detail_mut().note_mut(&id(7)).unwrap() = note.unwrap_or_default().into();
             assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
-            assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)));
+            assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true));
             state.reset();
             state.record_contacts(vec![stale.clone()]);
             state.select_contact(&id(7));
@@ -795,7 +799,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Theirs".into();
         assert!(state.detail_mut().begin_save(id(2), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(2), &id(7)));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(2), &id(7), true));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),

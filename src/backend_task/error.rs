@@ -43,20 +43,6 @@ impl DapiAddressAvailability {
     }
 }
 
-/// Why an existing DashPay `contactInfo` payload could not be preserved.
-#[derive(Debug, Error)]
-pub enum ContactInfoReadError {
-    /// The private payload was present with a shape this client does not understand.
-    #[error("contactInfo privateData has an unexpected type")]
-    UnexpectedPrivateDataType,
-    /// The private payload was present but could not be decrypted with its derived key.
-    #[error("contactInfo privateData decryption failed")]
-    DecryptFailed,
-    /// Decryption succeeded, but the plaintext is not a format this client understands.
-    #[error("contactInfo privateData deserialization failed")]
-    DeserializeFailed,
-}
-
 /// Typed failures while restoring persisted Core transaction history.
 #[derive(Debug, Error)]
 pub enum WalletTransactionHistoryError {
@@ -1370,6 +1356,26 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A DashPay record this device keeps (which contact details it holds,
+    /// which requests were withdrawn) could not be read, so an action that
+    /// depends on it cannot tell what to do.
+    #[error("Could not read your DashPay records on this device. Try again in a moment.")]
+    DashPayLocalStateRead {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A contact request was published, but this device could not stop
+    /// hiding the person it was sent to (an earlier decline or withdrawal).
+    /// Sending the request again finishes the update without publishing.
+    #[error(
+        "Your contact request was sent, but this device could not update your contacts. Send the request to this person again to finish."
+    )]
+    DashPayContactRequestSentNotUpdated {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A private contact note exceeds the application's byte limit.
     #[error("This note is too long. Shorten it to save it.")]
     DashPayContactNoteTooLong {
@@ -1384,14 +1390,25 @@ pub enum TaskError {
         source: Box<platform_wallet::PlatformWalletError>,
     },
 
-    /// An existing contact's encrypted details could not be read safely.
-    #[error(
-        "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
-    )]
-    DashPayContactInfoRead {
+    /// Publishing contact details through platform-wallet failed.
+    #[error("Your contact details could not be saved. Check your connection, then try again.")]
+    DashPayContactInfoWriteFailed {
         #[source]
-        source: ContactInfoReadError,
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
     },
+
+    /// Saving contact details needs the identity's index in its wallet, which
+    /// an identity added without its wallet does not have.
+    #[error(
+        "Contact details can be saved only for an identity loaded from its wallet. Load this identity from the wallet that created it, then try again."
+    )]
+    ContactInfoIdentityNotFromWallet,
+
+    /// Contact details are kept only for established contacts.
+    #[error(
+        "You can save details only for people in your contacts. Wait until they accept your contact request, then try again."
+    )]
+    ContactInfoContactNotEstablished,
 
     /// A direct contact-details update failed. The identity/contact envelope
     /// lets screens correlate a delayed failure with the exact pending write.
@@ -4827,15 +4844,11 @@ mod tests {
 
     #[test]
     fn a_contact_info_action_failure_shows_the_underlying_reason_to_the_user() {
-        let cause = TaskError::DashPayContactInfoRead {
-            source: ContactInfoReadError::DeserializeFailed,
-        };
+        let cause = TaskError::ContactInfoContactNotEstablished;
         let wrapped = TaskError::DashPayContactInfoActionFailed {
             identity_id: Identifier::from([6; 32]),
             contact_id: Identifier::from([7; 32]),
-            source: Box::new(TaskError::DashPayContactInfoRead {
-                source: ContactInfoReadError::DeserializeFailed,
-            }),
+            source: Box::new(TaskError::ContactInfoContactNotEstablished),
         };
 
         assert_eq!(wrapped.to_string(), cause.to_string());

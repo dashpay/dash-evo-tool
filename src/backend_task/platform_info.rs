@@ -584,11 +584,9 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
-        // Captured before the read, generation first: a rebuild swaps the SDK
-        // before it bumps the generation, so a read on an SDK that is no
-        // longer current is never adopted.
-        let generation = self.connection_generation();
-        let on_current_sdk = self.is_current_sdk(sdk);
+        // Captured together before the read: a read on an SDK a rebuild has
+        // replaced, or begun before it, is never adopted.
+        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
@@ -596,12 +594,6 @@ impl AppContext {
             self.adopt_epoch_info(generation, &epoch_info);
         }
         Ok(epoch_info)
-    }
-
-    /// Whether `sdk` is this context's current SDK, not one a rebuild has
-    /// replaced (or a copy of it).
-    fn is_current_sdk(&self, sdk: &Sdk) -> bool {
-        std::ptr::eq(sdk, Arc::as_ptr(&self.sdk.load_full()))
     }
 
     /// Adopts the fee multiplier and protocol version of a proved epoch read
@@ -667,8 +659,7 @@ impl AppContext {
                         // Without the epoch, the network's version is learned from
                         // the ratchet a proved DPNS fetch drives. Only a successful
                         // fetch proves it came from the network, not the local seed.
-                        let generation = self.connection_generation();
-                        let on_current_sdk = self.is_current_sdk(sdk);
+                        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
                         match DataContract::fetch(sdk, self.dpns_contract().id()).await {
                             Ok(_) if on_current_sdk => {
                                 self.raise_platform_protocol_version_on(
@@ -1125,7 +1116,7 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
 
-        ctx.reset_connection_state();
+        ctx.replace_connection(Arc::new(Sdk::new_mock()));
 
         assert_eq!(ctx.platform_protocol_version(), 0);
         assert_eq!(
@@ -1146,7 +1137,7 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let before_rebuild = ctx.connection_generation();
 
-        ctx.reset_connection_state();
+        ctx.replace_connection(Arc::new(Sdk::new_mock()));
 
         assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500, 14));
         assert_eq!(ctx.platform_protocol_version(), 0);

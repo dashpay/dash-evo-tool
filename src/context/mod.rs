@@ -328,7 +328,7 @@ pub struct AppContext {
     /// 0 means not yet fetched from the network.
     platform_protocol_version: AtomicU32,
     /// The connection generation and the last adopted proved epoch. See
-    /// [`Self::adopt_epoch`] and [`Self::reset_connection_state`].
+    /// [`Self::adopt_epoch`] and [`Self::replace_connection`].
     epoch_adoption: Mutex<EpochAdoption>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
@@ -1193,8 +1193,9 @@ impl AppContext {
     }
 
     /// The generation of the connection to the network: bumped each time the
-    /// connection is rebuilt. An epoch read captures it before it is sent, so
-    /// [`Self::adopt_epoch`] can drop a read the old connection answered.
+    /// connection is rebuilt. Production reads take it together with the SDK
+    /// check, via [`Self::connection_snapshot_for`].
+    #[cfg(test)]
     pub(crate) fn connection_generation(&self) -> u64 {
         self.epoch_adoption
             .lock()
@@ -1255,13 +1256,24 @@ impl AppContext {
         true
     }
 
-    /// Forget everything learned from the connection being replaced: bump the
-    /// generation, so reads still in flight on it are dropped, forget the
-    /// adopted epoch, and put the protocol version back to unknown and the
-    /// fee multiplier to the default. The new endpoints may serve another
-    /// protocol version or a reset devnet; capabilities stay closed until the
-    /// new connection proves its epoch.
-    pub(crate) fn reset_connection_state(&self) {
+    /// Replace the connection's SDK with `new_sdk` and forget everything
+    /// learned from the old connection: bump the generation, so reads still in
+    /// flight on it are dropped, forget the adopted epoch, and put the
+    /// protocol version back to unknown and the fee multiplier to the default.
+    /// The new endpoints may serve another protocol version or a reset devnet;
+    /// capabilities stay closed until the new connection proves its epoch.
+    ///
+    /// The reset is written before the new SDK is published, under the
+    /// adoption lock: whoever loads the new SDK sees the reset state, and a
+    /// [`Self::connection_snapshot_for`] sees either the old generation and
+    /// SDK or the new ones. A task still holding the old SDK may see the reset
+    /// state, which closes capabilities and uses default fees: fail closed.
+    pub(crate) fn replace_connection(&self, new_sdk: Arc<Sdk>) {
+        self.replace_connection_observed(new_sdk, |_| {});
+    }
+
+    /// [`Self::replace_connection`]; `observe` runs where the two halves meet (test seam).
+    fn replace_connection_observed(&self, new_sdk: Arc<Sdk>, observe: impl Fn(&Self)) {
         let mut adoption = self
             .epoch_adoption
             .lock()
@@ -1270,6 +1282,21 @@ impl AppContext {
         adoption.epoch_index = None;
         self.set_fee_multiplier_permille(PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE);
         self.set_platform_protocol_version(0);
+        observe(self);
+        self.sdk.store(new_sdk);
+    }
+
+    /// The connection generation and whether `sdk` is the current SDK (not
+    /// one a rebuild replaced, nor a copy), read together under the adoption
+    /// lock. An epoch read takes this before it is sent and passes the
+    /// generation to [`Self::adopt_epoch`].
+    pub(crate) fn connection_snapshot_for(&self, sdk: &Sdk) -> (u64, bool) {
+        let adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = std::ptr::eq(sdk, Arc::as_ptr(&self.sdk.load_full()));
+        (adoption.generation, current)
     }
 
     /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
@@ -1291,7 +1318,7 @@ impl AppContext {
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`, and forget the state
-    /// learned from the old connection ([`Self::reset_connection_state`]).
+    /// learned from the old connection ([`Self::replace_connection`]).
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
@@ -1335,10 +1362,7 @@ impl AppContext {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
         }
-        // Swapped before the reset: a read that sees the new generation then
-        // also sees the new SDK.
-        self.sdk.store(Arc::new(new_sdk));
-        self.reset_connection_state();
+        self.replace_connection(Arc::new(new_sdk));
 
         // Rebind the provider to hold the new AppContext reference.
         // bind_app_context also registers the provider with the SDK.
@@ -2047,6 +2071,32 @@ mod tests {
             assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
         }
         assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
+    }
+
+    /// A task that loads the new SDK always sees the reset connection state:
+    /// the new SDK never pairs with the old connection's protocol version or
+    /// fee multiplier.
+    #[test]
+    fn the_new_sdk_is_published_only_after_the_connection_state_is_reset() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
+        let new_sdk = Arc::new(dash_sdk::Sdk::new_mock());
+        let new_sdk_ptr = Arc::as_ptr(&new_sdk);
+
+        ctx.replace_connection_observed(new_sdk, |ctx| {
+            if Arc::as_ptr(&ctx.sdk.load_full()) == new_sdk_ptr {
+                assert_eq!(ctx.platform_protocol_version(), 0, "new SDK, old protocol");
+                assert_eq!(
+                    ctx.fee_multiplier_permille(),
+                    crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+                    "new SDK, old fee multiplier"
+                );
+            }
+        });
+
+        assert_eq!(Arc::as_ptr(&ctx.sdk.load_full()), new_sdk_ptr);
+        assert_eq!(ctx.platform_protocol_version(), 0);
     }
 
     /// Until the network's version is fetched, the connected version is the

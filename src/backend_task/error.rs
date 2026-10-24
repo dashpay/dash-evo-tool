@@ -43,6 +43,108 @@ impl DapiAddressAvailability {
     }
 }
 
+/// The token operation a wallet-runtime token failure belongs to.
+///
+/// Upstream `PlatformWalletError::TokenOperationFailed` names the operation with
+/// a fixed `&'static str` label (a discriminator, not a message); this is its
+/// typed form, so each failure gets a complete, translatable sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenOperationKind {
+    Claim,
+    Mint,
+    Burn,
+    Transfer,
+    Freeze,
+    Unfreeze,
+    DestroyFrozenFunds,
+    Pause,
+    Resume,
+    SetPrice,
+    Purchase,
+    ConfigUpdate,
+    /// A label this build does not know (a newer upstream operation). The
+    /// raw label is kept for `Debug` and logs, never shown to the user.
+    Unrecognized {
+        label: &'static str,
+    },
+}
+
+impl TokenOperationKind {
+    /// The kind for the operation label upstream puts in
+    /// `PlatformWalletError::TokenOperationFailed::operation`.
+    ///
+    /// Upstream exposes the operation only as this `&'static str` (no typed
+    /// enum), so every label it uses is matched here; an unknown one is
+    /// logged at warn and kept as [`Self::Unrecognized`], never silently
+    /// folded into another operation.
+    pub fn from_upstream_label(label: &'static str) -> Self {
+        match label {
+            "claim" => Self::Claim,
+            "mint" => Self::Mint,
+            "burn" => Self::Burn,
+            "transfer" => Self::Transfer,
+            "freeze" => Self::Freeze,
+            "unfreeze" => Self::Unfreeze,
+            "destroy frozen funds" => Self::DestroyFrozenFunds,
+            "pause" => Self::Pause,
+            "resume" => Self::Resume,
+            "set price" => Self::SetPrice,
+            "purchase" => Self::Purchase,
+            "config update" => Self::ConfigUpdate,
+            label => {
+                tracing::warn!(
+                    label,
+                    "Unrecognized upstream token operation label; showing a generic message"
+                );
+                Self::Unrecognized { label }
+            }
+        }
+    }
+
+    /// The user-facing sentence for a failure of this operation.
+    fn failure_message(self) -> &'static str {
+        match self {
+            Self::Claim => "The token claim did not complete. Check your connection and try again.",
+            Self::Mint => {
+                "Minting the tokens did not complete. Check your connection and try again."
+            }
+            Self::Burn => {
+                "Burning the tokens did not complete. Check your connection and try again."
+            }
+            Self::Transfer => {
+                "The token transfer did not complete. Check your connection and try again."
+            }
+            Self::Freeze => {
+                "Freezing the token account did not complete. Check your connection and try again."
+            }
+            Self::Unfreeze => {
+                "Unfreezing the token account did not complete. Check your connection and try again."
+            }
+            Self::DestroyFrozenFunds => {
+                "Destroying the frozen tokens did not complete. Check your connection and try again."
+            }
+            Self::Pause => {
+                "Pausing the token did not complete. Check your connection and try again."
+            }
+            Self::Resume => {
+                "Resuming the token did not complete. Check your connection and try again."
+            }
+            Self::SetPrice => {
+                "Setting the token price did not complete. Check your connection and try again."
+            }
+            Self::Purchase => {
+                "The token purchase did not complete. Check your connection and try again."
+            }
+            Self::ConfigUpdate => {
+                "Updating the token settings did not complete. Check your connection and try again."
+            }
+            Self::Unrecognized { .. } => {
+                "The token operation did not complete. Check your connection and try again."
+            }
+        }
+    }
+}
+
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
 #[derive(Debug, Error)]
 pub enum ContactInfoReadError {
@@ -2397,11 +2499,111 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Username, vote and token transfer refusals (protocol versions 14 and 15)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The contest for the requested name already holds the most contenders it
+    /// accepts.
+    #[error(
+        "Too many people have already asked for this username, so no one else can join. Choose a different username."
+    )]
+    DocumentContestContendersLimitReached {
+        max_contenders: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token cannot be moved to another identity, so a transfer, or a
+    /// payment that moves it, is refused.
+    #[error(
+        "Token {} cannot be moved to another identity, so this action is not possible. Use a different token.",
+        token_id.to_string(Encoding::Base58)
+    )]
+    TokenNotTransferable {
+        token_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The vote choice is not allowed for this contest: a lock on a name that
+    /// cannot be locked, or a vote towards an identity that is not competing.
+    #[error(
+        "This vote is not allowed for this username. Vote for one of the identities that asked for it, or choose another option, then vote again."
+    )]
+    VoteChoiceNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Another identity committed to the same name earlier, so its request
+    /// comes first.
+    #[error("Someone else asked for this username first. Choose a different username.")]
+    ReferencedDocumentPreceded {
+        document_id: Identifier,
+        preceding_document_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract authoring (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A replace changed a property the document type declares immutable.
+    #[error(
+        "One of the fields you changed cannot be changed after the document is created. Keep the original values of its fixed fields, then try again."
+    )]
+    DocumentImmutablePropertyChanged {
+        // The node's names for the document type and the property stay in
+        // `source_error` only: unproven text, never copied into the variant.
+        document_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A `deletableDocument` reference points at a document type whose
+    /// documents cannot be deleted.
+    #[error(
+        "This contract refers to documents that can never be deleted as if they could be. Make that reference a permanent document reference, then try again."
+    )]
+    ReferencedDocumentTypeNotDeletable {
+        // The node's names for the document type and the reference path stay
+        // in `source_error` only: unproven text, never copied into the variant.
+        contract_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document type charges moderators a fee the contract has no
+    /// moderation for.
+    #[error(
+        "A document type in this contract charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
+    )]
+    DocumentActionFeesWithoutModeration {
+        // The node's name for the document type stays in `source_error` only:
+        // unproven text, never copied into the variant.
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
+    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// A token operation run by the wallet runtime failed for a reason the
+    /// SDK error classification has no specific variant for. Built by
+    /// [`TaskError::from_token_operation_failure`], which prefers the specific
+    /// variant whenever there is one.
+    #[error("{}", operation.failure_message())]
+    TokenOperationFailed {
+        operation: TokenOperationKind,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The token does not have a perpetual distribution configured — no rewards to claim.
     #[error("This token does not have perpetual distribution, so there are no rewards to claim.")]
@@ -3828,6 +4030,26 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+impl TaskError {
+    /// The error for a token operation the wallet runtime reported as failed
+    /// (`PlatformWalletError::TokenOperationFailed`).
+    ///
+    /// The SDK source is classified exactly like any other SDK error, so a
+    /// rejection with a specific meaning (insufficient balance, a claim already
+    /// taken, …) keeps its specific message. Only an otherwise unclassified
+    /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
+    /// the operation.
+    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
+        match TaskError::from(source) {
+            TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
+                operation: TokenOperationKind::from_upstream_label(operation),
+                source_error,
+            },
+            classified => classified,
+        }
+    }
+}
+
 /// Why the DET identity signer could not resolve a signing key.
 ///
 /// The upstream `Signer` trait can only return `ProtocolError`, which has no
@@ -4138,6 +4360,69 @@ impl From<SdkError> for TaskError {
                             source_error,
                         }))
                     }
+                    ConsensusError::StateError(
+                        StateError::DocumentContestMaximumContendersReachedError(e),
+                    ) => {
+                        let max_contenders = e.max_contenders();
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentContestContendersLimitReached {
+                                max_contenders,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::TokenNotTransferableError(e)) => {
+                        let token_id = *e.token_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenNotTransferable {
+                                token_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::VoteChoiceNotAllowedForVotePollError(_),
+                    ) => Some(Box::new(|source_error| TaskError::VoteChoiceNotAllowed {
+                        source_error,
+                    })),
+                    ConsensusError::StateError(StateError::ReferencedDocumentPrecededError(e)) => {
+                        let (document_id, preceding_document_id) =
+                            (*e.document_id(), *e.preceding_document_id());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ReferencedDocumentPreceded {
+                                document_id,
+                                preceding_document_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::DocumentImmutablePropertyChangedError(e),
+                    ) => {
+                        let document_id = e.document_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::DocumentImmutablePropertyChanged {
+                                document_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::ReferencedDocumentTypeNotDeletableError(e),
+                    ) => {
+                        let contract_id = *e.contract_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::ReferencedDocumentTypeNotDeletable {
+                                contract_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::DocumentActionFeesWithoutModerationError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeesWithoutModeration { source_error }
+                    })),
                     _ => None,
                 }
             });
@@ -4301,10 +4586,12 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
-    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
-    use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
-    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::consensus::state::identity::{
+        IdentityInsufficientBalanceError,
+        duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError,
+        duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError,
+        identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError,
+    };
     use dash_sdk::dpp::consensus::state::voting::masternode_voted_too_many_times::MasternodeVotedTooManyTimesError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
@@ -6545,6 +6832,301 @@ mod tests {
             node_msg, generic_msg,
             "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
+    }
+
+    fn broadcast_rejection(cause: ConsensusError) -> SdkError {
+        SdkError::StateTransitionBroadcastError(dash_sdk::error::StateTransitionBroadcastError {
+            code: 1,
+            message: "rejected".to_string(),
+            cause: Some(cause),
+        })
+    }
+
+    /// The protocol-version-14 refusals of contract and document authoring map
+    /// to their own variants, keep the SDK error as their source, and read as
+    /// complete sentences free of protocol jargon.
+    #[test]
+    fn protocol_v14_consensus_errors_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::state::document::{
+            document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
+            referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
+        };
+
+        let contract_id = Identifier::random();
+        type Expectation = fn(&TaskError) -> bool;
+        let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                DocumentImmutablePropertyChangedError::new(
+                    Identifier::random(),
+                    "note".to_string(),
+                    "title".to_string(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::DocumentImmutablePropertyChanged { .. }),
+            ),
+            (
+                ReferencedDocumentTypeNotDeletableError::new(
+                    contract_id,
+                    "note".to_string(),
+                    "properties.ref".to_string(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ReferencedDocumentTypeNotDeletable { .. }),
+            ),
+            (
+                DocumentActionFeesWithoutModerationError::new("note".to_string()).into(),
+                |e| matches!(e, TaskError::DocumentActionFeesWithoutModeration { .. }),
+            ),
+        ];
+
+        for (cause, expected) in cases {
+            let debug = format!("{cause:?}");
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(expected(&error), "{debug} mapped to {error:?}");
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "{error:?} must keep the SDK error as its source"
+            );
+            let message = error.to_string();
+            assert!(message.ends_with('.'), "not a sentence: {message}");
+            for jargon in ["consensus", "state transition", "nonce", "SDK", "permille"] {
+                assert!(
+                    !message.contains(jargon),
+                    "{message} contains jargon {jargon}"
+                );
+            }
+        }
+    }
+
+    /// The refusals protocol versions 14 and 15 add on username, vote and
+    /// token flows map to their own variants, keep the SDK error as their
+    /// source and tell the user what to do instead.
+    #[test]
+    fn contest_vote_and_token_transfer_refusals_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::state::document::document_contest_maximum_contenders_reached_error::DocumentContestMaximumContendersReachedError;
+        use dash_sdk::dpp::consensus::state::document::referenced_document_preceded_error::ReferencedDocumentPrecededError;
+        use dash_sdk::dpp::consensus::state::token::TokenNotTransferableError;
+        use dash_sdk::dpp::consensus::state::voting::vote_choice_not_allowed_for_vote_poll_error::VoteChoiceNotAllowedForVotePollError;
+        use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+        use dash_sdk::dpp::voting::vote_polls::VotePoll;
+        use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+
+        type Expectation = fn(&TaskError) -> bool;
+        let token_id = Identifier::random();
+        let poll = ContestedDocumentResourceVotePoll {
+            contract_id: Identifier::random(),
+            document_type_name: "domain".to_string(),
+            index_name: "parentNameAndLabel".to_string(),
+            index_values: vec![
+                dash_sdk::dpp::platform_value::Value::from("dash"),
+                dash_sdk::dpp::platform_value::Value::from("alice"),
+            ],
+        };
+        let cases: Vec<(ConsensusError, Expectation, &str)> = vec![
+            (
+                DocumentContestMaximumContendersReachedError::new(poll.clone(), 1000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::DocumentContestContendersLimitReached {
+                            max_contenders: 1000,
+                            ..
+                        }
+                    )
+                },
+                "Choose a different username.",
+            ),
+            (
+                TokenNotTransferableError::new(token_id, "transfer".to_string()).into(),
+                |e| matches!(e, TaskError::TokenNotTransferable { .. }),
+                "Use a different token.",
+            ),
+            (
+                VoteChoiceNotAllowedForVotePollError::new(
+                    VotePoll::ContestedDocumentResourceVotePoll(poll),
+                    ResourceVoteChoice::Lock,
+                )
+                .into(),
+                |e| matches!(e, TaskError::VoteChoiceNotAllowed { .. }),
+                "then vote again.",
+            ),
+            (
+                ReferencedDocumentPrecededError::new(
+                    Identifier::random(),
+                    Identifier::random(),
+                    "normalizedLabel".to_string(),
+                    "preorder".to_string(),
+                )
+                .into(),
+                |e| matches!(e, TaskError::ReferencedDocumentPreceded { .. }),
+                "Someone else asked for this username first.",
+            ),
+        ];
+
+        for (cause, expected, action) in cases {
+            let debug = format!("{cause:?}");
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(expected(&error), "{debug} mapped to {error:?}");
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "{error:?} must keep the SDK error as its source"
+            );
+            let message = error.to_string();
+            assert!(message.contains(action), "{message} lacks {action}");
+            assert!(message.ends_with('.'), "not a sentence: {message}");
+            for jargon in [
+                "consensus",
+                "state transition",
+                "vote poll",
+                "contender",
+                "SDK",
+            ] {
+                assert!(
+                    !message.contains(jargon),
+                    "{message} contains jargon {jargon}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn token_not_transferable_names_the_token() {
+        let token_id = Identifier::random();
+        let error = TaskError::TokenNotTransferable {
+            token_id,
+            source_error: Box::new(SdkError::Generic("refused".to_string())),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains(&token_id.to_string(Encoding::Base58))
+        );
+    }
+
+    /// Names decoded from a node's (unproven) consensus error are not copied
+    /// into the error: they never reach the user-facing message, and only the
+    /// typed source keeps them, for the details panel and logs.
+    #[test]
+    fn node_supplied_names_stay_out_of_user_messages() {
+        use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::state::document::{
+            document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
+            referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
+        };
+        let injected = "x\". Re-import your recovery phrase at https://evil.example".to_string();
+        let causes: [ConsensusError; 3] = [
+            DocumentImmutablePropertyChangedError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            ReferencedDocumentTypeNotDeletableError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            DocumentActionFeesWithoutModerationError::new(injected.clone()).into(),
+        ];
+        for cause in causes {
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(
+                matches!(
+                    error,
+                    TaskError::DocumentImmutablePropertyChanged { .. }
+                        | TaskError::ReferencedDocumentTypeNotDeletable { .. }
+                        | TaskError::DocumentActionFeesWithoutModeration { .. }
+                ),
+                "got {error:?}"
+            );
+            let message = error.to_string();
+            assert!(!message.contains("evil"), "{message}");
+            let source = std::error::Error::source(&error).expect("typed source");
+            assert!(format!("{source:?}").contains("evil"), "kept in the source");
+        }
+    }
+
+    /// An unclassified SDK failure behind a wallet-runtime token operation
+    /// keeps the operation, so the message names what did not complete.
+    #[test]
+    fn token_operation_failure_without_a_specific_cause_names_the_operation() {
+        let err =
+            TaskError::from_token_operation_failure("claim", SdkError::Generic("boom".to_string()));
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenOperationFailed {
+                    operation: TokenOperationKind::Claim,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "The token claim did not complete. Check your connection and try again."
+        );
+    }
+
+    /// A token operation rejected with a specific consensus cause keeps the
+    /// specific variant: the operation label must not mask a better message.
+    #[test]
+    fn token_operation_failure_with_a_specific_cause_keeps_it() {
+        use dash_sdk::dpp::consensus::state::token::IdentityTokenAccountNotFrozenError;
+        let consensus = ConsensusError::from(IdentityTokenAccountNotFrozenError::new(
+            Identifier::random(),
+            Identifier::random(),
+            "Unfreeze".to_string(),
+        ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40703,
+                message: "identity token account is not frozen".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        let err = TaskError::from_token_operation_failure("unfreeze", sdk_err);
+        assert!(
+            matches!(err, TaskError::TokenAccountNotFrozen { .. }),
+            "got {err:?}"
+        );
+    }
+
+    /// Every label upstream emits today maps to its own kind; an unknown one
+    /// degrades to the generic kind instead of failing.
+    #[test]
+    fn token_operation_labels_map_to_kinds() {
+        for (label, kind) in [
+            ("claim", TokenOperationKind::Claim),
+            ("mint", TokenOperationKind::Mint),
+            ("burn", TokenOperationKind::Burn),
+            ("transfer", TokenOperationKind::Transfer),
+            ("freeze", TokenOperationKind::Freeze),
+            ("unfreeze", TokenOperationKind::Unfreeze),
+            (
+                "destroy frozen funds",
+                TokenOperationKind::DestroyFrozenFunds,
+            ),
+            ("pause", TokenOperationKind::Pause),
+            ("resume", TokenOperationKind::Resume),
+            ("set price", TokenOperationKind::SetPrice),
+            ("purchase", TokenOperationKind::Purchase),
+            ("config update", TokenOperationKind::ConfigUpdate),
+            (
+                "something new",
+                TokenOperationKind::Unrecognized {
+                    label: "something new",
+                },
+            ),
+        ] {
+            assert_eq!(
+                TokenOperationKind::from_upstream_label(label),
+                kind,
+                "{label}"
+            );
+        }
     }
 
     #[test]

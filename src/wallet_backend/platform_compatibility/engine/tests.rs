@@ -1118,7 +1118,7 @@ fn upgrade_through_core_rescan(
             "UPDATE core_sync_state SET synced_height = (
                 SELECT MIN(COALESCE(core_sync_state.synced_height, MAX(w.birth_height - 1, 0)),
                            MAX(w.birth_height - 1, 0))
-                FROM wallets w WHERE w.wallet_id = core_sync_state.wallet_id);",
+                FROM main.wallets w WHERE w.wallet_id = core_sync_state.wallet_id);",
         )?;
         conn.execute_batch(migrate)?;
         Ok(())

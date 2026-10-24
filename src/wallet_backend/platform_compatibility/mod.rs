@@ -290,7 +290,7 @@ mod tests {
             INSERT INTO wallets VALUES (zeroblob(32), 'testnet', 0);
             INSERT INTO core_sync_state VALUES (zeroblob(32), 777, NULL, NULL);
             INSERT INTO wallets VALUES (randomblob(32), 'testnet', 500);
-            INSERT INTO core_sync_state SELECT wallet_id, 888, 20, NULL FROM wallets WHERE birth_height = 500;").unwrap();
+            INSERT INTO core_sync_state SELECT wallet_id, 888, 20, NULL FROM main.wallets WHERE birth_height = 500;").unwrap();
         drop(conn);
         drop(open(SqlitePersisterConfig::new(&path)).unwrap());
         let conn = rusqlite::Connection::open(&path).unwrap();

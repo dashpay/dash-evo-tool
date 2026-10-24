@@ -1776,6 +1776,14 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// The revision a Core send Max quote is made against; see
+    /// [`crate::wallet_backend::WalletBackend::core_send_quote_revision`].
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.core_send_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
     /// Core (L1) transaction fee shown for a send that spends every UTXO.
     ///

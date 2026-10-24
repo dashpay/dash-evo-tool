@@ -610,6 +610,9 @@ impl WalletBackend {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
         let max_inputs = self.asset_lock_input_cap();
+        // Read before the lock: an operation starting meanwhile leaves this
+        // quote stale rather than current.
+        let spend_key = self.inner.spend_activity.quote_key(seed_hash);
         // Every dry run performs one reservation read→reserve→release cycle.
         // Keep them all under the same exclusive boundary as real builds.
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
@@ -642,7 +645,7 @@ impl WalletBackend {
             drop(wallet_manager);
             Ok(AssetLockMaxAmountQuote {
                 amount_duffs,
-                observed_inputs,
+                observed_inputs: observed_inputs.with_spend_key(spend_key),
                 is_partial,
             })
         })
@@ -887,6 +890,7 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_core_payment_builds(seed_hash, &recipients)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -1007,6 +1011,7 @@ impl WalletBackend {
     > {
         use platform_wallet::AssetLockFundingType;
 
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
             .await?;
         // One held-seed scope covers account provisioning, the funding-input
@@ -2229,6 +2234,63 @@ mod tests {
                 Err(TaskError::AssetLockTooManyInputs { count, max: 100 }) if count > 100
             ),
             "{result:?}"
+        );
+    }
+
+    /// Every operation that can take or release Core input reservations
+    /// moves both Max quote keys — the Core send key and the asset-lock input
+    /// composition — so a quote made before it is never offered after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reserving_operation_invalidates_both_max_quotes() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x71,
+            &[1_000_000],
+        )
+        .await;
+        let keys = |backend: &crate::wallet_backend::WalletBackend| {
+            (
+                backend.core_send_quote_revision(&seed_hash),
+                backend.asset_lock_probe_snapshot(&seed_hash).1,
+            )
+        };
+        let before = keys(&backend);
+
+        // Both refuse a shortfall before any prompt; each still ran as a
+        // reserving operation.
+        let send = backend
+            .send_payment(&seed_hash, vec![(payment_recipient(), 50_000_000)])
+            .await;
+        assert!(send.is_err(), "{send:?}");
+        let after_send = keys(&backend);
+        assert_ne!(after_send.0, before.0, "a send moves the Core Max key");
+        assert_ne!(after_send.1, before.1, "a send moves the asset-lock key");
+
+        let lock = backend
+            .create_asset_lock_proof(
+                &seed_hash,
+                50_000_000,
+                platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+                0,
+            )
+            .await;
+        assert!(lock.is_err(), "{lock:?}");
+        let after_lock = keys(&backend);
+        assert_ne!(
+            after_lock.0, after_send.0,
+            "an asset lock moves the Core Max key"
+        );
+        assert_ne!(
+            after_lock.1, after_send.1,
+            "an asset lock moves the asset-lock key"
         );
     }
 

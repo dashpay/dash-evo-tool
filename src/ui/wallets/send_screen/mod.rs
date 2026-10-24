@@ -1011,10 +1011,10 @@ impl WalletSendScreen {
     ) -> Option<(WalletSeedHash, SpendLimitKind, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
         match (source, destination?) {
-            (SourceSelection::PlatformAddresses(addresses), AddressKind::Shielded) => Some((
+            (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => Some((
                 seed_hash,
                 SpendLimitKind::ShieldFromPlatform,
-                platform_balances_revision(addresses),
+                self.live_platform_balances_revision(),
             )),
             (SourceSelection::CoreWallet, AddressKind::Core) => Some((
                 seed_hash,
@@ -1023,6 +1023,13 @@ impl WalletSendScreen {
             )),
             _ => None,
         }
+    }
+
+    /// Names the wallet's live Platform balances, not the ones captured in
+    /// a resolved source: a balance fetch or sync push updates the wallet
+    /// without re-resolving the source, and must still re-quote shield Max.
+    fn live_platform_balances_revision(&self) -> u64 {
+        platform_balances_revision(&self.platform_source_addresses())
     }
 
     /// The quoted Max, in credits, for paying `destination` from `source`.
@@ -5469,6 +5476,74 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// A Platform balance that changes after the shield quote (a balance
+    /// fetch or a sync push, neither of which re-selects the source) makes
+    /// that quote stale: Max is withdrawn and a fresh quote is asked for.
+    #[test]
+    fn shield_from_platform_max_is_requoted_when_live_balances_change() {
+        const BALANCE_CREDITS: u64 = 2 * CREDITS_PER_DUFF * 100_000_000;
+        const QUOTE_CREDITS: u64 = 123_456_789_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        let wallet = screen.selected_wallet.clone().expect("selected wallet");
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(source_core.clone(), BALANCE_CREDITS, 1);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core.clone(),
+            BALANCE_CREDITS,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+            })
+        );
+        assert_eq!(
+            screen.spend_limit(SpendLimitKind::ShieldFromPlatform),
+            Some(QUOTE_CREDITS)
+        );
+
+        // The balance drops behind the form's back; the selected source keeps
+        // its old figures.
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(source_core, BALANCE_CREDITS / 4, 2);
+
+        assert_eq!(
+            screen.spend_limit(SpendLimitKind::ShieldFromPlatform),
+            None,
+            "a quote made against the old balance must not back Max"
+        );
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::ShieldFromPlatform,
+                    ..
+                }))
+            ),
+            "the changed balance must be quoted afresh"
         );
     }
 

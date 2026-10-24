@@ -3157,12 +3157,22 @@ impl WalletSendScreen {
                 let headroom =
                     shield_from_balance_fee_headroom(self.app_context.platform_version());
                 let fee = format_credits_as_dash(headroom);
-                (
-                    self.spend_limit(SpendLimitKind::ShieldFromPlatform),
-                    Some(format!(
-                        "A shielding fee of approximately {fee} is reserved from your balance."
-                    )),
-                )
+                match self.spend_limit(SpendLimitKind::ShieldFromPlatform) {
+                    // No address can keep the fee back: a zero Max would only
+                    // fill in an amount the form refuses.
+                    Some(0) => (
+                        None,
+                        Some(format!(
+                            "None of your Platform addresses can cover the shielding fee of approximately {fee}, so nothing can be shielded right now."
+                        )),
+                    ),
+                    max => (
+                        max,
+                        Some(format!(
+                            "A shielding fee of approximately {fee} is reserved from your balance."
+                        )),
+                    ),
+                }
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Extract destination to exclude it from max calculation (can't send to yourself)
@@ -6675,6 +6685,67 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// When the planner can shield nothing (no address can keep the fee
+    /// reserve back), there is no Max to offer: the form says why instead of
+    /// a Max that fills in zero.
+    #[test]
+    fn shield_from_platform_offers_no_max_when_nothing_can_be_shielded() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: 0,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+
+        let field_text = harness
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .value()
+            .unwrap_or_default();
+        assert!(
+            field_text.is_empty(),
+            "a zero quote must not be offered as Max, got {field_text:?}"
+        );
+        assert!(
+            harness
+                .query_all(
+                    egui_kittest::kittest::By::new()
+                        .label_contains("so nothing can be shielded right now")
+                        .include_labels()
+                )
+                .next()
+                .is_some(),
+            "the form must say why nothing can be shielded"
         );
     }
 

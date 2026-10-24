@@ -1055,3 +1055,50 @@ fn platform_compatibility_lock_survives_concurrent_process_spawns() {
         outcome.expect("a released lock must be re-acquirable while processes spawn");
     });
 }
+
+#[test]
+fn platform_compatibility_asset_lock_blobs_survive_with_no_operation_id() {
+    let (_dir, path, target) = fixture();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!("../fixtures/public-rows.sql"))
+        .unwrap();
+    conn.execute("INSERT INTO asset_locks (wallet_id, outpoint, status, account_index, identity_index, amount_duffs, lifecycle_blob) VALUES (?1, ?2, 'built', 0, 0, 123, ?3)", rusqlite::params![&[0xA1u8;32][..], &[0xB1u8;36][..], &[0xC1u8,0xC2][..]]).unwrap();
+    drop(conn);
+    let backup = upgrade(&path, &target, |_| Ok(())).unwrap().unwrap();
+    let conn = Connection::open(&path).unwrap();
+    let (blob, operation): (Vec<u8>, Option<Vec<u8>>) = conn
+        .query_row(
+            "SELECT lifecycle_blob, operation_id FROM asset_locks",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(blob, [0xC1, 0xC2]);
+    assert_eq!(operation, None);
+    assert_eq!(
+        Connection::open(backup)
+            .unwrap()
+            .query_row("SELECT lifecycle_blob FROM asset_locks", [], |row| row
+                .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        blob
+    );
+}
+
+#[test]
+fn platform_compatibility_refuses_a_different_version_19_without_changes() {
+    let (dir, path, target) = fixture();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("INSERT INTO refinery_schema_history VALUES (19, 'core_transaction_accounting', '2026-10-21T00:00:00Z', '1'); CREATE TABLE core_transaction_inputs (opaque BLOB);").unwrap();
+    drop(conn);
+    let before = snapshot(&path);
+    assert!(
+        upgrade(&path, &target, |_| panic!(
+            "unrecognized history must not reach validation"
+        ))
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(snapshot(&path), before);
+    assert!(backup_files(dir.path()).is_empty());
+}

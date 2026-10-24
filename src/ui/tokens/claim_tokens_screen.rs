@@ -1,5 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -84,21 +85,22 @@ impl ClaimTokensScreen {
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
-            let identity_inner = &id.identity;
-            let key = identity_inner
-                .get_first_public_key_matching(
+            let key = id
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::CRITICAL],
+                    SigningScope::ContractWide {
+                        contract_id: identity_token_basic_info.contract_id,
+                    },
+                ))
                 .or_else(|| {
-                    identity_inner.get_first_public_key_matching(
+                    id.signing_key_now(KeyRequirements::new(
                         Purpose::TRANSFER,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
+                        &[SecurityLevel::CRITICAL],
+                        SigningScope::ContractWide {
+                            contract_id: identity_token_basic_info.contract_id,
+                        },
+                    ))
                 })
                 .cloned();
 
@@ -447,6 +449,9 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_basic_info.contract_id,
+                        },
                     );
                     ui.add_space(10.0);
                 }

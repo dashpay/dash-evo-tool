@@ -5,9 +5,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::validate_account_label;
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::ResultBannerExt;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
@@ -19,10 +19,11 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
@@ -308,29 +309,18 @@ impl ScreenLike for AddContactScreen {
 
                 if should_auto_select {
                     if let Some(identity) = &self.selected_identity {
-                        // Auto-select a suitable AUTHENTICATION key for signing contact requests
-                        // Platform requires CRITICAL or HIGH security level for contact request signing
-                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-                        use std::collections::HashSet;
                         self.selected_key = identity
-                            .identity
-                            .get_first_public_key_matching(
-                                Purpose::AUTHENTICATION,
-                                HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-                                KeyType::all_key_types().into(),
-                                false,
+                            .document_action_signing_key(
+                                &self.app_context.dashpay_contract(),
+                                "contactRequest",
+                                None,
                             )
                             .cloned();
 
-                        // Update wallet if not already set
-                        if self.selected_wallet.is_none() {
-                            self.selected_wallet =
-                                get_selected_wallet(identity, Some(&self.app_context), None)
-                                    .or_show_error(self.app_context.egui_ctx())
-                                    .unwrap_or(None);
-                            self.wallet_open_attempted = false;
-                        }
+                        // The wallet holding the key that signs the request.
+                        self.selected_wallet =
+                            wallet_for_signing_key(identity, self.selected_key.as_ref());
+                        self.wallet_open_attempted = false;
                     } else {
                         self.selected_key = None;
                         self.selected_wallet = None;
@@ -348,6 +338,10 @@ impl ScreenLike for AddContactScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::ContactRequest,
+                            SigningScope::Document {
+                                contract_id: self.app_context.dashpay_contract().id(),
+                                document_type_name: "contactRequest",
+                            },
                         );
                         if !matches!(key_action, AppAction::None) {
                             inner_action = key_action;

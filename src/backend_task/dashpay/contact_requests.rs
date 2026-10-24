@@ -715,16 +715,8 @@ pub async fn accept_contact_request(
         });
     }
 
-    // Get an AUTHENTICATION key for signing the state transition
-    // Platform requires CRITICAL or HIGH security level for document creation
     let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-            KeyType::all_key_types().into(),
-            false,
-        )
+        .document_action_signing_key(&app_context.dashpay_contract(), "contactRequest", None)
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 

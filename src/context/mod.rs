@@ -1691,14 +1691,19 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Stored owner, falling back to the signing-key wallet for legacy records.
+    /// Stored owner, falling back for legacy records to the loaded wallet that
+    /// derives one of the identity's keys, whatever the key is bound to.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
             return Some(hash);
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
+        let wallet = qi
+            .identity
+            .public_keys()
+            .values()
+            .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }
@@ -2611,5 +2616,29 @@ mod tests {
         }
 
         assert_eq!(maximum.load(Ordering::SeqCst), MAX_CONCURRENT_DPNS_VOTERS);
+    }
+
+    /// Regression: the owner of an identity stored without a wallet link was
+    /// read from its DPNS signing key, so an identity whose keys are all bound
+    /// to another contract had no owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlinked_identity_is_owned_by_the_wallet_deriving_its_keys() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let seed_hash = wallet.read().expect("wallet").seed_hash();
+        ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        assert_eq!(
+            ctx.owning_wallet_hash(identity.identity.id()),
+            Some(seed_hash)
+        );
     }
 }

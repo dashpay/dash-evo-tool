@@ -16,6 +16,7 @@ use crate::model::dpns_usernames::{
     registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -596,7 +597,14 @@ impl RegisterDpnsNameScreen {
                     if self.selected_key.is_none() {
                         self.selected_key = document_type
                             .as_ref()
-                            .and_then(|doc_type| identity.document_signing_key(&doc_type.as_ref()))
+                            .and_then(|doc_type| {
+                                identity.document_signing_key(
+                                    SigningScope::ContractWide {
+                                        contract_id: self.app_context.dpns_contract().id(),
+                                    },
+                                    &doc_type.as_ref(),
+                                )
+                            })
                             .cloned();
                     }
                     action |= add_key_chooser_with_doc_type(
@@ -606,6 +614,9 @@ impl RegisterDpnsNameScreen {
                         &mut self.selected_key,
                         TransactionType::DocumentAction,
                         document_type.as_ref(),
+                        SigningScope::ContractWide {
+                            contract_id: self.app_context.dpns_contract().id(),
+                        },
                     );
                 });
         }

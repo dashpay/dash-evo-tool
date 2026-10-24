@@ -1,3 +1,4 @@
+use crate::model::identity_key_usability::SigningScope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,7 +31,7 @@ use dash_sdk::{
 
 use super::refresh_loaded_identities_dpns_names::name_acquired_at;
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
-use crate::model::dpns_usernames::{dpns_signing_requirement, key_can_sign_documents};
+use crate::model::dpns_usernames::{chosen_key_can_sign_documents, dpns_signing_requirement};
 
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
@@ -190,10 +191,20 @@ impl AppContext {
             Some(key_id) => qualified_identity
                 .identity
                 .get_public_key_by_id(key_id)
+                // A key the user chose may have expired: the chooser offers
+                // it with a warning, and Platform decides by network time.
                 .filter(|key| {
-                    key_can_sign_documents(key, dpns_signing_requirement(&self.dpns_contract()))
+                    chosen_key_can_sign_documents(
+                        key,
+                        dpns_signing_requirement(&self.dpns_contract()),
+                    )
                 }),
-            None => qualified_identity.document_signing_key(&preorder_document_type),
+            None => qualified_identity.document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: dpns_contract.id(),
+                },
+                &preorder_document_type,
+            ),
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 

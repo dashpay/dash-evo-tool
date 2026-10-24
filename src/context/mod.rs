@@ -53,6 +53,7 @@ use connection_status::ConnectionStatus;
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -317,6 +318,9 @@ pub struct AppContext {
     /// Updated alongside fee_multiplier when epoch info is fetched.
     /// 0 means not yet fetched from the network.
     platform_protocol_version: AtomicU32,
+    /// The index of the last proved epoch whose fee multiplier and protocol
+    /// version were adopted; `None` until one is. See [`Self::adopt_epoch`].
+    adopted_epoch_index: Mutex<Option<EpochIndex>>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -642,6 +646,7 @@ impl AppContext {
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
             platform_protocol_version: AtomicU32::new(0),
+            adopted_epoch_index: Mutex::new(None),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -860,6 +865,13 @@ impl AppContext {
     pub fn set_platform_protocol_version(&self, version: u32) {
         self.platform_protocol_version
             .store(version, Ordering::Relaxed);
+    }
+
+    /// Raise the cached platform protocol version to `version`; a lower one
+    /// is ignored. What the network proves never moves it back.
+    pub(crate) fn raise_platform_protocol_version(&self, version: u32) {
+        self.platform_protocol_version
+            .fetch_max(version, Ordering::Relaxed);
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -1173,6 +1185,43 @@ impl AppContext {
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`.
+    /// Adopt the fee multiplier and protocol version of the proved epoch
+    /// `epoch_index`, unless an epoch newer than it was adopted already.
+    /// Returns whether it was adopted.
+    ///
+    /// Epoch reads run concurrently (platform info, fee refusals) and can
+    /// finish out of order, so a late, older epoch is ignored. The protocol
+    /// version only moves up. The lock covers the comparison and both stores,
+    /// so two adoptions cannot interleave; nothing is awaited under it.
+    pub(crate) fn adopt_epoch(
+        &self,
+        epoch_index: EpochIndex,
+        fee_multiplier_permille: u64,
+        protocol_version: u32,
+    ) -> bool {
+        let mut adopted = self
+            .adopted_epoch_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if adopted.is_some_and(|adopted| epoch_index < adopted) {
+            return false;
+        }
+        *adopted = Some(epoch_index);
+        self.set_fee_multiplier_permille(fee_multiplier_permille);
+        self.raise_platform_protocol_version(protocol_version);
+        true
+    }
+
+    /// Forget which epoch was adopted, so the next proved epoch is adopted
+    /// whatever its index: the connection was rebuilt and may reach a network
+    /// whose epochs restarted (a reset devnet).
+    pub(crate) fn forget_adopted_epoch(&self) {
+        *self
+            .adopted_epoch_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
@@ -1222,6 +1271,8 @@ impl AppContext {
             *client_lock = new_client;
         }
         self.sdk.store(Arc::new(new_sdk));
+        // The new endpoints may reach a network whose epochs restarted.
+        self.forget_adopted_epoch();
 
         // Rebind the provider to hold the new AppContext reference.
         // bind_app_context also registers the provider with the SDK.

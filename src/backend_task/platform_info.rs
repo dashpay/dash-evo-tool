@@ -591,10 +591,14 @@ impl AppContext {
         Ok(epoch_info)
     }
 
-    /// Adopts the fee multiplier and protocol version of a proved epoch.
+    /// Adopts the fee multiplier and protocol version of a proved epoch,
+    /// unless a newer epoch was adopted already (see `AppContext::adopt_epoch`).
     fn adopt_epoch_info(&self, epoch_info: &ExtendedEpochInfo) {
-        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
-        self.set_platform_protocol_version(epoch_info.protocol_version());
+        self.adopt_epoch(
+            epoch_info.index(),
+            epoch_info.fee_multiplier_permille(),
+            epoch_info.protocol_version(),
+        );
     }
 
     pub async fn run_platform_info_task(
@@ -651,7 +655,7 @@ impl AppContext {
                         // fetch proves it came from the network, not the local seed.
                         match DataContract::fetch(sdk, self.dpns_contract().id()).await {
                             Ok(_) => {
-                                self.set_platform_protocol_version(sdk.protocol_version_number())
+                                self.raise_platform_protocol_version(sdk.protocol_version_number())
                             }
                             Err(error) => tracing::warn!(
                                 %error,
@@ -1055,6 +1059,44 @@ mod tests {
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
         assert_eq!(ctx.platform_protocol_version(), 14);
+    }
+
+    /// Epoch reads can finish out of order: an older epoch arriving after a
+    /// newer one must not put back its fee multiplier or protocol version.
+    #[test]
+    fn an_older_epoch_does_not_overwrite_a_newer_one() {
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        let epoch = |index, fee_multiplier_permille, protocol_version| {
+            ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+                index,
+                first_block_time: 0,
+                first_block_height: 0,
+                first_core_block_height: 0,
+                fee_multiplier_permille,
+                protocol_version,
+            })
+        };
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        ctx.adopt_epoch_info(&epoch(8, 1_500, 14));
+        ctx.adopt_epoch_info(&epoch(7, 1_000, 13));
+        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
+        assert_eq!(ctx.platform_protocol_version(), 14);
+
+        // The same or a newer epoch is adopted; the protocol version never
+        // goes back.
+        ctx.adopt_epoch_info(&epoch(8, 1_600, 14));
+        assert_eq!(ctx.fee_multiplier_permille(), 1_600);
+        ctx.adopt_epoch_info(&epoch(9, 1_700, 13));
+        assert_eq!(ctx.fee_multiplier_permille(), 1_700);
+        assert_eq!(ctx.platform_protocol_version(), 14);
+
+        // After the connection is rebuilt (new endpoints, possibly a reset
+        // devnet), epochs are compared afresh.
+        ctx.forget_adopted_epoch();
+        ctx.adopt_epoch_info(&epoch(2, 1_100, 14));
+        assert_eq!(ctx.fee_multiplier_permille(), 1_100);
     }
 
     /// A failed withdrawal keeps its credits locked, so the history says so

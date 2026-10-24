@@ -1,7 +1,9 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+use dash_sdk::dpp::version::feature_initial_protocol_versions::{
+    CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+};
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -27,6 +29,9 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform keeps contract fee pots (filled by document
+    /// action fees) and accepts the transition that pays them out.
+    ContractFeePots,
 }
 
 /// The connected network's protocol version, when this build defines it.
@@ -55,6 +60,9 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
+            Capability::ContractFeePots => {
+                known_protocol_version_at_least(ctx, CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION)
+            }
         }
     }
 }
@@ -150,6 +158,9 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Viewing and claiming the fee pots of a contract. Offered only where
+    /// the connected network keeps them.
+    ContractFeePots,
 }
 
 impl FeatureGate {
@@ -166,6 +177,7 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
         }
     }
 
@@ -435,6 +447,21 @@ mod tests {
         }
     }
 
+    /// Protocol version 14 features stay closed below version 14 and before
+    /// the network's version is known, whatever the role.
+    #[test]
+    fn protocol_v14_gates_follow_the_connected_version() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            let gate = FeatureGate::ContractFeePots;
+            assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+            ctx.set_platform_protocol_version(13);
+            assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+            ctx.set_platform_protocol_version(14);
+            assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+        }
+    }
+
     /// A protocol version this build does not define closes every protocol
     /// capability: nothing here knows that version's rules. The newest
     /// version this build defines keeps them open.
@@ -442,7 +469,7 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol];
+        let capabilities = [Capability::ShieldedProtocol, Capability::ContractFeePots];
 
         ctx.set_platform_protocol_version(LATEST_VERSION);
         for capability in capabilities {

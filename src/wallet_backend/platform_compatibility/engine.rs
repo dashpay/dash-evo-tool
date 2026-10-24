@@ -9,6 +9,8 @@ const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
 const TARGET_SCHEMA: &str = include_str!("fixtures/e3cd7cf.sql");
 const HISTORY: &str = "refinery_schema_history";
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
+/// Upstream migration that rebuilds Core history through an SPV rescan.
+const CORE_ACCOUNTING_MIGRATION: &str = "core_transaction_accounting";
 
 /// A compatibility upgrade stopped before committing changes to the original database.
 #[derive(Debug, thiserror::Error)]
@@ -735,6 +737,97 @@ fn equal_rows(
     )
 }
 
+/// SHA-256 over one row's `cols` values, read without copying them.
+///
+/// Each value is tagged with its storage class and length-prefixed, so two rows
+/// share a digest only if every value has the same class and the same stored
+/// bytes: `1`, `1.0` and `'1'` differ, reals compare by IEEE-754 bits (`-0.0`
+/// is not `0.0`) and text by its bytes, whatever the column's collation.
+fn row_digest(row: &rusqlite::Row<'_>, cols: usize) -> rusqlite::Result<[u8; 32]> {
+    use rusqlite::types::ValueRef;
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for i in 0..cols {
+        let mut tagged = |tag: u8, bytes: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        };
+        match row.get_ref(i)? {
+            ValueRef::Null => tagged(0, &[]),
+            ValueRef::Integer(v) => tagged(1, &v.to_be_bytes()),
+            ValueRef::Real(v) => tagged(2, &v.to_bits().to_be_bytes()),
+            ValueRef::Text(v) => tagged(3, v),
+            ValueRef::Blob(v) => tagged(4, v),
+        }
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Every `target` row matching `target_filter` must equal, on `cols`, a `source` row
+/// selected by `source_filter`. Rows may be dropped; none may be added or changed.
+fn rows_retained(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>();
+    rows_retained_as(
+        source,
+        target,
+        table,
+        &names,
+        cols,
+        source_filter,
+        target_filter,
+    )
+}
+
+/// [`rows_retained`] against the `source` rows as `source_exprs` shape them: each
+/// expression yields the value expected in the matching `cols` column.
+///
+/// Source rows are kept as [`row_digest`]s, so memory grows by 32 bytes per row
+/// rather than with record blobs, scripts and InstantLocks.
+fn rows_retained_as(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    source_exprs: &[String],
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    if source_exprs.len() != cols.len() {
+        return Err(UpgradeError::Verification);
+    }
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
+    let exprs = source_exprs.join(",");
+    let mut original = std::collections::HashSet::new();
+    let mut stmt = source.prepare(&format!(
+        "SELECT {exprs} FROM {}{source_filter}",
+        quote(table)
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        original.insert(row_digest(row, cols.len())?);
+    }
+    let mut stmt = target.prepare(&format!(
+        "SELECT {names} FROM {} WHERE {target_filter}",
+        quote(table)
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if !original.contains(&row_digest(row, cols.len())?) {
+            return Err(UpgradeError::Verification);
+        }
+    }
+    Ok(())
+}
+
 fn equal_queries(
     source: &Connection,
     target: &Connection,
@@ -941,9 +1034,10 @@ fn upgrade_with_hook_locked(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     verify(&target)?;
+    // Matched by name: upstream renumbered this migration before it shipped.
     let resets_core = history(&target)?
         .iter()
-        .any(|(version, _, _)| *version == 21);
+        .any(|(_, name, _)| name == CORE_ACCOUNTING_MIGRATION);
     for (table, mut cols, filter) in copied {
         match table {
             "meta_data_versions" => {
@@ -956,13 +1050,35 @@ fn upgrade_with_hook_locked(
                     "SELECT wallet_id, domain, seq FROM meta_data_versions ORDER BY wallet_id, domain", 3)?;
                 continue;
             }
-            "core_transactions" | "core_utxos" | "core_instant_locks" if resets_core => {
-                if target
-                    .prepare(&format!("SELECT 1 FROM {}", quote(table)))?
-                    .exists([])?
-                {
-                    return Err(UpgradeError::Verification);
-                }
+            // The accounting migration drops Core history that SPV rebuilds, keeps
+            // unsettled evidence, and strips block details from kept mined funding;
+            // loading may drop further unauthorized pending spends. What remains must
+            // come from the original: nothing is invented or altered otherwise.
+            "core_transactions" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "height IS NULL")?;
+                // A kept mined row is its original with exactly the migration's
+                // stripping applied; any other value means something else ran.
+                let stripped = cols
+                    .iter()
+                    .map(|c| match c.as_str() {
+                        "block_hash" | "block_time" | "record_blob" => "NULL".to_owned(),
+                        "finalized" => "0".to_owned(),
+                        c => quote(c),
+                    })
+                    .collect::<Vec<_>>();
+                rows_retained_as(
+                    &source,
+                    &target,
+                    table,
+                    &stripped,
+                    &cols,
+                    &filter,
+                    "height IS NOT NULL",
+                )?;
+                continue;
+            }
+            "core_utxos" | "core_instant_locks" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "1")?;
                 continue;
             }
             "core_sync_state" if resets_core => {

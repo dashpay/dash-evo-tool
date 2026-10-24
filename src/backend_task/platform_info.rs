@@ -1000,13 +1000,15 @@ mod tests {
 
     /// The withdrawal limit follows DET's protocol version, not the newest one
     /// upstream knows: protocol 13 keeps the flat 2000 Dash, where protocol 14
-    /// reports 15% of the total, capped at 4000 Dash.
+    /// reports 15% of the total a day ago (no fixed cap; never below one maximal
+    /// 500 Dash withdrawal). Protocol 14 is named explicitly because
+    /// `PlatformVersion::latest()` moves with upstream.
     ///
     /// `dash_to_credits!` stringifies its argument and parses the text, so a
     /// Rust numeric separator is not a digit to it: `dash_to_credits!(1_000_000)`
     /// silently evaluates to 0 credits. Never write a separator inside this
     /// macro. The total is asserted below, and the protocol-14 expectation is
-    /// pinned to the 4000 Dash cap — a value only a genuinely large total
+    /// pinned to 150000 Dash — a value only a genuinely large total
     /// produces, so a zeroed total fails the test instead of passing it for the
     /// wrong reason (at 0 credits, protocol 14 returns its 500 Dash floor).
     #[test]
@@ -1025,13 +1027,14 @@ mod tests {
             daily_withdrawal_limit(Some(total), DET_PLATFORM_VERSION).expect("limit")
         );
 
+        let protocol_14 = PlatformVersion::get(14).expect("protocol 14");
+        assert_eq!(
+            daily_withdrawal_limit(Some(total), protocol_14).expect("limit"),
+            dash_to_credits!(150000),
+            "protocol 14 allows 15% of a million-Dash total"
+        );
         let latest_limit =
             daily_withdrawal_limit(Some(total), PlatformVersion::latest()).expect("limit");
-        assert_eq!(
-            latest_limit,
-            dash_to_credits!(4000),
-            "protocol 14 caps a million-Dash total at 4000 Dash"
-        );
         assert_ne!(
             det_limit, latest_limit,
             "the limit must not follow PlatformVersion::latest()"

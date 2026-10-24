@@ -1500,7 +1500,7 @@ mod tests {
         // The resolved private key's public key must match the spec's public key.
 
         let resolved_pub =
-            dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&*stored.1)
+            dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&stored.1)
                 .expect("secret")
                 .public_key();
         assert_eq!(

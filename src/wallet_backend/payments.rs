@@ -1000,8 +1000,9 @@ pub(super) fn map_core_broadcast_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSET_LOCK_FEE_PER_KB, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_account, map_core_broadcast_error, unbound_topup_lock_eligible,
+        ASSET_LOCK_FEE_PER_KB, MAX_MONEY, P2PKH_CREDIT_OUTPUT_SCRIPT_LEN,
+        asset_lock_builder_height, asset_lock_max_amount_from_account, map_core_broadcast_error,
+        unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::core_max_send_amount_duffs;
@@ -1022,6 +1023,13 @@ mod tests {
 
     /// A Max send folds its zero/dust remainder into the fee (DET #909,
     /// rust-dashcore #911).
+    /// A credit-output script as long as the P2PKH one real asset locks carry.
+    /// The builder prices the payload by its serialized size, so an empty script
+    /// would make every check build cheaper than the quoted Max assumes.
+    fn credit_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN])
+    }
+
     #[test]
     fn core_max_send_with_single_utxo_builds_without_change() {
         const BALANCE_DUFFS: u64 = 10_000_000;
@@ -1177,7 +1185,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_script(),
                 }]),
             ))
             .add_funding(&mut dry_run_account, account)
@@ -1195,7 +1203,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount + 1,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_script(),
                 }]),
             ))
             .add_funding(&mut one_over_account, account)
@@ -1213,7 +1221,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: snapshot_balance.spendable(),
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_script(),
                 }]),
             ))
             .add_funding(&mut overshoot_account, account)
@@ -1296,7 +1304,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_script(),
                 }]),
             ))
             .add_funding(&mut dry_run_account, account)
@@ -1318,7 +1326,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount + 1,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_script(),
                 }]),
             ))
             .add_funding(&mut one_over_account, account)

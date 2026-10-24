@@ -290,7 +290,7 @@ mod tests {
             INSERT INTO wallets VALUES (zeroblob(32), 'testnet', 0);
             INSERT INTO core_sync_state VALUES (zeroblob(32), 777, NULL, NULL);
             INSERT INTO wallets VALUES (randomblob(32), 'testnet', 500);
-            INSERT INTO core_sync_state SELECT wallet_id, 888, 20, NULL FROM wallets WHERE birth_height = 500;").unwrap();
+            INSERT INTO core_sync_state SELECT wallet_id, 888, 20, NULL FROM main.wallets WHERE birth_height = 500;").unwrap();
         drop(conn);
         drop(open(SqlitePersisterConfig::new(&path)).unwrap());
         let conn = rusqlite::Connection::open(&path).unwrap();
@@ -326,12 +326,13 @@ mod tests {
         }
         assert_eq!(
             conn.query_row(
-                "SELECT max(version) FROM refinery_schema_history",
+                "SELECT count(*) FROM refinery_schema_history WHERE name = 'core_transaction_accounting'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-            21
+            1,
+            "the upstream Core accounting migration must have run"
         );
         let backup = std::fs::read_dir(dir.path())
             .unwrap()
@@ -353,6 +354,58 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// The Core accounting migration keeps spend evidence a block rescan cannot
+    /// redeliver: a spent coin whose spender is not known to be mined survives with
+    /// its funding transaction, which loses its block details. The bridge accepts any
+    /// such retained subset of the original Core rows.
+    #[test]
+    fn platform_compatibility_keeps_unsettled_spend_evidence_through_core_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("fixtures/67d4ef3.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("fixtures/public-rows.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "UPDATE core_utxos SET spent = 1;
+            INSERT INTO core_instant_locks SELECT wallet_id, txid, X'00ff' FROM core_transactions;",
+        )
+        .unwrap();
+        drop(conn);
+
+        drop(open(SqlitePersisterConfig::new(&path)).expect("the bridge must accept kept spends"));
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let count = |table: &str| {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count("core_utxos"), 1, "the spent coin is kept as evidence");
+        assert_eq!(count("core_instant_locks"), 0, "a mined lock is rebuilt");
+        let funding = conn
+            .query_row(
+                "SELECT height, block_hash IS NULL, record_blob IS NULL FROM core_transactions",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, bool>(1)?,
+                        r.get::<_, bool>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            funding,
+            (200, true, true),
+            "mined funding keeps only its height"
+        );
     }
 
     #[test]

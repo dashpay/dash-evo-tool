@@ -134,7 +134,7 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 fn v093_masternode_blob() -> Vec<u8> {
     use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
     let public_hash = |key: &[u8; 32]| {
-        let key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&*(key))
+        let key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(key)
             .expect("generated valid key");
         let public = key.public_key();
         hex::encode(hash160::Hash::hash(&public.to_compressed()).to_byte_array())

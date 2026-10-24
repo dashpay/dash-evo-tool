@@ -17,6 +17,7 @@ use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
@@ -2499,6 +2500,66 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Document action fees, moderation and gas sponsorship (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The identity is banned on the contract.
+    #[error(
+        "This identity is banned from contract {} and cannot act on its documents. Use a different identity for this contract.",
+        contract_id.to_string(Encoding::Base58)
+    )]
+    ContractUserBanned {
+        contract_id: Identifier,
+        identity_id: Identifier,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity is suspended on the contract until a given time.
+    #[error(
+        "This identity is suspended from contract {} until {}. Wait until then, or use a different identity for this contract.",
+        contract_id.to_string(Encoding::Base58),
+        crate::model::datetime::local_date_time_from_unix_millis(*until_ms)
+    )]
+    ContractUserSuspended {
+        contract_id: Identifier,
+        identity_id: Identifier,
+        /// End of the suspension, in milliseconds since the Unix epoch.
+        until_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The contract owner sponsoring the gas cannot cover it.
+    #[error(
+        "The contract owner pays the network fee for this action but does not have enough credits for it right now. Try again later."
+    )]
+    GasSponsorInsufficientBalance {
+        sponsor_id: Identifier,
+        balance: Credits,
+        required_balance: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The transition asked for a gas payer the document type does not offer.
+    #[error(
+        "This document type does not let that party pay the network fee for this action. Pay the fee as the document type allows, then try again."
+    )]
+    GasFeesPaidByNotAllowed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The transitions of one batch named different gas payers.
+    #[error(
+        "The actions in this request name different payers for the network fee. Send them one at a time, then try again."
+    )]
+    InconsistentGasFeesPayerInBatch {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Username, vote and token transfer refusals (protocol versions 14 and 15)
     // ──────────────────────────────────────────────────────────────────────────
     /// The contest for the requested name already holds the most contenders it
@@ -2591,6 +2652,20 @@ pub enum TaskError {
     InvalidOncePerIdentityDistributionAmount {
         amount: u64,
         max_amount: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The pre-programmed distributions of one time add up to more than the
+    /// maximum.
+    #[error(
+        "The scheduled token distributions at {} add up to more than the allowed maximum. Lower those amounts, then try again.",
+        crate::model::datetime::local_date_time_from_unix_millis(*timestamp_ms)
+    )]
+    PreProgrammedDistributionOverLimit {
+        token_position: u16,
+        /// The distribution time, in milliseconds since the Unix epoch.
+        timestamp_ms: u64,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -4417,6 +4492,52 @@ impl From<SdkError> for TaskError {
                             source_error,
                         }))
                     }
+                    ConsensusError::StateError(StateError::ContractUserBannedError(e)) => {
+                        let (contract_id, identity_id) = (e.contract_id(), e.identity_id());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractUserBanned {
+                                contract_id,
+                                identity_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::ContractUserSuspendedError(e)) => {
+                        let (contract_id, identity_id, until_ms) =
+                            (e.contract_id(), e.identity_id(), e.until());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ContractUserSuspended {
+                                contract_id,
+                                identity_id,
+                                until_ms,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::GasSponsorInsufficientBalanceError(
+                        e,
+                    )) => {
+                        let (sponsor_id, balance, required_balance) =
+                            (*e.sponsor_id(), e.balance(), e.required_balance());
+                        Some(Box::new(move |source_error| {
+                            TaskError::GasSponsorInsufficientBalance {
+                                sponsor_id,
+                                balance,
+                                required_balance,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::GasFeesPaidByNotAllowedError(_)) => {
+                        Some(Box::new(|source_error| {
+                            TaskError::GasFeesPaidByNotAllowed { source_error }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::InconsistentGasFeesPaidByInBatchError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::InconsistentGasFeesPayerInBatch { source_error }
+                    })),
                     ConsensusError::StateError(
                         StateError::DocumentContestMaximumContendersReachedError(e),
                     ) => {
@@ -4488,6 +4609,18 @@ impl From<SdkError> for TaskError {
                             TaskError::InvalidOncePerIdentityDistributionAmount {
                                 amount,
                                 max_amount,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::PreProgrammedDistributionAmountOverLimitError(e),
+                    ) => {
+                        let (token_position, timestamp_ms) = (e.token_position(), e.timestamp());
+                        Some(Box::new(move |source_error| {
+                            TaskError::PreProgrammedDistributionOverLimit {
+                                token_position,
+                                timestamp_ms,
                                 source_error,
                             }
                         }))
@@ -6917,15 +7050,67 @@ mod tests {
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
         use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
+        use dash_sdk::dpp::consensus::state::contract_moderation::{
+            ContractUserBannedError, ContractUserSuspendedError,
+        };
         use dash_sdk::dpp::consensus::state::document::{
             document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
+        use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::token::{
+            GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
+        };
+        use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 
-        let contract_id = Identifier::random();
+        let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         type Expectation = fn(&TaskError) -> bool;
         let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                ContractUserBannedError::new(contract_id, identity_id).into(),
+                |e| matches!(e, TaskError::ContractUserBanned { .. }),
+            ),
+            (
+                ContractUserSuspendedError::new(contract_id, identity_id, 1_758_140_722_000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::ContractUserSuspended {
+                            until_ms: 1_758_140_722_000,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                GasSponsorInsufficientBalanceError::new(contract_id, 1, 2).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::GasSponsorInsufficientBalance {
+                            balance: 1,
+                            required_balance: 2,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                GasFeesPaidByNotAllowedError::new(
+                    "note".to_string(),
+                    "create".to_string(),
+                    GasFeesPaidBy::ContractOwner,
+                    GasFeesPaidBy::DocumentOwner,
+                )
+                .into(),
+                |e| matches!(e, TaskError::GasFeesPaidByNotAllowed { .. }),
+            ),
+            (
+                InconsistentGasFeesPaidByInBatchError::new(Some(identity_id), None).into(),
+                |e| matches!(e, TaskError::InconsistentGasFeesPayerInBatch { .. }),
+            ),
             (
                 DocumentImmutablePropertyChangedError::new(
                     Identifier::random(),
@@ -6956,6 +7141,18 @@ mod tests {
                         TaskError::InvalidOncePerIdentityDistributionAmount {
                             amount: 0,
                             max_amount: 100,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                PreProgrammedDistributionAmountOverLimitError::new(1, 1_758_140_722_000).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::PreProgrammedDistributionOverLimit {
+                            token_position: 1,
                             ..
                         }
                     )
@@ -7164,6 +7361,46 @@ mod tests {
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn contract_user_errors_name_the_contract_and_the_suspension_end() {
+        let contract_id = Identifier::random();
+        let banned = TaskError::ContractUserBanned {
+            contract_id,
+            identity_id: Identifier::random(),
+            source_error: Box::new(SdkError::Generic("banned".to_string())),
+        };
+        assert!(
+            banned
+                .to_string()
+                .contains(&contract_id.to_string(Encoding::Base58))
+        );
+        let suspended = TaskError::ContractUserSuspended {
+            contract_id,
+            identity_id: Identifier::random(),
+            until_ms: 1_758_140_722_000,
+            source_error: Box::new(SdkError::Generic("suspended".to_string())),
+        };
+        // Dates in messages follow the model's formatter: the user's time zone,
+        // like every other date the app shows.
+        let until = crate::model::datetime::local_date_time_from_unix_millis(1_758_140_722_000);
+        assert!(!until.is_empty());
+        assert!(
+            suspended.to_string().contains(&format!("until {until}.")),
+            "got: {suspended}"
+        );
+        let over_limit = TaskError::PreProgrammedDistributionOverLimit {
+            token_position: 0,
+            timestamp_ms: 1_758_140_722_000,
+            source_error: Box::new(SdkError::Generic("over".to_string())),
+        };
+        assert!(
+            over_limit
+                .to_string()
+                .contains(&format!("at {until} add up")),
+            "got: {over_limit}"
+        );
     }
 
     /// An unclassified SDK failure behind a wallet-runtime token operation

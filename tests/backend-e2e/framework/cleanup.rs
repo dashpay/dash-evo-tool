@@ -11,7 +11,7 @@ use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymen
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::spend_limit::SpendLimitKind;
+use dash_evo_tool::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use std::sync::Arc;
@@ -102,7 +102,10 @@ pub async fn cleanup_test_wallets(
             app_context,
             BackendTask::WalletTask(WalletTask::GetSpendLimit {
                 seed_hash: hash,
-                kind: SpendLimitKind::CoreSend,
+                // The framework wallet's receive address is P2PKH.
+                kind: SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
                 request_id: 0,
             }),
         )

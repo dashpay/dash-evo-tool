@@ -151,6 +151,40 @@ impl WalletBackend {
     }
 }
 
+#[cfg(test)]
+impl WalletBackend {
+    /// Set the details platform-wallet holds for `contact_id`, as a sync from
+    /// another device would, without publishing anything.
+    pub(crate) async fn set_contact_details_for_tests(
+        &self,
+        seed_hash: &crate::model::wallet::WalletSeedHash,
+        owner: &Identifier,
+        contact_id: &Identifier,
+        details: ContactDetails,
+    ) {
+        use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData;
+        let wallet = self.resolve_wallet(seed_hash).await.expect("wallet");
+        let persister = wallet.persister().clone();
+        let mut manager = wallet.wallet_manager().write().await;
+        let applied = manager
+            .get_wallet_info_mut(&wallet.wallet_id())
+            .and_then(|info| info.identity_manager.managed_identity_mut(owner))
+            .expect("managed identity")
+            .set_contact_metadata(
+                contact_id,
+                ContactInfoPrivateData {
+                    alias_name: details.nickname,
+                    note: details.note,
+                    display_hidden: details.hidden,
+                    accepted_accounts: Vec::new(),
+                },
+                &persister,
+            )
+            .expect("metadata saved");
+        assert!(applied, "the contact must be established");
+    }
+}
+
 impl WalletBackend {
     /// The details `identity`'s DIP-0015 `contactInfo` documents hold, read
     /// with platform-wallet's keys and codec; `documents` are oldest first and

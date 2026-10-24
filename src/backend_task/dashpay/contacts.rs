@@ -601,9 +601,11 @@ pub async fn load_contacts(
 }
 
 /// Read the contact list for `identity` entirely from offline state: contact
-/// relationships and private memos come from the upstream-rehydrated
-/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), and each
-/// contact's display profile is served from the DET contact-profile cache.
+/// relationships and contact details come from the upstream-rehydrated
+/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), with this
+/// device's private-info copy as a fallback (see [`shown_contact_details`]),
+/// and each contact's display profile is served from the DET contact-profile
+/// cache.
 ///
 /// No network round-trip — a view rendered from this result does not require
 /// connectivity. Profiles a contact has not yet been fetched for are returned
@@ -617,6 +619,9 @@ pub async fn load_contacts_offline(
     let backend = app_context.wallet_backend()?;
 
     let stored = backend.dashpay_view().contacts(&owner_id).await;
+    // The details platform-wallet holds win, as in the network list; this
+    // device's private-info copy only stands in where it never held any.
+    let mut synced = backend.dashpay_contact_details(&owner_id).await;
 
     let mut contact_list = Vec::with_capacity(stored.len());
     for sc in stored {
@@ -639,19 +644,28 @@ pub async fn load_contacts_offline(
         let cached = backend.contact_profile_cache().get(&contact_id);
         let memo = backend
             .dashpay_get_private_info(&owner_id, &contact_id)
-            .unwrap_or(None);
+            .unwrap_or_else(|error| {
+                tracing::debug!(?error, "LoadContactsOffline: private info not read");
+                None
+            })
+            .map(|memo| ContactDetails {
+                nickname: Some(memo.nickname).filter(|s| !s.is_empty()),
+                note: Some(memo.notes).filter(|s| !s.is_empty()),
+                hidden: memo.is_hidden,
+            });
+        let synced_before = backend
+            .dashpay_details_synced(&owner_id, &contact_id)
+            .unwrap_or_else(|error| {
+                tracing::debug!(?error, "LoadContactsOffline: synced record not read");
+                false
+            });
+        let details = shown_contact_details(None, synced.remove(&contact_id), synced_before, memo);
 
         contact_list.push(ContactData {
             identity_id: contact_id,
-            nickname: memo
-                .as_ref()
-                .map(|m| m.nickname.clone())
-                .filter(|s| !s.is_empty()),
-            note: memo
-                .as_ref()
-                .map(|m| m.notes.clone())
-                .filter(|s| !s.is_empty()),
-            is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            nickname: details.nickname,
+            note: details.note,
+            is_hidden: details.hidden,
             // Carry the cached account reference so the "Account #N" badge shows
             // and offline ordering matches the post-refresh view. Falls back to
             // 0 ("default account") when no network read has cached one yet.
@@ -713,6 +727,86 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After a restart the offline list shows the details platform-wallet
+    /// holds (synced from Platform) rather than this device's older copy, so
+    /// a contact hidden on another device is not listed as visible here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_shows_platform_wallets_details() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed = [0x4Du8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let contact = Identifier::from([0x22; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        let request = |from, to| {
+            platform_wallet::ContactRequest::new(from, to, 0, 0, 0, vec![0u8; 96], 100_000, 1)
+        };
+        backend
+            .record_sent_contact_request(&seed_hash, &owner, request(owner, contact))
+            .await
+            .expect("record sent request");
+        backend
+            .record_incoming_contact_request(&seed_hash, &owner, request(contact, owner))
+            .await
+            .expect("record incoming request");
+        // This device's older copy.
+        backend
+            .dashpay_set_private_info(
+                &owner,
+                &contact,
+                &crate::model::dashpay::ContactPrivateInfo {
+                    nickname: "Old".to_string(),
+                    notes: "old note".to_string(),
+                    is_hidden: false,
+                },
+            )
+            .expect("sidecar written");
+        let synced = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        backend
+            .set_contact_details_for_tests(&seed_hash, &owner, &contact, synced.clone())
+            .await;
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        let [row] = contacts.as_slice() else {
+            panic!("expected one contact, got {contacts:?}");
+        };
+        assert_eq!(row.details(), synced);
+    }
 
     /// After a restart the contacts list is built offline; a request the
     /// owner withdrew stays hidden there, as it does in the network list.

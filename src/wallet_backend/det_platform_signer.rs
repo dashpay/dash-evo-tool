@@ -154,8 +154,9 @@ impl<'a> DetPlatformSigner<'a> {
             .map_err(|e| ProtocolError::Generic(e.to_string()))?;
         let private_key = extended_private_key.to_priv();
 
-        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
-            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
+        let signature =
+            dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_slice())
+                .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
 
         Ok(signature.to_vec())
     }
@@ -202,7 +203,7 @@ mod tests {
     use super::*;
     use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
     use dash_sdk::dpp::dashcore::Address;
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
     use zeroize::Zeroizing;
 
     /// Reference platform-address signing — reproduces exactly what the
@@ -223,7 +224,7 @@ mod tests {
             .derive_priv_ecdsa_for_master_seed(seed, network)
             .expect("derive")
             .to_priv();
-        dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
+        dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_slice())
             .expect("reference sign")
             .to_vec()
     }
@@ -241,8 +242,8 @@ mod tests {
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .expect("derive platform key");
-        let secp = Secp256k1::new();
-        let address = Address::p2pkh(&xprv.to_priv().public_key(&secp), network);
+
+        let address = Address::p2pkh(&xprv.to_priv().public_key(), network);
         let platform_address =
             PlatformAddress::try_from(address.clone()).expect("to platform address");
 
@@ -318,10 +319,12 @@ mod tests {
                 .expect("derive")
                 .to_priv();
             let data = b"key-parity-vector";
-            let reference_sig =
-                dash_sdk::dpp::dashcore::signer::sign(data, reference_key.inner.as_ref())
-                    .expect("reference sign")
-                    .to_vec();
+            let reference_sig = dash_sdk::dpp::dashcore::signer::sign(
+                data,
+                reference_key.inner.to_bytes().as_slice(),
+            )
+            .expect("reference sign")
+            .to_vec();
 
             // The signer's view of the same address must yield the same key.
             let det = DetPlatformSigner::from_held(&seed, network, &index);
@@ -349,8 +352,8 @@ mod tests {
         let other_xprv = other_path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .unwrap();
-        let secp = Secp256k1::new();
-        let other_address = Address::p2pkh(&other_xprv.to_priv().public_key(&secp), network);
+
+        let other_address = Address::p2pkh(&other_xprv.to_priv().public_key(), network);
         let other_platform = PlatformAddress::try_from(other_address).unwrap();
 
         assert!(!det.can_sign_with(&other_platform));

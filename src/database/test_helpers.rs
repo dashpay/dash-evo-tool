@@ -161,21 +161,21 @@ pub fn legacy_master_epk_bytes(
     network: dash_sdk::dpp::dashcore::Network,
 ) -> Vec<u8> {
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
 
     let coin_type = if network == Network::Mainnet { 5 } else { 1 };
-    let secp = Secp256k1::new();
+
     let master = ExtendedPrivKey::new_master(network, seed).expect("master key");
     let path = DerivationPath::from(vec![
         ChildNumber::Hardened { index: 44 },
         ChildNumber::Hardened { index: coin_type },
         ChildNumber::Hardened { index: 0 },
     ]);
-    let account = master.derive_priv(&secp, &path).expect("derive account");
-    ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+    let account = master.derive_priv(&path).expect("derive account");
+    ExtendedPubKey::from_priv(&account).encode().to_vec()
 }
 
 /// Create the legacy `scheduled_votes` table in `data.db`. Fresh installs no

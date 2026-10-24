@@ -163,7 +163,12 @@ pub fn check_source(
     for row in rows {
         let (id, bytes, status, identity_type, alias) = row.map_err(|e| e.to_string())?;
         let record = snapshot(&bytes, status, &identity_type)?;
-        if record.id != dash_sdk::dpp::dashcore::base58::encode_slice(&id) || record.alias != alias
+        if record.id
+            != dash_sdk::dpp::platform_value::string_encoding::encode(
+                &id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+            || record.alias != alias
         {
             return Err("legacy identity columns disagree with the serialized identity".into());
         }
@@ -191,7 +196,12 @@ pub fn check_migrated(
             return Err("unexpected wallet binding in public identity record".into());
         }
         let record = snapshot(&stored.qi_bytes, stored.status, &stored.identity_type)?;
-        if record.id != dash_sdk::dpp::dashcore::base58::encode_slice(&id) {
+        if record.id
+            != dash_sdk::dpp::platform_value::string_encoding::encode(
+                &id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+        {
             return Err("identity storage key differs from its serialized identity".into());
         }
         found.push(record);

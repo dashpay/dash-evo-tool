@@ -627,14 +627,16 @@ async fn step_update_contact_info(
             key_type: KeyType::ECDSA_SECP256K1,
             read_only: false,
             data: {
-                use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
                 use dash_sdk::dpp::dashcore::PrivateKey;
-                let secp = Secp256k1::new();
                 let secret_key =
-                    dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
+                    dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
                         .expect("Step 5: invalid secret key");
-                let pk = PrivateKey::new(secret_key, dash_sdk::dpp::dashcore::Network::Testnet);
-                pk.public_key(&secp).to_bytes().into()
+                let pk = PrivateKey::from_byte_array(
+                    secret_key.as_secret_bytes(),
+                    dash_sdk::dpp::dashcore::Network::Testnet,
+                )
+                .expect("valid secret key");
+                pk.public_key().to_bytes().into()
             },
             disabled_at: None,
         });
@@ -850,11 +852,10 @@ async fn tc_045_detect_incoming_contact_payment() {
     // secret keys so the addresses stay stable across runs while remaining valid
     // curve points — secp256k1 now rejects raw bytes that are not on the curve,
     // so a hand-written `[0x02; 33]` is no longer a usable public key.
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
     let derive_pubkey = |seed: [u8; 32]| {
-        let secret_key = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&seed)
+        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(seed)
             .expect("fixed test secret key is a valid scalar");
-        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key(&secp))
+        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key())
     };
     let pubkey_0 = derive_pubkey([0x01; 32]);
     let pubkey_1 = derive_pubkey([0x02; 32]);

@@ -194,14 +194,13 @@ async fn step_add_key(
         key_type: KeyType::ECDSA_SECP256K1,
         read_only: false,
         data: {
-            use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
             use dash_sdk::dpp::dashcore::PrivateKey;
-            let secp = Secp256k1::new();
             let secret_key =
-                dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
+                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
                     .expect("invalid secret key");
-            let pk = PrivateKey::new(secret_key, Network::Testnet);
-            pk.public_key(&secp).to_bytes().into()
+            let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+                .expect("valid secret key");
+            pk.public_key().to_bytes().into()
         },
         disabled_at: None,
     });

@@ -3012,6 +3012,17 @@ pub enum TaskError {
     )]
     NonTransferableTokenNotSupported,
 
+    /// A once-per-identity token claim succeeded, but this device could not
+    /// record that it was made. Without the record, the claim may be offered
+    /// again, and Platform refuses (and charges for) a second claim.
+    #[error(
+        "The tokens were claimed, but this device could not save that this identity has claimed them. Do not claim this token again with this identity, because the claim would be refused."
+    )]
+    TokensClaimedButClaimNotRecorded {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// The identity already took its single claim of a token's
     /// once-per-identity distribution, so Platform refused another one.
     #[error(

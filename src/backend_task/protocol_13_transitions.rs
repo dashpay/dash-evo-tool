@@ -234,3 +234,43 @@ async fn a_document_is_created_in_the_protocol_13_encoding() {
         "protocol 13 cannot decode {base:?}"
     );
 }
+
+/// A key with limits built at protocol 13 (the feature gate and the SDK's
+/// version can disagree during the 13 → 14 switch) is either refused or keeps
+/// its limits; it never goes out as an unlimited version 0 key.
+#[tokio::test]
+async fn a_limited_key_built_at_protocol_13_never_loses_its_limits() {
+    use dash_sdk::dpp::state_transition::public_key_in_creation::accessors::IdentityPublicKeyInCreationV1Getters;
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let mut identity = Identity::create_basic_identity(Identifier::from([5; 32]), platform_version)
+        .expect("identity");
+    identity.add_public_key(plain_key(0, SecurityLevel::MASTER));
+    let limited =
+        plain_key(1, SecurityLevel::HIGH).with_limits(Some(5_000), Some(2_000_000_000_000));
+
+    let built = IdentityUpdateTransition::try_from_identity_with_signer(
+        &identity,
+        &0,
+        vec![limited],
+        vec![],
+        1,
+        UserFeeIncrease::default(),
+        &PlaceholderSigner,
+        platform_version,
+        None,
+    )
+    .await;
+
+    let Ok(transition) = built else {
+        return; // Refused: nothing reaches the network.
+    };
+    let StateTransition::IdentityUpdate(IdentityUpdateTransition::V0(update)) = transition else {
+        panic!("expected a version 0 identity update, got {transition:?}");
+    };
+    let IdentityPublicKeyInCreation::V1(added) = &update.add_public_keys[0] else {
+        panic!("the limits were dropped: {:?}", update.add_public_keys[0]);
+    };
+    assert_eq!(added.total_budget(), Some(5_000));
+    assert_eq!(added.expires_at(), Some(2_000_000_000_000));
+}

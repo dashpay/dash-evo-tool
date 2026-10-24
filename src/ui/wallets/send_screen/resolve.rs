@@ -211,7 +211,7 @@ impl WalletSendScreen {
                         // Core-to-Core "Max": the backend's quote of the largest
                         // payment the pooled build accepts, net of its fee.
                         // Nothing is offered until it arrives.
-                        match self.spend_limit_for(source, dest_kind, SpendLimitKind::CoreSend) {
+                        match self.spend_limit_for(source, dest_kind, self.core_send_limit_kind()) {
                             Some(0) => {
                                 max = None;
                                 Some(

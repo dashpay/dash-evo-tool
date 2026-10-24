@@ -6,6 +6,7 @@
 //! a fresh one arrives.
 
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::spend_limit::SpendLimitKind;
 use crate::model::wallet::WalletSeedHash;
@@ -25,6 +26,9 @@ enum Phase {
         max_credits: u64,
     },
     Failed,
+    /// Another transaction from the wallet is in progress; no limit is
+    /// offered until the revision changes.
+    Busy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,7 +58,7 @@ impl SpendLimitCache {
             && state.revision == revision
         {
             match state.phase {
-                Phase::Loaded { .. } | Phase::Failed => return None,
+                Phase::Loaded { .. } | Phase::Failed | Phase::Busy => return None,
                 Phase::InFlight { started_at, .. }
                     if started_at.elapsed() < SPEND_LIMIT_REQUEST_DEADLINE =>
                 {
@@ -126,6 +130,33 @@ impl SpendLimitCache {
         self.settle(seed_hash, kind, request_id, Phase::Loaded { max_credits });
     }
 
+    /// Whether the wallet reported another transaction in progress for
+    /// `revision`, so no limit is offered.
+    pub fn is_busy(&self, seed_hash: &WalletSeedHash, kind: SpendLimitKind, revision: u64) -> bool {
+        matches!(
+            self.states.get(&(*seed_hash, kind)),
+            Some(State {
+                revision: busy_for,
+                phase: Phase::Busy,
+            }) if *busy_for == revision
+        )
+    }
+
+    /// Record why the awaited request returned no limit.
+    pub fn mark_request_error(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        kind: SpendLimitKind,
+        request_id: u64,
+        error: &TaskError,
+    ) {
+        let phase = match error {
+            TaskError::SpendInProgress => Phase::Busy,
+            _ => Phase::Failed,
+        };
+        self.settle(seed_hash, kind, request_id, phase);
+    }
+
     /// Record that the awaited request failed.
     pub fn mark_failed(
         &mut self,
@@ -174,7 +205,9 @@ mod tests {
     #[test]
     fn a_quote_is_used_only_for_the_revision_it_was_requested_for() {
         let mut cache = SpendLimitCache::default();
-        let kind = SpendLimitKind::CoreSend;
+        let kind = SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
         let id = request_id(cache.ensure_requested(SEED, kind, 1));
         assert_eq!(
             cache.get(&SEED, kind, 1),
@@ -216,7 +249,9 @@ mod tests {
     #[test]
     fn a_failure_waits_for_new_wallet_state_or_an_invalidation() {
         let mut cache = SpendLimitCache::default();
-        let kind = SpendLimitKind::CoreSend;
+        let kind = SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
         let id = request_id(cache.ensure_requested(SEED, kind, 1));
         cache.mark_failed(SEED, kind, id);
 
@@ -232,14 +267,36 @@ mod tests {
     #[test]
     fn kinds_are_cached_independently() {
         let mut cache = SpendLimitCache::default();
-        let core = request_id(cache.ensure_requested(SEED, SpendLimitKind::CoreSend, 1));
+        let core = request_id(cache.ensure_requested(
+            SEED,
+            SpendLimitKind::CoreSend {
+                destination: Default::default(),
+            },
+            1,
+        ));
         assert!(
             cache
                 .ensure_requested(SEED, SpendLimitKind::ShieldFromPlatform, 1)
                 .is_some()
         );
-        cache.store(SEED, SpendLimitKind::CoreSend, core, 9);
-        assert_eq!(cache.get(&SEED, SpendLimitKind::CoreSend, 1), Some(9));
+        cache.store(
+            SEED,
+            SpendLimitKind::CoreSend {
+                destination: Default::default(),
+            },
+            core,
+            9,
+        );
+        assert_eq!(
+            cache.get(
+                &SEED,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
+                1
+            ),
+            Some(9)
+        );
         assert_eq!(
             cache.get(&SEED, SpendLimitKind::ShieldFromPlatform, 1),
             None

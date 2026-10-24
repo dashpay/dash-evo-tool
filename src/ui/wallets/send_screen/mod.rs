@@ -8,10 +8,7 @@ use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
-    validate_asset_lock_amount,
-};
+use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, estimate_address_funding_fee_from_transition,
@@ -36,7 +33,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
+use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, asset_lock_amount_refusal};
 use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
@@ -957,6 +954,20 @@ impl WalletSendScreen {
             .unwrap_or(0)
     }
 
+    /// The builder ceiling an explicit asset-lock amount is checked against:
+    /// `None` while another transaction from the wallet is in progress, when
+    /// only Max is withheld and the backend decides the amount.
+    fn asset_lock_validation_ceiling(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<u64>, String> {
+        match self.asset_lock_max_amount(seed_hash) {
+            Ok(ceiling) => Ok(Some(ceiling)),
+            Err(_) if self.asset_lock_balance.is_busy(seed_hash) => Ok(None),
+            Err(message) => Err(message),
+        }
+    }
+
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
         let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
         self.asset_lock_balance
@@ -976,6 +987,12 @@ impl WalletSendScreen {
                 destination,
                 Some(AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity)
             )
+    }
+
+    #[cfg(test)]
+    fn request_asset_lock_max_amount(&mut self) -> Option<BackendTask> {
+        let source = self.selected_source.clone()?;
+        self.request_asset_lock_max_amount_for(&source, self.destination_kind())
     }
 
     fn request_asset_lock_max_amount_for(
@@ -1018,11 +1035,23 @@ impl WalletSendScreen {
             )),
             (SourceSelection::CoreWallet, AddressKind::Core) => Some((
                 seed_hash,
-                SpendLimitKind::CoreSend,
+                self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
             )),
             _ => None,
         }
+    }
+
+    /// Core send Max is quoted for the script the destination pays to; with
+    /// none chosen yet, for P2PKH, the larger output and so the safe bound.
+    pub(super) fn core_send_limit_kind(&self) -> SpendLimitKind {
+        let destination = match &self.validated_destination {
+            Some(ValidatedAddress::Core(address)) => {
+                crate::model::spend_limit::CoreDestinationScript::of(address)
+            }
+            _ => Default::default(),
+        };
+        SpendLimitKind::CoreSend { destination }
     }
 
     /// Names the wallet's live Platform balances, not the ones captured in
@@ -1081,7 +1110,9 @@ impl WalletSendScreen {
         let Some((seed_hash, kind, revision)) = self.spend_limit_target() else {
             return;
         };
-        if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+        if self.spend_limits.is_busy(&seed_hash, kind, revision) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
             ui.label("The available amount could not be checked.");
             if ui.button("Retry available amount check").clicked() {
                 self.spend_limits.invalidate();
@@ -1106,7 +1137,9 @@ impl WalletSendScreen {
 
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
-        if failed {
+        if self.asset_lock_balance.is_busy(&seed_hash) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {
             ui.label("Checking the available amount…");
@@ -1428,28 +1461,14 @@ impl WalletSendScreen {
             &destination,
         )
         .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             platform_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Platform),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
@@ -1841,20 +1860,11 @@ impl WalletSendScreen {
                 }
                 .to_string()
             })?;
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) =
+            asset_lock_amount_refusal(amount_duffs, asset_lock_max, platform_fee_duffs, None)
         {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
+            return Err(message);
         }
 
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -1881,28 +1891,14 @@ impl WalletSendScreen {
             .fee_estimator()
             .estimate_identity_topup()
             .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             identity_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Identity),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, identity_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         // Resolve identity from destination
@@ -3932,7 +3928,7 @@ impl ScreenLike for WalletSendScreen {
         self.spend_limits.invalidate();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
             self.pending_send.clear();
@@ -3942,14 +3938,16 @@ impl ScreenLike for WalletSendScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
-            self.spend_limits.mark_failed(seed_hash, kind, request_id);
+            self.spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error);
         }
     }
 
@@ -5687,7 +5685,10 @@ mod tests {
             .expect("selected wallet seed hash");
 
         let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
-            kind: SpendLimitKind::CoreSend,
+            kind:
+                SpendLimitKind::CoreSend {
+                    destination: crate::model::spend_limit::CoreDestinationScript::PubkeyHash,
+                },
             request_id,
             ..
         })) = screen.request_spend_limit()
@@ -5697,7 +5698,9 @@ mod tests {
         assert!(
             screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
                 seed_hash,
-                kind: SpendLimitKind::CoreSend,
+                kind: SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
                 request_id,
                 max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
             })
@@ -5715,6 +5718,151 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// Core Max is quoted for the script the chosen destination pays to, and
+    /// a change of destination kind asks for that kind's own quote.
+    #[test]
+    fn core_send_max_is_requested_for_the_destination_script() {
+        use crate::model::spend_limit::CoreDestinationScript;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        let p2sh = Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::ScriptHash(
+                dash_sdk::dpp::dashcore::ScriptHash::from_byte_array([9; 20]),
+            ),
+        );
+        screen.validated_destination = Some(ValidatedAddress::Core(p2sh));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::ScriptHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2SH destination is quoted as P2SH"
+        );
+
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::PubkeyHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2PKH destination needs its own quote"
+        );
+    }
+
+    /// Busy withholds only Max: an explicit asset-lock amount still reaches
+    /// the backend, whose reservation-aware dry run and the build decide it.
+    #[test]
+    fn an_explicit_asset_lock_amount_is_sent_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(0.5));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(
+            task @ BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                snapshot_generation,
+                request_id,
+                ..
+            }),
+        ) = screen.request_asset_lock_max_amount()
+        else {
+            panic!("the asset-lock form must ask for the builder ceiling");
+        };
+        let _ = task;
+        screen.asset_lock_balance.mark_request_error(
+            &seed_hash,
+            snapshot_generation,
+            request_id,
+            &TaskError::SpendInProgress,
+        );
+
+        let action = screen.send_core_to_shielded(seed_hash);
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
+                        amount_duffs: 50_000_000,
+                        ..
+                    }
+                )))
+            ),
+            "an explicit amount must reach the backend: {action:?}"
+        );
+    }
+
+    /// While another transaction from the wallet is in progress, the backend
+    /// quotes no Max; the form offers none and says why, without a Retry
+    /// that could only get the same answer, and asks again only once the
+    /// wallet's quote revision moves.
+    #[test]
+    fn core_send_offers_no_max_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(&context, &TaskError::SpendInProgress);
+
+        assert!(
+            screen.request_spend_limit().is_none(),
+            "the same wallet state must not be re-quoted"
+        );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_spend_limit_status(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let caption = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)
+                    .include_labels(),
+            )
+            .count();
+        assert_eq!(caption, 1, "the form must say why Max is unavailable");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none(),
+            "retrying cannot help while the transaction is in progress"
+        );
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        assert_eq!(
+            harness
+                .state()
+                .amount
+                .as_ref()
+                .map(Amount::value)
+                .unwrap_or(0),
+            0,
+            "Max must offer nothing"
         );
     }
 

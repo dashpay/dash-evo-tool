@@ -2903,7 +2903,7 @@ impl WalletBackend {
     ) -> (u64, AssetLockInputState, u64) {
         let (generation, inputs, revision) =
             self.inner.snapshots.asset_lock_probe_snapshot(seed_hash);
-        let spend_key = self.inner.spend_activity.quote_key(seed_hash);
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
         (generation, inputs.with_spend_key(spend_key), revision)
     }
 
@@ -2911,12 +2911,19 @@ impl WalletBackend {
     /// wallet state and the operations that can move its reservations.
     pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
         let generation = self.inner.snapshots.asset_lock_probe_snapshot(seed_hash).0;
-        generation
-            ^ self
-                .inner
-                .spend_activity
-                .quote_key(seed_hash)
-                .rotate_left(32)
+        let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
+        generation ^ spend_key.rotate_left(32)
+    }
+
+    /// The key a Max quote made now for `seed_hash` is valid under, or
+    /// [`TaskError::SpendInProgress`] while an operation that can reserve its
+    /// Core inputs is open.
+    fn spend_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        let state = self.inner.spend_activity.quote_state(seed_hash);
+        if state.busy {
+            return Err(TaskError::SpendInProgress);
+        }
+        Ok(state.key)
     }
 
     /// Mark an operation that can take or release Core input reservations

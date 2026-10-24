@@ -1,8 +1,6 @@
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::ContextProvider;
-use dash_sdk::sdk::min_protocol_version;
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
 use std::time::Duration;
 use tracing::info;
@@ -22,25 +20,19 @@ fn request_settings() -> RequestSettings {
 ///
 /// The SDK is never pinned: it starts at upstream's per-network minimum (the
 /// lowest version the network still runs) and ratchets upward to whatever the
-/// network reports in proven responses. `carried_protocol_version` is the
-/// version a previous SDK of this network already reached (0 if none), so a
-/// replacement does not fall back below it.
+/// network reports in proven responses. A rebuilt connection starts there
+/// too: nothing learned from the endpoints it replaces is carried over.
 pub fn initialize_sdk<P: ContextProvider + 'static>(
     address_list: AddressList,
     network: Network,
     context_provider: P,
-    carried_protocol_version: u32,
 ) -> Result<Sdk, String> {
     let request_settings = request_settings();
 
-    let mut builder = SdkBuilder::new(address_list)
+    let sdk = SdkBuilder::new(address_list)
         .with_network(network)
         .with_context_provider(context_provider)
-        .with_settings(request_settings);
-    if let Some(seed) = sdk_seed(network, carried_protocol_version) {
-        builder = builder.with_initial_version(seed);
-    }
-    let sdk = builder
+        .with_settings(request_settings)
         .build()
         .map_err(|e| format!("Failed to build SDK: {e}"))?;
 
@@ -53,15 +45,6 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     Ok(sdk)
 }
 
-/// The seed replacing upstream's per-network default: the carried version,
-/// when it is known and above that default. `None` keeps the default.
-fn sdk_seed(network: Network, carried_protocol_version: u32) -> Option<&'static PlatformVersion> {
-    if carried_protocol_version <= min_protocol_version(network) {
-        return None;
-    }
-    PlatformVersion::get_optional(carried_protocol_version)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,40 +55,6 @@ mod tests {
         Address, ExecutionError, ExecutionResult, update_address_ban_status,
     };
     use dash_sdk::error::ContextProviderError;
-
-    const NETWORKS: [Network; 4] = [
-        Network::Mainnet,
-        Network::Testnet,
-        Network::Devnet,
-        Network::Regtest,
-    ];
-
-    /// Nothing carried, or nothing above the network minimum: upstream's
-    /// per-network default seeds the SDK.
-    #[test]
-    fn the_network_minimum_seeds_a_fresh_sdk() {
-        for network in NETWORKS {
-            let minimum = min_protocol_version(network);
-            for carried in [0, minimum - 1, minimum] {
-                assert!(
-                    sdk_seed(network, carried).is_none(),
-                    "{network:?} carried {carried}"
-                );
-            }
-        }
-    }
-
-    /// A version a previous SDK already reached is kept, unless this build
-    /// does not know it.
-    #[test]
-    fn a_carried_version_above_the_minimum_is_kept() {
-        let latest = PlatformVersion::latest().protocol_version;
-        assert_eq!(
-            sdk_seed(Network::Mainnet, latest).map(|v| v.protocol_version),
-            Some(latest)
-        );
-        assert!(sdk_seed(Network::Mainnet, latest + 1).is_none());
-    }
 
     /// Pins the pinned SDK's behaviour that makes pre-sync proof reads harmful:
     /// the context provider's "masternode list not ready" answer surfaces as a

@@ -518,7 +518,7 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
         return;
     }
 
-    if let Err(error) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+    if let Err(error) = app_context.rebuild_connection().await {
         tracing::warn!(
             target = "migration::finish_unwire",
             ?network,

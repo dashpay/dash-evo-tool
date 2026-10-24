@@ -307,7 +307,7 @@ impl WalletBackend {
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
-        let spend = self.begin_core_spend(seed_hash);
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -326,8 +326,6 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
-                // Reservations are taken from here on.
-                spend.mark();
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -682,7 +680,7 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let identity_id = identity.id();
-        let spend = self.begin_core_spend(seed_hash);
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -706,8 +704,6 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
-                // Reservations are taken from here on.
-                spend.mark();
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -793,7 +789,7 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
-        let spend = self.begin_core_spend(seed_hash);
+        let _spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -807,8 +803,6 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
-                // Reservations are taken from here on.
-                spend.mark();
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;

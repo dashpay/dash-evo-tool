@@ -378,16 +378,19 @@ impl ConnectionStatus {
         }
     }
 
-    /// Current SPV connected peer count (push-based from the wallet-backend
-    /// `EventBridge` `on_network_event` callback).
+    /// Mirrors the wallet backend's sync fault latch (polled by the frame-loop
+    /// refresh; upstream raises no event for it).
     pub fn set_wallet_sync_fault(&self, faulted: bool) {
         self.wallet_sync_fault.store(faulted, Ordering::Relaxed);
     }
 
+    /// Whether wallet sync data could not be saved during this run.
     pub fn wallet_sync_fault(&self) -> bool {
         self.wallet_sync_fault.load(Ordering::Relaxed)
     }
 
+    /// Current SPV connected peer count (push-based from the wallet-backend
+    /// `EventBridge` `on_network_event` callback).
     pub fn spv_connected_peers(&self) -> u16 {
         self.spv_connected_peers.load(Ordering::Relaxed)
     }

@@ -584,17 +584,31 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
+        // Captured before the read, generation first: a rebuild swaps the SDK
+        // before it bumps the generation, so a read on an SDK that is no
+        // longer current is never adopted.
+        let generation = self.connection_generation();
+        let on_current_sdk = self.is_current_sdk(sdk);
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
-        self.adopt_epoch_info(&epoch_info);
+        if on_current_sdk {
+            self.adopt_epoch_info(generation, &epoch_info);
+        }
         Ok(epoch_info)
     }
 
-    /// Adopts the fee multiplier and protocol version of a proved epoch,
-    /// unless a newer epoch was adopted already (see `AppContext::adopt_epoch`).
-    fn adopt_epoch_info(&self, epoch_info: &ExtendedEpochInfo) {
+    /// Whether `sdk` is this context's current SDK, not one a rebuild has
+    /// replaced (or a copy of it).
+    fn is_current_sdk(&self, sdk: &Sdk) -> bool {
+        std::ptr::eq(sdk, Arc::as_ptr(&self.sdk.load_full()))
+    }
+
+    /// Adopts the fee multiplier and protocol version of a proved epoch read
+    /// on connection `generation` (see `AppContext::adopt_epoch`).
+    fn adopt_epoch_info(&self, generation: u64, epoch_info: &ExtendedEpochInfo) {
         self.adopt_epoch(
+            generation,
             epoch_info.index(),
             epoch_info.fee_multiplier_permille(),
             epoch_info.protocol_version(),
@@ -653,10 +667,16 @@ impl AppContext {
                         // Without the epoch, the network's version is learned from
                         // the ratchet a proved DPNS fetch drives. Only a successful
                         // fetch proves it came from the network, not the local seed.
+                        let generation = self.connection_generation();
+                        let on_current_sdk = self.is_current_sdk(sdk);
                         match DataContract::fetch(sdk, self.dpns_contract().id()).await {
-                            Ok(_) => {
-                                self.raise_platform_protocol_version(sdk.protocol_version_number())
+                            Ok(_) if on_current_sdk => {
+                                self.raise_platform_protocol_version_on(
+                                    generation,
+                                    sdk.protocol_version_number(),
+                                );
                             }
+                            Ok(_) => {}
                             Err(error) => tracing::warn!(
                                 %error,
                                 "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
@@ -1048,14 +1068,17 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.set_fee_multiplier_permille(1000);
 
-        ctx.adopt_epoch_info(&ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-            index: 7,
-            first_block_time: 0,
-            first_block_height: 0,
-            first_core_block_height: 0,
-            fee_multiplier_permille: 1_500,
-            protocol_version: 14,
-        }));
+        ctx.adopt_epoch_info(
+            ctx.connection_generation(),
+            &ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+                index: 7,
+                first_block_time: 0,
+                first_block_height: 0,
+                first_core_block_height: 0,
+                fee_multiplier_permille: 1_500,
+                protocol_version: 14,
+            }),
+        );
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
         assert_eq!(ctx.platform_protocol_version(), 14);
@@ -1079,24 +1102,58 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
 
-        ctx.adopt_epoch_info(&epoch(8, 1_500, 14));
-        ctx.adopt_epoch_info(&epoch(7, 1_000, 13));
+        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_500, 14));
+        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(7, 1_000, 13));
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
         assert_eq!(ctx.platform_protocol_version(), 14);
 
         // The same or a newer epoch is adopted; the protocol version never
         // goes back.
-        ctx.adopt_epoch_info(&epoch(8, 1_600, 14));
+        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_600, 14));
         assert_eq!(ctx.fee_multiplier_permille(), 1_600);
-        ctx.adopt_epoch_info(&epoch(9, 1_700, 13));
+        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(9, 1_700, 13));
         assert_eq!(ctx.fee_multiplier_permille(), 1_700);
         assert_eq!(ctx.platform_protocol_version(), 14);
+    }
 
-        // After the connection is rebuilt (new endpoints, possibly a reset
-        // devnet), epochs are compared afresh.
-        ctx.forget_adopted_epoch();
-        ctx.adopt_epoch_info(&epoch(2, 1_100, 14));
+    /// Rebuilding the connection resets everything learned from the old one:
+    /// the protocol version goes back to unknown, the fee multiplier to the
+    /// default, and the next proved epoch is adopted whatever its index.
+    #[test]
+    fn a_rebuilt_connection_starts_from_unknown_protocol_and_default_fees() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
+
+        ctx.reset_connection_state();
+
+        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(
+            ctx.fee_multiplier_permille(),
+            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
+        );
+        assert!(ctx.adopt_epoch(ctx.connection_generation(), 2, 1_100, 13));
         assert_eq!(ctx.fee_multiplier_permille(), 1_100);
+        assert_eq!(ctx.platform_protocol_version(), 13);
+    }
+
+    /// An epoch read that started on the old connection and finishes after
+    /// the rebuild is dropped, so it cannot be the new connection's first
+    /// adoption.
+    #[test]
+    fn an_epoch_read_from_before_a_rebuild_is_dropped() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let before_rebuild = ctx.connection_generation();
+
+        ctx.reset_connection_state();
+
+        assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500, 14));
+        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(
+            ctx.fee_multiplier_permille(),
+            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
+        );
     }
 
     /// A failed withdrawal keeps its credits locked, so the history says so

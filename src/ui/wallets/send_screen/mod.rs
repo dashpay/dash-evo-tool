@@ -2671,16 +2671,6 @@ impl WalletSendScreen {
         Ok(inputs)
     }
 
-    fn confirmation_fee_sentence(estimated_fee_credits: Option<u64>) -> String {
-        match estimated_fee_credits {
-            Some(fee) => {
-                let estimated_fee = format_credits_as_dash(fee);
-                format!("The estimated network fee is approximately {estimated_fee}.")
-            }
-            None => "The network fee will be calculated when you confirm this send.".to_string(),
-        }
-    }
-
     fn simple_send_confirmation_message(&self) -> String {
         let amount_credits = self.amount.as_ref().map(Amount::value).unwrap_or(0);
         let fee_preview = self.current_fee_preview();
@@ -2688,7 +2678,7 @@ impl WalletSendScreen {
             format!("From: {source}", source = self.source_label()),
             format!(
                 "To: {destination}",
-                destination = self.destination_address_string()
+                destination = form_view::short_address(&self.destination_address_string())
             ),
             format!(
                 "Amount: {amount}",
@@ -2976,6 +2966,8 @@ impl WalletSendScreen {
         )))
     }
 
+    /// The confirmation for explicit inputs or several recipients, in the
+    /// same From / To / Amount / Fee / Total lines as a single payment.
     fn advanced_send_confirmation_message(&self) -> String {
         let recipients: Vec<_> = self
             .advanced_outputs
@@ -2990,50 +2982,65 @@ impl WalletSendScreen {
                     }
                     _ => None,
                 }?;
-                (amount_credits > 0).then(|| {
-                    (
-                        output.address.trim().to_string(),
-                        format_credits_as_dash(amount_credits),
-                    )
-                })
+                (amount_credits > 0).then(|| (output.address.trim().to_string(), amount_credits))
             })
             .collect();
-        let destinations = recipients
+        let several = recipients.len() > 1;
+        let total_credits = recipients
             .iter()
-            .enumerate()
-            .map(|(index, (destination, amount))| {
-                let output_number = index + 1;
+            .map(|(_, credits)| *credits)
+            .fold(0u64, u64::saturating_add);
+        let mut lines = vec![format!("From: {source}", source = self.source_label())];
+        for (address, credits) in &recipients {
+            let destination = form_view::short_address(address);
+            lines.push(if several {
                 format!(
-                    "Output {output_number} sends an entered amount of {amount} to {destination}."
+                    "To: {destination} · {amount}",
+                    amount = format_credits_as_dash(*credits)
                 )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let fee = Self::confirmation_fee_sentence(self.advanced_fee_estimate_credits());
-        let output_fee_effect = if self.advanced_source_type == AdvancedSourceType::Core
+            } else {
+                format!("To: {destination}")
+            });
+        }
+        lines.push(format!(
+            "Amount: {amount}",
+            amount = format_credits_as_dash(total_credits)
+        ));
+        // The fee strategy changes only Core-to-Platform payments.
+        let core_to_platform = self.advanced_source_type == AdvancedSourceType::Core
             && self.advanced_outputs.iter().any(|output| {
                 self.detect_address_kind(&output.address) == Some(AddressKind::Platform)
-            }) {
-            if matches!(
-                self.fee_strategy,
-                PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
-            ) {
-                "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
-            } else {
-                "The network fee will be paid from the selected inputs, so the recipient will receive the entered amount."
+            });
+        let reduces_output = core_to_platform && self.fee_strategy.reduces_output();
+        match self.advanced_fee_estimate_credits() {
+            Some(fee) => {
+                lines.push(format!("Fee: ≈ {fee}", fee = format_credits_as_dash(fee)));
+                let total = if reduces_output {
+                    total_credits
+                } else {
+                    total_credits.saturating_add(fee)
+                };
+                lines.push(format!(
+                    "Total: ≈ {total}",
+                    total = format_credits_as_dash(total)
+                ));
             }
+            None => lines.push("Fee: calculated when you send".to_string()),
+        }
+        if reduces_output {
+            lines.push("The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount.".to_string());
+        } else if core_to_platform {
+            lines.push("The network fee will be paid from the selected inputs, so the recipient will receive the entered amount.".to_string());
+        }
+        if let Some(note) = self.route_note() {
+            lines.push(note.to_string());
+        }
+        lines.push(if several {
+            "Check the recipients. Payments can't be undone.".to_string()
         } else {
-            ""
-        };
-        let fee_details = if output_fee_effect.is_empty() {
-            fee
-        } else {
-            format!("{output_fee_effect} {fee}")
-        };
-
-        format!(
-            "You are about to send the following outputs.\n{destinations}\n{fee_details} Confirm this transaction only if every destination, amount, and fee is correct."
-        )
+            "Check the recipient. Payments can't be undone.".to_string()
+        });
+        lines.join("\n")
     }
 
     fn open_send_confirmation(&mut self, action: AppAction, message: String) {
@@ -5689,7 +5696,8 @@ mod tests {
         assert_eq!(
             screen.simple_send_confirmation_message(),
             format!(
-                "From: Unnamed wallet · Core\nTo: {destination}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone."
+                "From: Unnamed wallet · Core\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone.",
+                short = form_view::short_address(&destination)
             )
         );
     }
@@ -5723,7 +5731,8 @@ mod tests {
         assert_eq!(
             screen.simple_send_confirmation_message(),
             format!(
-                "From: Unnamed wallet · Platform\nTo: {destination}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nCheck the recipient. Payments can't be undone."
+                "From: Unnamed wallet · Platform\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nCheck the recipient. Payments can't be undone.",
+                short = form_view::short_address(&destination)
             )
         );
     }
@@ -5866,6 +5875,60 @@ mod tests {
             "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
         ));
         assert!(!message.contains("will receive 1 DASH"));
+    }
+
+    /// Several recipients confirm with the same From / To / Amount / Fee /
+    /// Total lines as one recipient, addresses shortened so they never wrap.
+    #[test]
+    fn several_recipients_confirm_in_the_single_recipient_layout() {
+        let (mut screen, _temp_dir) = send_screen();
+        let first = PlatformAddress::try_from(testnet_core_address(8))
+            .expect("platform destination")
+            .to_bech32m_string(Network::Testnet);
+        let second = PlatformAddress::try_from(testnet_core_address(9))
+            .expect("platform destination")
+            .to_bech32m_string(Network::Testnet);
+        let source_core = testnet_core_address(10);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            PlatformAddress::try_from(source_core.clone()).expect("platform source"),
+            source_core,
+            2 * CREDITS_PER_DUFF * 100_000_000,
+        )]));
+        screen.advanced_source_type = AdvancedSourceType::Platform;
+        screen.advanced_outputs = vec![
+            AdvancedOutput {
+                address: first.clone(),
+                amount: "0.02".to_string(),
+            },
+            AdvancedOutput {
+                address: second.clone(),
+                amount: "0.02".to_string(),
+            },
+        ];
+
+        let message = screen.advanced_send_confirmation_message();
+        let lines: Vec<&str> = message.lines().collect();
+
+        assert_eq!(lines[0], "From: Unnamed wallet · Platform");
+        assert_eq!(
+            lines[1],
+            format!("To: {} · 0.02 DASH", form_view::short_address(&first))
+        );
+        assert_eq!(
+            lines[2],
+            format!("To: {} · 0.02 DASH", form_view::short_address(&second))
+        );
+        assert_eq!(lines[3], "Amount: 0.04 DASH");
+        assert!(lines[4].starts_with("Fee: "), "{message}");
+        assert!(lines[5].starts_with("Total: "), "{message}");
+        assert_eq!(
+            lines.last().copied(),
+            Some("Check the recipients. Payments can't be undone.")
+        );
+        assert!(
+            !message.contains(&first),
+            "addresses are shortened: {message}"
+        );
     }
 
     #[test]

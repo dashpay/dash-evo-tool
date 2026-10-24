@@ -374,6 +374,9 @@ pub fn asset_lock_status_label(status: &AssetLockStatus) -> &'static str {
         AssetLockStatus::ChainLocked => "Confirmed and ready to use.",
         AssetLockStatus::Consumed => "Already used to fund an identity.",
         AssetLockStatus::DrainCompleted => "Already used to transfer the wallet funds.",
+        AssetLockStatus::Conflicted => {
+            "This transfer did not go through because its coins were spent by another payment."
+        }
         // Core-side finality is proven, but whether Platform already spent this
         // lock is unknown, so it must claim neither "ready" nor "already used".
         AssetLockStatus::RecoveredFromChain => {
@@ -474,6 +477,9 @@ mod tests {
             AssetLockStatus::InstantSendLocked,
             AssetLockStatus::ChainLocked,
             AssetLockStatus::Consumed,
+            AssetLockStatus::DrainCompleted,
+            AssetLockStatus::RecoveredFromChain,
+            AssetLockStatus::Conflicted,
         ] {
             let label = asset_lock_status_label(&status);
             assert!(label.ends_with('.'), "label should be a sentence: {label}");

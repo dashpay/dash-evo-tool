@@ -1261,6 +1261,12 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
+    /// Where the wallet's "Max" transfer from the Core wallet stands; `None`
+    /// when the wallet has none.
+    ShieldedMaxTransferStatus {
+        seed_hash: WalletSeedHash,
+        state: Option<crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferState>,
+    },
 
     /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
     CoreClientReinitialized,
@@ -2665,25 +2671,27 @@ mod tests {
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataIncompatible {
-                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
-                    "incompatible test fixture",
+                source: Box::new(platform_wallet_storage::WalletStorageError::Io(
+                    std::io::Error::other("incompatible test fixture"),
                 )),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletDataFolderInsecure {
-                source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                    ancestor: std::path::PathBuf::from("/shared"),
-                    reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
-                        mode: 0o777,
-                    },
-                },
+                source: Box::new(
+                    platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                        ancestor: std::path::PathBuf::from("/shared"),
+                        reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
+                            mode: 0o777,
+                        },
+                    }
+                ),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
-                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
-                    std::io::ErrorKind::PermissionDenied,
+                source: Box::new(platform_wallet_storage::WalletStorageError::Io(
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
                 )),
             }
         ));

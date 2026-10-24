@@ -177,6 +177,20 @@ fn target_reference() -> Result<Connection, UpgradeError> {
     Ok(conn)
 }
 
+/// Create the staged destination of an upgrade at the reference schema the
+/// translation targets. The public open applies every later migration to the
+/// published result, so their row conversions cover translated data too.
+pub(super) fn create_staged_target(path: &Path) -> Result<(), UpgradeError> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?
+    .execute_batch(TARGET_SCHEMA)?;
+    Ok(())
+}
+
 fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeError> {
     let value: Option<Vec<u8>> = conn
         .query_row(

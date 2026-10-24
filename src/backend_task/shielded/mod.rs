@@ -11,6 +11,8 @@ use dash_sdk::dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::Arc;
 
+mod max_transfer;
+
 // TODO(shielded-identity-transfers): moving credits between identities and the
 // shielded pool (protocol version 14), and shielding to another wallet, are not
 // offered yet. See https://github.com/dashpay/dash-evo-tool/issues/1105
@@ -28,6 +30,17 @@ pub enum ShieldedTask {
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
     },
+
+    /// Move the whole Core balance, minus fees, into the wallet's own shielded
+    /// balance ("Max"). The amount is known only once the funding is built.
+    ShieldMaxFromCore { seed_hash: WalletSeedHash },
+
+    /// Finish the wallet's unsettled Max transfer from the Core wallet.
+    FinishShieldMaxFromCore { seed_hash: WalletSeedHash },
+
+    /// Look up where the wallet's Max transfer from the Core wallet stands.
+    /// Reads local wallet state only and moves no funds.
+    ShieldMaxFromCoreStatus { seed_hash: WalletSeedHash },
 
     /// Shield credits from the wallet's platform balance into the shielded
     /// pool (Type 15). Upstream selects the input addresses; DET does not pick
@@ -85,6 +98,15 @@ impl AppContext {
         self: &Arc<Self>,
         task: ShieldedTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // A status read moves no funds, so it stays available even when
+        // shielded operations are not: a transfer started earlier must remain
+        // visible.
+        if let ShieldedTask::ShieldMaxFromCoreStatus { seed_hash } = task {
+            let backend = self.wallet_backend()?;
+            return self
+                .shield_max_from_core_status(backend.as_ref(), seed_hash)
+                .await;
+        }
         if let Some(error) = shielded_operations_unavailable_error(self) {
             tracing::warn!(
                 ?error,
@@ -139,6 +161,16 @@ impl AppContext {
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
 
                 Ok(result)
+            }
+
+            ShieldedTask::ShieldMaxFromCore { seed_hash } => {
+                self.shield_max_from_core(backend, seed_hash).await
+            }
+            ShieldedTask::FinishShieldMaxFromCore { seed_hash } => {
+                self.finish_shield_max_from_core(backend, seed_hash).await
+            }
+            ShieldedTask::ShieldMaxFromCoreStatus { seed_hash } => {
+                self.shield_max_from_core_status(backend, seed_hash).await
             }
 
             ShieldedTask::ShieldFromBalance { seed_hash, amount } => {

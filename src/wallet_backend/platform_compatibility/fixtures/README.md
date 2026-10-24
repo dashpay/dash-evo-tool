@@ -31,6 +31,22 @@ comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
 Revision `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8) leaves the
 migrations untouched.
+Revision `cc5d498837c398453a22ed04bdefcf71728bb8f7` leaves V001–V019, and so
+this reference, untouched. It changes only V020, which no release has shipped:
+two `core_utxos` indexes, and a typed step that indexes every input of each
+kept unmined record by decoding its body under the persister's `LoadPolicy`.
+DET opens under the default `Strict`, so a bridged profile holding an
+unreadable kept record fails the staged validation open and nothing is
+published.
+
+The bridge translates into this V019 reference, not into the newest schema.
+Its staged destination is created from `033ecae.sql`, and the public
+`SqlitePersister::open` then applies every later migration to the published
+result. Those migrations rewrite existing rows (V020 drops mined Core history
+and rewinds the sync height to just below the wallet's birth height), so
+translating straight into a fully migrated database would skip them. Staged
+validation opens a copy, keeping the staged file at the reference schema the
+rebuild reads.
 
 
 `public-rows.sql` contains only public synthetic rows from that old revision's

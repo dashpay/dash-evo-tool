@@ -55,6 +55,7 @@ pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
 mod shielded;
+mod shielded_max_transfer;
 mod sidecar;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
@@ -107,6 +108,8 @@ pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
 pub use payments::AssetLockMaxAmountQuote;
+pub(crate) use shielded::MaxTransferAttempt;
+pub(crate) use shielded_max_transfer::{MaxTransferClaim, ShieldedMaxTransferRecords};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{
@@ -468,6 +471,10 @@ struct Inner {
     /// per-backend lock covers every writer. Held only for a synchronous
     /// KV read/write — never across an `.await`.
     auth_pubkey_cache_lock: std::sync::Mutex<()>,
+    /// Serialises claims and releases of this network's Core-to-shielded
+    /// "Max" transfer records (see [`ShieldedMaxTransferRecords`]). Held only
+    /// for a synchronous KV read/write — never across an `.await`.
+    shielded_max_transfer_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
@@ -717,6 +724,7 @@ impl WalletBackend {
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 auth_pubkey_cache_lock: std::sync::Mutex::new(()),
+                shielded_max_transfer_lock: std::sync::Mutex::new(()),
                 secret_store,
                 wallet_context,
                 app_kv,
@@ -1764,7 +1772,9 @@ impl WalletBackend {
             .delete_wallet_skip_backup(*wallet_id)
         {
             Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
-            Err(source) => Err(TaskError::WalletStorage { source }),
+            Err(source) => Err(TaskError::WalletStorage {
+                source: Box::new(source),
+            }),
         }
     }
 
@@ -2419,6 +2429,13 @@ impl WalletBackend {
             &self.inner.auth_pubkey_cache_lock,
             &self.inner.wallet_context,
         )
+    }
+
+    /// Records of unsettled Core-to-shielded "Max" transfers, one per wallet.
+    /// Backed by the cross-network app-level k/v store; see
+    /// [`ShieldedMaxTransferRecords`] for the key schema.
+    pub(crate) fn shielded_max_transfer_records(&self) -> ShieldedMaxTransferRecords<'_> {
+        ShieldedMaxTransferRecords::new(&self.inner.app_kv, &self.inner.shielded_max_transfer_lock)
     }
 
     /// View over the DET-owned avatar image cache. Backed by the
@@ -3386,6 +3403,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // The funding transaction lost a Core input conflict. Retrying the
+        // same operation cannot build a replacement, so the user starts anew.
+        other @ P::AssetLockConflicted(_) => TaskError::AssetLockFundingConflicted {
+            source: Box::new(other),
+        },
+
         // A token operation keeps its SDK cause, so it is classified like any
         // SDK error; an unclassified one still names the operation.
         P::TokenOperationFailed { operation, source } => {
@@ -3727,6 +3750,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockTransaction(_)
         | P::AssetLockNotTracked(_)
         | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockConflicted(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
@@ -4691,6 +4715,22 @@ mod tests {
         assert!(matches!(
             map_shielded_op_error(unconfirmed("future-op")),
             TaskError::WalletBackend { .. }
+        ));
+    }
+
+    /// A conflicted funding lock tells the user to start a new transfer, so it
+    /// must not fall into the generic "please retry" envelope.
+    #[test]
+    fn map_shielded_op_error_routes_a_conflicted_funding_lock() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use platform_wallet::error::PlatformWalletError as P;
+        let out_point = dash_sdk::dpp::dashcore::OutPoint::new(
+            dash_sdk::dpp::dashcore::Txid::from_byte_array([0x31; 32]),
+            0,
+        );
+        assert!(matches!(
+            map_shielded_op_error(P::AssetLockConflicted(out_point)),
+            TaskError::AssetLockFundingConflicted { .. }
         ));
     }
 

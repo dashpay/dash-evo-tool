@@ -599,14 +599,14 @@ pub enum TaskError {
     )]
     WalletStorage {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// Another process currently owns the wallet database write lock.
     #[error("{}", WALLET_DATA_IN_USE)]
     WalletStorageInUse {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A wallet database migration failed because the app is not allowed to
@@ -617,7 +617,7 @@ pub enum TaskError {
     )]
     WalletStorageAccessDenied {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A pinned-PR wallet database could not be upgraded without losing data.
@@ -678,7 +678,7 @@ pub enum TaskError {
     )]
     WalletDataIncompatible {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// The wallet database refused to open because a folder on its path can be
@@ -695,7 +695,7 @@ pub enum TaskError {
     )]
     WalletDataFolderInsecure {
         #[source]
-        source: platform_wallet_storage::WalletStorageError,
+        source: Box<platform_wallet_storage::WalletStorageError>,
     },
 
     /// A vault passphrase or a Tier-2 object password was longer than the
@@ -3619,6 +3619,51 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// The Core funding of a shield lost an input conflict: another payment
+    /// spent its coins first. Upstream binds the operation to that funding, so
+    /// retrying it cannot build a replacement; a new transfer can start.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::AssetLockConflicted`.
+    #[error(
+        "This transfer did not go through because its coins were spent by another payment. Check your balance, then start a new transfer."
+    )]
+    AssetLockFundingConflicted {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A "Max" transfer from the Core wallet to the shielded balance is still
+    /// unsettled, so a new one was not started. Nothing was built or sent.
+    #[error(
+        "An earlier transfer of your whole wallet balance to your shielded balance has not finished yet. Open the Shielded tab of this wallet and choose Finish now."
+    )]
+    ShieldedMaxTransferAlreadyPending,
+
+    /// A "Max" transfer started but stopped before it finished. Its id is
+    /// kept, so finishing it continues with the same funds.
+    #[error(
+        "Your transfer to the shielded balance has started but has not finished yet. Your funds are safe. Open the Shielded tab of this wallet and choose Finish now."
+    )]
+    ShieldedMaxTransferUnfinished {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// The Core wallet's confirmed funds do not cover the fees of a "Max"
+    /// transfer to the shielded balance.
+    #[error(
+        "Your wallet does not have enough confirmed funds to cover the fees of this transfer. Wait for incoming payments to confirm, then try again."
+    )]
+    ShieldedMaxInsufficientFunds,
+
+    /// The Core wallet holds more separate payments than one transfer to the
+    /// shielded balance can spend.
+    #[error(
+        "Your wallet holds too many separate payments to move in one transfer. Enter a smaller amount instead of using Max."
+    )]
+    ShieldedMaxTooManyCoins,
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.
@@ -4045,25 +4090,37 @@ impl TaskError {
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_in_use(&other) =>
             {
-                Self::WalletStorageInUse { source: other }
+                Self::WalletStorageInUse {
+                    source: Box::new(other),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_resource_exhausted(&other) =>
             {
-                Self::WalletStorage { source: other }
+                Self::WalletStorage {
+                    source: Box::new(other),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_)
                 if Self::wallet_storage_error_is_access_denied(&other) =>
             {
-                Self::WalletStorageAccessDenied { source: other }
+                Self::WalletStorageAccessDenied {
+                    source: Box::new(other),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
-                Self::WalletDataIncompatible { source: other }
+                Self::WalletDataIncompatible {
+                    source: Box::new(other),
+                }
             }
             other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
-                Self::WalletDataFolderInsecure { source: other }
+                Self::WalletDataFolderInsecure {
+                    source: Box::new(other),
+                }
             }
-            other => Self::WalletStorage { source: other },
+            other => Self::WalletStorage {
+                source: Box::new(other),
+            },
         }
     }
 
@@ -8479,12 +8536,14 @@ mod tests {
             assert!(
                 matches!(
                     &err,
-                    TaskError::WalletDataFolderInsecure {
-                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
-                            ancestor: a,
-                            ..
-                        },
-                    } if *a == ancestor
+                    TaskError::WalletDataFolderInsecure { source }
+                        if matches!(
+                            &**source,
+                            platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                                ancestor: a,
+                                ..
+                            } if *a == ancestor
+                        )
                 ),
                 "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
             );

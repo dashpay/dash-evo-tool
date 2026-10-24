@@ -72,10 +72,18 @@ fn upgrade(
     }
     let stage_dir = builder.tempdir_in(parent)?;
     let stage_path = stage_dir.path().join("wallet.sqlite");
-    drop(SqlitePersister::open(SqlitePersisterConfig::new(&stage_path)).map_err(validation_error)?);
+    // The translation targets the reference schema, not the newest one. The
+    // migrations after it rewrite existing rows, so they must run over the
+    // translated data through the public open rather than be skipped by
+    // translating straight into a fully migrated database.
+    engine::create_staged_target(&stage_path)?;
+    let probe_path = stage_dir.path().join("validation.sqlite");
     let backup = engine::upgrade_locked(guard, &stage_path, |path| {
-        let staged =
-            SqlitePersister::open(SqlitePersisterConfig::new(path)).map_err(validation_error)?;
+        // Validate a copy: opening applies the later migrations, and the
+        // staged file must stay at the reference schema the rebuild reads.
+        std::fs::copy(path, &probe_path)?;
+        let staged = SqlitePersister::open(SqlitePersisterConfig::new(&probe_path))
+            .map_err(validation_error)?;
         staged.load().map_err(validation_error)?;
         staged.load_unowned_identities().map_err(validation_error)?;
         Ok(())
@@ -297,7 +305,10 @@ mod tests {
         let loaded = persister.load().unwrap();
         assert_eq!(loaded.wallets.len(), 1);
         let wallet = loaded.wallets.get(&[0xA1; 32]).unwrap();
-        assert_eq!(wallet.wallet_info.balance.total(), 150_000);
+        // The upstream migrations after the bridge's reference schema run over
+        // the translated rows: the mined Core history is dropped so the next
+        // sync records it again from the wallet's birth height.
+        assert_eq!(wallet.wallet_info.balance.total(), 0);
         assert_eq!(
             wallet.identity_manager.wallet_identities[&[0xA1; 32]][&0]
                 .identity
@@ -316,7 +327,14 @@ mod tests {
             conn.query_row("SELECT count(*) FROM core_utxos", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT synced_height FROM core_sync_state", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            99,
+            "the next sync must rescan from just below the wallet's birth height"
         );
         drop(persister);
         let upstream = platform_wallet_storage::default_auto_backup_dir(&path);

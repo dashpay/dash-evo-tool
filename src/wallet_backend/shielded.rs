@@ -210,6 +210,26 @@ impl WalletBackend {
         amount: u64,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        // The planner's verdict, before any prompt: an amount above its
+        // maximum is refused with the maximum it can shield. A failed read
+        // leaves the verdict to the planner inside the build.
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        if let Ok(preflight) = wallet.shielded_shield_preflight(payment_account).await {
+            let max_shieldable = if preflight.can_shield {
+                preflight.max_shieldable_credits
+            } else {
+                0
+            };
+            if amount > max_shieldable {
+                // The refusal the planner itself would give for this amount.
+                let source =
+                    platform_wallet::error::PlatformWalletError::PlatformShieldCapacityExceeded {
+                        available: preflight.usable_balance_credits,
+                        required: amount.saturating_add(preflight.fee_reserve_credits),
+                    };
+                return Err(shield_capacity_exceeded_error(source, Ok(preflight)));
+            }
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access

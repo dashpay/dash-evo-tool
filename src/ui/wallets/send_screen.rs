@@ -1280,9 +1280,7 @@ impl WalletSendScreen {
             ValidatedSendRoute::ShieldedToPlatform(sh) => self.send_shielded_to_platform(sh),
             ValidatedSendRoute::CoreToShielded => self.send_core_to_shielded(seed_hash),
             ValidatedSendRoute::CoreToIdentity => self.send_core_to_identity(seed_hash),
-            ValidatedSendRoute::PlatformToShielded(addresses) => {
-                self.send_platform_to_shielded(seed_hash, addresses)
-            }
+            ValidatedSendRoute::PlatformToShielded(_) => self.send_platform_to_shielded(seed_hash),
             ValidatedSendRoute::PlatformToIdentity(addresses) => {
                 self.send_platform_to_identity(seed_hash, addresses)
             }
@@ -2212,7 +2210,6 @@ impl WalletSendScreen {
     fn send_platform_to_shielded(
         &mut self,
         seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         if !matches!(
             &self.validated_destination,
@@ -2230,17 +2227,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Pre-flight: the total platform balance must cover the amount. The
-        // upstream coordinator handles per-address selection and fees.
-        let total_available: u64 = addresses.iter().map(|(_, _, b)| b).sum();
-        if amount_credits > total_available {
-            return Err(format!(
-                "Insufficient platform balance. Need {} but total available is {}.",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(total_available)
-            ));
-        }
-
+        // No balance check here: the source's captured balances can lag a
+        // sync. The shield planner decides, and the backend refuses an amount
+        // above its maximum before any prompt.
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldFromBalance {
                 seed_hash,
@@ -6685,6 +6674,39 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// The Platform balances captured when the source was picked can lag a
+    /// sync that raised them, so they must not veto a shield: the planner
+    /// decides, and refuses an amount above its maximum itself.
+    #[test]
+    fn shield_from_platform_send_is_not_refused_by_the_captured_balances() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(1.0));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let action = screen.send_platform_to_shielded(seed_hash);
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldFromBalance { amount, .. }
+                ))) if amount == Amount::new_dash(1.0).value()
+            ),
+            "the shield must reach the planner: {action:?}"
         );
     }
 

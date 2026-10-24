@@ -107,9 +107,11 @@ impl AppContext {
                 now
             }
         };
+        // Retired schedules were created under protocol 13. Keep their notice
+        // lifetime stable across SDK ratchets and future protocol upgrades.
         let contest_duration = crate::model::dpns::contest_durations(
             self.network,
-            super::default_platform_version(&self.network),
+            &dash_sdk::dpp::version::v13::PLATFORM_V13,
         )
         .total;
         Ok(legacy_notice_is_current(
@@ -268,7 +270,7 @@ mod tests {
 
         let contest_duration = crate::model::dpns::contest_durations(
             Network::Testnet,
-            crate::context::default_platform_version(&Network::Testnet),
+            &dash_sdk::dpp::version::v13::PLATFORM_V13,
         )
         .total;
         let long_ago = now_ms() - u64::try_from(contest_duration.as_millis()).unwrap() - 1;

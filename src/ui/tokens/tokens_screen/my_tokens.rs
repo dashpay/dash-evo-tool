@@ -1116,7 +1116,7 @@ mod tests {
         let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
         let token_id = Identifier::from([42; 32]);
         let config = TokenConfigurationV0::default_most_restrictive().into();
-        let contract = context.dpns_contract.as_ref().clone();
+        let contract = context.dpns_contract().as_ref().clone();
         screen.all_known_tokens.insert(
             token_id,
             TokenInfoWithDataContract {

@@ -130,11 +130,11 @@ impl AppContext {
 
         // Pin the system contracts at the head of the list, in display order.
         let system_contracts = [
-            (&self.dpns_contract, "dpns"),
-            (&self.token_history_contract, "token_history"),
-            (&self.withdraws_contract, "withdrawals"),
-            (&self.keyword_search_contract, "keyword_search"),
-            (&self.dashpay_contract, "dashpay"),
+            (self.dpns_contract(), "dpns"),
+            (self.token_history_contract(), "token_history"),
+            (self.withdraws_contract(), "withdrawals"),
+            (self.keyword_search_contract(), "keyword_search"),
+            (self.dashpay_contract(), "dashpay"),
         ];
         for (index, (contract, alias)) in system_contracts.into_iter().enumerate() {
             contracts.insert(

@@ -169,7 +169,7 @@ impl AppContext {
         name: &str,
         sdk: &Sdk,
     ) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
-        let vote_poll = dpns_vote_poll(&self.dpns_contract, name)?;
+        let vote_poll = dpns_vote_poll(&self.dpns_contract(), name)?;
         let normalized_label = convert_to_homograph_safe_chars(name);
 
         // Pre-flight: confirm Platform has an open poll for this label before

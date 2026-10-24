@@ -1,3 +1,4 @@
+use crate::model::identity_key_usability::SigningScope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,7 +31,7 @@ use dash_sdk::{
 
 use super::refresh_loaded_identities_dpns_names::name_acquired_at;
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
-use crate::model::dpns_usernames::{dpns_signing_requirement, key_can_sign_documents};
+use crate::model::dpns_usernames::{chosen_key_can_sign_documents, dpns_signing_requirement};
 
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
@@ -98,6 +99,7 @@ async fn broadcast_name_registration<F, Fut>(
     identity: &QualifiedIdentity,
     signing_key: IdentityPublicKey,
     label: &str,
+    approved_contest_fee: u64,
     register: F,
 ) -> Result<Document, BroadcastFailure>
 where
@@ -108,6 +110,7 @@ where
     let preorder_confirmed = Arc::new(AtomicBool::new(false));
     let confirmed = Arc::clone(&preorder_confirmed);
     let input = SdkRegistrationInput {
+        contest_fund: Some(approved_contest_fee),
         label: label.to_owned(),
         identity: identity.identity.clone(),
         identity_public_key: signing_key,
@@ -151,7 +154,7 @@ impl AppContext {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
-        let dpns_contract = self.dpns_contract.clone();
+        let dpns_contract = self.dpns_contract();
 
         let qualified_identity = input.qualified_identity;
 
@@ -188,10 +191,20 @@ impl AppContext {
             Some(key_id) => qualified_identity
                 .identity
                 .get_public_key_by_id(key_id)
+                // A key the user chose may have expired: the chooser offers
+                // it with a warning, and Platform decides by network time.
                 .filter(|key| {
-                    key_can_sign_documents(key, dpns_signing_requirement(&self.dpns_contract))
+                    chosen_key_can_sign_documents(
+                        key,
+                        dpns_signing_requirement(&self.dpns_contract()),
+                    )
                 }),
-            None => qualified_identity.document_signing_key(&preorder_document_type),
+            None => qualified_identity.document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: dpns_contract.id(),
+                },
+                &preorder_document_type,
+            ),
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 
@@ -214,6 +227,7 @@ impl AppContext {
             &qualified_identity,
             public_key.clone(),
             &input.name_input,
+            input.approved_contest_fee,
             register,
         )
         .await
@@ -760,7 +774,7 @@ mod tests {
         let confirmed_preorder = domain_document(identity.identity.id(), "alice-123");
 
         let failure =
-            broadcast_name_registration(&identity, key, "alice-123", |input| async move {
+            broadcast_name_registration(&identity, key, "alice-123", 0, |input| async move {
                 // As the SDK does: report the confirmed first document if asked to.
                 if let Some(report_confirmed) = input.preorder_callback {
                     report_confirmed(&confirmed_preorder);
@@ -776,6 +790,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn registration_never_auto_quotes_above_the_approved_contest_fund() {
+        for approved in [0, 50_000_000_000] {
+            let identity = bare_identity(4);
+            let key = dash_sdk::platform::IdentityPublicKey::random_key(
+                1,
+                Some(4),
+                PlatformVersion::latest(),
+            );
+            let _ = broadcast_name_registration(
+                &identity,
+                key,
+                "alice",
+                approved,
+                |input| async move {
+                    assert_eq!(
+                        input.contest_fund,
+                        Some(approved),
+                        "The SDK must receive the exact approved cap, including zero."
+                    );
+                    Err(unproven_broadcast_failure())
+                },
+            )
+            .await;
+        }
+    }
+
     /// With no node to confirm the first document, the broadcast stops there.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn broadcast_that_cannot_confirm_the_first_document_reports_that_stage() {
@@ -789,7 +830,7 @@ mod tests {
             PlatformVersion::latest(),
         );
 
-        let failure = broadcast_name_registration(&identity, key, "alice-123", |input| {
+        let failure = broadcast_name_registration(&identity, key, "alice-123", 0, |input| {
             sdk.register_dpns_name(input)
         })
         .await
@@ -907,6 +948,8 @@ mod tests {
     /// A registered-name document as the network returns it for `label`.
     fn domain_document(owner: Identifier, label: &str) -> Document {
         Document::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: Identifier::from([0x5D; 32]),
             owner_id: owner,
             creator_id: None,
@@ -950,7 +993,7 @@ mod tests {
             .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
                 ContestedDocumentVotePollDriveQuery {
                     vote_poll: crate::model::dpns_voting::dpns_vote_poll(
-                        &ctx.dpns_contract,
+                        &ctx.dpns_contract(),
                         &normalize_dpns_label(label),
                     )
                     .expect("vote poll"),

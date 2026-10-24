@@ -22,6 +22,7 @@ use crate::register_dpns::{
 };
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::fee_estimation::contest_fee_credits;
+use dash_evo_tool::model::identity_key_usability::SigningScope;
 use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -165,13 +166,21 @@ async fn register_and_log(
         .document_type_for_name("preorder")
         .expect("the DPNS contract should define preorder");
     let signing_key = identity
-        .document_signing_key(&preorder)
+        .document_signing_key(
+            SigningScope::ContractWide {
+                contract_id: dpns.id(),
+            },
+            &preorder,
+        )
         .cloned()
         .expect("the identity should hold a key that signs name documents");
 
     let (confirmed_tx, confirmed_rx) = tokio::sync::oneshot::channel::<()>();
     let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
     let input = SdkRegistrationInput {
+        // States the fund the app approves, as the app's task does: the vote
+        // fee for a contested name, nothing otherwise.
+        contest_fund: Some(vote_fee),
         label: label.clone(),
         identity: identity.identity.clone(),
         identity_public_key: signing_key,

@@ -18,27 +18,38 @@ use tracing::error;
 
 use serde_json;
 
+use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
+use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
+use crate::ui::theme::{DashColors, ResponseExt};
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::{TokenAmount};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
+    TokenConfigurationPresetFeatures, TokenConfigurationV0,
+};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::{
+    distribution_function::{
+        DistributionFunction, evaluate_interval::IntervalEvaluationExplanation,
+    },
+    distribution_recipient::TokenDistributionRecipient,
+    reward_distribution_type::RewardDistributionType,
+};
 use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -47,15 +58,9 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Ui};
-use crate::ui::theme::{DashColors, ResponseExt};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use enum_iterator::Sequence;
 use image::ImageReader;
-use crate::app::BackendTasksExecutionMode;
-use crate::backend_task::contract::ContractTask;
-use crate::backend_task::error::TaskError;
-use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, BackendTaskContext};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
@@ -1007,6 +1012,7 @@ pub struct TokenBuildArgs {
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     pub marketplace_rules: ChangeControlRules,
     pub change_direct_purchase_pricing_rules: ChangeControlRules,
+    pub transferable: bool,
 }
 
 impl TokenBuildArgs {
@@ -1038,6 +1044,7 @@ impl TokenBuildArgs {
             groups: self.groups,
             document_schemas: self.document_schemas,
             marketplace_rules: self.marketplace_rules,
+            transferable: self.transferable,
         }
     }
 }
@@ -1148,6 +1155,9 @@ pub struct TokensScreen {
     max_supply_amount: Option<Amount>,
     max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
+    /// Whether holders may send the token to other identities. Turning it off
+    /// needs a network that accepts version 1 token configurations.
+    transferable_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
     token_creator_confirmation_dialog: Option<ConfirmationDialog>,
@@ -1193,6 +1203,13 @@ pub struct TokensScreen {
     // Pre-programmed distribution
     pub enable_pre_programmed_distribution: bool,
     pub pre_programmed_distributions: Vec<DistributionEntry>,
+
+    // Once-per-identity distribution (protocol version 14)
+    pub enable_once_per_identity_distribution: bool,
+    /// The amount, in base token units, every identity may claim once.
+    pub once_per_identity_amount_input: String,
+    /// Why the once-per-identity amount is not valid, shown under the field.
+    once_per_identity_amount_error: Option<String>,
 
     // New Tokens Destination Identity
     pub new_tokens_destination_identity_should_default_to_contract_owner: bool,
@@ -1513,6 +1530,7 @@ impl TokensScreen {
             max_supply_amount: None,
             max_supply_input: None,
             start_as_paused_input: false,
+            transferable_input: true,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
                 true,
@@ -1620,6 +1638,9 @@ impl TokensScreen {
 
             // Pre-programmed distribution
             enable_pre_programmed_distribution: false,
+            enable_once_per_identity_distribution: false,
+            once_per_identity_amount_input: String::new(),
+            once_per_identity_amount_error: None,
             // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
             // For an example, we'll keep it simple:
             pre_programmed_distributions: Vec::new(),
@@ -1874,9 +1895,12 @@ impl TokensScreen {
     }
 
     fn estimate_registration_cost(&self) -> Credits {
+        // Every term from one fee table: the one of the version the network
+        // confirmed, not the SDK's starting seed (they differ while a network
+        // moves to a new protocol version).
         let registration_fees = &self
             .app_context
-            .platform_version()
+            .connected_platform_version()
             .fee_version
             .data_contract_registration;
         let mut fee = registration_fees.base_contract_registration_fee;
@@ -1886,6 +1910,9 @@ impl TokensScreen {
         }
         if self.enable_pre_programmed_distribution {
             fee += registration_fees.token_uses_pre_programmed_distribution_fee;
+        }
+        if self.enable_once_per_identity_distribution {
+            fee += registration_fees.token_uses_once_per_identity_distribution_fee;
         }
         let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
             Vec::new()
@@ -2304,6 +2331,7 @@ impl TokensScreen {
         self.max_supply_input = None;
         self.max_supply_amount = None;
         self.start_as_paused_input = false;
+        self.transferable_input = true;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
@@ -2387,6 +2415,9 @@ impl TokensScreen {
         self.perpetual_distribution_rules = ChangeControlRulesUI::default();
         self.enable_pre_programmed_distribution = false;
         self.pre_programmed_distributions = Vec::new();
+        self.enable_once_per_identity_distribution = false;
+        self.once_per_identity_amount_input = String::new();
+        self.once_per_identity_amount_error = None;
         self.new_tokens_destination_other_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
         self.new_tokens_destination_other_identity = "".to_string();
@@ -3102,11 +3133,13 @@ mod tests {
 
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
-    use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
-    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::{
+        token_configuration_convention::TokenConfigurationConvention,
+        token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters,
+        token_keeps_history_rules::TokenKeepsHistoryRules,
+    };
+    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
 
@@ -3444,7 +3477,9 @@ mod tests {
         let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
         assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
 
-        let TokenConfiguration::V0(token_v0) = token_config;
+        let TokenConfiguration::V0(token_v0) = token_config else {
+            panic!("the existing token builder must retain V0 configuration");
+        };
         let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
 
         assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
@@ -3647,7 +3682,9 @@ mod tests {
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16];
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
+            panic!("the existing token builder must retain V0 configuration");
+        };
         let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
             panic!("rules without a once-per-identity distribution stay V0");
         };
@@ -3668,6 +3705,238 @@ mod tests {
             }
             _ => panic!("Expected TimeBasedDistribution"),
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
+    fn once_per_identity_distribution_builds_version_1_rules_only_on_protocol_14() {
+        let db_file_path = "test_db_once_per_identity_distribution";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
+        let db = Arc::new(Database::new(db_file_path).unwrap());
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
+
+        ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
+        let app_context = AppContext::new(
+            data_dir,
+            Network::Regtest,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Mainnet,
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
+        token_creator_ui.selected_key = Some(mock_key);
+
+        token_creator_ui.token_names_input = vec![(
+            "TestToken".to_owned(),
+            "TestToken".to_owned(),
+            TokenNameLanguage::English,
+            true,
+        )];
+
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
+        token_creator_ui.enable_once_per_identity_distribution = true;
+        token_creator_ui.once_per_identity_amount_input = "250".to_string();
+
+        // The connected network's version is not known yet: refused locally.
+        let err = token_creator_ui
+            .parse_token_build_args()
+            .expect_err("a network below protocol 14 refuses the distribution");
+        assert!(err.contains("does not accept"), "got: {err}");
+
+        app_context.set_platform_protocol_version(14);
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
+        let owner_id = build_args.identity_id;
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
+            .expect("Should build successfully");
+        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
+            panic!("the existing token builder must retain V0 configuration");
+        };
+        assert!(matches!(
+            token_v0.distribution_rules,
+            TokenDistributionRules::V1(_)
+        ));
+        assert_eq!(
+            crate::model::token::once_per_identity_amount(&contract_v1.tokens[&0u16]),
+            Some(250)
+        );
+
+        // A bad amount is reported, not sent.
+        token_creator_ui.once_per_identity_amount_input = "0".to_string();
+        assert!(token_creator_ui.parse_token_build_args().is_err());
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
+    fn non_transferable_token_builds_a_version_1_configuration_only_on_protocol_14() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
+        let db_file_path = "test_db_non_transferable_token";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
+        let db = Arc::new(Database::new(db_file_path).unwrap());
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
+
+        ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
+        let app_context = AppContext::new(
+            data_dir,
+            Network::Regtest,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Mainnet,
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
+        token_creator_ui.selected_key = Some(mock_key);
+
+        token_creator_ui.token_names_input = vec![(
+            "TestToken".to_owned(),
+            "TestToken".to_owned(),
+            TokenNameLanguage::English,
+            true,
+        )];
+
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
+        // A transferable token keeps the version 0 configuration older
+        // networks accept.
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("a transferable token parses on any network");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.into_contract_params(),
+            )
+            .expect("Should build successfully");
+        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
+        assert!(matches!(token, TokenConfiguration::V0(_)));
+        assert!(token.is_transferable());
+
+        token_creator_ui.transferable_input = false;
+
+        // The connected network's version is not known yet: refused locally.
+        let err = token_creator_ui
+            .parse_token_build_args()
+            .expect_err("a network below protocol 14 refuses a non-transferable token");
+        assert!(err.contains("does not accept"), "got: {err}");
+
+        app_context.set_platform_protocol_version(14);
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.into_contract_params(),
+            )
+            .expect("Should build successfully");
+        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
+        assert!(matches!(token, TokenConfiguration::V1(_)));
+        assert!(!token.is_transferable());
     }
 
     #[test]

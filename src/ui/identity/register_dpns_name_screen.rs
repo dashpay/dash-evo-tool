@@ -16,6 +16,7 @@ use crate::model::dpns_usernames::{
     registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -197,7 +198,7 @@ impl RegisterDpnsNameScreen {
         let Some(identity) = &self.selected_qualified_identity else {
             return;
         };
-        let required = dpns_signing_requirement(&self.app_context.dpns_contract);
+        let required = dpns_signing_requirement(&self.app_context.dpns_contract());
         let wallets = self.app_context.wallet_context();
         let arrived = missing_registration_wallets(identity, required)
             .any(|seed_hash| wallets.contains_hd(seed_hash));
@@ -590,13 +591,20 @@ impl RegisterDpnsNameScreen {
                 .show(ui, |ui| {
                     let document_type = self
                         .app_context
-                        .dpns_contract
+                        .dpns_contract()
                         .document_type_cloned_for_name("domain")
                         .ok();
                     if self.selected_key.is_none() {
                         self.selected_key = document_type
                             .as_ref()
-                            .and_then(|doc_type| identity.document_signing_key(&doc_type.as_ref()))
+                            .and_then(|doc_type| {
+                                identity.document_signing_key(
+                                    SigningScope::ContractWide {
+                                        contract_id: self.app_context.dpns_contract().id(),
+                                    },
+                                    &doc_type.as_ref(),
+                                )
+                            })
                             .cloned();
                     }
                     action |= add_key_chooser_with_doc_type(
@@ -606,6 +614,9 @@ impl RegisterDpnsNameScreen {
                         &mut self.selected_key,
                         TransactionType::DocumentAction,
                         document_type.as_ref(),
+                        SigningScope::ContractWide {
+                            contract_id: self.app_context.dpns_contract().id(),
+                        },
                     );
                 });
         }
@@ -913,7 +924,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     // and Keys screen; this page only says what helps.
                     let key_status = registration_key_status(
                         identity,
-                        dpns_signing_requirement(&self.app_context.dpns_contract),
+                        dpns_signing_requirement(&self.app_context.dpns_contract()),
                     );
                     let updated_install = key_status.key_is_unusable_here()
                         && self.app_context.has_legacy_identities();

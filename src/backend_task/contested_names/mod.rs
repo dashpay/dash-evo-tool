@@ -1669,14 +1669,12 @@ mod tests {
         context.set_det_kv_override_for_test(kv);
         store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 2);
         let mut sdk = Sdk::new_mock();
-        let document_type = context
-            .dpns_contract
-            .document_type_for_name("domain")
-            .unwrap();
+        let dpns_contract = context.dpns_contract();
+        let document_type = dpns_contract.document_type_for_name("domain").unwrap();
         sdk.mock()
             .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
                 VotePollsByDocumentTypeQuery {
-                    contract_id: context.dpns_contract.id(),
+                    contract_id: context.dpns_contract().id(),
                     document_type_name: document_type.name().to_owned(),
                     index_name: document_type.find_contested_index().unwrap().name.clone(),
                     start_at_value: None,
@@ -2333,14 +2331,12 @@ mod tests {
         use dash_sdk::query_types::{ContestedResource, ContestedResources};
         let (_temp, context) = vote_context();
         let mut sdk = Sdk::new_mock();
-        let document_type = context
-            .dpns_contract
-            .document_type_for_name("domain")
-            .unwrap();
+        let dpns_contract = context.dpns_contract();
+        let document_type = dpns_contract.document_type_for_name("domain").unwrap();
         sdk.mock()
             .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
                 VotePollsByDocumentTypeQuery {
-                    contract_id: context.dpns_contract.id(),
+                    contract_id: context.dpns_contract().id(),
                     document_type_name: document_type.name().to_owned(),
                     index_name: document_type.find_contested_index().unwrap().name.clone(),
                     start_at_value: None,
@@ -2413,7 +2409,7 @@ mod tests {
         let votes: ResourceVotesByIdentity = choice
             .map(|resource_vote_choice| {
                 let vote_poll = VotePoll::ContestedDocumentResourceVotePoll(
-                    crate::model::dpns_voting::dpns_vote_poll(&context.dpns_contract, name)
+                    crate::model::dpns_voting::dpns_vote_poll(&context.dpns_contract(), name)
                         .unwrap(),
                 );
                 (

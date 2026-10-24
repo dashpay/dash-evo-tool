@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -13,14 +14,12 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
@@ -105,15 +104,9 @@ impl QRScannerScreen {
         if let Some(identity) = &self.selected_identity {
             if let Some(qr_data) = &self.parsed_qr_data {
                 // Get signing key
-                let signing_key = match identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                    ]),
-                    HashSet::from([KeyType::ECDSA_SECP256K1]),
-                    false,
+                let signing_key = match contact_request_signing_key(
+                    identity,
+                    &self.app_context.dashpay_contract(),
                 ) {
                     Some(key) => key,
                     None => {
@@ -209,13 +202,11 @@ impl QRScannerScreen {
                 let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
                 if prev_identity_id != new_identity_id {
                     if let Some(identity) = &self.selected_identity {
-                        self.selected_wallet = get_selected_wallet(
+                        let key = contact_request_signing_key(
                             identity,
-                            Some(&self.app_context),
-                            None,
-                        )
-                        .or_show_error(self.app_context.egui_ctx())
-                        .unwrap_or(None);
+                            &self.app_context.dashpay_contract(),
+                        );
+                        self.selected_wallet = wallet_for_signing_key(identity, key);
                     } else {
                         self.selected_wallet = None;
                     }
@@ -354,6 +345,18 @@ impl QRScannerScreen {
     }
 }
 
+/// The ECDSA key to sign a contactRequest document with.
+fn contact_request_signing_key<'i>(
+    identity: &'i QualifiedIdentity,
+    dashpay_contract: &dash_sdk::platform::DataContract,
+) -> Option<&'i dash_sdk::platform::IdentityPublicKey> {
+    identity.document_action_signing_key(
+        dashpay_contract,
+        "contactRequest",
+        Some(&[KeyType::ECDSA_SECP256K1]),
+    )
+}
+
 impl ScreenLike for QRScannerScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
@@ -402,5 +405,26 @@ impl ScreenLike for QRScannerScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
+    use dash_sdk::dpp::identity::SecurityLevel;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    /// Regression: the contact-request key choice from a scanned code admitted
+    /// MEDIUM keys, which the document type refuses, and preferred unlimited
+    /// keys, so an unlimited MEDIUM key beat a held limited HIGH key and the
+    /// request was refused.
+    #[test]
+    fn a_scanned_contact_request_is_signed_with_a_key_its_document_type_accepts() {
+        let limited_high = auth_key(1, SecurityLevel::HIGH).with_limits(Some(5_000), None);
+        let identity = identity_holding(&[limited_high, auth_key(2, SecurityLevel::MEDIUM)]);
+
+        let chosen = contact_request_signing_key(&identity, &dashpay_contract());
+        assert_eq!(chosen.map(|key| key.id()), Some(1));
     }
 }

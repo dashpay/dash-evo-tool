@@ -1,6 +1,9 @@
 mod add_key_to_identity;
 mod auth_pubkey_resolve;
 mod discover_identities;
+mod key_limits;
+#[cfg(test)]
+pub(crate) use key_limits::tests::user_identity as key_limits_test_identity;
 mod dpns_usernames;
 mod load_identity;
 mod load_identity_by_dpns_name;
@@ -548,6 +551,19 @@ pub enum IdentityTask {
     },
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
+    /// Read what is left of the budgets of `key_ids` of `identity_id`
+    /// (protocol version 14 key limits). Read-only.
+    FetchKeyRemainingBudgets {
+        identity_id: Identifier,
+        key_ids: Vec<KeyID>,
+    },
+    /// Raise the limits of one of the identity's keys (protocol version 14)
+    /// exactly as the user reviewed them: refused, not recomputed, when the
+    /// key's limits moved meanwhile.
+    RaiseKeyLimits {
+        identity: Box<QualifiedIdentity>,
+        raise: crate::model::identity_key_limits::KeyLimitsRaise,
+    },
     /// Check whether a username label can be requested right now.
     CheckUsernameAvailability {
         /// The identity that would request it.
@@ -647,7 +663,7 @@ pub fn build_identity_registration_with_seed(
     identity_index: u32,
     funding_amount: Duffs,
 ) -> Result<IdentityRegistrationInfo, TaskError> {
-    let dashpay_contract_id = app_context.dashpay_contract.id();
+    let dashpay_contract_id = app_context.dashpay_contract().id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
     let network = app_context.network;
 
@@ -954,6 +970,16 @@ impl AppContext {
             } => self.unprotect_identity_keys(identity_id, password),
             IdentityTask::CheckLegacyRecovery { identity_id } => {
                 self.check_legacy_recovery(identity_id)
+            }
+            IdentityTask::FetchKeyRemainingBudgets {
+                identity_id,
+                key_ids,
+            } => {
+                self.fetch_key_remaining_budgets(sdk, identity_id, key_ids)
+                    .await
+            }
+            IdentityTask::RaiseKeyLimits { identity, raise } => {
+                self.raise_key_limits(sdk, *identity, raise).await
             }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,
@@ -1372,10 +1398,7 @@ mod tests {
     /// rejected or the wallet could not sign for its own identity.
     #[test]
     fn identity_key_entry_public_matches_private_derivation() {
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-
         let seed = [0x42u8; 64];
-        let secp = Secp256k1::new();
 
         for network in [Network::Testnet, Network::Mainnet] {
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1413,8 +1436,8 @@ mod tests {
                         .to_priv();
 
                     assert_eq!(
-                        entry.public_key.inner.serialize(),
-                        private_key.public_key(&secp).inner.serialize(),
+                        entry.public_key.inner.to_compressed(),
+                        private_key.public_key().inner.to_compressed(),
                         "public/private key drift at ({network:?}, id={identity_index}, key={key_index})"
                     );
 
@@ -1501,12 +1524,12 @@ mod tests {
             .expect("resolve master")
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
-        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-        let resolved_pub = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&stored.1[..])
+
+        let resolved_pub = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*stored.1)
             .expect("secret")
-            .public_key(&secp);
+            .public_key();
         assert_eq!(
-            master.public_key.inner.serialize(),
+            master.public_key.inner.to_compressed(),
             resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
         );

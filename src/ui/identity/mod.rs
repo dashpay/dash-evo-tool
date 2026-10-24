@@ -18,6 +18,7 @@
 //! `src/ui/components/left_panel.rs`, and the `RootScreenIdentityHub` entry in
 //! the `main_screens` map in `src/app.rs::AppState::new`.
 
+use crate::model::identity_key_usability::SigningScope;
 use std::sync::{Arc, RwLock};
 
 use dash_sdk::{
@@ -165,6 +166,17 @@ pub fn removed_identities_banner(
     }
 }
 
+/// The wallet that derives `key`, the key the caller signs with, for the
+/// unlock prompt. `None` when no key is chosen or no wallet derives it.
+pub fn wallet_for_signing_key(
+    qualified_identity: &QualifiedIdentity,
+    key: Option<&IdentityPublicKey>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    get_selected_wallet(qualified_identity, None, Some(key?))
+        .ok()
+        .flatten()
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -204,7 +216,7 @@ pub fn get_selected_wallet(
 ) -> Result<Option<Arc<RwLock<Wallet>>>, String> {
     // If `app_context` is provided, use the DPNS-based approach.
     let public_key = if let Some(context) = app_context {
-        let dpns_contract = &context.dpns_contract;
+        let dpns_contract = &context.dpns_contract();
 
         // Attempt to fetch the `preorder` document type from the DPNS contract.
         let preorder_document_type = dpns_contract
@@ -213,7 +225,12 @@ pub fn get_selected_wallet(
 
         // Attempt to retrieve the public key from the identity.
         qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .document_signing_key(
+                SigningScope::ContractWide {
+                    contract_id: dpns_contract.id(),
+                },
+                &preorder_document_type,
+            )
             .ok_or_else(|| {
                 "Identity doesn't have an authentication key for signing document transitions"
                     .to_string()

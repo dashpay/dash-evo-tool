@@ -174,6 +174,18 @@ fn test_app_context_with_kv_and_network(
     .expect("AppContext")
 }
 
+/// Put `ctx` at `protocol_version`, as its SDK stands once a proven response
+/// ratcheted it there. The replacement SDK is a mock: nothing reaches a network.
+pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let version = dash_sdk::dpp::version::PlatformVersion::get(protocol_version)
+        .expect("a protocol version this build knows");
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(version)
+        .build()
+        .expect("mock sdk");
+    ctx.sdk.store(Arc::new(sdk));
+}
+
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     let sdk = Sdk::new_mock();
@@ -191,6 +203,8 @@ pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
 pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value) -> Document {
     let text = |value: &str| Value::Text(value.to_string());
     Document::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: Identifier::from([0x5D; 32]),
         owner_id: owner,
         creator_id: None,
@@ -219,4 +233,94 @@ pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value
         transferred_at_core_block_height: None,
         contract_version: None,
     })
+}
+
+/// An ECDSA AUTHENTICATION key `id` at `level`, unbound and unlimited.
+pub(crate) fn auth_key(
+    id: u32,
+    level: dash_sdk::dpp::identity::SecurityLevel,
+) -> dash_sdk::platform::IdentityPublicKey {
+    dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+        id,
+        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+        security_level: level,
+        contract_bounds: None,
+        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![2; 33].into(),
+        disabled_at: None,
+    }
+    .into()
+}
+
+/// A testnet user identity publishing `keys` and holding the private half of
+/// each.
+pub(crate) fn identity_holding(
+    keys: &[dash_sdk::platform::IdentityPublicKey],
+) -> QualifiedIdentity {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    let mut qi = bare_user_identity(Identifier::new([0xD0; 32]), Network::Testnet);
+    qi.identity
+        .set_public_keys(keys.iter().map(|key| (key.id(), key.clone())).collect());
+    for key in keys {
+        qi.private_keys
+            .insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey {
+                        identity_public_key: key.clone(),
+                        in_wallet_at_derivation_path: None,
+                    },
+                    [key.id() as u8; 32],
+                ),
+            )
+            .expect("a free slot");
+    }
+    qi
+}
+
+/// The DashPay system contract, whose document types require a HIGH key.
+pub(crate) fn dashpay_contract() -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    load_system_data_contract(
+        SystemDataContract::Dashpay,
+        dash_sdk::dpp::version::PlatformVersion::latest(),
+    )
+    .expect("the DashPay contract")
+}
+
+/// A user identity whose only key, key 1 (an ECDSA HIGH AUTHENTICATION key
+/// bound to `bounds`), is held as a reference into an open test wallet, and
+/// that wallet.
+pub(crate) fn identity_with_bound_wallet_key(
+    bounds: dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
+) -> (
+    QualifiedIdentity,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+) {
+    let wallet = crate::model::wallet::test_support::open_wallet();
+    let seed_hash = wallet.seed_hash();
+    let mut key = auth_key(1, dash_sdk::dpp::identity::SecurityLevel::HIGH);
+    {
+        let dash_sdk::platform::IdentityPublicKey::V0(v0) = &mut key else {
+            unreachable!("auth_key builds a version 0 key");
+        };
+        v0.contract_bounds = Some(bounds);
+    }
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    let mut identity = bare_user_identity(Identifier::new([0xD1; 32]), Network::Testnet);
+    identity
+        .identity
+        .set_public_keys(std::collections::BTreeMap::from([(key.id(), key)]));
+    hold_as_wallet_reference(&mut identity, 1, seed_hash);
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    identity
+        .associated_wallets
+        .insert(seed_hash, Arc::clone(&wallet));
+    (identity, wallet)
 }

@@ -1,36 +1,46 @@
-use std::collections::{BTreeMap, HashSet};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::backend_task::BackendTask;
+use crate::backend_task::tokens::TokenTask;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::token::validate_contract_keyword;
+use crate::model::token::{
+    distribution_rules_with_once_per_identity, parse_once_per_identity_amount,
+};
+use crate::ui::MessageType;
+use crate::ui::ScreenType;
+use crate::ui::components::Component;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::styled::StyledCheckbox;
+use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::tokens::tokens_screen::{
+    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
+    TokenNameLanguage, TokensScreen,
+};
+use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
+    TokenConfigurationPreset,
+    TokenConfigurationPresetFeatures::{
+        self, MostRestrictive, WithAllAdvancedActions, WithExtremeActions,
+        WithMintingAndBurningActions, WithOnlyEmergencyAction,
+    },
+};
+use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
 use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
-use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::ScreenType;
-use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
-use crate::backend_task::tokens::TokenTask;
-use crate::model::token::validate_contract_keyword;
-use crate::ui::components::styled::{StyledCheckbox};
-use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::Component;
-use crate::ui::components::identity_selector::IdentitySelector;
-use crate::ui::components::MessageBanner;
-use crate::ui::MessageType;
-use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
-use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{
-    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
-    TokenNameLanguage, TokensScreen,
-};
+use std::collections::{BTreeMap, HashSet};
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -235,6 +245,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                SigningScope::NonBatch,
                             );
                             let after_id = self
                                 .selected_identity
@@ -608,6 +619,9 @@ impl TokensScreen {
                                             StyledCheckbox::new(&mut self.start_as_paused_input, "Start as paused").show(ui);
                                             crate::ui::helpers::info_icon_button(ui, "When enabled, the token will be created in a paused state, meaning transfers will be disabled by default. All other token features—such as distributions and manual minting—remain fully functional. To allow transfers in the future, the token must be unpaused via an emergency action. It is strongly recommended to enable emergency actions if this option is selected, unless the intention is to permanently disable transfers.");
                                         });
+                                        ui.end_row();
+
+                                        self.transferable_row(ui);
                                         ui.end_row();
 
                                         self.history_row(ui);
@@ -1125,8 +1139,9 @@ impl TokensScreen {
         let main_control_group_change_authorized =
             self.parse_main_control_group_change_authorized()?;
 
-        // 4) Distribution data (perpetual & pre_programmed)
+        // 4) Distribution data (perpetual, pre-programmed & once-per-identity)
         let distribution_rules = self.build_distribution_rules()?;
+        let once_per_identity_amount = self.parse_once_per_identity_amount()?;
 
         // 5) Groups
         let groups = self.parse_groups()?;
@@ -1166,12 +1181,72 @@ impl TokensScreen {
             conventions_change_rules,
             main_control_group_change_authorized,
 
-            distribution_rules: TokenDistributionRules::V0(distribution_rules),
+            distribution_rules: distribution_rules_with_once_per_identity(
+                distribution_rules,
+                once_per_identity_amount,
+            ),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
             marketplace_rules,
             change_direct_purchase_pricing_rules,
+            transferable: self.parse_transferable()?,
         })
+    }
+
+    /// Whether holders may transfer the token. A token that cannot be
+    /// transferred needs protocol version 14, so a network that does not
+    /// accept it yet is refused here rather than by Platform after the fee is
+    /// paid.
+    fn parse_transferable(&self) -> Result<bool, String> {
+        if !self.transferable_input
+            && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
+        {
+            return Err(
+                "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+                    .to_string(),
+            );
+        }
+        Ok(self.transferable_input)
+    }
+
+    /// The "holders can send this token" option. Offered only where the
+    /// connected network accepts tokens that cannot be transferred.
+    fn transferable_row(&mut self, ui: &mut egui::Ui) {
+        let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
+        if !available {
+            self.transferable_input = true;
+        }
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(available, |ui| {
+                StyledCheckbox::new(
+                    &mut self.transferable_input,
+                    "Holders can send this token to other identities",
+                )
+                .show(ui)
+                .on_disabled_hover_text(
+                    "The connected network does not accept tokens that cannot be transferred yet.",
+                );
+            });
+            crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
+        });
+    }
+
+    /// The once-per-identity amount, when that distribution is enabled. It
+    /// needs protocol version 14, so a network that does not accept it yet is
+    /// refused here rather than by Platform after the fee is paid.
+    fn parse_once_per_identity_amount(&self) -> Result<Option<TokenAmount>, String> {
+        if !self.enable_once_per_identity_distribution {
+            return Ok(None);
+        }
+        if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
+            return Err(
+                "The connected network does not accept once-per-identity distributions yet. Turn it off to create the token."
+                    .to_string(),
+            );
+        }
+        parse_once_per_identity_amount(&self.once_per_identity_amount_input)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {

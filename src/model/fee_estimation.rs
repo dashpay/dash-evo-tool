@@ -19,7 +19,6 @@ use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress}
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
-use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
@@ -33,10 +32,37 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 
+/// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
+pub fn document_create_contest_fund_cap(
+    document_type: dash_sdk::dpp::data_contract::document_type::DocumentTypeRef<'_>,
+    document: &dash_sdk::dpp::document::Document,
+    platform_version: &PlatformVersion,
+) -> Result<Option<Credits>, Box<dash_sdk::dpp::ProtocolError>> {
+    use dash_sdk::dpp::data_contract::document_type::methods::{
+        DocumentTypeBasicMethods, DocumentTypeV0Methods,
+    };
+    use dash_sdk::dpp::document::DocumentV0Getters;
+    let mut document = document.clone();
+    document_type.regenerate_generated_properties(document.properties_mut(), platform_version)?;
+    Ok(document_type
+        .contested_vote_poll_for_document(&document, platform_version)?
+        .map(|_| contest_fee_credits(platform_version)))
+}
+
 /// Subtract an estimated fee from a credit balance without floating-point conversion.
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
     balance.saturating_sub(estimated_fee)
 }
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV2Getters;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
+    AgreedFeeMultiplier, DocumentActionFeeAgreement,
+};
+use dash_sdk::dpp::prelude::FeeMultiplier;
+use dash_sdk::dpp::state_transition::{
+    StateTransitionEstimatedFeeValidation,
+    batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType,
+};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use std::collections::BTreeMap;
@@ -1333,9 +1359,338 @@ pub fn shield_from_balance_fee_headroom(
     base_fee.saturating_mul(multiplier) / 1000
 }
 
+/// How far above the fee multiplier the user saw a document action fee may be
+/// priced when it executes, in percent: a transition signed just before an
+/// epoch boundary is not refused for a small move. Platform refuses the action
+/// when the executing epoch's multiplier is higher still, so the user never
+/// pays more than [`DocumentActionFeeQuote::max_total`].
+pub const ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT: u16 = 20;
+
+/// What a document action charges on top of the gas, as a document type
+/// declares it (protocol version 14 `actionFees`), and the agreement the
+/// transition must carry to be accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentActionFeeQuote {
+    /// The agreement to sign: the declared amounts and, for a fee priced by
+    /// the fee multiplier, the multiplier the user saw plus the tolerance.
+    pub agreement: DocumentActionFeeAgreement,
+    /// The part going to the contract owner, priced at the multiplier the
+    /// user saw.
+    pub owner: Credits,
+    /// The part going to the contract's moderators, priced at the multiplier
+    /// the user saw.
+    pub moderators: Credits,
+    /// The whole fee at the multiplier the user saw.
+    pub total: Credits,
+    /// The most the fee can be when the action executes: at the highest
+    /// multiplier the agreement tolerates, or the declared amount for a fixed
+    /// fee.
+    pub max_total: Credits,
+}
+
+/// The action fee `document_type` charges for `action` at the epoch fee
+/// multiplier `fee_multiplier_permille`, or `None` when it charges nothing
+/// (always, before protocol version 14).
+pub fn document_action_fee_quote(
+    document_type: DocumentTypeRef<'_>,
+    action: DocumentTransitionActionType,
+    fee_multiplier_permille: u64,
+) -> Option<DocumentActionFeeQuote> {
+    let fees = document_type.action_fees()?;
+    let declared = fees.action_fee(action)?;
+    let pricing = fees.pricing();
+    let known_permille: FeeMultiplier = fee_multiplier_permille;
+    let agreement = DocumentActionFeeAgreement::for_declared_fee(
+        pricing,
+        declared,
+        AgreedFeeMultiplier {
+            known_permille,
+            increase_tolerance_percent: ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT,
+        },
+    );
+    // `charged` saturates at the maximum credits rather than overflowing, so
+    // it cannot fail; a fee that large is refused by Platform as unaffordable.
+    let now = declared
+        .charged(pricing, known_permille)
+        .unwrap_or(declared);
+    let highest_permille = known_permille
+        .saturating_mul(100 + u64::from(ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT))
+        / 100;
+    let at_most = declared
+        .charged(pricing, highest_permille)
+        .unwrap_or(declared);
+    Some(DocumentActionFeeQuote {
+        agreement,
+        owner: now.owner,
+        moderators: now.moderators,
+        total: now.saturating_total(),
+        max_total: at_most.saturating_total(),
+    })
+}
+
+/// Why a document action cannot carry the fee agreement it was given.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ActionFeeAgreementError {
+    /// The document type charges a fee for the action and no agreement was
+    /// given: the user never confirmed it.
+    #[error(
+        "This contract charges a fee for this action, and you have not confirmed it yet. Try again and confirm the contract fee when asked."
+    )]
+    NotConfirmed,
+    /// The agreement names another fee than the document type declares, so
+    /// the contract changed after the user confirmed.
+    #[error(
+        "The contract fee for this action changed after you confirmed it. Try again to see and confirm the current fee."
+    )]
+    Outdated,
+}
+
+/// The fee agreement a document action may carry: exactly the one the user
+/// confirmed (`agreed`), checked against what `document_type` declares for
+/// `action`. A charged fee without an agreement is refused — the agreement
+/// is never derived on the user's behalf — and so is an agreement to another
+/// fee. A type that charges nothing for the action carries none.
+pub fn checked_action_fee_agreement(
+    document_type: DocumentTypeRef<'_>,
+    action: DocumentTransitionActionType,
+    agreed: Option<DocumentActionFeeAgreement>,
+) -> Result<Option<DocumentActionFeeAgreement>, ActionFeeAgreementError> {
+    let declared = document_type
+        .action_fees()
+        .and_then(|fees| fees.action_fee(action).map(|fee| (fees.pricing(), fee)));
+    match (declared, agreed) {
+        (None, _) => Ok(None),
+        (Some(_), None) => Err(ActionFeeAgreementError::NotConfirmed),
+        (Some((pricing, fee)), Some(agreement)) if agreement.matches_declared(pricing, fee) => {
+            Ok(Some(agreement))
+        }
+        (Some(_), Some(_)) => Err(ActionFeeAgreementError::Outdated),
+    }
+}
+
+#[cfg(test)]
+mod action_fee_tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::document_type::DocumentType;
+    use dash_sdk::dpp::platform_value::{Identifier, Value, platform_value};
+
+    /// A document type declaring `action_fees`, parsed as Platform parses it.
+    fn document_type_with(action_fees: Option<Value>) -> DocumentType {
+        let pv = PlatformVersion::latest();
+        let mut schema = platform_value!({
+            "type": "object",
+            "properties": {"a": {"type": "string", "position": 0, "maxLength": 60_u32}},
+            "additionalProperties": false,
+        });
+        if let Some(action_fees) = action_fees {
+            schema
+                .insert("actionFees".to_string(), action_fees)
+                .expect("a map schema");
+        }
+        let config = DataContractConfig::default_for_version(pv).expect("a default config");
+        DocumentType::try_from_schema(
+            Identifier::new([1; 32]),
+            1,
+            config.version(),
+            "post",
+            schema,
+            None,
+            &BTreeMap::new(),
+            &config,
+            true,
+            &mut Vec::new(),
+            pv,
+        )
+        .expect("the document type parses")
+    }
+
+    /// A charged fee is never agreed on the user's behalf.
+    #[test]
+    fn a_charged_fee_without_an_agreement_is_refused() {
+        let doc_type = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                None
+            ),
+            Err(ActionFeeAgreementError::NotConfirmed)
+        );
+    }
+
+    #[test]
+    fn the_confirmed_agreement_is_carried_as_is() {
+        let doc_type = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        let agreed = document_action_fee_quote(
+            doc_type.as_ref(),
+            DocumentTransitionActionType::Create,
+            1000,
+        )
+        .expect("create is priced")
+        .agreement;
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                Some(agreed)
+            ),
+            Ok(Some(agreed))
+        );
+    }
+
+    /// An agreement to another fee means the contract changed since the
+    /// user confirmed: refused before signing, not sent to be refused.
+    #[test]
+    fn an_agreement_to_another_fee_is_outdated() {
+        let before = document_type_with(Some(platform_value!({"create": {"owner": 5_u64}})));
+        let after = document_type_with(Some(platform_value!({"create": {"owner": 9_u64}})));
+        let agreed =
+            document_action_fee_quote(before.as_ref(), DocumentTransitionActionType::Create, 1000)
+                .expect("create is priced")
+                .agreement;
+        assert_eq!(
+            checked_action_fee_agreement(
+                after.as_ref(),
+                DocumentTransitionActionType::Create,
+                Some(agreed)
+            ),
+            Err(ActionFeeAgreementError::Outdated)
+        );
+    }
+
+    #[test]
+    fn an_uncharged_action_carries_no_agreement() {
+        let doc_type = document_type_with(Some(platform_value!({"delete": {"owner": 5_u64}})));
+        assert_eq!(
+            checked_action_fee_agreement(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                None
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_document_type_without_action_fees_quotes_nothing() {
+        let doc_type = document_type_with(None);
+        assert_eq!(
+            document_action_fee_quote(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                1000
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_action_the_type_does_not_price_quotes_nothing() {
+        let doc_type = document_type_with(Some(platform_value!({"delete": {"owner": 5_u64}})));
+        assert_eq!(
+            document_action_fee_quote(
+                doc_type.as_ref(),
+                DocumentTransitionActionType::Create,
+                1000
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_multiplier_priced_fee_scales_and_names_the_tolerance() {
+        let doc_type = document_type_with(Some(platform_value!({
+            "create": {"owner": 10_000_000_u64, "moderators": 0_u64},
+        })));
+        let quote = document_action_fee_quote(
+            doc_type.as_ref(),
+            DocumentTransitionActionType::Create,
+            1500,
+        )
+        .expect("create is priced");
+
+        assert_eq!(quote.owner, 15_000_000, "1.5x the declared owner part");
+        assert_eq!(quote.moderators, 0);
+        assert_eq!(quote.total, 15_000_000);
+        assert_eq!(
+            quote.max_total, 18_000_000,
+            "the tolerated 20% above the multiplier the user saw"
+        );
+        assert_eq!(quote.agreement.owner(), 10_000_000, "declared, not scaled");
+        let terms = quote
+            .agreement
+            .fee_multiplier()
+            .expect("a multiplier-priced fee names its terms");
+        assert_eq!(terms.known_permille, 1500);
+        assert_eq!(
+            terms.increase_tolerance_percent,
+            ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT
+        );
+    }
+
+    #[test]
+    fn a_fixed_fee_is_charged_as_declared() {
+        let doc_type = document_type_with(Some(platform_value!({
+            "pricing": "fixed",
+            "transfer": {"owner": 7_000_u64},
+        })));
+        let quote = document_action_fee_quote(
+            doc_type.as_ref(),
+            DocumentTransitionActionType::Transfer,
+            3000,
+        )
+        .expect("transfer is priced");
+
+        assert_eq!(quote.total, 7_000);
+        assert_eq!(
+            quote.max_total, 7_000,
+            "a fixed fee does not follow the multiplier"
+        );
+        assert_eq!(quote.agreement.fee_multiplier(), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_contest_cap_preserves_ordinary_creates_and_caps_contested_names() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::platform::Identifier;
+        for version in [13, 14] {
+            let pv = PlatformVersion::get(version).unwrap();
+            let contract = load_system_data_contract(SystemDataContract::DPNS, pv).unwrap();
+            let owner = Identifier::from([1; 32]);
+            let document = crate::context::test_support::dpns_name_document(
+                owner,
+                "alice",
+                Value::Identifier(owner.to_buffer()),
+            );
+            let domain = contract.document_type_for_name("domain").unwrap();
+            assert_eq!(
+                document_create_contest_fund_cap(domain, &document, pv).unwrap(),
+                Some(contest_fee_credits(pv))
+            );
+            let preorder = contract.document_type_for_name("preorder").unwrap();
+            assert_eq!(
+                document_create_contest_fund_cap(preorder, &document, pv).unwrap(),
+                None
+            );
+            let ordinary = crate::context::test_support::dpns_name_document(
+                owner,
+                "alice-123",
+                Value::Identifier(owner.to_buffer()),
+            );
+            assert_eq!(
+                document_create_contest_fund_cap(domain, &ordinary, pv).unwrap(),
+                None
+            );
+        }
+    }
 
     #[test]
     fn contest_fee_follows_protocol_version() {
@@ -2080,12 +2435,10 @@ mod tests {
     fn any_core_address() -> Address {
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::secp256k1::{
-            PublicKey as SecpPublicKey, Secp256k1, SecretKey,
-        };
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid secret key");
-        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&secp, &sk).serialize())
+        use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
+
+        let sk = SecretKey::from_secret_bytes([1u8; 32]).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&sk).serialize())
             .expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }

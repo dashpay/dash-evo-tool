@@ -289,7 +289,7 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Check if a contact request already exists
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
@@ -520,7 +520,11 @@ pub async fn send_contact_request_with_proof(
     let mut rng = StdRng::from_entropy();
     let entropy = Bytes32::random_with_rng(&mut rng);
 
-    // Generate deterministic document ID based on entropy
+    // Before protocol version 14 this entropy-only id is the document's id,
+    // which Platform recomputes from the entropy. From protocol version 14
+    // (`Document::document_id_depends_on_nonce`) the id also commits to the
+    // identity contract nonce, so this one is only a placeholder that building
+    // the create transition replaces. Read the id from the confirmed document.
     let document_id = Document::generate_document_id_v0(
         &dashpay_contract.id(),
         &identity.identity.id(),
@@ -530,6 +534,8 @@ pub async fn send_contact_request_with_proof(
 
     // Create the document
     let document = DppDocument::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: document_id,
         owner_id: identity.identity.id(),
         creator_id: None,
@@ -709,16 +715,8 @@ pub async fn accept_contact_request(
         });
     }
 
-    // Get an AUTHENTICATION key for signing the state transition
-    // Platform requires CRITICAL or HIGH security level for document creation
     let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-            KeyType::all_key_types().into(),
-            false,
-        )
+        .document_action_signing_key(&app_context.dashpay_contract(), "contactRequest", None)
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
@@ -1289,6 +1287,8 @@ mod tests {
             properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(99),
             owner_id: owner,
             creator_id: None,
@@ -1319,7 +1319,7 @@ mod tests {
             operator: WhereOperator::Equal,
             value: Value::Text(value.to_string()),
         };
-        let mut query = DocumentQuery::new(ctx.dpns_contract.clone(), "domain")
+        let mut query = DocumentQuery::new(ctx.dpns_contract(), "domain")
             .expect("domain query")
             .with_where(equals("normalizedParentDomainName", "dash"))
             .with_where(equals("normalizedLabel", normalized));

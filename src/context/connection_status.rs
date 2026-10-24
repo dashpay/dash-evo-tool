@@ -15,6 +15,10 @@ const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
 
 const SPV_PEER_DEGRADED_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Tooltip line shown once wallet sync data could not be saved.
+const WALLET_SYNC_FAULT_HINT: &str =
+    "Some wallet data could not be saved. Restart Dash Evo Tool to try again.";
+
 /// Five-state connection indicator matching the UI's colored circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -88,6 +92,12 @@ pub struct ConnectionStatus {
     spv_no_peers_since: Mutex<Option<Instant>>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
+    /// Mirror of the wallet backend's sync fault latch: wallet sync data could
+    /// not be saved, so the saved sync height is held back and the missing
+    /// range is scanned again on the next start. Upstream raises no event for
+    /// it, so the frame-loop refresh polls it. Leaves the overall state alone:
+    /// the connection itself is healthy.
+    wallet_sync_fault: AtomicBool,
 }
 
 /// Downloaded-notes progress for an in-flight shielded sync pass (DET-shaped —
@@ -131,6 +141,7 @@ impl ConnectionStatus {
             spv_no_peers_since: Mutex::new(None),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
+            wallet_sync_fault: AtomicBool::new(false),
         }
     }
 
@@ -150,6 +161,7 @@ impl ConnectionStatus {
             }
         });
         self.masternodes_ready.store(false, Ordering::Relaxed);
+        self.wallet_sync_fault.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
         *self
             .spv_no_peers_since
@@ -368,6 +380,14 @@ impl ConnectionStatus {
 
     /// Current SPV connected peer count (push-based from the wallet-backend
     /// `EventBridge` `on_network_event` callback).
+    pub fn set_wallet_sync_fault(&self, faulted: bool) {
+        self.wallet_sync_fault.store(faulted, Ordering::Relaxed);
+    }
+
+    pub fn wallet_sync_fault(&self) -> bool {
+        self.wallet_sync_fault.load(Ordering::Relaxed)
+    }
+
     pub fn spv_connected_peers(&self) -> u16 {
         self.spv_connected_peers.load(Ordering::Relaxed)
     }
@@ -493,7 +513,12 @@ impl ConnectionStatus {
         } else {
             ""
         };
-        format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
+        let sync_fault_hint = if self.wallet_sync_fault() {
+            format!("\n{WALLET_SYNC_FAULT_HINT}")
+        } else {
+            String::new()
+        };
+        format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}{sync_fault_hint}")
     }
 
     /// Updates internal connection state from a task result.
@@ -532,6 +557,14 @@ impl ConnectionStatus {
 
         self.refresh_dapi(app_context);
         // SPV status is push-based; no RPC chain lock polling.
+
+        // Upstream raises no event when it refuses to save wallet sync data,
+        // so its latch is polled here, on the same cadence as DAPI.
+        // TODO(wallet-sync-fault-headless): headless (MCP/CLI) runs have no
+        // frame loop, so nothing mirrors the fault there yet.
+        if let Ok(backend) = app_context.wallet_backend() {
+            self.set_wallet_sync_fault(backend.sync_fault_detected());
+        }
         AppAction::None
     }
 
@@ -1143,6 +1176,46 @@ mod tests {
         assert!(
             status.shielded_tree_progress().is_none(),
             "reset must clear in-flight shielded tree progress"
+        );
+    }
+
+    #[test]
+    fn tooltip_tells_the_user_to_restart_after_a_wallet_sync_fault() {
+        let status = ConnectionStatus::new();
+        assert!(!status.wallet_sync_fault());
+        assert!(!status.tooltip_text().contains(WALLET_SYNC_FAULT_HINT));
+
+        status.set_wallet_sync_fault(true);
+        assert!(status.wallet_sync_fault());
+        let tooltip = status.tooltip_text();
+        assert!(tooltip.contains(WALLET_SYNC_FAULT_HINT), "{tooltip}");
+        assert!(
+            WALLET_SYNC_FAULT_HINT.ends_with("Restart Dash Evo Tool to try again."),
+            "the hint must say what to do"
+        );
+    }
+
+    /// The connection itself is healthy after a wallet sync fault, so the
+    /// indicator keeps its colour.
+    #[test]
+    fn wallet_sync_fault_leaves_the_overall_state_alone() {
+        let status = ConnectionStatus::new();
+        status.set_dapi_status(3, 3);
+        status.set_spv_status(SpvStatus::Running);
+        status.set_spv_connected_peers(4);
+        status.set_wallet_sync_fault(true);
+        status.refresh_state();
+        assert_eq!(status.overall_state(), OverallConnectionState::Synced);
+    }
+
+    #[test]
+    fn reset_clears_the_wallet_sync_fault() {
+        let status = ConnectionStatus::new();
+        status.set_wallet_sync_fault(true);
+        status.reset();
+        assert!(
+            !status.wallet_sync_fault(),
+            "another network's wallets start without the fault"
         );
     }
 }

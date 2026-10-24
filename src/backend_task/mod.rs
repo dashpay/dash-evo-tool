@@ -1,36 +1,36 @@
 use crate::app::TaskResult;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::document::DocumentTask;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
-use crate::model::masternode_input::decode_identity_id;
 use crate::model::dpns_voting::{
     DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
 };
-use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use crate::model::grovestark_prover::ProofDataOutput;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function;
 use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -38,19 +38,20 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use grovestark::GroveSTARKTask;
+use migration::MigrationTask;
+use shielded::ShieldedTask;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use migration::MigrationTask;
-use shielded::ShieldedTask;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
+pub mod contract_fee_pots;
 pub mod core;
 pub mod dapi_discovery;
 pub mod dashpay;
@@ -60,6 +61,8 @@ pub mod grovestark;
 pub mod identity;
 pub mod migration;
 pub mod platform_info;
+#[cfg(test)]
+mod protocol_13_transitions;
 pub mod register_contract;
 pub mod shielded;
 pub mod system_task;
@@ -382,6 +385,13 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// The read of what is left of one identity's key budgets.
+    KeyRemainingBudgets(Identifier),
+    /// The raise of one identity key's limits.
+    RaiseKeyLimits {
+        identity_id: Identifier,
+        key_id: dash_sdk::dpp::identity::KeyID,
+    },
     /// Warming the identity-auth public-key cache for one wallet identity
     /// index, so a screen can tell its own failed warm from other errors.
     IdentityAuthPubkeyWarm {
@@ -582,6 +592,29 @@ impl BackendTaskContext {
         }
     }
 
+    /// The identity whose key budgets this operation read, or `None` for
+    /// anything else.
+    pub(crate) fn key_remaining_budgets_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::KeyRemainingBudgets(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
+    /// The identity key whose limits this operation raised, or `None` for
+    /// anything else.
+    pub(crate) fn raise_key_limits_target(
+        &self,
+    ) -> Option<(Identifier, dash_sdk::dpp::identity::KeyID)> {
+        match self.operation() {
+            Self::RaiseKeyLimits {
+                identity_id,
+                key_id,
+            } => Some((*identity_id, *key_id)),
+            _ => None,
+        }
+    }
+
     /// The identity whose legacy-recovery offer this operation belongs to, or
     /// `None` for anything else. A screen showing the recovery affordance uses
     /// it to tell its own failed check or restore from any other task's error
@@ -676,6 +709,16 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::FetchKeyRemainingBudgets {
+                identity_id,
+                ..
+            }) => Self::KeyRemainingBudgets(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits { identity, raise }) => {
+                Self::RaiseKeyLimits {
+                    identity_id: identity.identity.id(),
+                    key_id: raise.key_id,
+                }
+            }
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
                 Self::IdentityRefresh(identity.identity.id())
             }
@@ -810,7 +853,7 @@ pub enum BackendTaskSuccessResult {
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
         TokenAmount,
-        IntervalEvaluationExplanation,
+        distribution_function::evaluate_interval::IntervalEvaluationExplanation,
     ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
@@ -1026,6 +1069,8 @@ pub enum BackendTaskSuccessResult {
     SetTokenPrice(FeeResult),
     DestroyedFrozenFunds(FeeResult),
     ClaimedTokens(FeeResult),
+    /// The once-per-identity claim note of this pair was forgotten.
+    OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
@@ -1082,6 +1127,39 @@ pub enum BackendTaskSuccessResult {
     IdentityKeysUnprotected {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
+    },
+    /// What is left of the budgets of an identity's keys, one entry per
+    /// requested key: `Some(credits)` for a budgeted key (zero means spent),
+    /// `None` for a key without a budget.
+    IdentityKeyRemainingBudgets {
+        identity_id: Identifier,
+        budgets: std::collections::BTreeMap<
+            dash_sdk::dpp::identity::KeyID,
+            Option<dash_sdk::dpp::fee::Credits>,
+        >,
+    },
+    /// Both fee pots of a contract, as Platform holds them.
+    ContractFeePots {
+        contract_id: Identifier,
+        pots: dash_sdk::platform::contract_fee_pots::ContractFeePots,
+        /// The seated moderation team, which claims an elected contract's
+        /// moderators pot instead of its interim team.
+        seated_moderators: crate::model::contract_fee_pots::SeatedModerators,
+    },
+    /// A contract fee pot was paid out. `claimant_balance` is the claiming
+    /// identity's balance after the claim, `remaining_credits` what is left
+    /// in the pot.
+    ContractFeesClaimed {
+        contract_id: Identifier,
+        pot: dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot,
+        claimant_balance: Option<dash_sdk::dpp::fee::Credits>,
+        remaining_credits: dash_sdk::dpp::fee::Credits,
+    },
+    /// The limits of an identity key were raised; `key` is the key as
+    /// Platform now stores it.
+    IdentityKeyLimitsRaised {
+        identity_id: Identifier,
+        key: dash_sdk::dpp::identity::IdentityPublicKey,
     },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan
@@ -1430,7 +1508,7 @@ impl AppContext {
                 Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
-                Arc::clone(self).reinit_core_client_and_sdk()?;
+                self.rebuild_connection().await?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {

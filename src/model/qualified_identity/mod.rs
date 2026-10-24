@@ -8,6 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
+use crate::model::identity_key_usability::{
+    KeyRequirements, SigningScope, document_security_levels, now_ms, select_identity_signing_key,
+};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -18,12 +21,12 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::async_trait::async_trait;
-use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
+use dash_sdk::dpp::data_contract::DataContract;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -35,9 +38,9 @@ use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
-use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
+use dash_sdk::dpp::{ProtocolError, bls, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -445,13 +448,12 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-                    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+                    use dash_sdk::dpp::secp256k1::SecretKey;
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
-                    if let Ok(secret_key) = SecretKey::from_slice(&private_key[..]) {
-                        let secp = Secp256k1::new();
-                        let derived_pubkey = PublicKey::new(secret_key.public_key(&secp));
+                    if let Ok(secret_key) = SecretKey::from_secret_bytes(*private_key) {
+                        let derived_pubkey = PublicKey::new(secret_key.public_key());
                         let pubkey_bytes = derived_pubkey.to_bytes();
                         let sha256_hash = sha256::Hash::hash(&pubkey_bytes);
                         let hash160 = ripemd160::Hash::hash(sha256_hash.as_byte_array());
@@ -482,17 +484,10 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
-                let pk = bls_signatures::SecretKey::<Bls12381G2Impl>::from_be_bytes(&private_key)
-                    .into_option()
-                    .ok_or(ProtocolError::Generic(
-                        "bls private key from bytes isn't correct".to_string(),
-                    ))?;
-                Ok(pk
-                    .sign(SignatureSchemes::Basic, data)?
-                    .as_raw_value()
-                    .to_compressed()
-                    .to_vec()
-                    .into())
+                let pk = bls::SecretKey::from_be_bytes(&private_key).ok_or(
+                    ProtocolError::Generic("bls private key from bytes isn't correct".to_string()),
+                )?;
+                Ok(pk.sign(data)?.to_bytes().to_vec().into())
             }
             KeyType::EDDSA_25519_HASH160 => {
                 let pk = ed25519_dalek::SigningKey::from(&*private_key);
@@ -990,7 +985,7 @@ impl QualifiedIdentity {
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =
@@ -1012,7 +1007,7 @@ impl QualifiedIdentity {
                     let Some(seed) = plaintext.expose_hd_seed() else {
                         return Ok(None);
                     };
-                    let secp = Secp256k1::new();
+
                     for identity_index in 0..10u32 {
                         let correct_path = DP::identity_authentication_path(
                             network,
@@ -1025,8 +1020,7 @@ impl QualifiedIdentity {
                         else {
                             continue;
                         };
-                        let correct_pubkey =
-                            PublicKey::new(extended_key.private_key.public_key(&secp));
+                        let correct_pubkey = PublicKey::new(extended_key.private_key.public_key());
                         let correct_hash = ripemd160::Hash::hash(
                             sha256::Hash::hash(&correct_pubkey.to_bytes()).as_byte_array(),
                         );
@@ -1038,7 +1032,7 @@ impl QualifiedIdentity {
                                 "Using corrected derivation path for signing (found via scan)"
                             );
                             let signature =
-                                signer::sign(&data, &extended_key.private_key.secret_bytes())
+                                signer::sign(&data, extended_key.private_key.to_bytes().as_slice())
                                     .map_err(|_| TaskError::EncryptionError {
                                         detail:
                                             "Failed to sign with the recovered derivation path."
@@ -1163,16 +1157,98 @@ impl QualifiedIdentity {
         None
     }
 
+    /// The key to sign document transitions on `document_type` with, within
+    /// `scope`: a live AUTHENTICATION key at a level the type accepts
+    /// ([`document_security_levels`]) whose contract bounds permit `scope`,
+    /// unlimited keys first (see [`crate::model::identity_key_usability`]).
+    /// The level the type requires is preferred; a stronger key signs only
+    /// when no key at that level qualifies.
     pub fn document_signing_key(
         &self,
+        scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
-        self.identity.get_first_public_key_matching(
+        document_security_levels(*document_type)
+            .iter()
+            .rev()
+            .find_map(|level| {
+                self.signing_key_now(KeyRequirements::new(
+                    Purpose::AUTHENTICATION,
+                    std::slice::from_ref(level),
+                    scope,
+                ))
+            })
+    }
+
+    /// The key to sign an action on document type `document_type_name` of
+    /// `contract` with: a live AUTHENTICATION key at a level the type accepts
+    /// ([`document_security_levels`]), of one of `key_types` when given, whose
+    /// bounds permit that document type; unlimited keys first. `None` when the
+    /// contract has no such type or no key qualifies.
+    pub fn document_action_signing_key(
+        &self,
+        contract: &DataContract,
+        document_type_name: &str,
+        key_types: Option<&[KeyType]>,
+    ) -> Option<&IdentityPublicKey> {
+        let document_type = contract.document_type_for_name(document_type_name).ok()?;
+        let levels = document_security_levels(document_type);
+        let mut requirements = KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([document_type.security_level_requirement()]),
-            HashSet::from(KeyType::all_key_types()),
+            &levels,
+            SigningScope::Document {
+                contract_id: contract.id(),
+                document_type_name,
+            },
+        );
+        if let Some(key_types) = key_types {
+            requirements = requirements.with_key_types(key_types);
+        }
+        self.signing_key_now(requirements)
+    }
+
+    /// The ENCRYPTION key whose wallet seeds DashPay auto-accept proofs
+    /// (DIP-15): the first MEDIUM ECDSA_SECP256K1 one.
+    pub fn auto_accept_proof_key(&self) -> Option<&IdentityPublicKey> {
+        self.identity.get_first_public_key_matching(
+            Purpose::ENCRYPTION,
+            std::collections::HashSet::from([SecurityLevel::MEDIUM]),
+            std::collections::HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
+    }
+
+    /// The key as the identity holds it now for `snapshot`, a copy taken
+    /// earlier (e.g. stored next to its private half): budget and expiry move
+    /// with key limits updates, so the snapshot may be stale. Falls back to
+    /// the snapshot when the identity no longer holds the same key.
+    pub fn live_public_key<'a>(&'a self, snapshot: &'a IdentityPublicKey) -> &'a IdentityPublicKey {
+        self.identity
+            .public_keys()
+            .get(&snapshot.id())
+            .filter(|live| encrypted_key_storage::same_key(snapshot, live))
+            .unwrap_or(snapshot)
+    }
+
+    /// The key to sign with for `requirements` now: the automatic choice of
+    /// [`select_identity_signing_key`] among the keys this device holds the
+    /// private half of.
+    pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
+            self.can_sign_with(key)
+        })
+    }
+
+    /// The key [`select_identity_signing_key`] would pick for `requirements`
+    /// now, whether or not this device holds its private half. For
+    /// informational lookups only (e.g. pointing the user at a key whose
+    /// private half they should load) — never for signing; use
+    /// [`Self::signing_key_now`] for that.
+    pub fn matching_key_now(
+        &self,
+        requirements: KeyRequirements<'_>,
+    ) -> Option<&IdentityPublicKey> {
+        select_identity_signing_key(&self.identity, requirements, now_ms(), |_| true)
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -2022,6 +2098,34 @@ mod key_resolution_tests {
         }
     }
 
+    #[tokio::test]
+    async fn bls_signing_preserves_the_previous_sdk_basic_signature_bytes() {
+        // Generated with the previous pin's blsful Basic signer using this synthetic key.
+        let secret = [0x11; 32];
+        let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
+        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 3,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::BLS12_381,
+            read_only: false,
+            data: BinaryData::new(public.to_bytes().to_vec()),
+            disabled_at: None,
+        });
+        let identity = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear(secret))]);
+        let signature = identity
+            .sign(&key, b"DET BLS adapter parity")
+            .await
+            .unwrap();
+        assert_eq!(
+            hex::encode(signature.as_slice()),
+            "94765bd6758b7cd55024a38dc591f3090e9535d97a94ae7674239c559b4733e64dcae72c3d50d96788dfb0475e921bd608410c7a556ab0fab22f9ceb15139c54f8cf8a34e3900f7ab58c6497d3e9b7f6e04445237da30cf635550276eb981c45"
+        );
+        let invalid = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear([0; 32]))]);
+        assert!(invalid.sign(&key, b"DET BLS adapter parity").await.is_err());
+    }
+
     /// T0 — a `Purpose::VOTING` key on the main identity must be signable
     /// wherever its private half is filed. Held under `Main` is what the
     /// authoritative loader writes and what the structural target names; held
@@ -2618,6 +2722,30 @@ pub(crate) mod withdrawal_key_tests {
         let transfer = key(1, Purpose::TRANSFER);
         let qi = build_identity(IdentityType::User, vec![transfer], vec![]);
         assert!(qi.default_withdrawal_key().is_none());
+    }
+
+    /// Regression: the withdraw screen's "Check Owner Key" / "Check Payout
+    /// Address Key" buttons render exactly when no signable key is held, so
+    /// their lookup must still find a public-only key.
+    #[test]
+    fn a_public_only_owner_key_is_found_for_information_but_not_for_signing() {
+        let owner = key(2, Purpose::OWNER);
+        let transfer = key(3, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::Masternode, vec![owner, transfer], vec![]);
+        let levels = SecurityLevel::full_range();
+        let requirements = |purpose| KeyRequirements::new(purpose, &levels, SigningScope::NonBatch);
+
+        assert!(qi.signing_key_now(requirements(Purpose::OWNER)).is_none());
+        assert_eq!(
+            qi.matching_key_now(requirements(Purpose::OWNER))
+                .map(|k| k.id()),
+            Some(2)
+        );
+        assert_eq!(
+            qi.matching_key_now(requirements(Purpose::TRANSFER))
+                .map(|k| k.id()),
+            Some(3)
+        );
     }
 
     #[test]
@@ -3236,6 +3364,295 @@ mod decode_limit_tests {
     }
 }
 
+/// Protocol version 14 added `IdentityPublicKey::V1` (key limits) and
+/// `ContractBounds::ContractGroup`. Stored identity blobs carry both enums, so
+/// blobs written before the bump must decode unchanged and the new variants
+/// must round-trip.
+#[cfg(test)]
+mod protocol_v14_compat_tests {
+    use super::*;
+    use crate::model::identity_key_usability::SigningScope;
+    use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+    use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+    use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    /// The bundled v0.9.3 profile: real identity rows written by DET v0.9.3.
+    const V0_9_3_DATA_SQL: &str =
+        include_str!("../../../tests/migration-fixtures/v0.9.3-public-identities/data.sql");
+
+    /// The stored blob of the v0.9.3 user identity `public-dpns-user`.
+    fn v0_9_3_user_blob() -> Vec<u8> {
+        const ROW: &str = "INSERT INTO \"identity\" VALUES(X'3B9DA97EBC06C07C0C0C48695EA5D36CAECE9E19E4944AAE5548691D9A80FAE5',X'";
+        let start = V0_9_3_DATA_SQL.find(ROW).expect("the user identity row") + ROW.len();
+        let len = V0_9_3_DATA_SQL[start..]
+            .find('\'')
+            .expect("the end of the blob literal");
+        hex::decode(&V0_9_3_DATA_SQL[start..start + len]).expect("a hex blob")
+    }
+
+    #[test]
+    fn a_blob_written_before_protocol_v14_still_decodes_with_v0_keys() {
+        let qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+
+        let keys = qi.identity.public_keys();
+        assert_eq!(keys.len(), 6, "as the v0.9.3 fixture expectations list");
+        assert!(
+            keys.values().all(|k| matches!(k, IdentityPublicKey::V0(_))),
+            "every pre-v14 key decodes as V0"
+        );
+        assert!(keys.values().all(|k| !k.has_limits()));
+        let bounds: Vec<_> = keys.values().filter_map(|k| k.contract_bounds()).collect();
+        assert_eq!(
+            bounds.len(),
+            2,
+            "the DashPay encryption and decryption keys"
+        );
+        assert!(bounds.iter().all(|b| matches!(
+            b,
+            ContractBounds::SingleContractDocumentType { document_type_name, .. }
+                if document_type_name == "contactRequest"
+        )));
+
+        let reencoded = QualifiedIdentity::from_bytes(&qi.to_bytes()).expect("re-decodes");
+        assert_eq!(reencoded.identity, qi.identity, "a re-save keeps every key");
+    }
+
+    #[test]
+    fn keys_with_limits_and_group_bounds_round_trip_through_the_blob() {
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        let pv = PlatformVersion::latest();
+        let limited = IdentityPublicKey::random_key(10, Some(1), pv)
+            .with_limits(Some(5_000_000), Some(1_900_000_000_000));
+        let grouped = match IdentityPublicKey::random_key(11, Some(2), pv) {
+            IdentityPublicKey::V0(mut v0) => {
+                v0.contract_bounds = Some(ContractBounds::ContractGroup {
+                    id: Identifier::from([7u8; 32]),
+                });
+                IdentityPublicKey::V0(v0)
+            }
+            other => other,
+        };
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(10, limited.clone());
+        keys.insert(11, grouped.clone());
+        qi.identity.set_public_keys(keys);
+
+        let decoded = QualifiedIdentity::from_bytes(&qi.to_bytes()).expect("decodes");
+        let keys = decoded.identity.public_keys();
+        assert_eq!(keys.get(&10), Some(&limited));
+        assert_eq!(keys[&10].total_budget(), Some(5_000_000));
+        assert_eq!(keys[&10].expires_at(), Some(1_900_000_000_000));
+        assert_eq!(keys.get(&11), Some(&grouped));
+    }
+
+    /// A key extended on the network but stored here as its expired copy is
+    /// judged by the live key: no "expired" caveat (the key chooser's view).
+    #[test]
+    fn an_extended_key_is_not_reported_expired_from_its_stale_copy() {
+        use crate::model::identity_key_usability::{KeyCaveat, key_caveats};
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(7, Some(7), pv).with_limits(None, Some(1));
+        let extended = stale.clone().with_limits(None, Some(u64::MAX));
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        qi.identity
+            .set_public_keys(BTreeMap::from([(7, extended.clone())]));
+
+        let live = qi.live_public_key(&stale);
+        assert_eq!(live, &extended);
+        let caveats = key_caveats(live, SigningScope::NonBatch, 1_000);
+        assert!(
+            !caveats
+                .iter()
+                .any(|caveat| matches!(caveat, KeyCaveat::Expired { .. })),
+            "{caveats:?}"
+        );
+        assert!(
+            key_caveats(&stale, SigningScope::NonBatch, 1_000)
+                .iter()
+                .any(|caveat| matches!(caveat, KeyCaveat::Expired { .. })),
+            "the stale copy alone would say expired"
+        );
+    }
+
+    /// Platform accepts a stronger key than a document type requires, so a
+    /// CRITICAL key signs a HIGH document type when no HIGH key is held; a
+    /// MASTER key never does.
+    #[test]
+    fn document_signing_key_accepts_a_stronger_key_than_required() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::{KeyType, Purpose};
+
+        let pv = PlatformVersion::latest();
+        let dpns = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            pv,
+        )
+        .expect("the DPNS contract");
+        let preorder: DocumentTypeRef = dpns.document_type_for_name("preorder").expect("preorder");
+        assert_eq!(preorder.security_level_requirement(), SecurityLevel::HIGH);
+
+        let auth_key = |id: KeyID, level: SecurityLevel| {
+            let mut key = IdentityPublicKey::random_key(id, Some(u64::from(id)), pv);
+            key.set_purpose(Purpose::AUTHENTICATION);
+            key.set_security_level(level);
+            key.set_key_type(KeyType::ECDSA_SECP256K1);
+            key
+        };
+        let all = [
+            auth_key(1, SecurityLevel::MASTER),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ];
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        qi.private_keys = Default::default();
+        for key in &all {
+            qi.private_keys
+                .insert_non_encrypted(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: key.clone(),
+                            in_wallet_at_derivation_path: None,
+                        },
+                        [key.id() as u8; 32],
+                    ),
+                )
+                .expect("a free slot");
+        }
+        qi.identity
+            .set_public_keys(all.iter().map(|key| (key.id(), key.clone())).collect());
+        let scope = SigningScope::ContractWide {
+            contract_id: dpns.id(),
+        };
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(2),
+            "the CRITICAL key, never the MASTER key"
+        );
+
+        // A key at the required level is still preferred over a stronger one.
+        let high = auth_key(3, SecurityLevel::HIGH);
+        qi.private_keys
+            .insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
+                (
+                    QualifiedIdentityPublicKey {
+                        identity_public_key: high.clone(),
+                        in_wallet_at_derivation_path: None,
+                    },
+                    [high.id() as u8; 32],
+                ),
+            )
+            .expect("a free slot");
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(high.id(), high);
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "the HIGH key the type asks for"
+        );
+    }
+
+    /// The document signing key skips a key Platform would refuse (expired,
+    /// bound elsewhere) and prefers an unlimited key over a limited one.
+    #[test]
+    fn document_signing_key_picks_a_usable_unlimited_key() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::{KeyType, Purpose};
+
+        let pv = PlatformVersion::latest();
+        let dpns = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            pv,
+        )
+        .expect("the DPNS contract");
+        let preorder: DocumentTypeRef = dpns.document_type_for_name("preorder").expect("preorder");
+        let level = preorder.security_level_requirement();
+
+        let auth_key = |id: KeyID| {
+            let mut key = IdentityPublicKey::random_key(id, Some(u64::from(id)), pv);
+            key.set_purpose(Purpose::AUTHENTICATION);
+            key.set_security_level(level);
+            key.set_key_type(KeyType::ECDSA_SECP256K1);
+            key
+        };
+        let expired = auth_key(1).with_limits(None, Some(1));
+        let elsewhere = match auth_key(2) {
+            IdentityPublicKey::V0(mut v0) => {
+                v0.contract_bounds = Some(ContractBounds::SingleContract {
+                    id: Identifier::from([9u8; 32]),
+                });
+                IdentityPublicKey::V0(v0)
+            }
+            other => other,
+        };
+        let limited = auth_key(3).with_limits(Some(1_000), None);
+        let plain = auth_key(4);
+
+        let mut qi = QualifiedIdentity::from_bytes(&v0_9_3_user_blob()).expect("decodes");
+        let all = [expired, elsewhere, limited, plain];
+        qi.private_keys = Default::default();
+        for key in &all {
+            qi.private_keys
+                .insert_non_encrypted(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                    (
+                        QualifiedIdentityPublicKey {
+                            identity_public_key: key.clone(),
+                            in_wallet_at_derivation_path: None,
+                        },
+                        [key.id() as u8; 32],
+                    ),
+                )
+                .expect("a free slot");
+        }
+        qi.identity
+            .set_public_keys(all.iter().map(|key| (key.id(), key.clone())).collect());
+        let scope = SigningScope::ContractWide {
+            contract_id: dpns.id(),
+        };
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(4),
+            "the unlimited, unbound, live key"
+        );
+
+        let mut keys = qi.identity.public_keys().clone();
+        keys.remove(&4);
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "a limited key when it is the only usable one"
+        );
+
+        // The stored snapshot of key 3 is judged by the live key.
+        let mut keys = qi.identity.public_keys().clone();
+        let raised = keys[&3].clone().with_limits(Some(9_000), None);
+        let snapshot = keys[&3].clone();
+        keys.insert(3, raised.clone());
+        qi.identity.set_public_keys(keys);
+        assert_eq!(qi.live_public_key(&snapshot), &raised);
+        let unknown = auth_key(42);
+        assert_eq!(qi.live_public_key(&unknown), &unknown);
+
+        // A held limited key beats an unlimited key whose private half is
+        // not on this device.
+        let mut keys = qi.identity.public_keys().clone();
+        keys.insert(5, auth_key(5));
+        qi.identity.set_public_keys(keys);
+        assert_eq!(
+            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            Some(3),
+            "the unlimited key 5 cannot be signed with here"
+        );
+    }
+}
 #[cfg(test)]
 mod identity_display_name_tests {
     use super::*;

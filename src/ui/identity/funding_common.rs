@@ -373,6 +373,7 @@ pub fn asset_lock_status_label(status: &AssetLockStatus) -> &'static str {
         AssetLockStatus::InstantSendLocked => "Confirmed and ready to use.",
         AssetLockStatus::ChainLocked => "Confirmed and ready to use.",
         AssetLockStatus::Consumed => "Already used to fund an identity.",
+        AssetLockStatus::DrainCompleted => "Already used to transfer the wallet funds.",
         // Core-side finality is proven, but whether Platform already spent this
         // lock is unknown, so it must claim neither "ready" nor "already used".
         AssetLockStatus::RecoveredFromChain => {
@@ -679,16 +680,16 @@ mod tests {
     }
 
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).
     fn addr(n: u8) -> Address {
         let mut sk_bytes = [1u8; 32];
         sk_bytes[31] = n.max(1);
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
-        let pubkey = PublicKey::new(sk.public_key(&secp));
+
+        let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
+        let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

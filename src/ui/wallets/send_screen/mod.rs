@@ -4088,7 +4088,8 @@ mod tests {
         let owner = screen.selected_wallet.clone().expect("owner wallet");
         let owner_hash = screen.selected_wallet_seed_hash.expect("owner hash");
         let other = Arc::new(RwLock::new(
-            Wallet::new_from_seed([2u8; 64], Network::Testnet, None, None).expect("wallet"),
+            // Generated per run: no wallet secret is ever committed.
+            Wallet::new_from_seed(rand::random(), Network::Testnet, None, None).expect("wallet"),
         ));
         let other_hash = other.read().expect("wallet").seed_hash();
         let ctx = screen.app_context.clone();

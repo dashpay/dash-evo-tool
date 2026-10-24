@@ -62,6 +62,7 @@ pub mod single_key;
 pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
+mod spend_activity;
 mod token_balance;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
@@ -505,6 +506,9 @@ struct Inner {
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
     task_result_sender: SenderAsync<TaskResult>,
+    /// Operations that can take or release Core input reservations; keys the
+    /// Max quotes. See [`spend_activity`].
+    spend_activity: Arc<spend_activity::SpendActivity>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -728,6 +732,7 @@ impl WalletBackend {
                 start_latch: StartLatch::default(),
                 coordinator_gate,
                 task_result_sender,
+                spend_activity: Arc::default(),
             }),
         };
 
@@ -2896,7 +2901,28 @@ impl WalletBackend {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> (u64, AssetLockInputState, u64) {
-        self.inner.snapshots.asset_lock_probe_snapshot(seed_hash)
+        let (generation, inputs, revision) =
+            self.inner.snapshots.asset_lock_probe_snapshot(seed_hash);
+        let spend_key = self.inner.spend_activity.quote_key(seed_hash);
+        (generation, inputs.with_spend_key(spend_key), revision)
+    }
+
+    /// The revision a Core send Max quote is made against: the published
+    /// wallet state and the operations that can move its reservations.
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        let generation = self.inner.snapshots.asset_lock_probe_snapshot(seed_hash).0;
+        generation
+            ^ self
+                .inner
+                .spend_activity
+                .quote_key(seed_hash)
+                .rotate_left(32)
+    }
+
+    /// Mark an operation that can take or release Core input reservations
+    /// on `seed_hash` for as long as the returned guard lives.
+    fn begin_core_spend(&self, seed_hash: &WalletSeedHash) -> spend_activity::SpendGuard {
+        self.inner.spend_activity.begin(seed_hash)
     }
 
     /// Full transaction history for the wallet (event-sourced).

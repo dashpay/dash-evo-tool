@@ -56,7 +56,7 @@ const P2PKH_INPUT_SIZE: usize = 148;
 
 enum AssetLockDryRun {
     Builds,
-    Rejected { available: u64 },
+    Rejected { available: u64, required: u64 },
     TooManyInputs { count: usize, max: usize },
 }
 
@@ -319,14 +319,22 @@ fn dry_run_asset_lock_amount_with_strategy(
         }
         Ok(_) => Ok(AssetLockDryRun::Builds),
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {
-            Ok(AssetLockDryRun::Rejected { available: 0 })
+            Ok(AssetLockDryRun::Rejected {
+                available: 0,
+                required: amount_duffs,
+            })
         }
         Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds {
-            available, ..
+            available,
+            required,
         }))
-        | Err(BuilderError::InsufficientFunds { available, .. }) => {
-            Ok(AssetLockDryRun::Rejected { available })
-        }
+        | Err(BuilderError::InsufficientFunds {
+            available,
+            required,
+        }) => Ok(AssetLockDryRun::Rejected {
+            available,
+            required,
+        }),
         Err(BuilderError::TooManyInputs { count, max }) => Ok(AssetLockDryRun::TooManyInputs {
             count,
             max: max.min(pool.max_inputs),
@@ -527,7 +535,7 @@ fn full_range_asset_lock_max_amount(
     }
 
     let mut high = match dry_run_asset_lock_amount(pool, MAX_MONEY.saturating_add(1))? {
-        AssetLockDryRun::Rejected { available } => available,
+        AssetLockDryRun::Rejected { available, .. } => available,
         AssetLockDryRun::Builds => MAX_MONEY,
         AssetLockDryRun::TooManyInputs { max, .. } => {
             return asset_lock_max_with_input_cap(pool, max, deadline);
@@ -602,6 +610,9 @@ impl WalletBackend {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
         let max_inputs = self.asset_lock_input_cap();
+        // Read before the lock: an operation starting meanwhile leaves this
+        // quote stale rather than current.
+        let spend_key = self.inner.spend_activity.quote_key(seed_hash);
         // Every dry run performs one reservation read→reserve→release cycle.
         // Keep them all under the same exclusive boundary as real builds.
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
@@ -634,7 +645,7 @@ impl WalletBackend {
             drop(wallet_manager);
             Ok(AssetLockMaxAmountQuote {
                 amount_duffs,
-                observed_inputs,
+                observed_inputs: observed_inputs.with_spend_key(spend_key),
                 is_partial,
             })
         })
@@ -790,9 +801,18 @@ impl WalletBackend {
             Ok(AssetLockDryRun::TooManyInputs { count, max }) => {
                 Err(TaskError::AssetLockTooManyInputs { count, max })
             }
-            // A shortfall or a build failure is the real build's to report,
-            // with the error it already maps.
-            Ok(AssetLockDryRun::Builds | AssetLockDryRun::Rejected { .. }) | Err(_) => Ok(()),
+            // The pool shares the live reservations, so a shortfall here is
+            // one the real build would hit too — refuse it before the unlock.
+            Ok(AssetLockDryRun::Rejected {
+                available,
+                required,
+            }) => Err(TaskError::InsufficientFunds {
+                available,
+                required,
+            }),
+            // Any other build failure is the real build's to report, with the
+            // error it already maps.
+            Ok(AssetLockDryRun::Builds) | Err(_) => Ok(()),
         }
     }
 
@@ -870,6 +890,7 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
+        let spend = self.begin_core_spend(seed_hash);
         self.ensure_core_payment_builds(seed_hash, &recipients)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -878,6 +899,8 @@ impl WalletBackend {
             .with_secret_session(&scope, async |session| {
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
+                // Reservations are taken from here on.
+                spend.mark();
                 // Funding and reservation happen in one critical section
                 // under the wallet-manager write lock inside upstream; the
                 // signer runs after it drops.
@@ -891,6 +914,8 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(map_core_finalize_error)?;
+                // The inputs are reserved now, before the broadcast settles.
+                spend.mark();
                 let txid = transaction.transaction().txid();
                 // A definitive rejection releases the reservation on every
                 // funding account; an ambiguous outcome keeps it.
@@ -990,6 +1015,7 @@ impl WalletBackend {
     > {
         use platform_wallet::AssetLockFundingType;
 
+        let spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
             .await?;
         // One held-seed scope covers account provisioning, the funding-input
@@ -1033,6 +1059,8 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_amount_within_input_cap(seed_hash, amount_duffs)
                     .await?;
+                // Reservations are taken from here on.
+                spend.mark();
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let (proof, credit_output_path, out_point) = wallet
@@ -2212,6 +2240,135 @@ mod tests {
                 Err(TaskError::AssetLockTooManyInputs { count, max: 100 }) if count > 100
             ),
             "{result:?}"
+        );
+    }
+
+    /// Every operation that can take or release Core input reservations
+    /// moves both Max quote keys — the Core send key and the asset-lock input
+    /// composition — so a quote made before it is never offered after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reserving_operation_invalidates_both_max_quotes() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x71,
+            &[1_000_000],
+        )
+        .await;
+        let keys = |backend: &crate::wallet_backend::WalletBackend| {
+            (
+                backend.core_send_quote_revision(&seed_hash),
+                backend.asset_lock_probe_snapshot(&seed_hash).1,
+            )
+        };
+        let before = keys(&backend);
+
+        // Both refuse a shortfall before any prompt; each still ran as a
+        // reserving operation.
+        let send = backend
+            .send_payment(&seed_hash, vec![(payment_recipient(), 50_000_000)])
+            .await;
+        assert!(send.is_err(), "{send:?}");
+        let after_send = keys(&backend);
+        assert_ne!(after_send.0, before.0, "a send moves the Core Max key");
+        assert_ne!(after_send.1, before.1, "a send moves the asset-lock key");
+
+        let lock = backend
+            .create_asset_lock_proof(
+                &seed_hash,
+                50_000_000,
+                platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+                0,
+            )
+            .await;
+        assert!(lock.is_err(), "{lock:?}");
+        let after_lock = keys(&backend);
+        assert_ne!(
+            after_lock.0, after_send.0,
+            "an asset lock moves the Core Max key"
+        );
+        assert_ne!(
+            after_lock.1, after_send.1,
+            "an asset lock moves the asset-lock key"
+        );
+    }
+
+    /// A shield from Platform above what the planner can shield is refused
+    /// before the wallet is unlocked, with the planner's own verdict — here,
+    /// a wallet with no Platform balance can shield nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shield_above_the_planner_maximum_is_refused_before_unlocking() {
+        let (_dir, _ctx, backend, seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let det_wallet = crate::model::wallet::Wallet::new_from_seed(
+            rand::random(),
+            Network::Testnet,
+            None,
+            None,
+        )
+        .expect("DET wallet");
+        let path_index =
+            crate::wallet_backend::PlatformPathIndex::from_wallet(&det_wallet, Network::Testnet);
+
+        let refused = backend
+            .shield_from_balance(
+                &seed_hash,
+                &path_index,
+                0,
+                crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
+                100_000_000_000,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::ShieldFromPlatformNothingShieldable { .. })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    /// An exact asset lock the wallet cannot fund is refused by the guard,
+    /// before any secret is opened, with the balance advice a shortfall
+    /// deserves — not left to fail inside the build after the unlock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaffordable_asset_lock_is_refused_before_unlocking() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const FUNDED_DUFFS: u64 = 1_000_000;
+        const AMOUNT_DUFFS: u64 = 5_000_000;
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x70,
+            &[FUNDED_DUFFS],
+        )
+        .await;
+
+        let refused = backend
+            .ensure_asset_lock_amount_within_input_cap(&seed_hash, AMOUNT_DUFFS)
+            .await;
+
+        assert!(
+            matches!(
+                refused,
+                Err(TaskError::InsufficientFunds { available, required })
+                    if available <= FUNDED_DUFFS && required >= AMOUNT_DUFFS
+            ),
+            "{refused:?}"
         );
     }
 

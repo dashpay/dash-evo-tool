@@ -78,6 +78,10 @@ pub struct AssetLockInputState {
     /// Sum of the observed input values in duffs.
     pub final_funds_duffs: u64,
     inputs: Arc<[(OutPoint, u64)]>,
+    /// The reserving-operation key this state was read under (see
+    /// `spend_activity`). Part of equality, so a quote stops matching once
+    /// an operation that can move reservations starts or ends.
+    spend_key: u64,
 }
 
 impl AssetLockInputState {
@@ -92,7 +96,14 @@ impl AssetLockInputState {
         Self {
             final_funds_duffs,
             inputs: inputs.into(),
+            spend_key: 0,
         }
+    }
+
+    /// This state, read under the reserving-operation key `spend_key`.
+    pub(crate) fn with_spend_key(mut self, spend_key: u64) -> Self {
+        self.spend_key = spend_key;
+        self
     }
 }
 

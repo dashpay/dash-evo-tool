@@ -76,7 +76,9 @@ pub struct WithdrawalRecord {
     /// Amount in credits (atomic units).
     pub amount_credits: u64,
     /// Withdrawal status: `"queued"`, `"pooled"`, `"broadcasted"`,
-    /// `"complete"`, `"expired"`, or `"failed"`.
+    /// `"complete"`, `"expired"`, or `"failed"`. `"failed"` is terminal: the
+    /// payout was too small to ever be mined, and its credits are not returned
+    /// (they stay locked in the Core credit pool).
     pub status: String,
     /// Destination Dash address decoded from the output script, or `None` when
     /// the script does not map to a standard address on this network.
@@ -437,6 +439,17 @@ fn format_withdrawal_line(
         address,
         status,
     ))
+}
+
+/// Shown under a withdrawal history holding a failed withdrawal: that status
+/// is terminal and, unlike an expired one, never gives the credits back.
+const FAILED_WITHDRAWAL_NOTE: &str = "A failed withdrawal was too small to ever be paid out on the Dash network. Its amount is not returned to the identity. Withdraw larger amounts to avoid this.";
+
+/// Whether any of `documents` is a withdrawal in the terminal failed status.
+fn any_withdrawal_failed(documents: &[Document]) -> bool {
+    documents.iter().any(|document| {
+        document.properties().get_integer::<u8>(STATUS).ok() == Some(WithdrawalStatus::FAILED as u8)
+    })
 }
 
 /// Format one completed/expired/failed withdrawal document as a single line keyed by
@@ -852,7 +865,7 @@ impl AppContext {
                         .map(|document| format_completed_withdrawal_line(document, self.network))
                         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
-                    let formatted = format!(
+                    let mut formatted = format!(
                         "Recent Withdrawal History:\n\n\
                          Total Amount: {:.8} Dash\n\
                          Count: {} withdrawals\n\n\
@@ -861,6 +874,10 @@ impl AppContext {
                         withdrawal_docs.len(),
                         amounts.join("\n    ")
                     );
+                    if any_withdrawal_failed(&withdrawal_docs) {
+                        formatted.push_str("\n\n");
+                        formatted.push_str(FAILED_WITHDRAWAL_NOTE);
+                    }
 
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(formatted),
@@ -993,6 +1010,18 @@ impl AppContext {
 mod tests {
     use super::*;
 
+    fn withdrawal_with_status(status: WithdrawalStatus) -> Document {
+        use dash_sdk::dpp::document::DocumentV0;
+        let mut properties = std::collections::BTreeMap::new();
+        properties.insert(STATUS.to_string(), Value::U8(status as u8));
+        Document::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
+            properties,
+            ..Default::default()
+        })
+    }
+
     /// The limit is whatever the network's own protocol version says it is,
     /// never a version fixed in this build: protocol 13 reports a flat 2000
     /// Dash whatever the total, protocol 14 derives it from that total (15% of
@@ -1116,6 +1145,21 @@ mod tests {
             ctx.fee_multiplier_permille(),
             crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
         );
+    }
+
+    /// A failed withdrawal keeps its credits locked, so the history says so
+    /// exactly when one is listed; an expired one is refunded and needs no note.
+    #[test]
+    fn only_a_failed_withdrawal_triggers_the_not_refunded_note() {
+        assert!(any_withdrawal_failed(&[
+            withdrawal_with_status(WithdrawalStatus::COMPLETE),
+            withdrawal_with_status(WithdrawalStatus::FAILED),
+        ]));
+        assert!(!any_withdrawal_failed(&[
+            withdrawal_with_status(WithdrawalStatus::COMPLETE),
+            withdrawal_with_status(WithdrawalStatus::EXPIRED),
+        ]));
+        assert!(FAILED_WITHDRAWAL_NOTE.contains("not returned"));
     }
 
     #[test]

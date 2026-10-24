@@ -1028,6 +1028,8 @@ pub enum BackendTaskSuccessResult {
     SetTokenPrice(FeeResult),
     DestroyedFrozenFunds(FeeResult),
     ClaimedTokens(FeeResult),
+    /// The once-per-identity claim note of this pair was forgotten.
+    OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already

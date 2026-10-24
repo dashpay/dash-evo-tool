@@ -1273,6 +1273,17 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 ---
 
+### TOK-019: Create a token each identity can claim once [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
+
+- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The fee estimate includes the network's extra fee for this distribution.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
+
 ## Contracts and Documents (DOC)
 
 ### DOC-001: Register a new data contract [Implemented]

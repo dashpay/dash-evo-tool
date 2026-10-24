@@ -113,6 +113,9 @@ pub enum TokenTask {
     /// ordering so the row disappears, and record the dismissal so later
     /// refreshes do not re-watch the pair.
     StopTrackingTokenBalance(IdentityTokenIdentifier),
+    /// Forget the note that an identity may already have taken its
+    /// once-per-identity claim of a token (the user dismissed it).
+    ClearOncePerIdentityClaimHint(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     FetchTokenByTokenId(Identifier),
@@ -246,6 +249,25 @@ impl AppContext {
         Ok(make_success(FeeResult::estimated_only(estimated_fee)))
     }
 
+    /// Version 1 distribution rules (a once-per-identity distribution) only
+    /// decode on networks that accept them; refuse them elsewhere before
+    /// anything is signed.
+    fn ensure_distribution_rules_supported(
+        &self,
+        rules: &TokenDistributionRules,
+    ) -> Result<(), TaskError> {
+        match rules {
+            TokenDistributionRules::V0(_) => Ok(()),
+            TokenDistributionRules::V1(_)
+                if crate::context::feature_gate::FeatureGate::TokenOncePerIdentityDistribution
+                    .is_available(self) =>
+            {
+                Ok(())
+            }
+            TokenDistributionRules::V1(_) => Err(TaskError::TokenOncePerIdentityNotSupported),
+        }
+    }
+
     pub async fn run_token_task(
         self: &Arc<Self>,
         task: TokenTask,
@@ -258,6 +280,7 @@ impl AppContext {
                 signing_key,
                 params,
             } => {
+                self.ensure_distribution_rules_supported(&params.distribution_rules)?;
                 params
                     .contract_keywords
                     .iter()
@@ -553,6 +576,12 @@ impl AppContext {
                     Err(e) => Err(TaskError::from(e)),
                 }
             }
+            TokenTask::ClearOncePerIdentityClaimHint(pair) => {
+                self.clear_once_per_identity_claim(&pair.token_id, &pair.identity_id)?;
+                Ok(BackendTaskSuccessResult::OncePerIdentityClaimHintCleared(
+                    pair,
+                ))
+            }
             TokenTask::SaveTokenLocally(token_info) => {
                 let token_id = token_info.token_id;
                 self.insert_token(
@@ -784,6 +813,32 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Once-per-identity rules are refused until the network accepts them;
+    /// version 0 rules always pass.
+    #[test]
+    fn once_per_identity_rules_need_a_network_that_accepts_them() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let TokenDistributionRules::V0(v0) =
+            TokenConfigurationV0::default_most_restrictive().distribution_rules
+        else {
+            panic!("the default rules are version 0");
+        };
+        let v1 =
+            crate::model::token::distribution_rules_with_once_per_identity(v0.clone(), Some(5));
+        let v0 = TokenDistributionRules::V0(v0);
+
+        ctx.set_platform_protocol_version(13);
+        assert!(ctx.ensure_distribution_rules_supported(&v0).is_ok());
+        assert!(matches!(
+            ctx.ensure_distribution_rules_supported(&v1),
+            Err(TaskError::TokenOncePerIdentityNotSupported)
+        ));
+        ctx.set_platform_protocol_version(14);
+        assert!(ctx.ensure_distribution_rules_supported(&v1).is_ok());
+    }
 
     #[tokio::test]
     async fn token_lookup_timeout_is_typed_and_actionable() {

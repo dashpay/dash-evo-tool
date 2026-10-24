@@ -234,3 +234,61 @@ async fn a_document_is_created_in_the_protocol_13_encoding() {
         "protocol 13 cannot decode {base:?}"
     );
 }
+
+/// A token contract with a once-per-identity distribution, encoded at
+/// protocol 13, either fails to encode or keeps the distribution; it is never
+/// silently rewritten to version 0 rules without it.
+#[test]
+fn once_per_identity_rules_encoded_at_protocol_13_are_never_dropped() {
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+    use dash_sdk::dpp::serialization::{
+        PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
+        PlatformSerializableWithPlatformVersion,
+    };
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let mut config = TokenConfigurationV0::default_most_restrictive();
+    let TokenDistributionRules::V0(rules) = config.distribution_rules.clone() else {
+        panic!("the default rules are version 0");
+    };
+    config.distribution_rules =
+        crate::model::token::distribution_rules_with_once_per_identity(rules, Some(25));
+    let contract = dash_sdk::platform::DataContract::V1(DataContractV1 {
+        id: Identifier::from([9; 32]),
+        version: 1,
+        owner_id: Identifier::from([4; 32]),
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(platform_version).expect("config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::from([(0, TokenConfiguration::V0(config))]),
+        keywords: vec![],
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    });
+
+    let Ok(bytes) = contract.serialize_to_bytes_with_platform_version(platform_version) else {
+        return; // Refused: nothing reaches the network.
+    };
+    let decoded = dash_sdk::platform::DataContract::versioned_deserialize_untrusted(
+        &bytes,
+        false,
+        PlatformVersion::latest(),
+    )
+    .expect("decodes");
+    let token = decoded.tokens().get(&0).expect("the token");
+    assert_eq!(
+        crate::model::token::once_per_identity_amount(token),
+        Some(25),
+        "the once-per-identity distribution was dropped"
+    );
+}

@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -11,6 +12,11 @@ use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INI
 /// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+/// Version 1 token distribution rules (the once-per-identity distribution)
+/// are accepted from protocol version 14. Upstream names no feature constant
+/// for it, so the protocol version it shipped in is used directly.
+const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -27,6 +33,9 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform accepts tokens with a once-per-identity
+    /// distribution.
+    OncePerIdentityDistribution,
 }
 
 /// The connected network's protocol version, when this build defines it.
@@ -55,6 +64,10 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
+            Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
+                ctx,
+                ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
+            ),
         }
     }
 }
@@ -150,6 +163,10 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Creating a token with a once-per-identity distribution. Offered only
+    /// where the connected network accepts it; claiming from an existing one
+    /// needs no gate, since such a token can only exist on such a network.
+    TokenOncePerIdentityDistribution,
 }
 
 impl FeatureGate {
@@ -166,6 +183,9 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::TokenOncePerIdentityDistribution => {
+                &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
         }
     }
 
@@ -435,6 +455,25 @@ mod tests {
         }
     }
 
+    /// Protocol version 14 features stay closed below version 14 and before
+    /// the network's version is known, whatever the role.
+    #[test]
+    fn protocol_v14_gates_follow_the_connected_version() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            // One entry per protocol version 14 gate this build offers.
+            let gates = [FeatureGate::TokenOncePerIdentityDistribution];
+            for gate in gates {
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                ctx.set_platform_protocol_version(13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                ctx.set_platform_protocol_version(14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+                ctx.set_platform_protocol_version(0);
+            }
+        }
+    }
+
     /// A protocol version this build does not define closes every protocol
     /// capability: nothing here knows that version's rules. The newest
     /// version this build defines keeps them open.
@@ -442,7 +481,10 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol];
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::OncePerIdentityDistribution,
+        ];
 
         ctx.set_platform_protocol_version(LATEST_VERSION);
         for capability in capabilities {

@@ -2502,7 +2502,7 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Signing key refusals (protocol version 14)
+    // Signing key refusals and key limits (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// The signing key's expiry time has passed.
     #[error(
@@ -2556,6 +2556,132 @@ pub enum TaskError {
         "The key used to sign this action is limited to one contract, so it cannot sign this kind of action. Choose a key that is not limited to a contract, then try again."
     )]
     SigningKeyContractBoundForNonBatch {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Key limits were requested that do not pass validation.
+    #[error(transparent)]
+    InvalidKeyLimits {
+        #[from]
+        source: crate::model::identity_key_limits::KeyLimitsError,
+    },
+
+    /// An identity this device holds is not on the network (e.g. it was
+    /// never registered, or the network was reset).
+    #[error(
+        "This identity could not be found on the network. Refresh the identity, then try again."
+    )]
+    IdentityMissingOnNetwork { identity_id: Identifier },
+
+    /// The key to change is not among the identity's keys on the network.
+    #[error(
+        "This key is no longer part of the identity on the network. Refresh the identity to see its current keys."
+    )]
+    IdentityKeyNotFound { key_id: KeyID },
+
+    /// Key limits were requested on a network whose protocol version does not
+    /// support them yet.
+    #[error(
+        "This network does not support spending limits or expiry for keys yet. Add the key without limits, or try again after the network upgrades."
+    )]
+    KeyLimitsNotSupported,
+
+    /// Remaining key budgets were requested from a network whose protocol
+    /// version does not track them yet.
+    #[error(
+        "This network does not track key spending limits yet. Try again after the network upgrades."
+    )]
+    KeyRemainingBudgetsNotSupported,
+
+    /// No key this device holds may sign a key limits update: that takes a
+    /// MASTER key, or a CRITICAL authentication key with no limits and no
+    /// contract bounds.
+    #[error(
+        "Changing key limits needs this identity's master key, or a critical key without limits. Import one of them on this device, then try again."
+    )]
+    NoKeyLimitsSigningKey,
+
+    /// A key limits update was accepted on the network, but storing the
+    /// updated key on this device afterward failed. The broadcast and the
+    /// local write cannot be atomic; this reports the change as made rather
+    /// than as failed, so the user does not retry a change already applied.
+    #[error(
+        "The key's new limits are set on the network, but they could not be saved on this device. Refresh the identity to load them."
+    )]
+    KeyLimitsRaisedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A key limits update was accepted on the network and the updated key
+    /// is stored on this device, but the identity's balance after the fee
+    /// could not be read. The stored balance is the one before the update.
+    /// `source` is `None` when Platform reported no balance for the identity.
+    #[error(
+        "The key's new limits are set, but the identity's new balance could not be read. Refresh the identity to see its balance."
+    )]
+    KeyLimitsRaisedButBalanceNotRefreshed {
+        #[source]
+        source: Option<Box<TaskError>>,
+    },
+
+    /// Platform refused a key whose expiry is not in the future.
+    #[error(
+        "The key's expiry is already in the past, so the network refused the change. Choose a later expiry, then try again."
+    )]
+    KeyExpiryInPast {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused a limits update that does not raise the stored limit,
+    /// typically because the key changed since it was loaded.
+    #[error(
+        "The key's limits have changed since they were loaded, so the new value would not raise them. Refresh the identity, then try again."
+    )]
+    KeyLimitNotRaised {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused raising a limit the key does not have.
+    #[error(
+        "This key does not have that limit, and a limit can only be raised, not added. Refresh the identity to see the key's current limits."
+    )]
+    KeyLimitNotSet {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A key with limits was used to sign a key limits update.
+    #[error(
+        "A key with its own spending limit or expiry cannot change key limits. Use the identity's master key instead, then try again."
+    )]
+    KeyLimitsSignerHasLimits {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused limits on a key that may not carry them, a zero
+    /// budget, or a limits update that changes nothing.
+    #[error(
+        "The network refused these key limits. Only authentication keys below the master level can have them, and a spending limit must be above zero. Adjust the limits, then try again."
+    )]
+    KeyLimitsRefused {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The key to change is disabled.
+    #[error("This key is disabled, so it cannot be used or changed. Choose a different key.")]
+    IdentityKeyDisabled {
         key_id: KeyID,
         #[source]
         source_error: Box<SdkError>,
@@ -4421,6 +4547,80 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyAlreadyExpiredError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyExpiryInPast {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyLimitNotRaisedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitNotRaised {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::IdentityPublicKeyLimitNotSetError(
+                        e,
+                    )) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitNotSet {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyWithLimitsCannotUpdateKeyLimitsError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::KeyLimitsSignerHasLimits {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::IdentityPublicKeyLimitsNotAllowedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::BasicError(
+                        BasicError::InvalidIdentityPublicKeyBudgetError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::BasicError(BasicError::IdentityKeyLimitsUpdateEmptyError(
+                        e,
+                    )) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
+                            key_id,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::StateError(StateError::IdentityPublicKeyIsDisabledError(e)) => {
+                        let key_id = e.public_key_index();
+                        Some(Box::new(move |source_error| {
+                            TaskError::IdentityKeyDisabled {
+                                key_id,
+                                source_error,
+                            }
                         }))
                     }
                     ConsensusError::SignatureError(SignatureError::PublicKeyExpiredError(e)) => {
@@ -6960,12 +7160,18 @@ mod tests {
         })
     }
 
-    /// The protocol-version-14 refusals of signing keys and of contract and
-    /// document authoring map to their own variants, keep the SDK error as
-    /// their source, and read as complete sentences free of protocol jargon.
+    /// The protocol-version-14 refusals of signing keys, key limits and
+    /// contract and document authoring map to their own variants, keep the SDK
+    /// error as their source, and read as complete sentences free of protocol
+    /// jargon.
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::basic::identity::{
+            IdentityKeyLimitsUpdateEmptyError, IdentityPublicKeyLimitsNotAllowedError,
+            InvalidIdentityPublicKeyBudgetError,
+        };
+        use dash_sdk::dpp::consensus::signature::PublicKeyWithLimitsCannotUpdateKeyLimitsError;
         use dash_sdk::dpp::consensus::signature::{
             ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
             PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
@@ -6974,7 +7180,14 @@ mod tests {
             document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_expired_error::IdentityPublicKeyAlreadyExpiredError;
         use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_is_disabled_error::IdentityPublicKeyIsDisabledError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_raised_error::IdentityPublicKeyLimitNotRaisedError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_set_error::{
+            IdentityPublicKeyLimitNotSetError, KeyLimit,
+        };
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         type Expectation = fn(&TaskError) -> bool;
@@ -7042,7 +7255,44 @@ mod tests {
             ),
         ];
 
-        for (cause, expected) in cases {
+        let key_limit_cases: Vec<(ConsensusError, Expectation)> = vec![
+            (
+                IdentityPublicKeyAlreadyExpiredError::new(8, 1, 2).into(),
+                |e| matches!(e, TaskError::KeyExpiryInPast { key_id: 8, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitNotRaisedError::new(8, KeyLimit::Budget, 2, 1).into(),
+                |e| matches!(e, TaskError::KeyLimitNotRaised { key_id: 8, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitNotSetError::new(8, KeyLimit::Expiry).into(),
+                |e| matches!(e, TaskError::KeyLimitNotSet { key_id: 8, .. }),
+            ),
+            (
+                PublicKeyWithLimitsCannotUpdateKeyLimitsError::new(9).into(),
+                |e| matches!(e, TaskError::KeyLimitsSignerHasLimits { key_id: 9, .. }),
+            ),
+            (
+                IdentityPublicKeyLimitsNotAllowedError::new(
+                    8,
+                    Purpose::TRANSFER,
+                    SecurityLevel::CRITICAL,
+                )
+                .into(),
+                |e| matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. }),
+            ),
+            (InvalidIdentityPublicKeyBudgetError::new(8).into(), |e| {
+                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
+            }),
+            (IdentityKeyLimitsUpdateEmptyError::new(8).into(), |e| {
+                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
+            }),
+            (IdentityPublicKeyIsDisabledError::new(8).into(), |e| {
+                matches!(e, TaskError::IdentityKeyDisabled { key_id: 8, .. })
+            }),
+        ];
+
+        for (cause, expected) in cases.into_iter().chain(key_limit_cases) {
             let debug = format!("{cause:?}");
             let error = TaskError::from(broadcast_rejection(cause));
             assert!(expected(&error), "{debug} mapped to {error:?}");

@@ -5511,6 +5511,12 @@ mod tests {
                 max_credits: 0,
             })
         );
+        // Auto reads the same limits: a settled zero, not a pending quote.
+        let source = screen.selected_source.clone().expect("source");
+        let destination = screen.validated_destination.clone();
+        let limits = screen.amount_limits_for(&source, destination.as_ref());
+        assert_eq!(limits.max_credits, None);
+        assert_eq!(limits.quote, resolve::QuoteState::Ready);
 
         let mut harness = Harness::builder().build_ui_state(
             |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),

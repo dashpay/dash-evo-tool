@@ -28,7 +28,8 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns::{
     ContestDurations, DpnsNameValidationResult, contest_durations, is_contested_label,
-    normalize_dpns_label, username_contest_max_contenders, validate_dpns_name,
+    normalize_dpns_label, username_contest_fund_depends_on_contenders,
+    username_contest_max_contenders, validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
     ContenderTally, ContestSnapshot, ContestWinner, RequestPhase, UsernameAvailability,
@@ -140,6 +141,11 @@ impl AppContext {
     ) -> Result<Credits, TaskError> {
         let vote_poll = dpns_vote_poll(&self.dpns_contract(), &normalize_dpns_label(label))?;
         let max_contenders = username_contest_max_contenders(sdk.version());
+        // Nothing to count where the vote neither caps its requests nor
+        // raises its fund with them.
+        if max_contenders.is_none() && !username_contest_fund_depends_on_contenders(sdk.version()) {
+            return Ok(vote_poll.required_vote_resolution_fund_to_join(0, sdk.version()));
+        }
         // Counting stops at the limit table's cap even where the network
         // never enforces it: no count past it changes the fund.
         let count_up_to = sdk.version().system_limits.max_contenders_per_contest;
@@ -578,6 +584,32 @@ mod tests {
             .await
             .unwrap();
         sdk
+    }
+
+    /// Before protocol 14 a username vote neither caps its requests nor
+    /// raises its fund with them, so the fee to join is the base fund and no
+    /// request is counted: a failed count must not fail the quote.
+    #[tokio::test]
+    async fn fixed_fund_protocol_quotes_the_base_fund_without_counting() {
+        use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::required_vote_resolution_fund;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let pv13 = dash_sdk::dpp::version::PlatformVersion::get(13).expect("PV13");
+        // No contender read is mocked: counting would fail the quote.
+        let sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(pv13)
+            .build()
+            .expect("mock sdk");
+
+        let fund = ctx
+            .username_contest_fund_to_join(&sdk, "alice")
+            .await
+            .expect("the base fund needs no count");
+
+        assert_eq!(
+            fund,
+            required_vote_resolution_fund(&ctx.dpns_contract().id(), "domain", pv13)
+        );
     }
 
     #[tokio::test]

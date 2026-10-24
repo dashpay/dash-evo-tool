@@ -91,6 +91,65 @@ pub async fn create_or_update_contact_info(
     })
 }
 
+/// Read the details shown for `contact_id`, the ones a contact details
+/// editor starts from.
+///
+/// # Errors
+///
+/// As for [`shown_details_for`].
+pub async fn load_contact_details(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    contact_id: Identifier,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let backend = app_context.wallet_backend()?;
+    let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
+    Ok(BackendTaskSuccessResult::DashPayContactDetails {
+        identity: identity.identity.id(),
+        contact_id,
+        details,
+    })
+}
+
+/// The details shown for `contact_id`, with the precedence of
+/// [`super::contacts::shown_contact_details`]: published, then
+/// platform-wallet's on this device, then a legacy-key document.
+///
+/// # Errors
+///
+/// Fails when the details sync, the document fetch, or reading the published
+/// or legacy documents fails (a cancelled password prompt included), rather
+/// than guessing: a save keeps every field it does not replace from this.
+async fn shown_details_for(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    backend: &WalletBackend,
+    identity: &QualifiedIdentity,
+    contact_id: &Identifier,
+) -> Result<ContactDetails, TaskError> {
+    let owner = identity.identity.id();
+    backend.dashpay_sync_contact_infos(&owner).await?;
+    let local = backend
+        .dashpay_contact_details(&owner)
+        .await
+        .remove(contact_id);
+    let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
+    let published = stored.published?.remove(contact_id);
+    let legacy = stored.legacy?;
+    let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
+        || super::contacts::holds_details(published.as_ref(), local.as_ref());
+    let legacy = legacy
+        .get(contact_id)
+        .map(super::contacts::ContactData::details);
+    Ok(super::contacts::shown_contact_details(
+        published,
+        local,
+        synced_before,
+        legacy,
+    ))
+}
+
 /// The reads and writes one contact details save performs, behind a trait so
 /// their order and failures can be driven in tests.
 trait SaveOps {
@@ -154,31 +213,14 @@ struct PlatformSaveOps<'a> {
 
 impl SaveOps for PlatformSaveOps<'_> {
     async fn current(&self) -> Result<ContactDetails, TaskError> {
-        let owner = self.identity.identity.id();
-        self.backend.dashpay_sync_contact_infos(&owner).await?;
-        let local = self
-            .backend
-            .dashpay_contact_details(&owner)
-            .await
-            .remove(&self.contact_id);
-        let stored =
-            super::contacts::stored_contact_details(self.app_context, self.sdk, self.identity)
-                .await?;
-        let published = stored.published?.remove(&self.contact_id);
-        let legacy = stored.legacy?;
-        let synced_before = self
-            .backend
-            .dashpay_details_synced(&owner, &self.contact_id)?
-            || super::contacts::holds_details(published.as_ref(), local.as_ref());
-        let legacy = legacy
-            .get(&self.contact_id)
-            .map(super::contacts::ContactData::details);
-        Ok(super::contacts::shown_contact_details(
-            published,
-            local,
-            synced_before,
-            legacy,
-        ))
+        shown_details_for(
+            self.app_context,
+            self.sdk,
+            &self.backend,
+            self.identity,
+            &self.contact_id,
+        )
+        .await
     }
 
     async fn publish(

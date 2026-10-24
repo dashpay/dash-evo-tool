@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -67,6 +67,12 @@ pub struct ContactDetailsScreen {
     /// fields the user changed.
     edit_opened: ContactDetails,
     loading: bool,
+    /// The details read is running; editing waits for it so the editor opens
+    /// from the published details rather than this device's copy.
+    details_loading: bool,
+    /// `contact_info`'s nickname, note and hidden flag came from the details
+    /// read, so a reread of this device's copy keeps them.
+    details_read: bool,
     show_info_popup: bool,
     needs_backend_fetch: bool,
     pending_update: Option<ContactInfoUpdate>,
@@ -90,6 +96,8 @@ impl ContactDetailsScreen {
             edit_hidden: false,
             edit_opened: ContactDetails::default(),
             loading: false,
+            details_loading: false,
+            details_read: false,
             show_info_popup: false,
             needs_backend_fetch: true,
             pending_update: None,
@@ -98,9 +106,11 @@ impl ContactDetailsScreen {
         screen
     }
 
-    /// Initialise `contact_info` from local-only data (private notes / hidden flag).
-    /// Public profile fields (username, display_name, avatar, bio) are populated
-    /// asynchronously by `FetchContactProfile` — see `display_task_result`.
+    /// Initialise `contact_info` from this device's copy of the nickname, note
+    /// and hidden flag, until `LoadContactDetails` returns the details shown
+    /// everywhere else. Public profile fields (username, display_name, avatar,
+    /// bio) are populated asynchronously by `FetchContactProfile` — see
+    /// `display_task_result`.
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
 
@@ -126,6 +136,15 @@ impl ContactDetailsScreen {
             Some(nickname)
         };
         let note = if note.is_empty() { None } else { Some(note) };
+        // Details read from the backend outrank this device's copy.
+        let (nickname, note, is_hidden) = match self.contact_info.as_ref() {
+            Some(existing) if self.details_read => (
+                existing.nickname.clone(),
+                existing.note.clone(),
+                existing.is_hidden,
+            ),
+            _ => (nickname, note, is_hidden),
+        };
 
         // Preserve any public profile fields already in `contact_info`; otherwise
         // start empty and let the async fetch fill them in.
@@ -154,19 +173,32 @@ impl ContactDetailsScreen {
         });
     }
 
-    /// Trigger a backend fetch to refresh contact profile data from Platform.
+    /// Trigger backend reads of the contact's public profile and of the
+    /// details shown for it (published first; see `LoadContactDetails`).
     fn trigger_backend_fetch(&mut self) -> AppAction {
         self.loading = true;
+        self.details_loading = true;
 
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::FetchContactProfile {
-                identity: self.identity.clone(),
-                contact_id: self.contact_id,
-            },
-        )))
+        let task = |task| BackendTask::DashPayTask(Box::new(task));
+        AppAction::BackendTasks(
+            vec![
+                task(DashPayTask::FetchContactProfile {
+                    identity: self.identity.clone(),
+                    contact_id: self.contact_id,
+                }),
+                task(DashPayTask::LoadContactDetails {
+                    identity: self.identity.clone(),
+                    contact_id: self.contact_id,
+                }),
+            ],
+            BackendTasksExecutionMode::Concurrent,
+        )
     }
 
     fn start_editing(&mut self) {
+        if self.details_loading {
+            return;
+        }
         if let Some(info) = &self.contact_info {
             self.edit_nickname = info.nickname.clone().unwrap_or_default();
             self.edit_note = info.note.clone().unwrap_or_default();
@@ -366,7 +398,10 @@ impl ContactDetailsScreen {
                                 if ui.button("Save").clicked() {
                                     action = self.save_contact_info();
                                 }
-                            } else if ui.button("Edit").clicked() {
+                            } else if ui
+                                .add_enabled(!self.details_loading, egui::Button::new("Edit"))
+                                .clicked()
+                            {
                                 self.start_editing();
                             }
                         });
@@ -597,13 +632,31 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // A failed read leaves this device's copy in place; a save from it
+        // still replaces only the fields the user edits.
         self.loading = false;
+        self.details_loading = false;
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.loading = false;
 
         match result {
+            BackendTaskSuccessResult::DashPayContactDetails {
+                identity,
+                contact_id,
+                details,
+            } => {
+                if identity == self.identity.identity.id() && contact_id == self.contact_id {
+                    self.details_loading = false;
+                    self.details_read = true;
+                    if let Some(info) = &mut self.contact_info {
+                        info.nickname = details.nickname;
+                        info.note = details.note;
+                        info.is_hidden = details.hidden;
+                    }
+                }
+            }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Update contact info with fresh profile data from Platform
                 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -768,6 +821,54 @@ mod tests {
                 display_hidden: ContactInfoField::Preserve,
             }
         );
+    }
+
+    /// The editor opens from the details shown for the contact everywhere
+    /// else (published first), read by the backend when the screen opens,
+    /// not from this device's older copy. It stays closed until that read
+    /// returns.
+    #[test]
+    fn the_editor_opens_from_the_published_details() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let owner = Identifier::from([1; 32]);
+        let contact = Identifier::from([2; 32]);
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+
+        let AppAction::BackendTasks(tasks, _) = screen.trigger_backend_fetch() else {
+            panic!("expected the profile and details reads");
+        };
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::DashPayTask(task) if matches!(
+                task.as_ref(),
+                DashPayTask::LoadContactDetails { contact_id, .. } if *contact_id == contact
+            )
+        )));
+        screen.start_editing();
+        assert!(
+            !screen.editing_info,
+            "the editor waits for the details read"
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails {
+                nickname: Some("Bao".into()),
+                note: Some("published".into()),
+                hidden: true,
+            },
+        });
+        // A refresh rereads this device's copy, which must not replace them.
+        screen.refresh();
+        screen.start_editing();
+
+        assert!(screen.editing_info);
+        assert_eq!(screen.edit_nickname, "Bao");
+        assert_eq!(screen.edit_note, "published");
+        assert!(screen.edit_hidden);
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no

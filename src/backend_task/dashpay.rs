@@ -67,6 +67,12 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     },
+    /// Read the nickname, note and hidden flag shown for one contact, with
+    /// the same precedence as the contacts list (published first).
+    LoadContactDetails {
+        identity: QualifiedIdentity,
+        contact_id: Identifier,
+    },
     /// Fetch an avatar image for a URL, consulting and populating the DET avatar
     /// disk cache. Off the egui frame loop; the result flows back to the
     /// screen's [`AvatarCache`](crate::ui::state::avatar_cache::AvatarCache).
@@ -179,6 +185,10 @@ impl AppContext {
                 identity,
                 contact_id,
             } => Ok(profile::fetch_contact_profile(self, sdk, identity, contact_id).await?),
+            DashPayTask::LoadContactDetails {
+                identity,
+                contact_id,
+            } => Ok(contact_info::load_contact_details(self, sdk, identity, contact_id).await?),
             DashPayTask::FetchAvatar { url } => {
                 let bytes = avatar_processing::fetch_avatar_cached(self, &url).await;
                 Ok(BackendTaskSuccessResult::DashPayAvatar { url, bytes })

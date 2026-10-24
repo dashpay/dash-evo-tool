@@ -903,6 +903,12 @@ pub enum BackendTaskSuccessResult {
         request_id: Identifier,
         contact_id: Identifier,
     },
+    /// The details shown for one contact; see `DashPayTask::LoadContactDetails`.
+    DashPayContactDetails {
+        identity: Identifier,
+        contact_id: Identifier,
+        details: crate::model::dashpay::ContactDetails,
+    },
     DashPayContactInfoUpdated {
         /// Identity that owns the encrypted `contactInfo` document.
         identity: Identifier,

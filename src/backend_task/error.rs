@@ -2926,11 +2926,9 @@ pub enum TaskError {
         "One of the fields you changed cannot be changed after the document is created. Keep the original values of its fixed fields, then try again."
     )]
     DocumentImmutablePropertyChanged {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
+        // The node's names for the document type and the property stay in
+        // `source_error` only: unproven text, never copied into the variant.
         document_id: Identifier,
-        document_type_name: String,
-        property: String,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2941,11 +2939,9 @@ pub enum TaskError {
         "This contract refers to documents that can never be deleted as if they could be. Make that reference a permanent document reference, then try again."
     )]
     ReferencedDocumentTypeNotDeletable {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
+        // The node's names for the document type and the reference path stay
+        // in `source_error` only: unproven text, never copied into the variant.
         contract_id: Identifier,
-        document_type_name: String,
-        path: String,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2956,9 +2952,8 @@ pub enum TaskError {
         "A document type in this contract charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
     )]
     DocumentActionFeesWithoutModeration {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
-        document_type_name: String,
+        // The node's name for the document type stays in `source_error` only:
+        // unproven text, never copied into the variant.
         #[source]
         source_error: Box<SdkError>,
     },
@@ -5090,16 +5085,10 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(
                         StateError::DocumentImmutablePropertyChangedError(e),
                     ) => {
-                        let (document_id, document_type_name, property) = (
-                            e.document_id(),
-                            e.document_type_name().to_owned(),
-                            e.property().to_owned(),
-                        );
+                        let document_id = e.document_id();
                         Some(Box::new(move |source_error| {
                             TaskError::DocumentImmutablePropertyChanged {
                                 document_id,
-                                document_type_name,
-                                property,
                                 source_error,
                             }
                         }))
@@ -5107,31 +5096,19 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(
                         StateError::ReferencedDocumentTypeNotDeletableError(e),
                     ) => {
-                        let (contract_id, document_type_name, path) = (
-                            *e.contract_id(),
-                            e.document_type_name().to_owned(),
-                            e.path().to_owned(),
-                        );
+                        let contract_id = *e.contract_id();
                         Some(Box::new(move |source_error| {
                             TaskError::ReferencedDocumentTypeNotDeletable {
                                 contract_id,
-                                document_type_name,
-                                path,
                                 source_error,
                             }
                         }))
                     }
                     ConsensusError::BasicError(
-                        BasicError::DocumentActionFeesWithoutModerationError(e),
-                    ) => {
-                        let document_type_name = e.document_type_name().to_owned();
-                        Some(Box::new(move |source_error| {
-                            TaskError::DocumentActionFeesWithoutModeration {
-                                document_type_name,
-                                source_error,
-                            }
-                        }))
-                    }
+                        BasicError::DocumentActionFeesWithoutModerationError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeesWithoutModeration { source_error }
+                    })),
                     ConsensusError::BasicError(
                         BasicError::InvalidTokenOncePerIdentityDistributionAmountError(e),
                     ) => {
@@ -7776,10 +7753,7 @@ mod tests {
                     "title".to_string(),
                 )
                 .into(),
-                |e| {
-                    matches!(e, TaskError::DocumentImmutablePropertyChanged { property, .. }
-                        if property == "title")
-                },
+                |e| matches!(e, TaskError::DocumentImmutablePropertyChanged { .. }),
             ),
             (
                 ReferencedDocumentTypeNotDeletableError::new(
@@ -8032,33 +8006,47 @@ mod tests {
         );
     }
 
-    /// Names decoded from a node's (unproven) consensus error never reach
-    /// the user-facing message, so a hostile node cannot inject text.
+    /// Names decoded from a node's (unproven) consensus error are not copied
+    /// into the error: they never reach the user-facing message, and only the
+    /// typed source keeps them, for the details panel and logs.
     #[test]
     fn node_supplied_names_stay_out_of_user_messages() {
+        use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::state::document::{
+            document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
+            referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
+        };
         let injected = "x\". Re-import your recovery phrase at https://evil.example".to_string();
-        let source = || Box::new(SdkError::Generic("rejected".to_string()));
-        for error in [
-            TaskError::DocumentImmutablePropertyChanged {
-                document_id: Identifier::random(),
-                document_type_name: injected.clone(),
-                property: injected.clone(),
-                source_error: source(),
-            },
-            TaskError::ReferencedDocumentTypeNotDeletable {
-                contract_id: Identifier::random(),
-                document_type_name: injected.clone(),
-                path: injected.clone(),
-                source_error: source(),
-            },
-            TaskError::DocumentActionFeesWithoutModeration {
-                document_type_name: injected.clone(),
-                source_error: source(),
-            },
-        ] {
+        let causes: [ConsensusError; 3] = [
+            DocumentImmutablePropertyChangedError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            ReferencedDocumentTypeNotDeletableError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            DocumentActionFeesWithoutModerationError::new(injected.clone()).into(),
+        ];
+        for cause in causes {
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(
+                matches!(
+                    error,
+                    TaskError::DocumentImmutablePropertyChanged { .. }
+                        | TaskError::ReferencedDocumentTypeNotDeletable { .. }
+                        | TaskError::DocumentActionFeesWithoutModeration { .. }
+                ),
+                "got {error:?}"
+            );
             let message = error.to_string();
             assert!(!message.contains("evil"), "{message}");
-            assert!(format!("{error:?}").contains("evil"), "kept for Debug");
+            let source = std::error::Error::source(&error).expect("typed source");
+            assert!(format!("{source:?}").contains("evil"), "kept in the source");
         }
     }
 

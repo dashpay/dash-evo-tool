@@ -205,7 +205,9 @@ mod tests {
     #[test]
     fn a_quote_is_used_only_for_the_revision_it_was_requested_for() {
         let mut cache = SpendLimitCache::default();
-        let kind = SpendLimitKind::CoreSend;
+        let kind = SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
         let id = request_id(cache.ensure_requested(SEED, kind, 1));
         assert_eq!(
             cache.get(&SEED, kind, 1),
@@ -247,7 +249,9 @@ mod tests {
     #[test]
     fn a_failure_waits_for_new_wallet_state_or_an_invalidation() {
         let mut cache = SpendLimitCache::default();
-        let kind = SpendLimitKind::CoreSend;
+        let kind = SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
         let id = request_id(cache.ensure_requested(SEED, kind, 1));
         cache.mark_failed(SEED, kind, id);
 
@@ -263,14 +267,36 @@ mod tests {
     #[test]
     fn kinds_are_cached_independently() {
         let mut cache = SpendLimitCache::default();
-        let core = request_id(cache.ensure_requested(SEED, SpendLimitKind::CoreSend, 1));
+        let core = request_id(cache.ensure_requested(
+            SEED,
+            SpendLimitKind::CoreSend {
+                destination: Default::default(),
+            },
+            1,
+        ));
         assert!(
             cache
                 .ensure_requested(SEED, SpendLimitKind::ShieldFromPlatform, 1)
                 .is_some()
         );
-        cache.store(SEED, SpendLimitKind::CoreSend, core, 9);
-        assert_eq!(cache.get(&SEED, SpendLimitKind::CoreSend, 1), Some(9));
+        cache.store(
+            SEED,
+            SpendLimitKind::CoreSend {
+                destination: Default::default(),
+            },
+            core,
+            9,
+        );
+        assert_eq!(
+            cache.get(
+                &SEED,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
+                1
+            ),
+            Some(9)
+        );
         assert_eq!(
             cache.get(&SEED, SpendLimitKind::ShieldFromPlatform, 1),
             None

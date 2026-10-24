@@ -10,7 +10,7 @@
 //! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
-use crate::model::spend_limit::SpendLimitKind;
+use crate::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
@@ -674,7 +674,7 @@ impl WalletBackend {
             source: Arc::new(source),
         };
         match kind {
-            SpendLimitKind::CoreSend => {
+            SpendLimitKind::CoreSend { destination } => {
                 // The UI keys this quote on the revision it read before
                 // dispatch, so an operation opening after this check leaves
                 // the result stale rather than current.
@@ -688,7 +688,7 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(quote_failed)?;
-                self.core_send_max_within_reservations(&wallet, upper_duffs)
+                self.core_send_max_within_reservations(&wallet, upper_duffs, destination)
                     .await
                     .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
             }
@@ -707,9 +707,12 @@ impl WalletBackend {
         }
     }
 
-    /// Narrow upstream's Core-send quote to what the pooled build accepts now.
+    /// Narrow upstream's Core-send quote to what the pooled build accepts now
+    /// for a payment to a `destination` script.
     ///
-    /// `pooled_max_sendable` counts inputs another in-flight build has
+    /// `pooled_max_sendable` prices a P2PKH output, while the build prices
+    /// the real one: a smaller script raises the ceiling by the fee its saved
+    /// bytes cost. It also counts inputs another in-flight build has
     /// reserved, which can only make the real ceiling lower. The quote is
     /// confirmed with the same reservation-aware dry run a send runs; when a
     /// reservation bites, the largest amount that builds is searched for
@@ -721,12 +724,15 @@ impl WalletBackend {
         &self,
         wallet: &platform_wallet::PlatformWallet,
         upper_duffs: u64,
+        destination: CoreDestinationScript,
     ) -> Result<u64, TaskError> {
         if upper_duffs == 0 {
             return Ok(0);
         }
         let wallet_id = wallet.wallet_id();
         let network = self.inner.network;
+        let recipient = core_quote_recipient(network, destination);
+        let upper_duffs = upper_duffs.saturating_add(fee_saved_against_p2pkh(network, &recipient));
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
         tokio::task::spawn_blocking(move || {
             let deadline = ProbeDeadline::after(CORE_SEND_MAX_PROBE_LOCK_HOLD_DEADLINE);
@@ -736,7 +742,7 @@ impl WalletBackend {
             Ok(largest_core_payment_at_most(
                 key_wallet,
                 &info.core_wallet,
-                network,
+                &recipient,
                 upper_duffs,
                 &deadline,
             ))
@@ -1214,18 +1220,10 @@ fn dry_run_core_payment(
 fn largest_core_payment_at_most(
     wallet: &Wallet,
     info: &ManagedWalletInfo,
-    network: dash_sdk::dpp::dashcore::Network,
+    recipient: &dash_sdk::dpp::dashcore::Address,
     upper_duffs: u64,
     deadline: &ProbeDeadline,
 ) -> u64 {
-    use dash_sdk::dpp::dashcore::hashes::Hash;
-    // Any P2PKH output prices the same: the size, not the payee, sets the fee.
-    let recipient = dash_sdk::dpp::dashcore::Address::new(
-        network,
-        dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
-            dash_sdk::dpp::dashcore::PubkeyHash::all_zeros(),
-        ),
-    );
     let builds =
         |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).is_ok();
     if builds(upper_duffs) {
@@ -1244,6 +1242,40 @@ fn largest_core_payment_at_most(
         }
     }
     low
+}
+
+/// A stand-in payee paid through a `destination` script: the output's size,
+/// not its payee, sets the fee.
+fn core_quote_recipient(
+    network: dash_sdk::dpp::dashcore::Network,
+    destination: CoreDestinationScript,
+) -> dash_sdk::dpp::dashcore::Address {
+    use dash_sdk::dpp::dashcore::address::Payload;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    let payload = match destination {
+        CoreDestinationScript::PubkeyHash => {
+            Payload::PubkeyHash(dash_sdk::dpp::dashcore::PubkeyHash::all_zeros())
+        }
+        CoreDestinationScript::ScriptHash => {
+            Payload::ScriptHash(dash_sdk::dpp::dashcore::ScriptHash::all_zeros())
+        }
+    };
+    dash_sdk::dpp::dashcore::Address::new(network, payload)
+}
+
+/// The fee a payment to `recipient` saves against the P2PKH output
+/// `pooled_max_sendable` prices, at the rate the send builds with.
+fn fee_saved_against_p2pkh(
+    network: dash_sdk::dpp::dashcore::Network,
+    recipient: &dash_sdk::dpp::dashcore::Address,
+) -> u64 {
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+    let p2pkh = core_quote_recipient(network, CoreDestinationScript::PubkeyHash);
+    let saved_bytes = p2pkh
+        .script_pubkey()
+        .len()
+        .saturating_sub(recipient.script_pubkey().len());
+    FeeRate::normal().calculate_fee(saved_bytes)
 }
 
 /// Classify a failed pooled payment build. A shortfall the dry run did not
@@ -2354,7 +2386,9 @@ mod tests {
             &[1_000_000],
         )
         .await;
-        let core_kind = crate::model::spend_limit::SpendLimitKind::CoreSend;
+        let core_kind = crate::model::spend_limit::SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
 
         let spend = backend.begin_core_spend(&seed_hash);
         let core = backend.spend_limit_credits(&seed_hash, core_kind).await;
@@ -2379,6 +2413,60 @@ mod tests {
             .await
             .expect("asset-lock Max after the operation");
         assert!(lock.amount_duffs > 0, "{}", lock.amount_duffs);
+    }
+
+    /// A P2SH output is two bytes smaller than a P2PKH one, so the payment
+    /// to a P2SH address can be larger by that much fee. Its Max is quoted
+    /// for that script and is exactly the largest amount the build accepts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_is_quoted_for_the_destination_script() {
+        use crate::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(
+            &platform_wallet,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            0x73,
+            &[1_000_000],
+        )
+        .await;
+        let quote = |destination| {
+            let backend = backend.clone();
+            async move {
+                backend
+                    .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend { destination })
+                    .await
+                    .expect("Core send maximum")
+                    / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF
+            }
+        };
+        let p2pkh_max = quote(CoreDestinationScript::PubkeyHash).await;
+        let p2sh_max = quote(CoreDestinationScript::ScriptHash).await;
+        assert!(p2sh_max > p2pkh_max, "{p2sh_max} <= {p2pkh_max}");
+
+        let p2sh = Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::ScriptHash(
+                dash_sdk::dpp::dashcore::ScriptHash::from_byte_array(rand::random()),
+            ),
+        );
+        backend
+            .ensure_core_payment_builds(&seed_hash, &[(p2sh.clone(), p2sh_max)])
+            .await
+            .expect("the P2SH Max must build");
+        let over = backend
+            .ensure_core_payment_builds(&seed_hash, &[(p2sh, p2sh_max + 1)])
+            .await;
+        assert!(
+            matches!(over, Err(TaskError::InsufficientFunds { .. })),
+            "one duff above the P2SH Max must be a shortfall: {over:?}"
+        );
     }
 
     /// An exact asset lock the wallet cannot fund is refused by the guard,
@@ -2602,7 +2690,12 @@ mod tests {
         .await;
 
         let max_credits = backend
-            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .spend_limit_credits(
+                &seed_hash,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
             .await
             .expect("Core send maximum");
         assert_eq!(max_credits % CREDITS_PER_DUFF, 0);
@@ -2666,7 +2759,12 @@ mod tests {
         }
 
         let max_duffs = backend
-            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .spend_limit_credits(
+                &seed_hash,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
             .await
             .expect("Core send maximum")
             / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -2739,7 +2837,12 @@ mod tests {
         )
         .await;
         let max_duffs = backend
-            .spend_limit_credits(&seed_hash, SpendLimitKind::CoreSend)
+            .spend_limit_credits(
+                &seed_hash,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
             .await
             .expect("Core send maximum")
             / CREDITS_PER_DUFF;

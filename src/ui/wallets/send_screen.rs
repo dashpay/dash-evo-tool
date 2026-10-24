@@ -900,11 +900,23 @@ impl WalletSendScreen {
             )),
             (SourceSelection::CoreWallet, AddressKind::Core) => Some((
                 seed_hash,
-                SpendLimitKind::CoreSend,
+                self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
             )),
             _ => None,
         }
+    }
+
+    /// Core send Max is quoted for the script the destination pays to; with
+    /// none chosen yet, for P2PKH, the larger output and so the safe bound.
+    fn core_send_limit_kind(&self) -> SpendLimitKind {
+        let destination = match &self.validated_destination {
+            Some(ValidatedAddress::Core(address)) => {
+                crate::model::spend_limit::CoreDestinationScript::of(address)
+            }
+            _ => Default::default(),
+        };
+        SpendLimitKind::CoreSend { destination }
     }
 
     /// Names the wallet's live Platform balances, not the ones captured in
@@ -3069,7 +3081,7 @@ impl WalletSendScreen {
                         // Core-to-Core "Max": the backend's quote of the largest
                         // payment the pooled build accepts, net of its fee.
                         // Nothing is offered until it arrives.
-                        match self.spend_limit(SpendLimitKind::CoreSend) {
+                        match self.spend_limit(self.core_send_limit_kind()) {
                             Some(0) => {
                                 max = None;
                                 Some(
@@ -6846,7 +6858,10 @@ mod tests {
             .expect("selected wallet seed hash");
 
         let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
-            kind: SpendLimitKind::CoreSend,
+            kind:
+                SpendLimitKind::CoreSend {
+                    destination: crate::model::spend_limit::CoreDestinationScript::PubkeyHash,
+                },
             request_id,
             ..
         })) = screen.request_spend_limit()
@@ -6856,7 +6871,9 @@ mod tests {
         assert!(
             screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
                 seed_hash,
-                kind: SpendLimitKind::CoreSend,
+                kind: SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
                 request_id,
                 max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
             })
@@ -6874,6 +6891,50 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// Core Max is quoted for the script the chosen destination pays to, and
+    /// a change of destination kind asks for that kind's own quote.
+    #[test]
+    fn core_send_max_is_requested_for_the_destination_script() {
+        use crate::model::spend_limit::CoreDestinationScript;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        let p2sh = Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::ScriptHash(
+                dash_sdk::dpp::dashcore::ScriptHash::from_byte_array([9; 20]),
+            ),
+        );
+        screen.validated_destination = Some(ValidatedAddress::Core(p2sh));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::ScriptHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2SH destination is quoted as P2SH"
+        );
+
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::PubkeyHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2PKH destination needs its own quote"
         );
     }
 

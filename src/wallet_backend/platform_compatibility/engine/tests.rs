@@ -1174,7 +1174,10 @@ fn platform_compatibility_accepts_core_rows_the_rescan_drops_or_strips() {
         1
     );
 
-    let (_dir, _, _, result) = upgrade_through_core_rescan("DELETE FROM core_utxos;");
+    // As the migration does, a mined transaction goes with the outputs it funded.
+    let (_dir, _, _, result) = upgrade_through_core_rescan(
+        "DELETE FROM core_utxos; DELETE FROM core_transactions WHERE height IS NOT NULL;",
+    );
     result.unwrap().unwrap();
 }
 
@@ -1187,6 +1190,29 @@ fn platform_compatibility_refuses_core_rows_the_rescan_alters_or_invents() {
         "UPDATE core_transactions SET height = NULL;",
     ] {
         let (dir, path, before, result) = upgrade_through_core_rescan(migrate);
+        assert!(
+            matches!(result, Err(UpgradeError::Verification)),
+            "{migrate}: {result:?}"
+        );
+        assert_eq!(snapshot(&path), before, "{migrate}");
+        assert!(backup_files(dir.path()).is_empty(), "{migrate}");
+    }
+}
+
+/// A kept mined transaction must carry exactly the accounting migration's
+/// stripping: no block hash or time, not finalized, no record. Any other value,
+/// including the untouched original, means a different migration or loader ran.
+#[test]
+fn platform_compatibility_refuses_mined_transactions_not_stripped_exactly() {
+    const STRIP: &str = "block_hash = NULL, block_time = NULL, finalized = 0, record_blob = NULL";
+    for migrate in [
+        "SELECT 1;".to_string(),
+        format!("UPDATE core_transactions SET {STRIP}, record_blob = X'ff';"),
+        format!("UPDATE core_transactions SET {STRIP}, finalized = 1;"),
+        format!("UPDATE core_transactions SET {STRIP}, block_time = 7;"),
+        format!("UPDATE core_transactions SET {STRIP}, block_hash = X'01';"),
+    ] {
+        let (dir, path, before, result) = upgrade_through_core_rescan(&migrate);
         assert!(
             matches!(result, Err(UpgradeError::Verification)),
             "{migrate}: {result:?}"

@@ -54,11 +54,12 @@ them), and rewinds each filter checkpoint to at most birth height minus one
 V021 (`asset_lock_conflict_evidence`) rebuilds `asset_locks` with a `conflicted`
 status and an `operation_revision` column, copying every row unchanged. The bridge
 recognizes the Core migration by name, checks the checkpoint rewind, accepts any
-Core rows that remain unchanged from the original (only stripped block details on
-mined transactions), and requires every non-Core row to be preserved. The original
-backup retains the pre-rescan Core data; the app rebuilds confirmed Core history
-through SPV. A different V019 migration history, such as the unmerged `c0425f7`
-accounting schema, is not recognized by this bridge.
+Core rows that remain unchanged from the original, except that each kept mined
+transaction must be stripped exactly as the migration does (no block hash, block
+time or record, not finalized), and requires every non-Core row to be preserved.
+The original backup retains the pre-rescan Core data; the app rebuilds confirmed
+Core history through SPV. A different V019 migration history, such as the unmerged
+`c0425f7` accounting schema, is not recognized by this bridge.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

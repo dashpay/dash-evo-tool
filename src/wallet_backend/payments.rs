@@ -2013,9 +2013,7 @@ mod tests {
     }
 
     /// A test backend with one registered, unfunded wallet.
-    async fn backend_with_registered_wallet(
-        seed_byte: u8,
-    ) -> (
+    async fn backend_with_registered_wallet() -> (
         tempfile::TempDir,
         std::sync::Arc<crate::context::AppContext>,
         std::sync::Arc<crate::wallet_backend::WalletBackend>,
@@ -2034,7 +2032,8 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
-        let seed = [seed_byte; 64];
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2104,7 +2103,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x61).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2141,7 +2140,7 @@ mod tests {
         const CAP: u64 = 100;
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x63).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2178,7 +2177,7 @@ mod tests {
         const UTXO_DUFFS: u64 = 100_000;
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x65).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2222,7 +2221,7 @@ mod tests {
         wallet: std::sync::OnceLock<std::sync::Arc<platform_wallet::PlatformWallet>>,
         account_type: dash_sdk::dpp::key_wallet::account::AccountType,
         spent: OutPoint,
-        password: &'static str,
+        password: String,
         asks: std::sync::atomic::AtomicUsize,
     }
 
@@ -2250,7 +2249,7 @@ mod tests {
             assert!(removed.is_some(), "the prompt must spend the large UTXO");
             Ok(
                 crate::wallet_backend::secret_prompt::SecretPromptReply::new(
-                    platform_wallet_storage::secrets::SecretString::new(self.password.to_string()),
+                    platform_wallet_storage::secrets::SecretString::new(self.password.clone()),
                     crate::wallet_backend::secret_prompt::RememberPolicy::None,
                 ),
             )
@@ -2272,7 +2271,6 @@ mod tests {
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-        const PASSWORD: &str = "cap-race-password";
         const SMALL_DUFFS: u64 = 100_000;
         const LARGE_DUFFS: u64 = 10_000_000;
         // With the large UTXO about 22 inputs; without it about 121.
@@ -2282,13 +2280,16 @@ mod tests {
             standard_account_type: StandardAccountType::BIP44Account,
         };
 
+        // Generated per run: no wallet secret is ever committed.
+        let password = hex::encode(rand::random::<[u8; 16]>());
+        let seed: [u8; 64] = rand::random();
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let prompt = std::sync::Arc::new(SpendWhilePrompting {
             wallet: std::sync::OnceLock::new(),
             account_type: bip44,
             spent: OutPoint::new(Txid::from_byte_array([0x68; 32]), 0),
-            password: PASSWORD,
+            password: password.clone(),
             asks: std::sync::atomic::AtomicUsize::new(0),
         });
         app_context.install_secret_prompt(prompt.clone());
@@ -2298,7 +2299,6 @@ mod tests {
             .await
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
-        let seed = [0x67; 64];
         let seed_hash = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2315,7 +2315,7 @@ mod tests {
             .set_protected(
                 &seed_hash,
                 &seed,
-                &platform_wallet_storage::secrets::SecretString::new(PASSWORD.to_string()),
+                &platform_wallet_storage::secrets::SecretString::new(password),
             )
             .expect("protected seed");
         let platform_wallet = backend
@@ -2376,7 +2376,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x67).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {
@@ -2438,7 +2438,7 @@ mod tests {
         };
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x6e).await;
+            backend_with_registered_wallet().await;
         fund_account(&platform_wallet, bip44, 0x6f, &[FREE_DUFFS, RESERVED_DUFFS]).await;
         // Another build takes the large input and has not broadcast yet.
         {
@@ -2497,7 +2497,8 @@ mod tests {
         let (_dir, ctx, backend) = backend_without_wallets().await;
         // Registered through the app, so the seed is in the vault and the
         // signer can open it without a prompt.
-        let seed = [0x6c; 64];
+        // Generated per run: no wallet secret is ever committed.
+        let seed: [u8; 64] = rand::random();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2567,7 +2568,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
         let (_dir, _ctx, backend, seed_hash, platform_wallet) =
-            backend_with_registered_wallet(0x6a).await;
+            backend_with_registered_wallet().await;
         fund_account(
             &platform_wallet,
             AccountType::Standard {

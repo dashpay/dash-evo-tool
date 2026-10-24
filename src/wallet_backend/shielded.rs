@@ -158,7 +158,7 @@ impl WalletBackend {
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
-        let _spend = self.begin_core_spend(seed_hash);
+        let spend = self.begin_core_spend(seed_hash);
         self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
             .await?;
         let scope = Self::hd_scope(seed_hash);
@@ -168,6 +168,8 @@ impl WalletBackend {
                 // The wallet may have changed during the prompt.
                 self.ensure_asset_lock_within_input_cap(seed_hash, &funding)
                     .await?;
+                // Reservations are taken from here on.
+                spend.mark();
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;

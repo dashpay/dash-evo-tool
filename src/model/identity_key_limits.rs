@@ -1,6 +1,8 @@
 //! Spending limits and expiry of identity authentication keys (protocol
 //! version 14): pure validation for adding a key with limits and for raising
-//! the limits of an existing key.
+//! the limits of an existing key. It also holds which keys may be added with
+//! contract bounds ([`contract_bounds_allowed`]), the other restriction a
+//! new key can carry.
 //!
 //! The rules mirror Platform's so a request it would refuse — and still charge
 //! for — is refused here for free:
@@ -471,6 +473,35 @@ mod tests {
         let with_limits = key_with_limits(key(None, None), Some(5), Some(NOW));
         assert_eq!(with_limits.total_budget(), Some(5));
         assert_eq!(with_limits.expires_at(), Some(NOW));
+    }
+
+    /// A contract-bound key keeps its bounds through `key_with_limits`: a
+    /// bound key without limits is a version 0 key, which protocol 13
+    /// decodes, and a bound key with limits is a version 1 key.
+    #[test]
+    fn a_bound_key_keeps_its_bounds_with_or_without_limits() {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use dash_sdk::platform::Identifier;
+        let bounds = ContractBounds::SingleContract {
+            id: Identifier::from([4; 32]),
+        };
+        let IdentityPublicKey::V0(mut v0) = key_with_limits(key(None, None), None, None) else {
+            unreachable!("a key without limits is a version 0 key");
+        };
+        v0.contract_bounds = Some(bounds.clone());
+        let bound = IdentityPublicKey::V0(v0);
+
+        let plain = key_with_limits(bound.clone(), None, None);
+        assert!(matches!(plain, IdentityPublicKey::V0(_)));
+        assert_eq!(plain.contract_bounds(), Some(&bounds));
+
+        let limited = key_with_limits(bound, Some(5), None);
+        assert!(matches!(limited, IdentityPublicKey::V1(_)));
+        assert_eq!(limited.contract_bounds(), Some(&bounds));
+
+        let unlimited_again = key_with_limits(limited, None, None);
+        assert!(matches!(unlimited_again, IdentityPublicKey::V0(_)));
+        assert_eq!(unlimited_again.contract_bounds(), Some(&bounds));
     }
 
     #[test]

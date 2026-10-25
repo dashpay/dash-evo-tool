@@ -2608,6 +2608,13 @@ pub enum TaskError {
     )]
     ContractBoundAuthenticationKeysNotSupported,
 
+    /// A key whose purpose or security level may never be bound to a
+    /// contract was requested with contract bounds.
+    #[error(
+        "Only encryption and decryption keys, and authentication keys below the master level, can be limited to one contract. Add this key without contract bounds, or choose another purpose or security level."
+    )]
+    KeyCannotBeBound,
+
     /// No key this device holds may sign a key limits update: that takes a
     /// MASTER key, or a CRITICAL authentication key with no limits and no
     /// contract bounds.

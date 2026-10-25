@@ -53,14 +53,19 @@ impl AppContext {
 
         {
             let key = &public_key_to_add.identity_public_key;
-            if key.contract_bounds().is_some()
-                && !contract_bounds_allowed(
+            if key.contract_bounds().is_some() {
+                // A key that may never be bound is refused as such; only a
+                // key the network has yet to admit gets the upgrade advice.
+                if !contract_bounds_allowed(key.purpose(), key.security_level(), true) {
+                    return Err(TaskError::KeyCannotBeBound);
+                }
+                if !contract_bounds_allowed(
                     key.purpose(),
                     key.security_level(),
                     FeatureGate::ContractBoundAuthenticationKeys.is_available(self),
-                )
-            {
-                return Err(TaskError::ContractBoundAuthenticationKeysNotSupported);
+                ) {
+                    return Err(TaskError::ContractBoundAuthenticationKeysNotSupported);
+                }
             }
         }
 
@@ -1953,20 +1958,19 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_bound_authentication_key_needs_a_network_that_admits_it() {
+    /// A key of `purpose` at `security_level`, bound to one contract.
+    fn bound_key(
+        purpose: dash_sdk::dpp::identity::Purpose,
+        security_level: dash_sdk::dpp::identity::SecurityLevel,
+    ) -> QualifiedIdentityPublicKey {
         use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
         use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.set_platform_protocol_version(13);
-        let sdk = dash_sdk::Sdk::new_mock();
-        let key = QualifiedIdentityPublicKey {
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType};
+        QualifiedIdentityPublicKey {
             identity_public_key: IdentityPublicKey::from(IdentityPublicKeyV0 {
                 id: 5,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
+                purpose,
+                security_level,
                 contract_bounds: Some(ContractBounds::SingleContract {
                     id: dash_sdk::platform::Identifier::random(),
                 }),
@@ -1976,19 +1980,35 @@ mod tests {
                 disabled_at: None,
             }),
             in_wallet_at_derivation_path: None,
-        };
+        }
+    }
 
-        let result = ctx
-            .add_key_to_identity(
-                &sdk,
-                crate::context::test_support::bare_user_identity(
-                    Identifier::random(),
-                    dash_sdk::dpp::dashcore::Network::Testnet,
-                ),
-                key,
-                [1; 32],
-            )
-            .await;
+    /// Adds `key` on a network at `protocol_version`.
+    async fn add_at_protocol(
+        protocol_version: u32,
+        key: QualifiedIdentityPublicKey,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_platform_protocol_version(protocol_version);
+        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.add_key_to_identity(
+            &sdk,
+            crate::context::test_support::bare_user_identity(
+                Identifier::random(),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+            ),
+            key,
+            [1; 32],
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_bound_authentication_key_needs_a_network_that_admits_it() {
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        let result =
+            add_at_protocol(13, bound_key(Purpose::AUTHENTICATION, SecurityLevel::HIGH)).await;
 
         assert!(
             matches!(
@@ -1997,6 +2017,26 @@ mod tests {
             ),
             "got {result:?}"
         );
+    }
+
+    /// A key that may never be bound (a MASTER key, a transfer key) is refused
+    /// as such, not with advice to wait for a network upgrade: on a network
+    /// that admits bound authentication keys the advice would be wrong.
+    #[tokio::test]
+    async fn a_key_that_may_never_be_bound_is_refused_as_such() {
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        for (purpose, level) in [
+            (Purpose::AUTHENTICATION, SecurityLevel::MASTER),
+            (Purpose::TRANSFER, SecurityLevel::CRITICAL),
+        ] {
+            for protocol_version in [13, 14] {
+                let result = add_at_protocol(protocol_version, bound_key(purpose, level)).await;
+                assert!(
+                    matches!(result, Err(TaskError::KeyCannotBeBound)),
+                    "{purpose:?} {level:?} on protocol {protocol_version}: got {result:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

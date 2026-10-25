@@ -86,6 +86,12 @@ pub enum BroadcastStatus {
     Broadcasted,
 }
 
+/// Shown in place of a field whose type the document editor cannot edit yet.
+const UNEDITABLE_FIELD_NOTICE: &str = "The app cannot edit this field type yet.";
+
+/// Why a document with a field type the editor cannot edit is not sent.
+const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the app cannot edit yet, so it cannot be created or changed here.";
+
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
     pub action_type: DocumentActionType,
@@ -820,9 +826,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::TypedArray(_) => {
-                            ui.label(
-                                "This field cannot be edited here. Use another document editor.",
-                            );
+                            ui.label(UNEDITABLE_FIELD_NOTICE);
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
@@ -1276,7 +1280,7 @@ impl DocumentActionScreen {
             .ok_or("No identity selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1397,9 +1401,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
@@ -1471,7 +1475,7 @@ impl DocumentActionScreen {
             .ok_or("No document-type selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1592,9 +1596,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(

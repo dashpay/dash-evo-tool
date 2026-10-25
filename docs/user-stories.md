@@ -826,7 +826,7 @@ As a user whose limited key is running out, I want to add to its spending limit 
 - An expired key cannot be topped up on its own; the screen also asks to extend its expiry.
 - Before anything is sent, a confirmation shows the resulting total spending limit and expiry and the key that signs the change; exactly that is sent.
 - If the key's limits, or the key that would sign the change, changed elsewhere in the meantime, nothing is sent and the screen shows the current limits and signing key to review again; no other signing key is picked without a new review.
-- The change is signed by the identity's master key, or a critical key without limits; without either on this device, the screen says which key to import.
+- The change is signed by the identity's master key, or a critical key that has no limits and is not limited to a contract; without either on this device, the screen says which key to import.
 - After the change, the screen shows the key as the network stores it and its new remaining limit.
 
 ### IDN-024: Signing avoids keys that cannot sign [Implemented]
@@ -836,7 +836,7 @@ As a user, I want the app to sign with a key that can actually sign the action, 
 
 - Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
 - Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
-- Where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
+- Where the user picks the key, limited and expired keys stay selectable, the key list marks them, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
 ## DPNS (DPN)
 

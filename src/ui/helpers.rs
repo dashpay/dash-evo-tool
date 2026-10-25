@@ -588,7 +588,7 @@ pub(crate) fn key_caveat_message(caveat: &KeyCaveat) -> String {
             group_id = group_id.to_string(Encoding::Base58)
         ),
         KeyCaveat::Budgeted { total_budget } => format!(
-            "This key has a lifetime spending limit of {amount}. Once the limit is used up, the network rejects actions signed with it.",
+            "This key has a lifetime spending limit of {amount}. Once the limit is used up, the network rejects actions signed with it. Its details page shows how much is left.",
             amount = format_credits_as_dash(*total_budget)
         ),
         KeyCaveat::Expiring { expires_at } => format!(

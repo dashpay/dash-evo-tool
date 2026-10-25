@@ -14,7 +14,6 @@ use crate::model::identity_key_limits::{
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::identity_key_usability::now_ms;
 use crate::model::legacy_recovery::RecoveryItem;
-use crate::model::qualified_identity::encrypted_key_storage::same_key;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -1064,16 +1063,10 @@ impl KeyInfoScreen {
     }
 
     /// The key as the identity currently holds it, for its usage limits: the
-    /// budget and expiry move with `IdentityKeyLimitsUpdate`, so the snapshot
-    /// this screen was opened with may be stale. Falls back to the snapshot
-    /// when the identity no longer holds the same key.
+    /// snapshot this screen was opened with may be stale
+    /// ([`QualifiedIdentity::live_public_key`]).
     fn limits_key(&self) -> &IdentityPublicKey {
-        self.identity
-            .identity
-            .public_keys()
-            .get(&self.key.id())
-            .filter(|live| same_key(&self.key, live))
-            .unwrap_or(&self.key)
+        self.identity.live_public_key(&self.key)
     }
 
     /// The spending limit and expiry rows of the key details grid. A key
@@ -1173,10 +1166,8 @@ impl KeyInfoScreen {
             .map(|signer| signer.id());
         let Some(signer_id) = signer_id else {
             ui.label(
-                RichText::new(
-                    "Raising key limits needs this identity's master key, or a critical key without limits, on this device. Import one of them to raise this key's limits.",
-                )
-                .color(DashColors::text_secondary(dark_mode)),
+                RichText::new(TaskError::NoKeyLimitsSigningKey.to_string())
+                    .color(DashColors::text_secondary(dark_mode)),
             );
             return;
         };

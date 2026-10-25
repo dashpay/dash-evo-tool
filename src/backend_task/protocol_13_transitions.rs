@@ -260,3 +260,75 @@ async fn a_fee_agreement_is_refused_on_protocol_13() {
     );
     assert!(create_note(platform_version, Some(options)).await.is_err());
 }
+
+/// A contested username is created on a protocol 13 network the way
+/// `BroadcastDocument` creates it, with the contest fund DET states: in the
+/// protocol 13 document encoding, and stating exactly the protocol's base
+/// fund.
+#[tokio::test]
+async fn a_contested_name_is_created_in_the_protocol_13_encoding_with_the_base_fund() {
+    use crate::model::fee_estimation::{contest_fee_credits, document_create_contest_fund_cap};
+    use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_create_transition::v0::v0_methods::DocumentCreateTransitionV0Methods;
+    use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition::DocumentTransition;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+        .expect("DPNS contract");
+    let domain = contract
+        .document_type_for_name("domain")
+        .expect("domain type");
+    let owner_id = Identifier::from([4; 32]);
+    let document = crate::context::test_support::dpns_name_document(
+        owner_id,
+        "alice",
+        dash_sdk::dpp::platform_value::Value::Identifier(owner_id.to_buffer()),
+    );
+    let fund = document_create_contest_fund_cap(domain, &document, platform_version)
+        .expect("contest check")
+        .expect("a contested name");
+    assert_eq!(fund, contest_fee_credits(platform_version));
+    let options = StateTransitionCreationOptions {
+        contest_fund: Some(fund),
+        ..Default::default()
+    };
+
+    let transition = BatchTransition::new_document_creation_transition_from_document(
+        document,
+        domain,
+        [3; 32],
+        &plain_key(1, SecurityLevel::HIGH),
+        1,
+        UserFeeIncrease::default(),
+        None,
+        &PlaceholderSigner,
+        platform_version,
+        Some(options),
+    )
+    .await
+    .expect("contested name create");
+
+    let StateTransition::Batch(batch) = transition else {
+        panic!("expected a batch, got {transition:?}");
+    };
+    let document_transition = match &batch {
+        BatchTransition::V0(v0) => v0.transitions[0].clone(),
+        BatchTransition::V1(v1) => match &v1.transitions[0] {
+            BatchedTransition::Document(document) => document.clone(),
+            other => panic!("expected a document transition, got {other:?}"),
+        },
+    };
+    assert!(
+        !matches!(document_transition.base(), DocumentBaseTransition::V2(_)),
+        "protocol 13 cannot decode {:?}",
+        document_transition.base()
+    );
+    let DocumentTransition::Create(create) = document_transition else {
+        panic!("expected a create, got {document_transition:?}");
+    };
+    let stated = create
+        .prefunded_voting_balance()
+        .as_ref()
+        .map(|(_, credits)| *credits);
+    assert_eq!(stated, Some(contest_fee_credits(platform_version)));
+}

@@ -48,7 +48,7 @@ use egui::{RichText, Ui};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use super::get_selected_wallet;
+use super::{get_selected_wallet, wallet_for_signing_key};
 
 /// Wait after the last keystroke before asking the network about a name.
 const AVAILABILITY_DEBOUNCE: Duration = Duration::from_millis(400);
@@ -180,10 +180,11 @@ impl RegisterDpnsNameScreen {
         }
     }
 
-    /// Pick the wallet the identity's signing key comes from, to offer its unlock.
+    /// Pick the wallet the registration's signing key comes from, to offer
+    /// its unlock.
     fn select_wallet(&mut self) {
         self.selected_wallet = self.selected_qualified_identity.as_ref().and_then(|qi| {
-            get_selected_wallet(qi, Some(&self.app_context), None)
+            registration_wallet(qi, self.selected_key.as_ref(), &self.app_context)
                 .or_show_error(self.app_context.egui_ctx())
                 .unwrap_or(None)
         });
@@ -585,6 +586,7 @@ impl RegisterDpnsNameScreen {
                 );
             });
 
+        let key_before = self.selected_key.as_ref().map(|key| key.id());
         if self.app_context.user_role().at_least(UserRole::Power) {
             egui::CollapsingHeader::new("Advanced")
                 .default_open(false)
@@ -619,6 +621,11 @@ impl RegisterDpnsNameScreen {
                         },
                     );
                 });
+        }
+        // The wallet to unlock follows the key the registration is signed
+        // with, so a key chosen under Advanced brings its own wallet.
+        if self.selected_key.as_ref().map(|key| key.id()) != key_before {
+            self.select_wallet();
         }
 
         if let Some(wallet) = &self.selected_wallet {
@@ -971,9 +978,73 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 }
 
+/// The wallet to unlock for a registration: the one holding the key the
+/// user chose under Advanced, or, without a choice, the one holding the key
+/// picked automatically.
+fn registration_wallet(
+    identity: &QualifiedIdentity,
+    chosen_key: Option<&IdentityPublicKey>,
+    app_context: &AppContext,
+) -> Result<Option<Arc<RwLock<Wallet>>>, String> {
+    match chosen_key {
+        Some(key) => Ok(wallet_for_signing_key(identity, Some(key))),
+        None => get_selected_wallet(identity, Some(app_context), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the unlock prompt and the pay gate followed the
+    /// automatically picked key's wallet, not the wallet of the key the user
+    /// chose under Advanced.
+    #[test]
+    fn the_unlock_wallet_follows_the_chosen_registration_key() {
+        use crate::context::test_support::{
+            auth_key, bare_user_identity, hold_as_wallet_reference,
+        };
+        use crate::model::wallet::WalletSeed;
+        use crate::model::wallet::test_support::open_wallet;
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::platform::Identifier;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let auto_wallet = open_wallet();
+        let mut chosen_wallet = open_wallet();
+        let WalletSeed::Open(seed) = &mut chosen_wallet.wallet_seed else {
+            unreachable!("open_wallet builds an open wallet");
+        };
+        seed.wallet_info.seed_hash = [7; 32];
+        let (auto_hash, chosen_hash) = (auto_wallet.seed_hash(), chosen_wallet.seed_hash());
+
+        // Key 1 (HIGH) is the automatic choice; key 2 (CRITICAL) also signs.
+        let auto_key = auth_key(1, SecurityLevel::HIGH);
+        let chosen_key = auth_key(2, SecurityLevel::CRITICAL);
+        let mut identity = bare_user_identity(Identifier::new([0xD2; 32]), ctx.network());
+        identity.identity.set_public_keys(
+            [(1, auto_key), (2, chosen_key.clone())]
+                .into_iter()
+                .collect(),
+        );
+        hold_as_wallet_reference(&mut identity, 1, auto_hash);
+        hold_as_wallet_reference(&mut identity, 2, chosen_hash);
+        let auto_wallet = Arc::new(RwLock::new(auto_wallet));
+        let chosen_wallet = Arc::new(RwLock::new(chosen_wallet));
+        identity
+            .associated_wallets
+            .insert(auto_hash, Arc::clone(&auto_wallet));
+        identity
+            .associated_wallets
+            .insert(chosen_hash, Arc::clone(&chosen_wallet));
+
+        let automatic = registration_wallet(&identity, None, &ctx).unwrap();
+        assert!(automatic.is_some_and(|wallet| Arc::ptr_eq(&wallet, &auto_wallet)));
+        let chosen = registration_wallet(&identity, Some(&chosen_key), &ctx).unwrap();
+        assert!(chosen.is_some_and(|wallet| Arc::ptr_eq(&wallet, &chosen_wallet)));
+    }
 
     #[test]
     fn review_regression_unrelated_error_keeps_paid_registration_blocked() {

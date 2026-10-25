@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::token::parse_once_per_identity_amount;
 use crate::ui::theme::DashColors;
@@ -1106,9 +1107,7 @@ impl TokensScreen {
                 "Enable Once-per-identity Distribution",
             )
             .on_hover_text("Every identity can claim a fixed amount of this token, exactly once.")
-            .on_disabled_hover_text(
-                "The connected network does not accept once-per-identity distributions yet.",
-            );
+            .on_disabled_hover_text(TaskError::TokenOncePerIdentityNotSupported.to_string());
         });
 
         if self.enable_once_per_identity_distribution {

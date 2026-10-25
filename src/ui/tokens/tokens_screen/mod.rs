@@ -60,6 +60,9 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{
+    TokenRegistrationFeatures, estimate_token_contract_registration,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -1884,53 +1887,35 @@ impl TokensScreen {
     }
 
     fn estimate_registration_cost(&self) -> Credits {
-        // Every term from one fee table: the one of the version the network
-        // confirmed, not the SDK's starting seed (they differ while a network
-        // moves to a new protocol version).
-        let registration_fees = &self
-            .app_context
-            .connected_platform_version()
-            .fee_version
-            .data_contract_registration;
-        let mut fee = registration_fees.base_contract_registration_fee;
-        fee += registration_fees.token_registration_fee;
-        if self.enable_perpetual_distribution {
-            fee += registration_fees.token_uses_perpetual_distribution_fee;
-        }
-        if self.enable_pre_programmed_distribution {
-            fee += registration_fees.token_uses_pre_programmed_distribution_fee;
-        }
-        if self.enable_once_per_identity_distribution {
-            fee += registration_fees.token_uses_once_per_identity_distribution_fee;
-        }
-        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
-            Vec::new()
+        let contract_keyword_count = if self.contract_keywords_input.trim().is_empty() {
+            0
         } else {
             self.contract_keywords_input
                 .split(',')
-                .filter_map(|s| {
-                    let trimmed = s.trim().to_string();
-                    if trimmed.len() < 3 || trimmed.len() > 50 {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect::<Vec<String>>()
+                .filter(|s| (3..=50).contains(&s.trim().len()))
+                .count()
         };
-
-        fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
         let searchable_count = self
             .token_names_input
             .iter()
-            .filter(|(_, _, _, searchable)| *searchable) // or `.is_searchable()` if it's a method
+            .filter(|(_, _, _, searchable)| *searchable)
             .count();
-
-        fee += registration_fees.search_keyword_fee * searchable_count as u64;
-
-        fee += 200_000_000; //just an extra estimate
-
-        fee
+        // The fee table of the version the network confirmed, not the SDK's
+        // starting seed (they differ while a network moves to a new protocol
+        // version).
+        estimate_token_contract_registration(
+            &self
+                .app_context
+                .connected_platform_version()
+                .fee_version
+                .data_contract_registration,
+            TokenRegistrationFeatures {
+                perpetual_distribution: self.enable_perpetual_distribution,
+                pre_programmed_distribution: self.enable_pre_programmed_distribution,
+                once_per_identity_distribution: self.enable_once_per_identity_distribution,
+                search_keyword_count: contract_keyword_count + searchable_count,
+            },
+        )
     }
 
     fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
@@ -3779,7 +3764,11 @@ mod tests {
         let err = token_creator_ui
             .parse_token_build_args()
             .expect_err("a network below protocol 14 refuses the distribution");
-        assert!(err.contains("does not accept"), "got: {err}");
+        assert_eq!(
+            err,
+            crate::backend_task::error::TaskError::TokenOncePerIdentityNotSupported.to_string(),
+            "the local refusal reads like the backend's"
+        );
 
         app_context.set_platform_protocol_version(14);
         let build_args = token_creator_ui

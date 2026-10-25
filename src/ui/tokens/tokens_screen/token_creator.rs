@@ -15,6 +15,7 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::token::validate_contract_keyword;
@@ -1190,10 +1191,7 @@ impl TokensScreen {
             return Ok(None);
         }
         if !FeatureGate::TokenOncePerIdentityDistribution.is_available(&self.app_context) {
-            return Err(
-                "The connected network does not accept once-per-identity distributions yet. Turn it off to create the token."
-                    .to_string(),
-            );
+            return Err(TaskError::TokenOncePerIdentityNotSupported.to_string());
         }
         parse_once_per_identity_amount(&self.once_per_identity_amount_input)
             .map(Some)

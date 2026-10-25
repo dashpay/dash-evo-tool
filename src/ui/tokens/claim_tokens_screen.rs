@@ -28,6 +28,7 @@ use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
@@ -75,6 +76,10 @@ pub struct ClaimTokensScreen {
     /// token, as far as this device knows (a local hint; Platform has no query
     /// for it).
     once_per_identity_claimed_at: Option<u64>,
+    /// The network refused this identity's once-per-identity claim while this
+    /// screen was open. Unproven node output, so it is never saved; it only
+    /// keeps a retry from being charged again on this screen.
+    once_per_identity_refused: bool,
 }
 
 /// An open claim confirmation and the claim it names: the claim is built when
@@ -166,6 +171,7 @@ impl ClaimTokensScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
             once_per_identity_claimed_at,
+            once_per_identity_refused: false,
         }
     }
 
@@ -256,6 +262,15 @@ impl ClaimTokensScreen {
             if ui.button("Dismiss").clicked() {
                 action = self.dismiss_claim_note();
             }
+        }
+        if self.once_per_identity_refused {
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.label(
+                RichText::new(
+                    "The network says this identity has already claimed its share, so Claim is turned off. Reopen this screen to try again.",
+                )
+                .color(DashColors::warning_color(dark_mode)),
+            );
         }
         ui.add_space(10.0);
         action
@@ -361,6 +376,12 @@ impl ClaimTokensScreen {
         *pending.action
     }
 
+    /// Whether Claim may be pressed for the selected distribution.
+    fn claim_allowed(&self) -> bool {
+        !(self.once_per_identity_refused
+            && self.distribution_type == Some(TokenDistributionType::OncePerIdentity))
+    }
+
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen_with_info(
             ui,
@@ -399,6 +420,20 @@ impl ScreenLike for ClaimTokensScreen {
             }
             _ => {}
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let TaskError::TokenOncePerIdentityAlreadyClaimed {
+            token_id,
+            identity_id,
+            ..
+        } = error
+            && *token_id == self.identity_token_basic_info.token_id
+            && *identity_id == self.identity_token_basic_info.identity_id
+        {
+            self.once_per_identity_refused = true;
+        }
+        false
     }
 
     fn refresh(&mut self) {
@@ -702,7 +737,9 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                if ComponentStyles::add_primary_button(ui, "Claim").clicked() {
+                if ComponentStyles::add_primary_button_enabled(ui, self.claim_allowed(), "Claim")
+                    .clicked()
+                {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,
@@ -901,6 +938,51 @@ mod tests {
             panic!("a claim was confirmed");
         };
         assert_eq!(*distribution_type, TokenDistributionType::OncePerIdentity);
+    }
+
+    /// Regression: a refused second claim left Claim enabled with no note, so
+    /// every retry was charged again. The refusal now disables Claim for this
+    /// screen, but it is unproven node output, so nothing is saved.
+    #[test]
+    fn a_refused_second_claim_disables_claim_without_saving_anything() {
+        let (mut screen, _dir) = screen_for(once_per_identity_token(25));
+        let refusal = |identity_id| TaskError::TokenOncePerIdentityAlreadyClaimed {
+            token_id: screen_token_id(),
+            identity_id,
+            claimed_at_ms: 1_758_140_722_000,
+            source_error: Box::new(dash_sdk::Error::Generic("claimed".to_string())),
+        };
+        assert!(screen.claim_allowed());
+
+        assert!(!screen.display_task_error(&refusal(Identifier::new([0x99; 32]))));
+        assert!(
+            screen.claim_allowed(),
+            "a refusal for another identity changes nothing"
+        );
+
+        assert!(
+            !screen.display_task_error(&refusal(Identifier::new([0x71; 32]))),
+            "the refusal banner still shows"
+        );
+        assert!(!screen.claim_allowed());
+        assert_eq!(
+            screen.once_per_identity_claimed_at, None,
+            "the refusal does not become the saved hint"
+        );
+        assert_eq!(
+            load_once_per_identity_claim(&screen.app_context, &screen.identity_token_basic_info),
+            None
+        );
+
+        screen.distribution_type = Some(TokenDistributionType::PreProgrammed);
+        assert!(
+            screen.claim_allowed(),
+            "other distributions of the token stay claimable"
+        );
+    }
+
+    fn screen_token_id() -> Identifier {
+        Identifier::new([0x70; 32])
     }
 
     /// Dismissing the claim note is saved by a backend task, not from the

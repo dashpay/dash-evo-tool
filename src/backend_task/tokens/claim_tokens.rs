@@ -63,7 +63,7 @@ impl AppContext {
                     ClaimResult::Document(document)
                     | ClaimResult::GroupActionWithDocument(_, document) => document.created_at(),
                 };
-                if let Some(token_id) = data_contract.token_id(token_position) {
+                if let Some(token_id) = token_id {
                     match result {
                         // Standard claim result - extract claimer and amount from document
                         ClaimResult::Document(document) => {

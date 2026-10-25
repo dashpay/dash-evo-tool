@@ -128,9 +128,9 @@ impl<'a> DetSigner<'a> {
     /// Signing stays on the secp256k1 primitive (plain RFC 6979 nonce), so
     /// signatures are byte-identical to earlier builds; the newer
     /// `EcdsaSecretKey::sign` grinds for a low R and would change them.
-    fn derive_secret(&self, path: &DerivationPath) -> Result<secp256k1::SecretKey, DetSignerError> {
+    fn derive_secret(&self, path: &DerivationPath) -> Result<ErasedSecretKey, DetSignerError> {
         let scalar = self.derive_xprv(path)?.private_key.to_bytes();
-        secp256k1::SecretKey::from_secret_bytes(*scalar).map_err(DetSignerError::Sign)
+        ErasedSecretKey::from_scalar(&scalar)
     }
 
     /// Sign `msg` (a 32-byte digest) with the held **single key** directly,
@@ -143,13 +143,40 @@ impl<'a> DetSigner<'a> {
     ) -> Result<ecdsa::Signature, DetSignerError> {
         match &self.secret {
             HeldSecret::SingleKey(key) => {
-                let sk = secp256k1::SecretKey::from_secret_bytes(***key)
-                    .map_err(DetSignerError::Sign)?;
+                let sk = ErasedSecretKey::from_scalar(key)?;
                 let message = message_from_digest(*msg)?;
                 Ok(dash_sdk::dpp::secp256k1::ecdsa::sign(message, &sk))
             }
             HeldSecret::HdSeed(_) => Err(DetSignerError::WrongSecretKind),
         }
+    }
+}
+
+/// A secp256k1 secret key erased when dropped. secp256k1's own type keeps its
+/// bytes after use, while the derived key it is built from would have wiped
+/// them; this keeps the signing primitive (byte-identical signatures) without
+/// leaving the key behind in freed memory.
+struct ErasedSecretKey(secp256k1::SecretKey);
+
+impl ErasedSecretKey {
+    fn from_scalar(scalar: &[u8; 32]) -> Result<Self, DetSignerError> {
+        secp256k1::SecretKey::from_secret_bytes(*scalar)
+            .map(Self)
+            .map_err(DetSignerError::Sign)
+    }
+}
+
+impl std::ops::Deref for ErasedSecretKey {
+    type Target = secp256k1::SecretKey;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for ErasedSecretKey {
+    fn drop(&mut self) {
+        self.0.non_secure_erase();
     }
 }
 

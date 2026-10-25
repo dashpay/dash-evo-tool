@@ -86,6 +86,12 @@ pub enum BroadcastStatus {
     Broadcasted,
 }
 
+/// Shown in place of a field whose type the document editor cannot edit yet.
+const UNEDITABLE_FIELD_NOTICE: &str = "The app cannot edit this field type yet.";
+
+/// Why a document with a field type the editor cannot edit is not sent.
+const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the app cannot edit yet, so it cannot be created or changed here.";
+
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
     pub action_type: DocumentActionType,
@@ -258,9 +264,6 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
     }
 
-    /// The contract or document type changed: what was fetched for the old
-    /// one no longer applies, and the key is picked again for the new scope
-    /// (a key bound to the old contract or type cannot sign in the new one).
     /// The wallet holding the key the action is signed with, for the unlock
     /// prompt.
     fn signing_wallet(&self) -> Option<Arc<RwLock<Wallet>>> {
@@ -268,6 +271,9 @@ impl DocumentActionScreen {
         wallet_for_signing_key(identity, self.selected_key.as_ref())
     }
 
+    /// The contract or document type changed: what was fetched for the old
+    /// one no longer applies, and the key is picked again for the new scope
+    /// (a key bound to the old contract or type cannot sign in the new one).
     fn signing_scope_changed(&mut self) {
         self.no_documents_found = false;
         self.fetched_documents.clear();
@@ -820,9 +826,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::TypedArray(_) => {
-                            ui.label(
-                                "This field cannot be edited here. Use another document editor.",
-                            );
+                            ui.label(UNEDITABLE_FIELD_NOTICE);
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
@@ -1276,7 +1280,7 @@ impl DocumentActionScreen {
             .ok_or("No identity selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1397,9 +1401,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
@@ -1471,7 +1475,7 @@ impl DocumentActionScreen {
             .ok_or("No document-type selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1592,9 +1596,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
@@ -1967,12 +1971,11 @@ impl DocumentActionScreen {
     }
 }
 
-/// The contract-bounds scope of a document action on `document_type` of
-/// `contract`. Before a contract is chosen nothing is known about the target,
-/// so only keys that can sign anywhere (unbound keys) qualify.
 /// The key to sign a document action with when the user has not picked one:
 /// a live AUTHENTICATION key this device can sign with, at a security level
 /// the document type accepts, within the contract and document type's scope.
+/// The least privileged accepted level is tried first, as for every document
+/// key ([`QualifiedIdentity::least_privileged_signing_key_now`]).
 fn auto_selected_document_key(
     identity: &QualifiedIdentity,
     contract: Option<&QualifiedContract>,
@@ -1985,7 +1988,7 @@ fn auto_selected_document_key(
         document_type,
     );
     identity
-        .signing_key_now(KeyRequirements::new(
+        .least_privileged_signing_key_now(KeyRequirements::new(
             dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
             &levels,
             signing_scope(contract, document_type),
@@ -1993,6 +1996,9 @@ fn auto_selected_document_key(
         .cloned()
 }
 
+/// The contract-bounds scope of a document action on `document_type` of
+/// `contract`. Before a contract is chosen nothing is known about the target,
+/// so only keys that can sign anywhere (unbound keys) qualify.
 fn signing_scope<'a>(
     contract: Option<&QualifiedContract>,
     document_type: Option<&'a DocumentType>,
@@ -2033,6 +2039,8 @@ mod tests {
 
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 
+    use crate::context::test_support::identity_holding;
+
     /// An AUTHENTICATION key at `level`, optionally bound to `bounds`.
     fn auth_key(
         id: u32,
@@ -2041,62 +2049,11 @@ mod tests {
             dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
         >,
     ) -> IdentityPublicKey {
-        dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-            id,
-            purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-            security_level: level,
-            contract_bounds: bounds,
-            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: vec![2; 33].into(),
-            disabled_at: None,
+        let key = crate::context::test_support::auth_key(id, level);
+        match bounds {
+            Some(bounds) => crate::context::test_support::bound_to(key, bounds),
+            None => key,
         }
-        .into()
-    }
-
-    /// A user identity holding the private half of each of `keys`.
-    fn identity_holding(keys: &[IdentityPublicKey]) -> QualifiedIdentity {
-        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
-        use dash_sdk::dpp::version::PlatformVersion;
-
-        let mut identity =
-            Identity::create_basic_identity(Identifier::new([0xD0; 32]), PlatformVersion::latest())
-                .expect("basic identity");
-        identity.set_public_keys(keys.iter().map(|key| (key.id(), key.clone())).collect());
-        let mut qi = QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
-        for key in keys {
-            qi.private_keys
-                .insert_non_encrypted(
-                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
-                    (
-                        QualifiedIdentityPublicKey {
-                            identity_public_key: key.clone(),
-                            in_wallet_at_derivation_path: None,
-                        },
-                        [key.id() as u8; 32],
-                    ),
-                )
-                .expect("a free slot");
-        }
-        qi
     }
 
     /// The DPNS contract, whose document types require a HIGH key.
@@ -2142,6 +2099,25 @@ mod tests {
 
         let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
         assert_eq!(chosen.map(|key| key.id()), Some(1));
+    }
+
+    /// Regression: automatic selection offered every accepted level at once,
+    /// so an unlimited CRITICAL key signed where an unlimited key at the level
+    /// the document type requires was held.
+    #[test]
+    fn auto_selection_takes_the_least_privileged_key() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let required = domain.security_level_requirement();
+        assert_eq!(required, SecurityLevel::HIGH, "precondition: a HIGH type");
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL, None),
+            auth_key(2, SecurityLevel::HIGH, None),
+        ]);
+
+        let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
+        assert_eq!(chosen.map(|key| key.id()), Some(2));
     }
 
     /// Regression: the unlock prompt looked for a DPNS signing key, so an

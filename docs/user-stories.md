@@ -836,7 +836,7 @@ As a user, I want the app to sign with a key that can actually sign the action, 
 
 - Automatic key choice skips disabled and expired keys, keys limited to other contracts or document types, and keys bound to a contract group.
 - Only keys this device holds the private key of are chosen; among those, one without limits is preferred over a limited one.
-- Where the user picks the key, limited and expired keys stay selectable, and the key list and selection show a warning explaining the limit. Keys bound to another contract or document type are not offered.
+- Where the user picks the key, limited and expired keys stay selectable, and the key chooser shows a warning explaining the limit. Keys bound to another contract or document type are not offered.
 
 ## DPNS (DPN)
 

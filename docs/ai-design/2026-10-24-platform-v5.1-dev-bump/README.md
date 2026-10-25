@@ -31,9 +31,10 @@ from 13 to 14:
 `SystemContractsCache` serves the system contracts (DPNS, DashPay, withdrawals,
 token history, keyword search) at the SDK's version and reloads them when it
 changes. The context provider serves them at the version the proof verifier
-asks for (`verifier_version`), which can be newer than the SDK's. `try_get`
-fails rather than serving another version's contracts, so a proof is never
-checked against the wrong schema.
+passes in (`AppContext::system_contracts_at`), which can be newer than the
+SDK's. Each version keeps its own set, so the two lookups do not evict each
+other. `try_get` fails rather than serving another version's contracts, so a
+proof is never checked against the wrong schema.
 
 ## Connection state
 

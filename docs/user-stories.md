@@ -1358,6 +1358,14 @@ As a developer, I want to set a price on a document and allow others to purchase
 
 ---
 
+### DOC-011: Skip an optional token cost [Implemented]
+**Persona:** Alex, Priya
+
+As a user, when a document action's token cost is optional, I want to choose not to pay it, so that I can pay the network fee in credits instead.
+
+- A "Pay the token cost" option appears only when the token cost is optional.
+- Without it, the action carries no token payment and its network fee is paid from the identity's credits.
+
 ## Developer and Power Tools (DEV)
 
 ### DEV-001: Decode state transitions [Implemented]

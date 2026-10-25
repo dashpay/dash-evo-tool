@@ -1,6 +1,7 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dapi_addresses;
 mod dpns_vote_attention;
 mod dpns_vote_operations;
 mod dpns_vote_preferences;
@@ -384,6 +385,11 @@ pub struct AppContext {
     /// double-checked `ArcSwapOption` read still serves the steady state
     /// lock-free; this `Mutex` is held only across the one-time build.
     wallet_backend_build: tokio::sync::Mutex<()>,
+    /// Serialises connection rebuilds ([`Self::reinit_core_client_and_sdk`]):
+    /// two rebuilds retargeting the shared DAPI address list at once could
+    /// leave a mix of both lists. Held across the whole rebuild, which never
+    /// awaits; taken before any other lock of this context, never under one.
+    connection_rebuild: Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -661,6 +667,7 @@ impl AppContext {
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
+            connection_rebuild: Mutex::new(()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
@@ -1127,8 +1134,14 @@ impl AppContext {
     }
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
-    /// updated `NetworkConfig` from `self.config`.
+    /// updated `NetworkConfig` from `self.config`. The DAPI address list all
+    /// SDKs of this context share, the wallet backend's included, moves to
+    /// the configured addresses in place.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
+        let _rebuild = self
+            .connection_rebuild
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
             let cfg_lock = self.config.read()?;
@@ -1159,8 +1172,21 @@ impl AppContext {
             }
         };
 
+        // One address list per context (see `dapi_addresses`): the wallet
+        // backend, and the upstream wallet components it feeds, hold clones of
+        // the SDK they were built with and cannot be given a new one. So the
+        // list every SDK of this context shares moves to the new addresses in
+        // place, keeping the bans of addresses that stay, and the new SDK is
+        // built over that same list. Should building the SDK fail below, every
+        // SDK of the context already uses the addresses the saved config names.
+        // TODO(platform-wallet-replace-sdk): the wallet's SDK keeps its own
+        // protocol version and nonce cache across a rebuild; that needs
+        // upstream `PlatformWalletManager` to accept a replacement SDK.
+        let shared_addresses = self.sdk.load().address_list().clone();
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+
         let provider = self.spv_context_provider.read()?.clone();
-        let new_sdk = initialize_sdk(address_list, self.network, provider)
+        let new_sdk = initialize_sdk(shared_addresses, self.network, provider)
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
 
         // 4. Swap in the new SDK and client
@@ -1801,6 +1827,67 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a connection rebuild gave the app a new SDK while the
+    /// wallet backend kept the one it was built with, so wallet operations
+    /// kept sending to the old DAPI addresses. Both now read one shared list,
+    /// so the new addresses, and any ban, reach the wallet backend too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rebuilt_connection_moves_the_wallet_backend_to_the_new_addresses() {
+        use dash_sdk::dapi_client::Address;
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let new_addresses = ["https://10.0.0.1:443", "https://10.0.0.2:443"];
+        ctx.config.write().expect("config").dapi_addresses = Some(new_addresses.join(","));
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let expected: HashSet<String> = new_addresses
+            .iter()
+            .map(|uri| uri.parse::<Address>().expect("address").to_string())
+            .collect();
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), expected);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), expected);
+
+        let banned: Address = new_addresses[0].parse().expect("address");
+        assert!(backend.sdk().address_list().ban(&banned));
+        assert!(
+            ctx.sdk.load().address_list().is_banned(&banned),
+            "the app's SDK and the wallet's SDK share one list"
+        );
+    }
+
+    /// Without a wallet backend, a rebuild still moves the app to the new
+    /// addresses.
+    #[test]
+    fn a_rebuilt_connection_without_a_wallet_backend_uses_the_new_addresses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.9:443".to_string());
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let sdk = ctx.sdk.load();
+        let uris: Vec<String> = sdk
+            .address_list()
+            .ban_info()
+            .into_iter()
+            .map(|info| info.uri)
+            .collect();
+        assert_eq!(uris.len(), 1);
+        assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
+    }
 
     #[test]
     fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {

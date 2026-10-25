@@ -16,6 +16,7 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::token::validate_contract_keyword;
@@ -1187,10 +1188,7 @@ impl TokensScreen {
         if !self.transferable_input
             && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
         {
-            return Err(
-                "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
-                    .to_string(),
-            );
+            return Err(TaskError::NonTransferableTokenNotSupported.to_string());
         }
         Ok(self.transferable_input)
     }
@@ -1209,9 +1207,7 @@ impl TokensScreen {
                     "Holders can send this token to other identities",
                 )
                 .show(ui)
-                .on_disabled_hover_text(
-                    "The connected network does not accept tokens that cannot be transferred yet.",
-                );
+                .on_disabled_hover_text(TaskError::NonTransferableTokenNotSupported.to_string());
             });
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });

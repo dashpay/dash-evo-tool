@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -11,6 +12,11 @@ use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INI
 /// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+/// Tokens that cannot be transferred (a version 1 token configuration) are
+/// accepted from protocol version 14. Upstream names no feature constant for
+/// them, so the protocol version they shipped in is used directly.
+const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -58,19 +64,10 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
-            // Upstream names no feature constant either; the newest token
-            // configuration format the version decodes is the source of truth.
-            Capability::NonTransferableTokens => {
-                known_protocol_version(ctx).is_some_and(|version| {
-                    version
-                        .dpp
-                        .contract_versions
-                        .token_versions
-                        .token_configuration_format
-                        .max_version
-                        >= 1
-                })
-            }
+            Capability::NonTransferableTokens => known_protocol_version_at_least(
+                ctx,
+                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
+            ),
         }
     }
 }

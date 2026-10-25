@@ -2686,7 +2686,7 @@ pub enum TaskError {
     /// A token with a once-per-identity distribution was requested on a
     /// network that does not accept one yet.
     #[error(
-        "This network does not support once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
+        "The connected network does not accept once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
     )]
     TokenOncePerIdentityNotSupported,
 

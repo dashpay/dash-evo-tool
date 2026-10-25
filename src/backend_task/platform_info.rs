@@ -644,15 +644,14 @@ impl AppContext {
                             "Current epoch fetch failed; keeping the last known fee multiplier"
                         );
                         // Without the epoch, the network's version is learned from
-                        // the ratchet a proved DPNS fetch drives. Only a successful
-                        // fetch proves it came from the network, not the local seed.
+                        // a proved DPNS fetch: the version of the responses the SDK
+                        // verified, never its local seed.
                         let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
                         match DataContract::fetch(sdk, self.dpns_contract().id()).await {
                             Ok(_) if on_current_sdk => {
-                                self.raise_platform_protocol_version_on(
-                                    generation,
-                                    sdk.protocol_version_number(),
-                                );
+                                if let Some(version) = network_proved_protocol_version(sdk) {
+                                    self.raise_platform_protocol_version_on(generation, version);
+                                }
                             }
                             Ok(_) => {}
                             Err(error) => tracing::warn!(
@@ -789,11 +788,7 @@ impl AppContext {
                     where_clauses: vec![WhereClause {
                         field: "status".to_string(),
                         operator: WhereOperator::In,
-                        value: Value::Array(vec![
-                            Value::U8(WithdrawalStatus::COMPLETE as u8),
-                            Value::U8(WithdrawalStatus::EXPIRED as u8),
-                            Value::U8(WithdrawalStatus::FAILED as u8),
-                        ]),
+                        value: Value::Array(completed_withdrawal_statuses()),
                     }],
                     time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
@@ -878,11 +873,7 @@ impl AppContext {
                 let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
 
                 let statuses = if completed {
-                    vec![
-                        Value::U8(WithdrawalStatus::COMPLETE as u8),
-                        Value::U8(WithdrawalStatus::EXPIRED as u8),
-                        Value::U8(WithdrawalStatus::FAILED as u8),
-                    ]
+                    completed_withdrawal_statuses()
                 } else {
                     vec![
                         Value::U8(WithdrawalStatus::QUEUED as u8),
@@ -989,9 +980,105 @@ impl AppContext {
     }
 }
 
+/// The `status` values a finished withdrawal can carry, as the completed
+/// withdrawal queries send them.
+///
+/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
+/// schema of a protocol 13 network stops at `EXPIRED` (4). Sending it at
+/// protocol 13 is still correct and deliberate: a JSON-schema `enum` constrains
+/// documents being created, not query values. Nothing in the query path checks
+/// membership — the `status` property is typed as a plain integer, and
+/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
+/// converts to it. So the out-of-enum member encodes, matches nothing on a
+/// protocol 13 network (which cannot produce a failed withdrawal), and leaves
+/// `COMPLETE` and `EXPIRED` matching as usual, while the same query stays
+/// complete on protocol 14.
+fn completed_withdrawal_statuses() -> Vec<Value> {
+    vec![
+        Value::U8(WithdrawalStatus::COMPLETE as u8),
+        Value::U8(WithdrawalStatus::EXPIRED as u8),
+        Value::U8(WithdrawalStatus::FAILED as u8),
+    ]
+}
+
+/// The protocol version `sdk` has seen in a response whose proof and quorum
+/// signature were verified, or `None` before any such response. Never the
+/// SDK's local seed: the SDK's own version starts at the network's upstream
+/// minimum and only rises, so a successful read does not prove it.
+fn network_proved_protocol_version(sdk: &Sdk) -> Option<u32> {
+    match sdk.query_settings().verified_protocol_version {
+        0 => None,
+        version => Some(version),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The completed-withdrawal filter keeps `FAILED` even though the protocol
+    /// 13 schema stops at `EXPIRED`: a schema `enum` constrains documents, not
+    /// query values, and every status encodes into the `status` property's key
+    /// representation at both schema versions.
+    #[test]
+    fn completed_withdrawal_filter_encodes_at_both_schema_versions() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::v13::PLATFORM_V13;
+
+        assert_eq!(
+            completed_withdrawal_statuses(),
+            vec![Value::U8(3), Value::U8(4), Value::U8(5)],
+            "COMPLETE, EXPIRED and FAILED, in that order"
+        );
+
+        let status_property = |version| {
+            let contract = load_system_data_contract(SystemDataContract::Withdrawals, version)
+                .expect("withdrawals contract");
+            contract
+                .document_type_cloned_for_name("withdrawal")
+                .expect("withdrawal document type")
+                .properties()
+                .get("status")
+                .expect("status property")
+                .clone()
+        };
+
+        // v1 (protocol 13) and v2 (protocol 14) differ only in the enum's last
+        // member, so the property type is identical.
+        let v13 = status_property(&PLATFORM_V13);
+        let latest = status_property(PlatformVersion::latest());
+        assert_eq!(
+            v13.property_type, latest.property_type,
+            "the status property type must not differ across schema versions"
+        );
+
+        // FAILED is outside the v1 enum, yet encodes for the query exactly like
+        // the statuses that are inside it.
+        for status in completed_withdrawal_statuses() {
+            assert!(
+                v13.property_type
+                    .encode_value_for_tree_keys(&status)
+                    .is_ok(),
+                "status {status:?} must encode against the protocol 13 schema"
+            );
+        }
+    }
+
+    /// Regression: the DPNS fallback confirmed the SDK's version, which starts
+    /// at the local seed (14 on devnet), as the network's proved version. A
+    /// fresh SDK has verified nothing, so nothing is proved.
+    #[test]
+    fn a_fresh_sdk_proves_no_protocol_version() {
+        let sdk = Sdk::new_mock();
+        assert_ne!(
+            sdk.protocol_version_number(),
+            0,
+            "precondition: a seeded SDK"
+        );
+        assert_eq!(network_proved_protocol_version(&sdk), None);
+    }
 
     /// The limit is whatever the network's own protocol version says it is,
     /// never a version fixed in this build: protocol 13 reports a flat 2000

@@ -2574,9 +2574,7 @@ pub enum TaskError {
 
     /// The document type charges an action fee and the transition carried no
     /// agreement to it.
-    #[error(
-        "This contract charges a fee for this action, and the request did not include your agreement to it. Try again and confirm the contract fee when asked."
-    )]
+    #[error("{}", crate::model::fee_estimation::ActionFeeAgreementError::NotConfirmed)]
     DocumentActionFeeNotAgreed {
         #[source]
         source_error: Box<SdkError>,
@@ -2584,9 +2582,7 @@ pub enum TaskError {
 
     /// The fee the transition agreed to differs from the one the document
     /// type declares, typically because the contract changed meanwhile.
-    #[error(
-        "The contract fee for this action is not the one you agreed to, because the contract changed. Reload the contract to see its current fee, then try again."
-    )]
+    #[error("{}", crate::model::fee_estimation::ActionFeeAgreementError::Outdated)]
     DocumentActionFeeChanged {
         #[source]
         source_error: Box<SdkError>,
@@ -7173,6 +7169,28 @@ mod tests {
             message: "rejected".to_string(),
             cause: Some(cause),
         })
+    }
+
+    /// A missing or outdated fee agreement reads the same whether this app or
+    /// the network refuses it, so the user gets one instruction for each.
+    #[test]
+    fn fee_agreement_refusals_read_the_same_locally_and_from_the_network() {
+        use crate::model::fee_estimation::ActionFeeAgreementError;
+        let source = || Box::new(SdkError::Generic("refused".to_string()));
+        assert_eq!(
+            TaskError::DocumentActionFeeNotAgreed {
+                source_error: source()
+            }
+            .to_string(),
+            ActionFeeAgreementError::NotConfirmed.to_string()
+        );
+        assert_eq!(
+            TaskError::DocumentActionFeeChanged {
+                source_error: source()
+            }
+            .to_string(),
+            ActionFeeAgreementError::Outdated.to_string()
+        );
     }
 
     /// The protocol-version-14 refusals of signing keys and of contract and

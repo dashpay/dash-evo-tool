@@ -1431,19 +1431,21 @@ pub fn document_action_fee_quote(
 /// The network refuses the same two cases
 /// (`TaskError::DocumentActionFeeNotAgreed`, `TaskError::DocumentActionFeeChanged`)
 /// with this same text. Either way the app's copy of the contract may be
-/// out of date, so the instruction is to reload it.
+/// out of date. Loading a contract that is already stored keeps the stored
+/// copy, so the instruction is to remove it on the Contracts screen and load
+/// it again.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionFeeAgreementError {
     /// The document type charges a fee for the action and no agreement was
     /// given: the user never confirmed it.
     #[error(
-        "This contract charges a fee for this action that you have not agreed to. Reload the contract to see its current fee, then try again and confirm it when asked."
+        "This contract charges a fee for this action that you have not agreed to. On the Contracts screen, remove the contract and load it again to see its current fee, then try again and confirm the fee when asked."
     )]
     NotConfirmed,
     /// The agreement names another fee than the document type declares, so
     /// the contract changed after the user confirmed.
     #[error(
-        "The contract fee for this action changed after you confirmed it. Reload the contract to see its current fee, then try again."
+        "The contract fee for this action changed after you confirmed it. On the Contracts screen, remove the contract and load it again to see its current fee, then try again."
     )]
     Outdated,
 }

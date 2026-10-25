@@ -388,8 +388,9 @@ pub struct AppContext {
     /// Serialises connection rebuilds ([`Self::reinit_core_client_and_sdk`]):
     /// two rebuilds retargeting the SDK's shared DAPI address list at once
     /// could each remove the other's addresses and leave a mixed or empty
-    /// list. Held across the whole rebuild, which never awaits; taken before
-    /// any other lock of this context, never under one.
+    /// list. The config is read under it, so the last rebuild applies the
+    /// newest addresses. Held across the whole rebuild, which never awaits;
+    /// taken before any other lock of this context, never under one.
     connection_rebuild: Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs

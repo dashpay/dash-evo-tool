@@ -1,11 +1,9 @@
-//! One DAPI address list per network context.
+//! Moving the SDK to new DAPI addresses without replacing it.
 //!
 //! Every `Sdk` clone shares its DAPI address list (the addresses, their ban
-//! state and the request rotation). The wallet backend and the upstream
-//! wallet components it feeds hold clones of the SDK they were built with
-//! and cannot be handed a new one, so a connection rebuild updates that list
-//! in place and builds the new SDK over it: every SDK of the context then
-//! reads the same addresses and the same bans.
+//! state and the request rotation), and each request picks its address from
+//! that list. Changing the list in place therefore moves every clone, the
+//! wallet backend's and the upstream wallet components' included.
 
 use dash_sdk::dapi_client::{Address, AddressList};
 

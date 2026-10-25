@@ -2,6 +2,7 @@
 //! fees have paid into its owner pot and its moderators pot, and paying a pot
 //! out to its recipients.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::backend_task::BackendTaskSuccessResult;
@@ -13,6 +14,7 @@ use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::contract_fee_pots::ContractFeePots;
@@ -90,9 +92,7 @@ impl AppContext {
             .await?;
 
         let claimant_balance = claimed.balances.get(&identity_id).copied();
-        if let Some(balance) = claimant_balance {
-            self.persist_claimant_balance(&identity_id, balance)?;
-        }
+        self.persist_paid_balances(&identity_id, &claimed.balances)?;
 
         Ok(BackendTaskSuccessResult::ContractFeesClaimed {
             contract_id,
@@ -101,27 +101,42 @@ impl AppContext {
             remaining_credits: claimed.remaining_credits,
         })
     }
-}
 
-impl AppContext {
-    /// Store `balance`, the claimant's balance after a claim the network
-    /// paid out, on the record of `identity_id`. The claim is already paid
-    /// out, so a failure here is reported as
-    /// [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not as a failed
-    /// claim.
-    fn persist_claimant_balance(
+    /// Store the balances after a claim the network paid out (`balances`,
+    /// from the proof) on the records of the paid identities kept on this
+    /// device; paid identities not kept here are skipped, but `claimant` must
+    /// be kept here. The claim is already paid out, so a failure here is
+    /// reported as [`TaskError::ContractFeesClaimedButBalanceNotSaved`], not
+    /// as a failed claim.
+    fn persist_paid_balances(
         &self,
-        identity_id: &Identifier,
-        balance: dash_sdk::dpp::fee::Credits,
+        claimant: &Identifier,
+        balances: &BTreeMap<Identifier, Credits>,
     ) -> Result<(), TaskError> {
-        self.edit_local_qualified_identity(identity_id, |fresh| {
-            fresh.identity.set_balance(balance);
-            Ok(())
-        })
-        .map(|_| ())
-        .map_err(|source| TaskError::ContractFeesClaimedButBalanceNotSaved {
-            source: Box::new(source),
-        })
+        // Every write is tried, so one failure does not leave the other
+        // paid identities stale; the first failure is reported.
+        let mut first_failure = None;
+        for (identity_id, balance) in balances {
+            let saved = self.edit_local_qualified_identity(identity_id, |fresh| {
+                fresh.identity.set_balance(*balance);
+                Ok(())
+            });
+            match saved {
+                Ok(_) => {}
+                // A paid co-recipient not kept on this device has no record
+                // to update.
+                Err(TaskError::IdentityNotFoundLocally) if identity_id != claimant => {}
+                Err(source) => {
+                    first_failure.get_or_insert(source);
+                }
+            }
+        }
+        match first_failure {
+            None => Ok(()),
+            Some(source) => Err(TaskError::ContractFeesClaimedButBalanceNotSaved {
+                source: Box::new(source),
+            }),
+        }
     }
 }
 
@@ -161,7 +176,8 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
 
         // Nothing is stored for this identity, so the write fails.
-        let result = ctx.persist_claimant_balance(&Identifier::random(), 1_000);
+        let claimant = Identifier::random();
+        let result = ctx.persist_paid_balances(&claimant, &BTreeMap::from([(claimant, 1_000)]));
 
         assert!(
             matches!(
@@ -169,6 +185,39 @@ mod tests {
                 Err(TaskError::ContractFeesClaimedButBalanceNotSaved { .. })
             ),
             "got {result:?}"
+        );
+    }
+
+    /// The proof carries the new balance of every identity the pot paid: each
+    /// one kept on this device is updated, not only the claimant's, and the
+    /// paid identities not kept here are skipped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_claim_stores_the_new_balance_of_every_paid_identity_kept_here() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
+        let [claimant, co_moderator, stranger] = [1, 2, 3].map(|byte| Identifier::new([byte; 32]));
+        for id in [claimant, co_moderator] {
+            let identity = crate::context::test_support::bare_user_identity(id, ctx.network);
+            ctx.insert_local_qualified_identity(&identity, &None)
+                .expect("identity stored");
+        }
+        let balances =
+            BTreeMap::from([(claimant, 1_000), (co_moderator, 2_000), (stranger, 3_000)]);
+
+        ctx.persist_paid_balances(&claimant, &balances)
+            .expect("balances saved");
+
+        let balance = |id| {
+            ctx.get_local_qualified_identity(&id)
+                .expect("read")
+                .map(|stored| stored.identity.balance())
+        };
+        assert_eq!(balance(claimant), Some(1_000));
+        assert_eq!(balance(co_moderator), Some(2_000));
+        assert_eq!(
+            balance(stranger),
+            None,
+            "an identity not kept here is not added"
         );
     }
 

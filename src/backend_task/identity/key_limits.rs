@@ -215,34 +215,15 @@ fn remaining_budgets_by_key(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
     use crate::backend_task::identity::IdentityTask;
     use crate::backend_task::{BackendTask, BackendTaskContext};
-    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
 
-    pub(crate) fn user_identity() -> QualifiedIdentity {
-        let identity =
-            Identity::create_basic_identity(Identifier::random(), PlatformVersion::latest())
-                .expect("basic identity");
-        QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        }
+    fn user_identity() -> QualifiedIdentity {
+        crate::context::test_support::bare_user_identity(Identifier::random(), Network::Testnet)
     }
 
     /// A reviewed signer replaced on Platform asks for a fresh review; only

@@ -7,7 +7,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_limits::{
-    KeyLimitsError, limits_allowed, new_key_limits, parse_key_validity_days,
+    KeyLimitsError, key_with_limits, limits_allowed, new_key_limits, parse_key_validity_days,
 };
 use crate::model::identity_key_usability::now_ms;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
@@ -32,7 +32,6 @@ use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -380,10 +379,11 @@ impl AddKeyScreen {
             return self.dispatch_add(BackendTask::IdentityTask(
                 IdentityTask::AddDerivedKeyToIdentity {
                     identity: self.identity.clone(),
-                    key: QualifiedIdentityPublicKey::from(
-                        dash_sdk::platform::IdentityPublicKey::from(new_key)
-                            .with_limits(limits.0, limits.1),
-                    ),
+                    key: QualifiedIdentityPublicKey::from(key_with_limits(
+                        new_key.into(),
+                        limits.0,
+                        limits.1,
+                    )),
                     index,
                     expected_key_id: self.derivation.expected_key_id(),
                 },
@@ -435,11 +435,8 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let identity_public_key = match limits {
-                            (None, None) => IdentityPublicKey::from(new_key),
-                            (total_budget, expires_at) => IdentityPublicKey::from(new_key)
-                                .with_limits(total_budget, expires_at),
-                        };
+                        let identity_public_key =
+                            key_with_limits(new_key.into(), limits.0, limits.1);
                         let new_qualified_key = QualifiedIdentityPublicKey {
                             identity_public_key,
                             in_wallet_at_derivation_path: None,
@@ -703,14 +700,19 @@ impl AddKeyScreen {
         }
     }
 
+    /// Dispatches `task` as this screen's add, bound to a fresh dispatch
+    /// context that alone settles it.
     fn dispatch_add(&mut self, task: BackendTask) -> AppAction {
         self.add_dispatch.dispatch(task)
     }
 
+    /// Whether `context` is this screen's in-flight add; takes it, so each
+    /// dispatch settles the add once.
     fn take_own_add(&mut self, context: &BackendTaskContext) -> bool {
         self.add_dispatch.settle(context).is_some()
     }
 
+    /// Why the Add Key button is disabled, or `None` when it is enabled.
     fn add_blocked_reason(&self) -> Option<&'static str> {
         if self.add_key_status == AddKeyStatus::WaitingForResult {
             return Some("The key is being added. Wait for it to finish.");
@@ -742,11 +744,14 @@ impl AddKeyScreen {
         }
     }
 
+    /// Reload the identity from local storage and recompute the chooser.
     fn reload_identity(&mut self) {
         self.load_identity();
         self.derivation.reload(&self.app_context, &self.identity);
     }
 
+    /// Reload the identity from local storage; keeps the current copy when it
+    /// is not stored here.
     fn load_identity(&mut self) {
         match self
             .app_context
@@ -2149,33 +2154,13 @@ mod tests {
     /// under the field like the app's other form fields.
     #[test]
     fn a_mistyped_expiry_is_reported_under_its_field() {
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
         context.set_platform_protocol_version(14);
-        let identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity(
-                dash_sdk::platform::Identifier::new([0xA1; 32]),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
+        let identity = crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::new([0xA1; 32]),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
         let mut screen = AddKeyScreen::new(identity, &context);
         screen.purpose = Purpose::AUTHENTICATION;
         screen.security_level = SecurityLevel::HIGH;

@@ -235,6 +235,45 @@ async fn a_document_is_created_in_the_protocol_13_encoding() {
     );
 }
 
+/// A key added without limits, from a wallet or a private key, goes out on a
+/// protocol 13 network as a version 0 key, the only version it decodes.
+#[tokio::test]
+async fn a_key_added_without_limits_goes_out_as_version_0() {
+    use crate::model::identity_key_limits::key_with_limits;
+
+    let (_tmp, _ctx, platform_version) = mainnet_context();
+    let mut identity = Identity::create_basic_identity(Identifier::from([5; 32]), platform_version)
+        .expect("identity");
+    identity.add_public_key(plain_key(0, SecurityLevel::MASTER));
+    let added = key_with_limits(plain_key(1, SecurityLevel::HIGH), None, None);
+
+    let transition = IdentityUpdateTransition::try_from_identity_with_signer(
+        &identity,
+        &0,
+        vec![added],
+        vec![],
+        1,
+        UserFeeIncrease::default(),
+        &PlaceholderSigner,
+        platform_version,
+        None,
+    )
+    .await
+    .expect("a plain key update builds on protocol 13");
+
+    let StateTransition::IdentityUpdate(IdentityUpdateTransition::V0(update)) = transition else {
+        panic!("expected a version 0 identity update, got {transition:?}");
+    };
+    assert!(
+        matches!(
+            update.add_public_keys[0],
+            IdentityPublicKeyInCreation::V0(_)
+        ),
+        "a key without limits must go out as version 0: {:?}",
+        update.add_public_keys[0]
+    );
+}
+
 /// A key with limits built at protocol 13 (the feature gate and the SDK's
 /// version can disagree during the 13 → 14 switch) is either refused or keeps
 /// its limits; it never goes out as an unlimited version 0 key.

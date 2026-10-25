@@ -6,7 +6,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::derived_identity_key::{
     derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
-use crate::model::identity_key_limits::validate_key_limits;
+use crate::model::identity_key_limits::{key_with_limits, validate_key_limits};
 use crate::model::identity_key_usability::now_ms;
 use crate::model::qualified_identity::PrivateKeyTarget::{self, PrivateKeyOnMainIdentity};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -194,6 +194,12 @@ impl AppContext {
         mut public_key_to_add: QualifiedIdentityPublicKey,
         material: NewKeyMaterial,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // A key without limits goes out as a version 0 key, the only version
+        // a protocol 13 network decodes.
+        let key = &public_key_to_add.identity_public_key;
+        public_key_to_add.identity_public_key =
+            key_with_limits(key.clone(), key.total_budget(), key.expires_at());
+
         // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
         // for and VERIFY its object password up front; a headless host or a
@@ -1917,7 +1923,10 @@ mod tests {
         // Not known yet (0), and mainnet's 13.
         for version in [0, 13] {
             ctx.set_platform_protocol_version(version);
-            let identity = super::super::key_limits_test_identity();
+            let identity = crate::context::test_support::bare_user_identity(
+                Identifier::random(),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+            );
             let result = ctx
                 .add_key_to_identity(&sdk, identity, key_with_limits(Some(1)), [1; 32])
                 .await;
@@ -1935,7 +1944,10 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.set_platform_protocol_version(dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14);
         let sdk = dash_sdk::Sdk::new_mock();
-        let identity = super::super::key_limits_test_identity();
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::random(),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
 
         let result = ctx
             .add_key_to_identity(&sdk, identity, key_with_limits(Some(0)), [1; 32])

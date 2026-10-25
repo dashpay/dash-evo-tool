@@ -14,10 +14,13 @@ stored in table/index/trigger order. Refinery history uses its SipHasher13
 hash over migration name, i32 version and rendered SQL. Timestamps and the
 store-generation token are deterministic fixture values.
 
-The production bridge compares these exact histories and materialized
-schemas before translating data. The destination itself is created by the
-current public `SqlitePersister::open`, not by the fixture SQL. Updating
-either schema revision requires reviewing and regenerating these guards.
+The production bridge compares the source history and schema in
+`67d4ef3.sql`, and the destination guard `033ecae.sql` described below,
+before translating data. No code reads `e3cd7cf.sql` any more: it is kept
+as the reference for the V001–V018 migration names and checksums. The
+destination itself is created by the current public `SqlitePersister::open`,
+not by the fixture SQL. Updating either schema revision requires reviewing
+and regenerating these guards.
 The current destination guard is `033ecae.sql`, captured from an empty database
 opened by `SqlitePersister::open` at Platform revision
 `033ecaee2f3badc8e04ff8be664062f33516e3e4`. The V001–V018 migration names and

@@ -2149,6 +2149,12 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token contract errors
     // ──────────────────────────────────────────────────────────────────────────
+    /// A token configuration change the app cannot make yet (the shielded
+    /// pool settings), refused by `validate_supported_change` in
+    /// `backend_task/tokens/update_token_config.rs` before anything is signed.
+    #[error("The app cannot change this token setting yet. Choose another setting to update.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// A token at the expected position was not found in the contract.
     #[error(
         "Token at position {position} was not found in the contract. Please reload the contract and retry."
@@ -2776,9 +2782,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
-    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
-    TokenShieldedConfigurationUnsupported,
-
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },

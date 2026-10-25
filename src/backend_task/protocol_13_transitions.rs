@@ -273,6 +273,7 @@ async fn a_limited_key_built_at_protocol_13_never_loses_its_limits() {
     };
     assert_eq!(added.total_budget(), Some(5_000));
     assert_eq!(added.expires_at(), Some(2_000_000_000_000));
+}
 
 /// A contested username is created on a protocol 13 network the way
 /// `BroadcastDocument` creates it, with the contest fund DET states: in the

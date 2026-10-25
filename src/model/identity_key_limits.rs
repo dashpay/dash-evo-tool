@@ -14,6 +14,8 @@
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
 use dash_sdk::dpp::identity::{IdentityPublicKey, KeyID, Purpose, SecurityLevel, TimestampMillis};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -104,7 +106,8 @@ pub fn contract_bounds_allowed(
     }
 }
 
-/// Check the limits a key to be added carries, as Platform will.
+/// Check the limits a key to be added carries, as Platform will, and that
+/// it expires within [`MAX_KEY_VALIDITY_DAYS`].
 pub fn validate_key_limits(
     key: &IdentityPublicKey,
     now_ms: TimestampMillis,
@@ -126,6 +129,17 @@ pub fn validate_key_limits(
         .is_some_and(|expires_at| expires_at <= now_ms)
     {
         return Err(KeyLimitsError::ExpiryNotInFuture);
+    }
+    // The form's bound, re-checked here for every caller: an expiry
+    // further away is almost certainly a typo.
+    let longest = days_after(now_ms, MAX_KEY_VALIDITY_DAYS).unwrap_or(TimestampMillis::MAX);
+    if key
+        .expires_at()
+        .is_some_and(|expires_at| expires_at > longest)
+    {
+        return Err(KeyLimitsError::TooManyDays {
+            max: MAX_KEY_VALIDITY_DAYS,
+        });
     }
     Ok(())
 }
@@ -201,6 +215,11 @@ pub fn parse_key_validity_days(input: &str) -> Result<u32, KeyLimitsError> {
         .trim()
         .parse()
         .map_err(|_| KeyLimitsError::DaysNotANumber)?;
+    check_validity_days(days)
+}
+
+/// `days` when it is a validity of 1 to [`MAX_KEY_VALIDITY_DAYS`] days.
+fn check_validity_days(days: u32) -> Result<u32, KeyLimitsError> {
     match days {
         0 => Err(KeyLimitsError::ZeroDays),
         days if days > MAX_KEY_VALIDITY_DAYS => Err(KeyLimitsError::TooManyDays {
@@ -215,6 +234,47 @@ fn days_after(from_ms: TimestampMillis, days: u32) -> Result<TimestampMillis, Ke
         .checked_mul(DAY_MS)
         .and_then(|span| from_ms.checked_add(span))
         .ok_or(KeyLimitsError::ExpiryOverflow)
+}
+
+/// `key` carrying `total_budget` and `expires_at`. A key with neither is a
+/// version 0 key: protocol 13 decodes only version 0 keys, and upstream's
+/// `IdentityPublicKey::with_limits` makes a version 1 key even when both are
+/// `None`, which an identity update then sends as is.
+pub fn key_with_limits(
+    key: IdentityPublicKey,
+    total_budget: Option<Credits>,
+    expires_at: Option<TimestampMillis>,
+) -> IdentityPublicKey {
+    match (key, total_budget, expires_at) {
+        (
+            IdentityPublicKey::V1(IdentityPublicKeyV1 {
+                id,
+                purpose,
+                security_level,
+                contract_bounds,
+                key_type,
+                read_only,
+                data,
+                disabled_at,
+                total_budget: _,
+                expires_at: _,
+            }),
+            None,
+            None,
+        ) => IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level,
+            contract_bounds,
+            key_type,
+            read_only,
+            data,
+            disabled_at,
+        }
+        .into(),
+        (key @ IdentityPublicKey::V0(_), None, None) => key,
+        (key, total_budget, expires_at) => key.with_limits(total_budget, expires_at),
+    }
 }
 
 /// The limits for a new key: `total_budget` credits, and an expiry
@@ -239,13 +299,7 @@ pub fn new_key_limits(
         return Err(KeyLimitsError::ZeroBudget);
     }
     let expires_at = validity_days
-        .map(|days| match days {
-            0 => Err(KeyLimitsError::ZeroDays),
-            days if days > MAX_KEY_VALIDITY_DAYS => Err(KeyLimitsError::TooManyDays {
-                max: MAX_KEY_VALIDITY_DAYS,
-            }),
-            days => days_after(now_ms, days),
-        })
+        .map(|days| days_after(now_ms, check_validity_days(days)?))
         .transpose()?;
     Ok((total_budget, expires_at))
 }
@@ -281,15 +335,7 @@ pub fn raised_key_limits(
     let expires_at = extend_days
         .map(|days| {
             let current = key.expires_at().ok_or(KeyLimitsError::NoExpiryToExtend)?;
-            if days == 0 {
-                return Err(KeyLimitsError::ZeroDays);
-            }
-            if days > MAX_KEY_VALIDITY_DAYS {
-                return Err(KeyLimitsError::TooManyDays {
-                    max: MAX_KEY_VALIDITY_DAYS,
-                });
-            }
-            days_after(current.max(now_ms), days)
+            days_after(current.max(now_ms), check_validity_days(days)?)
         })
         .transpose()?;
 
@@ -391,7 +437,6 @@ impl KeyLimitsRaise {
 mod tests {
     use super::*;
     use dash_sdk::dpp::identity::KeyType;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 
     const NOW: u64 = 1_758_000_000_000;
 
@@ -407,6 +452,25 @@ mod tests {
             disabled_at: None,
         })
         .with_limits(total_budget, expires_at)
+    }
+
+    /// Regression: a wallet key added without limits was built as a version 1
+    /// key, which a protocol 13 network cannot decode.
+    #[test]
+    fn a_key_without_limits_is_a_version_0_key() {
+        assert!(matches!(
+            key_with_limits(key(None, None), None, None),
+            IdentityPublicKey::V0(_)
+        ));
+        let limited = key(Some(5), None);
+        assert!(matches!(limited, IdentityPublicKey::V1(_)));
+        assert!(matches!(
+            key_with_limits(limited, None, None),
+            IdentityPublicKey::V0(_)
+        ));
+        let with_limits = key_with_limits(key(None, None), Some(5), Some(NOW));
+        assert_eq!(with_limits.total_budget(), Some(5));
+        assert_eq!(with_limits.expires_at(), Some(NOW));
     }
 
     #[test]
@@ -686,6 +750,20 @@ mod tests {
             ),
             Err(KeyLimitsError::NotAllowedForKey { .. })
         ));
+    }
+
+    /// The backend refuses an expiry further away than the form allows, so a
+    /// caller other than the form cannot set one centuries away.
+    #[test]
+    fn a_new_key_expiring_beyond_the_longest_validity_is_refused() {
+        let longest = NOW + u64::from(MAX_KEY_VALIDITY_DAYS) * DAY_MS;
+        assert_eq!(validate_key_limits(&key(None, Some(longest)), NOW), Ok(()));
+        assert_eq!(
+            validate_key_limits(&key(None, Some(longest + 1)), NOW),
+            Err(KeyLimitsError::TooManyDays {
+                max: MAX_KEY_VALIDITY_DAYS
+            })
+        );
     }
 
     #[test]

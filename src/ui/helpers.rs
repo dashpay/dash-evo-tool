@@ -528,10 +528,7 @@ fn render_key_combo(
                 // A key Platform may refuse stays selectable (the user may know
                 // better, e.g. a contract group that covers this contract), but
                 // its entry says why it may not work.
-                let label = match caveats.first() {
-                    Some(caveat) => format!("{label} ({tag})", tag = key_caveat_tag(caveat)),
-                    None => label,
-                };
+                let label = key_entry_label(&label, caveats.first());
 
                 if kui
                     .selectable_label(selected_key.as_ref() == Some(key), label)
@@ -563,15 +560,17 @@ fn offered_for_manual_choice(caveats: &[KeyCaveat]) -> bool {
         .any(|caveat| matches!(caveat, KeyCaveat::OutOfBounds))
 }
 
-/// A one- or two-word tag for a key list entry, naming the most severe caveat.
-fn key_caveat_tag(caveat: &KeyCaveat) -> &'static str {
+/// A key list entry for the key labelled `label`, naming its most severe
+/// caveat. Each entry is one complete template, so it translates as a unit.
+fn key_entry_label(label: &str, caveat: Option<&KeyCaveat>) -> String {
     match caveat {
-        KeyCaveat::Disabled => "disabled",
-        KeyCaveat::Expired { .. } => "expired",
-        KeyCaveat::OutOfBounds => "other contract",
-        KeyCaveat::ContractGroupBound { .. } => "contract group",
-        KeyCaveat::Budgeted { .. } => "spending limit",
-        KeyCaveat::Expiring { .. } => "expires",
+        Some(KeyCaveat::Expired { .. }) => format!("{label} (expired)"),
+        Some(KeyCaveat::ContractGroupBound { .. }) => format!("{label} (contract group)"),
+        Some(KeyCaveat::Budgeted { .. }) => format!("{label} (spending limit)"),
+        Some(KeyCaveat::Expiring { .. }) => format!("{label} (expires)"),
+        // Disabled keys and keys bound to another contract or document type
+        // are never listed, so no entry names them.
+        Some(KeyCaveat::Disabled | KeyCaveat::OutOfBounds) | None => label.to_string(),
     }
 }
 

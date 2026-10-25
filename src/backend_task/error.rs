@@ -2149,6 +2149,12 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token contract errors
     // ──────────────────────────────────────────────────────────────────────────
+    /// A token configuration change the app cannot make yet (the shielded
+    /// pool settings), refused by `validate_supported_change` in
+    /// `backend_task/tokens/update_token_config.rs` before anything is signed.
+    #[error("The app cannot change this token setting yet. Choose another setting to update.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// A token at the expected position was not found in the contract.
     #[error(
         "Token at position {position} was not found in the contract. Please reload the contract and retry."
@@ -2606,7 +2612,7 @@ pub enum TaskError {
     /// MASTER key, or a CRITICAL authentication key with no limits and no
     /// contract bounds.
     #[error(
-        "Changing key limits needs this identity's master key, or a critical key without limits. Import one of them on this device, then try again."
+        "Changing key limits needs this identity's master key, or a critical key that has no limits and is not limited to a contract. Import one of them on this device, then try again."
     )]
     NoKeyLimitsSigningKey,
 
@@ -2675,12 +2681,22 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// Platform refused limits on a key that may not carry them, a zero
-    /// budget, or a limits update that changes nothing.
+    /// Platform refused limits on a key that may not carry them, or a zero
+    /// budget.
     #[error(
         "The network refused these key limits. Only authentication keys below the master level can have them, and a spending limit must be above zero. Adjust the limits, then try again."
     )]
     KeyLimitsRefused {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform refused a key limits update that raises nothing.
+    #[error(
+        "The network refused this change because it raises nothing. Enter an amount to add to the spending limit or a number of days to extend the expiry, then try again."
+    )]
+    KeyLimitsUpdateEmpty {
         key_id: KeyID,
         #[source]
         source_error: Box<SdkError>,
@@ -2857,9 +2873,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
-    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
-    TokenShieldedConfigurationUnsupported,
-
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
@@ -4690,9 +4703,11 @@ impl From<SdkError> for TaskError {
                         e,
                     )) => {
                         let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
-                            key_id,
-                            source_error,
+                        Some(Box::new(move |source_error| {
+                            TaskError::KeyLimitsUpdateEmpty {
+                                key_id,
+                                source_error,
+                            }
                         }))
                     }
                     ConsensusError::StateError(StateError::IdentityPublicKeyIsDisabledError(e)) => {
@@ -7488,7 +7503,7 @@ mod tests {
                 matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
             }),
             (IdentityKeyLimitsUpdateEmptyError::new(8).into(), |e| {
-                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
+                matches!(e, TaskError::KeyLimitsUpdateEmpty { key_id: 8, .. })
             }),
             (IdentityPublicKeyIsDisabledError::new(8).into(), |e| {
                 matches!(e, TaskError::IdentityKeyDisabled { key_id: 8, .. })

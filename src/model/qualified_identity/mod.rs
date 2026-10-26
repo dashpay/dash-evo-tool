@@ -985,7 +985,6 @@ impl QualifiedIdentity {
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =
@@ -1007,7 +1006,6 @@ impl QualifiedIdentity {
                     let Some(seed) = plaintext.expose_hd_seed() else {
                         return Ok(None);
                     };
-
                     for identity_index in 0..10u32 {
                         let correct_path = DP::identity_authentication_path(
                             network,

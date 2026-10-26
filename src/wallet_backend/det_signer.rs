@@ -207,7 +207,6 @@ impl Signer for DetSigner<'_> {
         sighash: [u8; 32],
     ) -> Result<(EcdsaSignature, EcdsaPublicKey), Self::Error> {
         let secret = self.derive_secret(path)?;
-
         let msg = message_from_digest(sighash)?;
         let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(msg, &secret);
         let public_key = PublicKey::from_secret_key(&secret);
@@ -341,7 +340,6 @@ mod tests {
             // Independent reference: derive the key directly from the seed at
             // the path, then sign + recover the public key with the same
             // secp256k1 primitive `DetSigner` uses internally.
-
             let reference_sk = secp256k1::SecretKey::from_secret_bytes(
                 *path
                     .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
@@ -396,7 +394,6 @@ mod tests {
         for network in [Network::Testnet, Network::Mainnet] {
             // Independent reference: derive the xprv straight from the seed at
             // the path, then convert to the xpub with the same primitive.
-
             let reference_xprv = path
                 .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
                 .expect("reference derive");
@@ -439,7 +436,6 @@ mod tests {
     #[test]
     fn hd_derivation_matches_pinned_vector() {
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
-
         let pk = path
             .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, Network::Testnet)
             .expect("derive")

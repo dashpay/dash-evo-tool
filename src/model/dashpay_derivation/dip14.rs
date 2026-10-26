@@ -116,7 +116,6 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))?;
 
     // Derive to the account level using standard BIP32
-
     let account_xprv = master_xprv.derive_priv(&base_path)?;
 
     // Now use DIP-14 256-bit derivation for the identity levels

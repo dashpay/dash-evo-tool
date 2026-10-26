@@ -1,5 +1,5 @@
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::ecdsa::EcdsaPublicKey;
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
@@ -11,7 +11,6 @@ use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKe
 use dash_sdk::platform::Identifier;
 
 use super::DerivationError;
-use crate::model::erased_secret_key::ErasedSecretKey;
 
 /// Perform DIP-14 compliant 256-bit child key derivation for private keys
 ///
@@ -63,10 +62,8 @@ pub fn ckd_priv_256(
 
     // Parse I_L as a private key (refusing zero and values >= n) and add it
     // to the parent key.
-    let i_l: &[u8; 32] = i_l
-        .try_into()
-        .map_err(|_| dash_sdk::dpp::secp256k1::Error::InvalidSecretKey)?;
-    ErasedSecretKey::from_secret_bytes(i_l)?;
+    let i_l: &[u8; 32] = i_l.try_into().map_err(|_| EcdsaError::InvalidSecretKey)?;
+    EcdsaSecretKey::from_bytes(i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
     let child_key = parent_key.private_key.add_tweak(i_l)?;

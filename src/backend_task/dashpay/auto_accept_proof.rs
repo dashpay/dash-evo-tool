@@ -1,7 +1,7 @@
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay_derivation::derive_auto_accept_key;
-use crate::model::erased_secret_key::ErasedSecretKey;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::secp256k1::Message;
@@ -210,15 +210,13 @@ pub fn create_auto_accept_proof_bytes_with_key(
     hasher.update(&message_data);
     let message_hash = hasher.finalize();
 
-    // Create secp256k1 message and sign
-
-    let message = Message::from_digest(message_hash.into());
-
-    let secret_key = ErasedSecretKey::from_secret_bytes(signing_key_bytes)
+    // Sign the digest. The key erases itself when it drops. The signature is
+    // low-S with a low R ground as Dash Core grinds it; any ECDSA verifier
+    // accepts it.
+    let secret_key = EcdsaSecretKey::from_bytes(signing_key_bytes)
         .map_err(|e| format!("Failed to create secret key: {}", e))?;
 
-    let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret_key);
-    let sig_bytes = signature.serialize_compact();
+    let sig_bytes = secret_key.sign(&message_hash.into()).to_bytes();
 
     // Build the proof bytes
     let mut proof_bytes = Vec::new();
@@ -309,3 +307,59 @@ pub async fn verify_auto_accept_proof(
 }
 
 // No local persistence required
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey, ecdsa};
+
+    /// The proof's signature verifies, the way `verify_auto_accept_proof`
+    /// checks it, against the public key of the key it was signed with. The
+    /// signature is low-S with a low R ground as Dash Core grinds it; R lands
+    /// low half the time on its own, so this signs for many accounts.
+    #[test]
+    fn proof_signature_verifies_and_has_low_r() {
+        let key_bytes = [0x2Bu8; 32];
+        let public_key =
+            PublicKey::from_secret_key(&SecretKey::from_secret_bytes(key_bytes).expect("valid"));
+        let sender = Identifier::from([0x01; 32]);
+        let recipient = Identifier::from([0x02; 32]);
+        let expires_at = 1_900_000_000u64;
+
+        for account_reference in 0..32u32 {
+            let proof = create_auto_accept_proof_bytes_with_key(
+                expires_at,
+                &key_bytes,
+                &sender,
+                &recipient,
+                account_reference,
+            )
+            .expect("proof");
+
+            assert_eq!(proof[0], 0, "key type");
+            assert_eq!(
+                &proof[1..5],
+                &(expires_at as u32).to_be_bytes(),
+                "key index"
+            );
+            assert_eq!(proof[5], 64, "signature size");
+            assert_eq!(proof.len(), 6 + 64);
+
+            let mut message_data = Vec::new();
+            message_data.extend_from_slice(&sender.to_buffer());
+            message_data.extend_from_slice(&recipient.to_buffer());
+            message_data.extend_from_slice(&account_reference.to_le_bytes());
+            let digest: [u8; 32] = Sha256::digest(&message_data).into();
+
+            let signature = ecdsa::Signature::from_compact(&proof[6..]).expect("compact");
+            let mut normalized = signature;
+            normalized.normalize_s();
+            assert_eq!(normalized, signature, "high S for {account_reference}");
+            assert!(
+                ecdsa::verify(&signature, Message::from_digest(digest), &public_key).is_ok(),
+                "proof does not verify for {account_reference}"
+            );
+            assert!(proof[6] < 0x80, "R is not low for {account_reference}");
+        }
+    }
+}

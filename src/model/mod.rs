@@ -12,7 +12,6 @@ pub mod derived_identity_key;
 pub mod dpns;
 pub mod dpns_usernames;
 pub mod dpns_voting;
-pub(crate) mod erased_secret_key;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;

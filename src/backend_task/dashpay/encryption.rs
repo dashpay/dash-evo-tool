@@ -4,11 +4,40 @@ use cbc;
 use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::secp256k1::PublicKey;
+use dash_sdk::dpp::secp256k1::{self, PublicKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::model::erased_secret_key::ErasedSecretKey;
+/// A secp256k1 secret key erased when dropped, for the ECDH below.
+///
+/// `secp256k1::SecretKey` is `Copy` with no `Drop`, so a plain one would
+/// outlive the exchange in freed memory. Everywhere else DET uses the
+/// self-erasing `EcdsaSecretKey`, which has no ECDH; this keeps the raw
+/// secp256k1 ECDH (unchanged output) and overwrites the key once it is done.
+///
+/// The erase is best effort: it uses secp256k1's volatile `non_secure_erase`,
+/// and the compiler may still have moved the bytes elsewhere before. Not
+/// `Clone`/`Copy` on purpose, so the only copy is the one that gets erased.
+struct EcdhSecretKey(secp256k1::SecretKey);
+
+impl EcdhSecretKey {
+    /// Build a secret key from a 32-byte scalar, refusing zero and values not
+    /// below the curve order.
+    fn from_secret_bytes(scalar: &[u8; 32]) -> Result<Self, secp256k1::Error> {
+        secp256k1::SecretKey::from_secret_bytes(*scalar).map(Self)
+    }
+
+    /// Overwrite the held key. Called on drop.
+    fn erase(&mut self) {
+        self.0.non_secure_erase();
+    }
+}
+
+impl Drop for EcdhSecretKey {
+    fn drop(&mut self) {
+        self.erase();
+    }
+}
 
 /// Generate ECDH shared key according to DashPay DIP-15
 /// Uses libsecp256k1_ecdh method: SHA256((y[31]&0x1|0x2) || x)
@@ -21,7 +50,7 @@ pub fn generate_ecdh_shared_key(
     public_key: &IdentityPublicKey,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     // Parse the private key
-    let secret_key = ErasedSecretKey::from_secret_bytes(
+    let secret_key = EcdhSecretKey::from_secret_bytes(
         <&[u8; 32]>::try_from(private_key).map_err(|_| "Invalid private key length".to_string())?,
     )
     .map_err(|e| format!("Invalid private key: {}", e))?;
@@ -36,10 +65,7 @@ pub fn generate_ecdh_shared_key(
             // Perform ECDH to get shared secret. The 64-byte point is secret;
             // hold it in `Zeroizing` so it is wiped once the key is hashed out.
             let shared_secret = Zeroizing::new(
-                dash_sdk::dpp::secp256k1::ecdh::shared_secret_point(
-                    &public_key,
-                    &secret_key,
-                ),
+                secp256k1::ecdh::shared_secret_point(&public_key, &secret_key.0),
             );
 
             // Extract x and y coordinates (64 bytes total: 32 + 32)
@@ -298,6 +324,27 @@ mod tests {
     use super::*;
     use bip39::rand::{self, RngCore};
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+
+    /// The erase that `Drop` runs leaves none of the original key bytes
+    /// behind. Checked through `erase` itself, because reading a value after
+    /// its drop has run is not allowed.
+    #[test]
+    fn ecdh_secret_key_erase_overwrites_the_key() {
+        let scalar = [0x5a; 32];
+        let mut key = EcdhSecretKey::from_secret_bytes(&scalar).expect("valid scalar");
+        assert_eq!(key.0.to_secret_bytes(), scalar);
+
+        key.erase();
+
+        assert_ne!(key.0.to_secret_bytes(), scalar);
+    }
+
+    /// The ECDH key refuses the same invalid scalars secp256k1 does.
+    #[test]
+    fn ecdh_secret_key_rejects_invalid_scalar() {
+        assert!(EcdhSecretKey::from_secret_bytes(&[0; 32]).is_err());
+        assert!(EcdhSecretKey::from_secret_bytes(&[0xff; 32]).is_err());
+    }
 
     fn generate_test_shared_key() -> [u8; 32] {
         let mut shared_key = [0u8; 32];

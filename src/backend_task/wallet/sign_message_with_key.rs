@@ -45,11 +45,7 @@ impl AppContext {
                             tracing::warn!(error = %detail, "Sign-message secret key construction failed");
                             TaskError::WalletMessageSigningFailed
                         })?;
-                    Ok(dash_signed_message(
-                        message.as_str(),
-                        &secret_key,
-                        private_key.compressed,
-                    ))
+                    dash_signed_message(message.as_str(), &secret_key, private_key.compressed)
                 },
             )
             .await?;

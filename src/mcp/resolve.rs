@@ -349,7 +349,7 @@ async fn wait_for_spv_and_refresh_platform_info(
     }
 
     match protocol_refresh {
-        ProtocolRefresh::BestEffortIfUnpopulated if ctx.platform_protocol_version() == 0 => {
+        ProtocolRefresh::BestEffortIfUnpopulated if ctx.proven_protocol_version().is_none() => {
             let _ = refresh_platform_protocol_version(ctx).await;
             Ok(())
         }
@@ -376,7 +376,7 @@ async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), 
     })?;
 
     tracing::trace!(
-        protocol_version = ctx.platform_protocol_version(),
+        protocol_version = ?ctx.proven_protocol_version(),
         "Platform epoch information refreshed for headless feature gating"
     );
     Ok(())
@@ -449,12 +449,10 @@ mod tests {
 
     /// Mocks the DPNS-contract fetch that drives the protocol-version ratchet,
     /// the epoch task's fallback when the current epoch cannot be read (the
-    /// mock has no epoch response). The fallback takes only a version the SDK
+    /// mock has no epoch response). The app reads the version the SDK
     /// verified, and a mock expectation is made up, never verified, so the
-    /// SDK first accepts `LATEST_VERSION` from metadata it is told was proved,
-    /// as it does after a live network's quorum-signed response. A successful
-    /// fetch then ratchets the app exactly as a live network would; a failed
-    /// one leaves the version unconfirmed.
+    /// SDK accepts `LATEST_VERSION` from metadata it is told was proved, as
+    /// it does after a live network's quorum-signed response.
     async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
         let sdk = mock_sdk_with_unproved_dpns_contract(ctx).await;
         sdk.verify_response_metadata(
@@ -494,43 +492,29 @@ mod tests {
             .await
             .expect("refresh platform metadata");
 
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.proven_protocol_version(), None);
     }
 
+    /// Once SPV runs, the headless sync completes and reads the protocol
+    /// version the current SDK has proven; the fee multiplier stays at the
+    /// default without a proved epoch.
     #[tokio::test]
-    async fn headless_sync_populates_protocol_version_after_spv_is_running() {
+    async fn headless_sync_reads_the_proven_protocol_version_after_spv_is_running() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
         ctx.sdk
             .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
         ctx.connection_status().set_spv_status(SpvStatus::Running);
 
-        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
-
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("headless sync completion");
 
-        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
+        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION));
         assert_eq!(
             ctx.fee_multiplier_permille(),
             crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
         );
-    }
-
-    #[tokio::test]
-    async fn protocol_refresh_observes_activation_after_a_pre_activation_epoch() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.set_platform_protocol_version(LATEST_VERSION - 1);
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
-
-        refresh_platform_protocol_version(&ctx)
-            .await
-            .expect("refresh platform metadata");
-
-        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
     }
 
     #[tokio::test]
@@ -543,7 +527,7 @@ mod tests {
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("SPV readiness survives a Platform metadata failure");
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.proven_protocol_version(), None);
 
         ctx.sdk
             .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
@@ -551,7 +535,7 @@ mod tests {
             .await
             .expect("SPV readiness retries Platform metadata");
 
-        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
+        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION));
     }
 
     /// Insert a wallet straight into the in-memory map, bypassing registration

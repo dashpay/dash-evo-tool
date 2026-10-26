@@ -348,6 +348,8 @@ impl ContactData {
 /// One identity's contact request exchange with one counterparty: what an
 /// Accept, Decline or Cancel acts on. Platform holds at most one request each
 /// way between two identities, so the pair names the request.
+// TODO(upstream): dashpay/platform#5597 — platform-wallet's `ContactRequest`
+// carries no document id, so actions re-fetch the document by this pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContactRequestKey {
     /// The identity acting on the request.

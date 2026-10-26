@@ -40,8 +40,8 @@ pub(super) struct DashPaySnapshots {
     refreshed_after_pass: AtomicU64,
     /// Profiles of identities platform-wallet does not sync: those no wallet
     /// manages, and those whose wallet is not loaded (a locked one).
-    // TODO(upstream): wallet-less identities are not synced; drop this once
-    // platform-wallet syncs the profiles of its unowned identities.
+    // TODO(upstream): dashpay/platform#5600 — wallet-less identities are not
+    // synced; drop this once platform-wallet syncs their profiles.
     unsynced_profiles: std::sync::Mutex<BTreeMap<Identifier, ProfileState>>,
     /// Counterparties whose username was looked up this session.
     usernames_looked_up: std::sync::Mutex<BTreeSet<Identifier>>,
@@ -193,8 +193,9 @@ pub(super) fn build_snapshot(
 /// platform-wallet records the same payment under the bare txid. Where both
 /// exist the older entry is kept, since it carries the time this device saw
 /// the payment.
-// TODO(upstream): per-output payment keys; until platform-wallet keys
-// payments per output, the older composite entries shadow its bare-txid twin.
+// TODO(upstream): dashpay/platform#5601 — per-output payment keys; until
+// platform-wallet keys payments per output, the older composite entries
+// shadow its bare-txid twin.
 fn payments(
     owner: &Identifier,
     dashpay: &DashPayState,

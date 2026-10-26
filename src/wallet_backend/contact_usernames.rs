@@ -13,8 +13,9 @@
 //! The key and the leading `username` field are shared with the contact
 //! profile blobs older versions stored, so those still read as usernames.
 
-// TODO(upstream): carry the DPNS username on `ContactProfileEntry`; this
-// store is a stopgap until platform-wallet holds it.
+// TODO(upstream): dashpay/platform#5598 — carry the DPNS username on
+// `ContactProfileEntry`; this store is a stopgap until platform-wallet
+// holds it.
 
 use std::sync::Arc;
 

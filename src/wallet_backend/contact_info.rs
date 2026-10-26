@@ -95,7 +95,7 @@ impl WalletBackend {
     ///
     /// The details could not be persisted
     /// ([`TaskError::WalletBackend`]); those stored before the failure stay.
-    // TODO(upstream): dip15-contactinfo-reader — platform-wallet applies
+    // TODO(upstream): dashpay/platform#5595 — platform-wallet applies
     // contactInfo it decrypts itself, but not what a seedless wallet's host
     // decrypts; this writes the result DET opened through the same setter.
     pub(crate) async fn dashpay_apply_contact_details(
@@ -291,7 +291,7 @@ impl WalletBackend {
 
 /// Open `documents` (oldest first) through `crypto`; the newest readable
 /// document per contact wins.
-// TODO(upstream): dip15-contactinfo-reader — replace with a platform-wallet
+// TODO(upstream): dashpay/platform#5595 — replace with a platform-wallet
 // contactInfo-only, provider-backed read for seedless wallets once one exists;
 // platform-wallet's own drain is crate-private and runs unrelated contact work.
 // Upstream request drafted, not yet filed.

@@ -431,7 +431,7 @@ impl AppContext {
             }
         }
         record.identity = identity;
-        self.adopt_balance_observation_locked(&mut record, balance_provenance)?;
+        let pending = self.adopt_balance_observation_locked(&mut record, balance_provenance)?;
 
         // Both inserts refuse a slot another writer filled with a different
         // key meanwhile, before anything is sealed.
@@ -445,7 +445,8 @@ impl AppContext {
             record
                 .private_keys
                 .insert_wallet_derived(new_key, public_key.clone(), path)?;
-            return self.write_local_qualified_identity_locked(&record);
+            self.write_local_qualified_identity_locked(&record)?;
+            return self.seed_balance_watermark_locked(pending);
         };
         record
             .private_keys
@@ -481,7 +482,8 @@ impl AppContext {
             }
         }
 
-        self.write_local_qualified_identity_locked(&record)
+        self.write_local_qualified_identity_locked(&record)?;
+        self.seed_balance_watermark_locked(pending)
     }
 }
 

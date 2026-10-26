@@ -69,26 +69,36 @@ pub(super) fn reconcile_stored_balance(
     Ok(reconciled.credits)
 }
 
+/// The watermark of a balance observed before its identity had a stored
+/// record. A watermark binds only a stored record, so it is stored once that
+/// first record is written, by [`AppContext::seed_balance_watermark_locked`].
+#[must_use = "store it after the record write with `seed_balance_watermark_locked`"]
+pub(crate) struct PendingBalanceWatermark(Option<([u8; 32], BalanceWatermark)>);
+
 impl AppContext {
     /// Reconcile the balance `qualified_identity` carries from `provenance`
     /// against its stored watermark, and adopt the balance to keep. The
-    /// caller holds the identity's record lock and writes the record next.
+    /// caller holds the identity's record lock, writes the record next, and
+    /// then passes the result to [`Self::seed_balance_watermark_locked`].
     ///
-    /// An identity with no stored record is left as it is: its first record
-    /// takes the balance it carries, as every record did before heights were
-    /// tracked.
+    /// An identity with no stored record keeps the balance it carries; the
+    /// height it was observed at is returned, to be stored with that first
+    /// record.
     pub(crate) fn adopt_balance_observation_locked(
         &self,
         qualified_identity: &mut QualifiedIdentity,
         provenance: BalanceProvenance,
-    ) -> std::result::Result<(), TaskError> {
+    ) -> std::result::Result<PendingBalanceWatermark, TaskError> {
         let kv = self.det_kv()?;
         let id = qualified_identity.identity.id().to_buffer();
         if !kv
             .contains(DetScope::Identity(&id), IDENTITY_KEY)
             .map_err(identity_err)?
         {
-            return Ok(());
+            let first = reconcile_balance(None, qualified_identity.identity.balance(), provenance);
+            return Ok(PendingBalanceWatermark(
+                first.watermark.map(|watermark| (id, watermark)),
+            ));
         }
         let credits = reconcile_stored_balance(
             &kv,
@@ -98,6 +108,25 @@ impl AppContext {
             provenance,
         )?;
         qualified_identity.identity.set_balance(credits);
+        Ok(PendingBalanceWatermark(None))
+    }
+
+    /// Store the watermark `pending` carries, once the first record it belongs
+    /// to has been written. The caller holds the identity's record lock. A
+    /// write that was declined left no record, so no watermark is stored.
+    pub(crate) fn seed_balance_watermark_locked(
+        &self,
+        pending: PendingBalanceWatermark,
+    ) -> std::result::Result<(), TaskError> {
+        let Some((id, watermark)) = pending.0 else {
+            return Ok(());
+        };
+        let kv = self.det_kv()?;
+        let scope = DetScope::Identity(&id);
+        if kv.contains(scope, IDENTITY_KEY).map_err(identity_err)? {
+            kv.put(scope, BALANCE_WATERMARK_KEY, &watermark)
+                .map_err(identity_err)?;
+        }
         Ok(())
     }
 
@@ -113,8 +142,9 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.adopt_balance_observation_locked(qualified_identity, provenance)?;
-        self.write_local_qualified_identity_locked(qualified_identity)
+        let pending = self.adopt_balance_observation_locked(qualified_identity, provenance)?;
+        self.write_local_qualified_identity_locked(qualified_identity)?;
+        self.seed_balance_watermark_locked(pending)
     }
 
     /// [`Self::insert_local_qualified_identity`] for a record whose balance
@@ -130,11 +160,12 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.adopt_balance_observation_locked(qualified_identity, provenance)?;
+        let pending = self.adopt_balance_observation_locked(qualified_identity, provenance)?;
         self.insert_local_qualified_identity_under_lock(
             qualified_identity,
             wallet_and_identity_id_info,
-        )
+        )?;
+        self.seed_balance_watermark_locked(pending)
     }
 
     /// [`Self::edit_local_qualified_identity`] whose `edit` sets a balance
@@ -153,8 +184,9 @@ impl AppContext {
             .get_local_qualified_identity(identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         edit(&mut fresh)?;
-        self.adopt_balance_observation_locked(&mut fresh, provenance)?;
+        let pending = self.adopt_balance_observation_locked(&mut fresh, provenance)?;
         self.write_local_qualified_identity_locked(&fresh)?;
+        self.seed_balance_watermark_locked(pending)?;
         Ok(fresh)
     }
 }
@@ -371,6 +403,37 @@ mod tests {
             .expect("update it");
 
         assert_eq!(stored(&staged.ctx, &staged.id).identity.balance(), 7);
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// The first record stored for an identity keeps the height its balance
+    /// was observed at, so an older observation cannot replace it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_first_record_keeps_the_height_of_its_observation() {
+        let (staged, identity) = staged_with_balance(100).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        kv.delete(DetScope::Identity(&staged.id.to_buffer()), IDENTITY_KEY)
+            .expect("drop the record, leaving an identity this device never stored");
+
+        let mut loaded = identity.clone();
+        loaded.identity.set_balance(500);
+        staged
+            .ctx
+            .insert_local_qualified_identity_observed(
+                &mut loaded,
+                &None,
+                BalanceProvenance::ObservedAt(100),
+            )
+            .expect("store the first record");
+        let adopted = observe(
+            &staged.ctx,
+            &identity,
+            700,
+            BalanceProvenance::ObservedAt(90),
+        );
+
+        assert_eq!(stored(&staged.ctx, &staged.id).identity.balance(), 500);
+        assert_eq!(adopted, 500, "a lagging node's older balance is kept out");
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

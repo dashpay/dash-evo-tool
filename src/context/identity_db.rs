@@ -2023,7 +2023,8 @@ impl AppContext {
             );
             self.clear_identity_unloaded(&kv, &id)?;
         }
-        self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
 
         let existing: Option<StoredQualifiedIdentity> = kv
             .get(DetScope::Identity(&id), IDENTITY_KEY)
@@ -2057,6 +2058,7 @@ impl AppContext {
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
         }
+        self.seed_balance_watermark_locked(pending)?;
         Ok(true)
     }
 

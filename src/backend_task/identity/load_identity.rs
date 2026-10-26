@@ -483,16 +483,19 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         load_guard.ensure_current()?;
-        self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
         if load_mode != IdentityLoadMode::MergeIntoExisting {
             let existing = self.get_local_qualified_identity(&identity_id)?;
-            return self.persist_loaded_identity_locked(
+            let stored = self.persist_loaded_identity_locked(
                 qualified_identity,
                 existing,
                 encryption_password,
                 load_mode,
                 IdentityRecordWrite::Import,
-            );
+            )?;
+            self.seed_balance_watermark_locked(pending)?;
+            return Ok(stored);
         }
         // A scoped merge is a key fix-up of a listed identity; it must never
         // restore an identity removed while the network requests were in flight.
@@ -525,7 +528,7 @@ impl AppContext {
         qualified_identity.wallet_index = existing.wallet_index;
         qualified_identity.top_ups = existing.top_ups.clone();
         qualified_identity.status = existing.status;
-        match encryption_password {
+        let stored = match encryption_password {
             None => self.persist_merged_identity_locked(
                 qualified_identity,
                 Some(existing),
@@ -539,7 +542,9 @@ impl AppContext {
                 load_mode,
                 IdentityRecordWrite::UpdateListed,
             ),
-        }
+        }?;
+        self.seed_balance_watermark_locked(pending)?;
+        Ok(stored)
     }
 
     /// Merge `qi` into its stored record, taking the record lock itself.

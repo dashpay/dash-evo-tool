@@ -11,12 +11,8 @@ use std::collections::HashMap;
 /// `contactInfo` document, so a contact has at most one at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingWrite {
-    /// A private-note save: the note that was sent, and the stored note the
-    /// edit started from, which a read lagging behind the save still returns.
-    Note {
-        note: Option<String>,
-        before: Option<String>,
-    },
+    /// A private-note save, with the note that was sent.
+    Note { note: Option<String> },
     /// An unhide.
     Visibility,
 }
@@ -140,10 +136,7 @@ impl ContactDetailState {
     ) -> Option<Option<String>> {
         let draft = self.draft_for(&contact_id)?;
         let note = normalized_note(&draft.text);
-        let write = PendingWrite::Note {
-            note: note.clone(),
-            before: draft.baseline.clone(),
-        };
+        let write = PendingWrite::Note { note: note.clone() };
         self.begin_write(owner, contact_id, write).then_some(note)
     }
 
@@ -171,6 +164,15 @@ impl ContactDetailState {
     /// Whether a contact details write for `owner` and `contact_id` is running.
     pub fn is_writing(&self, owner: &Identifier, contact_id: &Identifier) -> bool {
         self.writes.contains_key(&(*owner, *contact_id))
+    }
+
+    /// The contact details write running for `owner` and `contact_id`.
+    pub fn pending_write(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> Option<&PendingWrite> {
+        self.writes.get(&(*owner, *contact_id))
     }
 
     /// Release a confirmed write and return what it was.
@@ -312,8 +314,7 @@ mod tests {
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
             Some(PendingWrite::Note {
-                note: Some("Bao".into()),
-                before: None
+                note: Some("Bao".into())
             })
         );
         assert!(!state.is_writing(&id(1), &id(5)));
@@ -361,8 +362,7 @@ mod tests {
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
             Some(PendingWrite::Note {
-                note: Some("First note".into()),
-                before: None
+                note: Some("First note".into())
             })
         );
         assert_eq!(
@@ -389,8 +389,7 @@ mod tests {
         assert_eq!(
             state.finish_write(&id(1), &id(5)),
             Some(PendingWrite::Note {
-                note: Some("Bao".into()),
-                before: None
+                note: Some("Bao".into())
             })
         );
     }

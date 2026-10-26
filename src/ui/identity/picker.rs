@@ -50,7 +50,7 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identities: &[QualifiedIdentity],
-    profiles: &mut super::profile_cache::ProfileCache,
+    profiles: &crate::ui::state::hub_profiles::HubProfiles,
     avatars: &mut crate::ui::state::AvatarCache,
     pending_avatars: &mut Vec<crate::backend_task::BackendTask>,
     selected_id_out: Option<&mut Option<String>>,
@@ -102,8 +102,7 @@ pub fn render(
                     for cell in row {
                         match cell {
                             PickerCell::Identity(identity) => {
-                                let profile =
-                                    profiles.get_or_request(identity).and_then(Option::as_ref);
+                                let profile = profiles.get(identity).and_then(Option::as_ref);
                                 let name = app_context.identity_display_name_or(
                                     identity.identity.id(),
                                     profile.and_then(|p| p.display_name_opt()),
@@ -235,22 +234,15 @@ mod tests {
         for dark in [false, true] {
             let tmp = tempfile::tempdir().expect("temp dir");
             let ctx = crate::context::test_support::test_app_context(tmp.path());
-            let mut profiles = super::super::profile_cache::ProfileCache::default();
+            let profiles = crate::ui::state::hub_profiles::HubProfiles::default();
             let mut avatars = crate::ui::state::AvatarCache::new();
             let mut pending = Vec::new();
             let mut harness = Harness::builder()
                 .with_size(egui::vec2(1200.0, 800.0))
                 .build_ui_state(
                     |ui, last_action| {
-                        let action = render(
-                            ui,
-                            &ctx,
-                            &[],
-                            &mut profiles,
-                            &mut avatars,
-                            &mut pending,
-                            None,
-                        );
+                        let action =
+                            render(ui, &ctx, &[], &profiles, &mut avatars, &mut pending, None);
                         if action != AppAction::None {
                             *last_action = action;
                         }

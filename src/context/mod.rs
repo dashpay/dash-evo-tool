@@ -36,6 +36,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
+use crate::model::dashpay::ContactRequestKey;
 use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
@@ -89,8 +90,8 @@ type DpnsVoteDiagnostics = BTreeMap<DpnsVoteDiagnosticKey, DpnsVoteDiagnosticEnt
 pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings>>;
 
 pub(crate) struct ContactRequestActionClaim<'a> {
-    registry: &'a Mutex<HashSet<Identifier>>,
-    request_id: Identifier,
+    registry: &'a Mutex<HashSet<ContactRequestKey>>,
+    request: ContactRequestKey,
 }
 
 impl Drop for ContactRequestActionClaim<'_> {
@@ -98,7 +99,7 @@ impl Drop for ContactRequestActionClaim<'_> {
         self.registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.request_id);
+            .remove(&self.request);
     }
 }
 
@@ -276,7 +277,7 @@ pub struct AppContext {
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
-    contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    contact_request_actions_in_flight: Mutex<HashSet<ContactRequestKey>>,
     /// Shared across all contact-info writers on this network.
     pub(crate) contact_info_writes: contact_info_writes::ContactInfoWrites,
     /// Serializes operation journal writes and target-lock acquisition.
@@ -465,26 +466,26 @@ impl AppContext {
 
     pub(crate) fn try_claim_contact_request_action(
         &self,
-        request_id: Identifier,
+        request: ContactRequestKey,
     ) -> Option<ContactRequestActionClaim<'_>> {
         let mut in_flight = self
             .contact_request_actions_in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !in_flight.insert(request_id) {
+        if !in_flight.insert(request) {
             return None;
         }
         Some(ContactRequestActionClaim {
             registry: &self.contact_request_actions_in_flight,
-            request_id,
+            request,
         })
     }
 
-    pub(crate) fn contact_request_action_is_in_flight(&self, request_id: &Identifier) -> bool {
+    pub(crate) fn contact_request_action_is_in_flight(&self, request: &ContactRequestKey) -> bool {
         self.contact_request_actions_in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(request_id)
+            .contains(request)
     }
 
     // The constructor takes the app's foundational dependencies — the shared

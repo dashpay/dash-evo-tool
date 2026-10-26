@@ -40,18 +40,8 @@ fn bao(note: Option<&str>) -> ContactData {
     }
 }
 
-fn deliver(hub: &mut HubHarness, owner: Identifier, contact: ContactData) {
-    let app_context = hub.state().0.app_context.clone();
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-        identity: app_context.resolve_selected_identity().expect("identity"),
-    }));
-    hub.state_mut().0.display_backend_task_result(
-        &BackendTaskContext::from(&task),
-        BackendTaskSuccessResult::DashPayContactsWithInfo {
-            identity: owner,
-            contacts: vec![contact],
-        },
-    );
+fn deliver(hub: &mut HubHarness, _owner: Identifier, contact: ContactData) {
+    hub.state_mut().0.show_contacts_for_test(vec![contact]);
 }
 
 /// The Contacts tab with Bao listed, then Bao selected.

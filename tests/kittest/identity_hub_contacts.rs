@@ -109,22 +109,22 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
     use crate::identity_home::{seed_identity, seed_identity_with_id};
     use crate::support::{fresh_app_context, with_isolated_data_dir};
     use dash_evo_tool::backend_task::dashpay::ContactData;
-    use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
     use dash_evo_tool::ui::state::contacts_view::ContactsState;
+    use dash_evo_tool::ui::state::hub_profiles::{HubProfiles, ProfileFields};
     use dash_sdk::platform::Identifier;
 
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
         let first = seed_identity(&app_context, vec![], vec![]);
-        let mut profiles = ProfileCache::default();
+        let mut profiles = HubProfiles::default();
         for identity in [first, second] {
-            profiles.record_saved(
+            profiles.set_for_test(
                 identity,
-                ProfileFields {
+                Some(ProfileFields {
                     display_name: "Alex".into(),
                     ..Default::default()
-                },
+                }),
             );
         }
         let heading = |count: usize| format!("{} · {count}", contacts::ACTIVE_HEADING_PREFIX);
@@ -132,13 +132,13 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(960.0, 720.0))
             .build_ui_state(
-                move |ui, state: &mut (ContactsState, ProfileCache)| {
+                move |ui, state: &mut (ContactsState, HubProfiles)| {
                     let _ = contacts::render(
                         ui,
                         &render_context,
                         render_context.resolve_selected_identity().as_ref(),
                         &mut state.0,
-                        &mut state.1,
+                        &state.1,
                         &mut Default::default(),
                         &mut Vec::new(),
                     );
@@ -146,17 +146,20 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
                 (ContactsState::default(), profiles),
             );
         harness.run();
-        harness.state_mut().0.record_contacts(vec![ContactData {
-            identity_id: Identifier::from([0xD8; 32]),
-            nickname: Some("Bao".into()),
-            note: None,
-            is_hidden: false,
-            account_reference: 0,
-            username: None,
-            display_name: None,
-            avatar_url: None,
-            bio: None,
-        }]);
+        harness
+            .state_mut()
+            .0
+            .record_contacts_for_test(vec![ContactData {
+                identity_id: Identifier::from([0xD8; 32]),
+                nickname: Some("Bao".into()),
+                note: None,
+                is_hidden: false,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }]);
         harness.run();
         assert!(harness.query_by_label(&heading(1)).is_some());
 
@@ -167,63 +170,5 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             "one identity's contacts must never be listed under another"
         );
         assert_eq!(harness.state().0.contacts_len(), 0);
-    });
-}
-
-/// The tab's load is asked for separately from rendering. A gated tab has
-/// nothing to load; a populated one loads its two lists once.
-#[test]
-fn contacts_tab_load_is_for_a_populated_tab_and_goes_out_once() {
-    use crate::identity_home::seed_identity;
-    use crate::support::{fresh_app_context, with_isolated_data_dir};
-    use dash_evo_tool::app::AppAction;
-    use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
-    use dash_evo_tool::ui::state::contacts_view::ContactsState;
-
-    with_isolated_data_dir(|| {
-        let (_runtime, app_context) = fresh_app_context();
-        // The tab holds its proof-verifying reads until the masternode list
-        // is synced; this test starts on a synced network.
-        app_context.connection_status().set_masternodes_ready(true);
-        let identity = seed_identity(&app_context, vec![], vec![]);
-        let mut state = ContactsState::default();
-        let mut profiles = ProfileCache::default();
-        assert!(
-            matches!(
-                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
-                AppAction::None
-            ),
-            "a tab gated on a missing social profile must not load contacts"
-        );
-
-        profiles.record_saved(
-            identity,
-            ProfileFields {
-                display_name: "Alex".into(),
-                ..Default::default()
-            },
-        );
-        app_context.connection_status().set_masternodes_ready(false);
-        assert!(
-            matches!(
-                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
-                AppAction::None
-            ),
-            "the populated tab holds its reads until the masternode list is synced"
-        );
-        assert!(state.load_is_due(), "the held load is still owed");
-        app_context.connection_status().set_masternodes_ready(true);
-        let load = contacts::tab_load_action(&app_context, &mut state, &mut profiles);
-        assert!(
-            matches!(&load, AppAction::BackendTasksWithContexts(tasks, _) if tasks.len() == 2),
-            "the populated tab loads its contacts and its requests, got {load:?}"
-        );
-        assert!(
-            matches!(
-                contacts::tab_load_action(&app_context, &mut state, &mut profiles),
-                AppAction::None
-            ),
-            "and does not ask for them again"
-        );
     });
 }

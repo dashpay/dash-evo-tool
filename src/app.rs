@@ -55,7 +55,6 @@ use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
 use crate::wallet_backend::{DetScope, WalletBackend};
 use dash_sdk::dpp::dashcore::{Network, Txid};
-use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
@@ -530,6 +529,7 @@ mod backend_task_join_tests {
     use crate::backend_task::BackendTaskContext;
     use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::platform::Identifier;
 
     fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
         BackendTaskContext::Dispatched {
@@ -769,17 +769,14 @@ mod backend_task_join_tests {
     /// unattributed report.
     #[tokio::test]
     async fn panicking_batch_settles_each_dispatched_read() {
-        use crate::model::dashpay::ContactsLoadKind;
-        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
+        let read = |dispatch_id| BackendTaskContext::Dispatched {
             dispatch_id,
-            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
-                network: Network::Testnet,
-                identity_id: Identifier::from([0x45; 32]),
-                kind,
-            }),
+            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
+                [0x45; 32],
+            ))),
         };
-        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
-        let requests = read(u64::MAX, ContactsLoadKind::Requests);
+        let contacts = read(u64::MAX - 1);
+        let requests = read(u64::MAX);
         for (contexts, expected) in [
             (
                 vec![contacts.clone(), requests.clone()],
@@ -897,13 +894,16 @@ mod backend_task_join_tests {
     async fn panicking_paid_contact_action_keeps_its_request_correlation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
-        let request_id = Identifier::from([0x44; 32]);
+        let request = crate::model::dashpay::ContactRequestKey {
+            owner: Identifier::from([0x43; 32]),
+            counterparty: Identifier::from([0x44; 32]),
+        };
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
         forward_backend_task_join_error(
             join_handle.await,
             sender,
-            Some(request_id),
+            Some(request),
             BackendTaskContext::Unknown,
         )
         .await;
@@ -916,11 +916,11 @@ mod backend_task_join_tests {
             result,
             TaskResult::Error {
                 error: TaskError::DashPayContactRequestActionFailed {
-                    request_id: correlated,
+                    request: correlated,
                     source,
                 },
                 ..
-            } if correlated == request_id
+            } if correlated == request
                 && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
         ));
     }
@@ -1286,21 +1286,21 @@ impl TaskResult {
 async fn forward_backend_task_join_error(
     join_result: Result<(), tokio::task::JoinError>,
     sender: egui_mpsc::SenderAsync<TaskResult>,
-    request_id: Option<Identifier>,
+    request: Option<crate::model::dashpay::ContactRequestKey>,
     context: BackendTaskContext,
 ) {
     if let Err(source) = join_result {
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
-        let error = match (context.dashpay_contact_info_target(), request_id) {
+        let error = match (context.dashpay_contact_info_target(), request) {
             (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
                 identity_id,
                 contact_id,
                 source: Box::new(stopped),
             },
-            (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
-                request_id,
+            (None, Some(request)) => TaskError::DashPayContactRequestActionFailed {
+                request,
                 source: Box::new(stopped),
             },
             (None, None) => stopped,
@@ -1487,6 +1487,8 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    /// When the frame loop last asked for the DashPay snapshots to be republished.
+    dashpay_snapshots_refreshed_at: Option<Instant>,
     /// Per-network start of a migration wait that deferred scheduled-vote casting.
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
     /// Networks with a scheduled-vote sweep currently running.
@@ -1642,12 +1644,6 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
-    /// [`Self::BackendTasks`] with the context each task's result comes back
-    /// under, so a screen can tell one dispatch of a task from another.
-    BackendTasksWithContexts(
-        Vec<(BackendTask, BackendTaskContext)>,
-        BackendTasksExecutionMode,
-    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2099,6 +2095,7 @@ impl AppState {
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
+            dashpay_snapshots_refreshed_at: None,
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
             unconfirmed_vote_checks: BTreeMap::new(),
@@ -2516,7 +2513,7 @@ impl AppState {
             captured.push((task, context));
             return;
         }
-        let request_id = crate::backend_task::dashpay_request_id(&task);
+        let request = crate::backend_task::dashpay_request(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let watcher_context = context.clone();
@@ -2539,7 +2536,7 @@ impl AppState {
                 forward_backend_task_join_error(
                     join_result,
                     watcher_sender,
-                    request_id,
+                    request,
                     watcher_context,
                 )
             },
@@ -2547,55 +2544,15 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel.
-    ///
-    /// Contact-list reads in a batch report to the screen that sent them, as a
-    /// task dispatched with its own context does: the hub asks for its lists
-    /// once per arrival, so a failure delivered to a screen covering it would
-    /// leave it waiting for good.
-    fn handle_backend_tasks(
-        &mut self,
-        tasks: Vec<BackendTask>,
-        mode: BackendTasksExecutionMode,
-        owner: Option<ScreenOwner>,
-    ) {
-        let network = self.current_app_context().network;
-        let tasks = tasks
-            .into_iter()
-            .map(|task| {
-                let context = BackendTaskContext::for_task_on(&task, network);
-                (task, context)
-            })
-            .collect();
-        self.run_backend_tasks(tasks, mode, owner);
-    }
-
-    /// Run `tasks` under their contexts; see [`Self::handle_backend_tasks`]. A
-    /// contact-list read that carries no dispatch of its own is given one.
-    fn run_backend_tasks(
-        &mut self,
-        tasks: Vec<(BackendTask, BackendTaskContext)>,
-        mode: BackendTasksExecutionMode,
-        owner: Option<ScreenOwner>,
-    ) {
+    fn handle_backend_tasks(&mut self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let network = app_context.network;
-        let (tasks, contexts): (Vec<_>, Vec<_>) = tasks
-            .into_iter()
-            .map(|(task, context)| match owner {
-                Some(owner) if context.contacts_load().is_some() => {
-                    let context = if context.dispatch_id().is_some() {
-                        context
-                    } else {
-                        BackendTaskContext::for_dispatch_on(&task, network)
-                    };
-                    self.request_owners.record(&context, owner);
-                    (task, context)
-                }
-                _ => (task, context),
-            })
-            .unzip();
+        let contexts: Vec<_> = tasks
+            .iter()
+            .map(|task| BackendTaskContext::for_task_on(task, network))
+            .collect();
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.extend(tasks.into_iter().zip(contexts));
@@ -3135,8 +3092,8 @@ impl AppState {
         )
     }
 
-    /// Tell the hub about results it would otherwise miss: those of loads it
-    /// starts without a dispatch context, and other screens' profile saves.
+    /// Tell the hub about results it would otherwise miss: the outcomes of
+    /// its own writes and avatar reads, and other screens' profile saves.
     fn route_identity_result_to_hidden_hub(
         &mut self,
         owner: Option<ScreenOwner>,
@@ -3151,13 +3108,8 @@ impl AppState {
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
             let needs_completion = match result {
-                // Another screen's save changes the profile the hub caches.
+                // A profile save the Profile tab may be waiting on.
                 BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
-                // The hub asks for its contact lists once per arrival, so an
-                // answer that misses it is never asked for again. It drops
-                // answers that are not for what it shows.
-                BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
-                | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
                 // A contact details write the hub dispatched holds a guard and
                 // a pending task there until its outcome arrives.
                 BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
@@ -3782,16 +3734,6 @@ impl App for AppState {
                                 screen.display_backend_task_result(&context, result);
                             }
                         }
-                        BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
-                            // The EventBridge surfaced received outputs on a
-                            // freshly-seen wallet transaction. Run the owner-
-                            // scoped detect-match-record off the frame thread;
-                            // matches come back as a `Refresh` to repaint the
-                            // payment history, misses as `None`.
-                            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
-                                DashPayTask::DetectIncomingContactPayments { outputs },
-                            )));
-                        }
                         BackendTaskSuccessResult::PlatformReadyDiscoverIdentities => {
                             // Platform is reachable: run the automatic all-wallets
                             // identity discovery sweep. The latch inside makes it a
@@ -4202,6 +4144,22 @@ impl App for AppState {
             self.last_repaint_request = Instant::now();
         }
 
+        // Republish the DashPay snapshots after each background sync pass, and
+        // now and then for changes no pass reports (a newly loaded identity).
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && let Ok(backend) = active_context.wallet_backend()
+            && crate::model::dashpay::snapshot_refresh_due(
+                backend.dashpay_pass_completed(),
+                self.dashpay_snapshots_refreshed_at.map(|at| at.elapsed()),
+            )
+        {
+            self.dashpay_snapshots_refreshed_at = Some(Instant::now());
+            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
+                DashPayTask::RefreshSnapshots,
+            )));
+        }
+
         // Periodically cast any scheduled masternode votes that have come due.
         // The poll itself — the journal read, local-identity load, and per-vote
         // casting — runs off the UI thread in the `CastDueScheduledVotes`
@@ -4514,10 +4472,7 @@ impl App for AppState {
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode, owner);
-                }
-                AppAction::BackendTasksWithContexts(tasks, mode) => {
-                    self.run_backend_tasks(tasks, mode, owner);
+                    self.handle_backend_tasks(tasks, mode);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);
@@ -4640,6 +4595,7 @@ mod migration_banner_tests {
     use super::*;
     use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    use dash_sdk::platform::Identifier;
 
     fn feedback_operation(statuses: &[DpnsVoteTargetStatus]) -> DpnsVoteOperation {
         let mut operation = AppContext::new_dpns_vote_operation(
@@ -5404,6 +5360,7 @@ mod contact_request_routing_tests {
 #[cfg(test)]
 mod dpns_result_routing_tests {
     use super::*;
+    use dash_sdk::platform::Identifier;
 
     /// The route a result nobody open dispatched takes to the voting panel.
     fn dpns_result_needs_hidden_route(

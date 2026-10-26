@@ -14,11 +14,12 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::dashpay::ContactInfoField;
+use crate::model::dashpay::{ContactInfoField, ContactRequestKey};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
+use crate::ui::state::hub_profiles::HubProfiles;
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
@@ -85,14 +86,16 @@ pub struct IdentityHubScreen {
     /// only ever match a later result removing that same identity — precisely
     /// when the reset is wanted anyway.
     pending_unloads: BTreeSet<Identifier>,
-    /// Contacts-tab state. Owned here to debounce
-    /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
-    /// single dispatch per tab entry, instead of firing every frame.
+    /// Contacts-tab state, built from the selected identity's DashPay
+    /// snapshot.
     contacts_state: super::contacts::ContactsState,
-    /// DashPay profiles, loaded asynchronously (the local profile cache was
-    /// removed in the platform-wallet migration). Read by the Home, Contacts,
-    /// and Settings tabs; loads are dispatched after rendering each frame.
-    profile_cache: super::profile_cache::ProfileCache,
+    /// DashPay profiles of the identities on screen, re-read every frame.
+    /// Read by the picker and the Home, Contacts, and Settings tabs.
+    profiles: HubProfiles,
+    /// A DashPay sync of the selected identity is due: after a refresh, an
+    /// arrival, an identity switch, or entering the Contacts tab. Sent once
+    /// the masternode list is synced.
+    dashpay_sync_due: bool,
     avatar_cache: crate::ui::state::AvatarCache,
     pending_avatars: Vec<BackendTask>,
     /// Breadcrumb-switcher view state (picker override + dropdown search
@@ -116,7 +119,7 @@ enum ContactInfoTaskKey {
         identity_id: Identifier,
         contact_id: Identifier,
     },
-    Request(Identifier),
+    Request(ContactRequestKey),
 }
 
 impl IdentityHubScreen {
@@ -152,6 +155,25 @@ impl IdentityHubScreen {
         ))
     }
 
+    /// The DashPay sync due for the selected identity, once the masternode
+    /// list is synced: a pass reads proofs, and sent earlier it gets the
+    /// queried nodes banned. Only Home and Contacts show what it syncs.
+    fn dashpay_sync_action(&mut self, rendered_tab: Option<IdentityHubTab>) -> AppAction {
+        if !self.dashpay_sync_due
+            || !matches!(
+                rendered_tab,
+                Some(IdentityHubTab::Home | IdentityHubTab::Contacts)
+            )
+            || !self.app_context.connection_status().masternodes_ready()
+        {
+            return AppAction::None;
+        }
+        self.dashpay_sync_due = false;
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+            identity: self.app_context.resolve_selected_identity(),
+        })))
+    }
+
     /// Whether an avatar result still belongs to an outstanding hub request.
     pub(crate) fn is_waiting_for_avatar(&self, url: &str) -> bool {
         self.avatar_cache.awaits_result(url)
@@ -172,7 +194,8 @@ impl IdentityHubScreen {
             usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
-            profile_cache: super::profile_cache::ProfileCache::default(),
+            profiles: HubProfiles::default(),
+            dashpay_sync_due: true,
             avatar_cache: crate::ui::state::AvatarCache::default(),
             pending_avatars: Vec::new(),
             selection: HubSelection::default(),
@@ -268,6 +291,7 @@ impl IdentityHubScreen {
     fn reset_contacts_for_identity_change(&mut self) {
         self.home_state = HomeState::default();
         self.contacts_state.reset_for_identity_change();
+        self.dashpay_sync_due = true;
         // A write still running keeps its guard across the change, so it keeps
         // the records its outcome is matched against too.
         let detail = self.contacts_state.detail();
@@ -280,21 +304,18 @@ impl IdentityHubScreen {
     }
 
     /// Clear the stale load-error banner so the next `landing()` call can try
-    /// again cleanly, and re-arm the per-tab loads. With `keep_shown`, the
-    /// profile and contacts stay on screen until their reload lands.
+    /// again cleanly, and ask for a DashPay sync. With `keep_shown`, the
+    /// contacts and avatars stay on screen while it runs.
     fn reload(&mut self, keep_shown: bool) {
         self.load_error_banner.take_and_clear();
         if keep_shown {
-            self.contacts_state.invalidate();
             self.contacts_state.search_mut().clear();
-            self.profile_cache.reload_kept();
             self.avatar_cache.reload_kept();
         } else {
             self.contacts_state.reset();
-            self.profile_cache.reset();
             self.avatar_cache.invalidate();
         }
-        self.home_state.refresh_payments();
+        self.dashpay_sync_due = true;
         self.selection.clear_searches();
         self.pending_avatars.clear();
     }
@@ -305,7 +326,6 @@ impl IdentityHubScreen {
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.settings_tab = SettingsTab::new();
-        self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
         self.avatar_cache.invalidate();
@@ -355,24 +375,18 @@ impl IdentityHubScreen {
         self.selected_tab = tab;
     }
 
-    /// Whether an identity-scoped backend result still belongs to the identity
-    /// on screen. See [`applies_to_selected_identity`].
-    fn result_is_for_selected_identity(&self, result_identity: &Identifier) -> bool {
-        let selected = self
-            .app_context
-            .resolve_selected_identity()
-            .map(|identity| identity.identity.id());
-        applies_to_selected_identity(selected, result_identity)
+    /// Show `contacts` for the identity on screen, as a sync would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn show_contacts_for_test(&mut self, contacts: Vec<crate::model::dashpay::ContactData>) {
+        self.contacts_state.record_contacts_for_test(contacts);
     }
 
     /// Retire a request row the backend just resolved (accepted, declined, or
-    /// cancelled), confirm it to the user, and re-arm the Contacts load so the
-    /// authoritative lists replace the local edit.
-    fn resolve_request(&mut self, request_id: &Identifier, confirmation: &str) {
+    /// cancelled) and confirm it to the user.
+    fn resolve_request(&mut self, request: &ContactRequestKey, confirmation: &str) {
         self.pending_contact_info_tasks
-            .remove(&ContactInfoTaskKey::Request(*request_id));
-        self.contacts_state.remove_request(request_id);
-        self.contacts_state.invalidate();
+            .remove(&ContactInfoTaskKey::Request(*request));
+        self.contacts_state.remove_request(request);
         MessageBanner::set_global(
             self.app_context.egui_ctx(),
             confirmation,
@@ -385,20 +399,19 @@ impl IdentityHubScreen {
         result: &BackendTaskSuccessResult,
     ) -> bool {
         match result {
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
-                self.resolve_request(request_id, "Contact request accepted.");
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request) => {
+                self.resolve_request(request, "Contact request accepted.");
             }
-            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
-                self.resolve_request(request_id, "Contact request declined.");
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request) => {
+                self.resolve_request(request, "Contact request declined.");
             }
-            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
-                self.resolve_request(request_id, "Contact request cancelled.");
+            BackendTaskSuccessResult::DashPayContactRequestCancelled(request) => {
+                self.resolve_request(request, "Contact request cancelled.");
             }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(request) => {
                 self.pending_contact_info_tasks
-                    .remove(&ContactInfoTaskKey::Request(*request_id));
-                self.contacts_state.remove_request(request_id);
-                self.contacts_state.invalidate();
+                    .remove(&ContactInfoTaskKey::Request(*request));
+                self.contacts_state.remove_request(request);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "You are already contacts with this person.",
@@ -467,14 +480,12 @@ impl IdentityHubScreen {
                 self.app_context.set_selected_hd_wallet(hash);
                 self.selection.open_picker();
                 self.reset_contacts_for_identity_change();
-                self.profile_cache.reset();
                 AppAction::None
             }
             BreadcrumbEffect::SelectIdentity(id) => {
                 self.app_context.set_selected_identity(Some(id));
                 self.selection.clear_picker_override();
                 self.reset_contacts_for_identity_change();
-                self.profile_cache.reset();
                 AppAction::None
             }
             BreadcrumbEffect::AddWallet => {
@@ -562,16 +573,12 @@ impl ScreenLike for IdentityHubScreen {
                     .unwrap_or_default(),
             }
         };
-        for identity in &frame_identities {
-            self.profile_cache.seed_cached(&self.app_context, identity);
-        }
-        // A profile load sent before the masternode list synced (right after
-        // start-up) failed; ask for it again now that the network is ready.
-        if self.app_context.connection_status().masternodes_ready() {
-            self.profile_cache.retry_after_sync();
-            self.contacts_state
-                .retry_load_if_due(std::time::Instant::now());
-        }
+        self.profiles.read(
+            &self.app_context,
+            frame_identities
+                .iter()
+                .map(|identity| identity.identity.id()),
+        );
         let view = if self.selection.picker_override()
             || self.app_context.selected_wallet_hash().is_some() && frame_identities.is_empty()
         {
@@ -602,7 +609,7 @@ impl ScreenLike for IdentityHubScreen {
                     ui,
                     &self.app_context,
                     &frame_identities,
-                    &mut self.profile_cache,
+                    &self.profiles,
                     &mut self.avatar_cache,
                     &mut self.pending_avatars,
                     Some(&mut picked_identity),
@@ -618,7 +625,7 @@ impl ScreenLike for IdentityHubScreen {
                                 ui,
                                 &self.app_context,
                                 identity,
-                                &mut self.profile_cache,
+                                &self.profiles,
                                 &mut self.avatar_cache,
                                 &mut self.pending_avatars,
                             ),
@@ -636,9 +643,9 @@ impl ScreenLike for IdentityHubScreen {
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
                         if let Some(clicked) = tab_response.clicked() {
                             if clicked != self.selected_tab {
-                                // Tab-entry transition: reset per-tab load guards
-                                // so the incoming tab re-dispatches once.
+                                // Tab entry starts the lists afresh.
                                 self.contacts_state.reset();
+                                self.dashpay_sync_due |= clicked == IdentityHubTab::Contacts;
                             }
                             self.selected_tab = clicked;
                         }
@@ -652,7 +659,7 @@ impl ScreenLike for IdentityHubScreen {
                                         &self.app_context,
                                         identity,
                                         &mut self.home_state,
-                                        &mut self.profile_cache,
+                                        &self.profiles,
                                         &mut self.contacts_state,
                                     ),
                                     None => (AppAction::None, super::home::HomeOutcome::None),
@@ -665,7 +672,6 @@ impl ScreenLike for IdentityHubScreen {
                                     {
                                         self.contacts_state.search_mut().clear();
                                         self.contacts_state.select_contact(&contact_id);
-                                        self.contacts_state.invalidate();
                                     } else if next_tab != self.selected_tab {
                                         self.contacts_state.reset();
                                     }
@@ -679,7 +685,7 @@ impl ScreenLike for IdentityHubScreen {
                                 &self.app_context,
                                 selected.as_ref(),
                                 &mut self.contacts_state,
-                                &mut self.profile_cache,
+                                &self.profiles,
                                 &mut self.avatar_cache,
                                 &mut self.pending_avatars,
                             ),
@@ -690,7 +696,7 @@ impl ScreenLike for IdentityHubScreen {
                                 ui,
                                 &self.app_context,
                                 selected.as_ref(),
-                                &mut self.profile_cache,
+                                &self.profiles,
                             ),
                         };
                         tab_action |= header_action;
@@ -711,7 +717,6 @@ impl ScreenLike for IdentityHubScreen {
             self.app_context.set_selected_identity(Some(id));
             self.selection.clear_picker_override();
             self.reset_contacts_for_identity_change();
-            self.profile_cache.reset();
         }
 
         action |= self.apply_breadcrumb_effect(breadcrumb_effect);
@@ -723,36 +728,16 @@ impl ScreenLike for IdentityHubScreen {
         }
 
         // Every part of the frame above has had its say; this is where the
-        // action that leaves the frame is settled. A data load claims its one
-        // dispatch slot when it is asked for, so it is asked for only here and
-        // only when nothing produced an action: a click anywhere on the screen
-        // keeps its frame, and a claimed load is the action returned — nothing
-        // below replaces an action.
+        // action that leaves the frame is settled. Background work is asked
+        // for only when nothing produced an action: a click anywhere on the
+        // screen keeps its frame, and nothing below replaces an action.
         if matches!(action, AppAction::None) {
-            action = match rendered_tab {
-                Some(IdentityHubTab::Home) => super::home::load_action(
-                    &self.app_context,
-                    &mut self.home_state,
-                    &mut self.contacts_state,
-                ),
-                Some(IdentityHubTab::Contacts) => super::contacts::tab_load_action(
-                    &self.app_context,
-                    &mut self.contacts_state,
-                    &mut self.profile_cache,
-                ),
-                _ => AppAction::None,
-            };
+            action = self.dashpay_sync_action(rendered_tab);
         }
-        if matches!(action, AppAction::None) {
-            action = if let Some(task) = self.pending_avatars.pop() {
-                AppAction::BackendTask(task)
-            } else if self.app_context.connection_status().masternodes_ready() {
-                // Profile reads verify proofs; sent before the masternode list
-                // is synced they get the queried nodes banned.
-                self.profile_cache.dispatch_pending()
-            } else {
-                AppAction::None
-            };
+        if matches!(action, AppAction::None)
+            && let Some(task) = self.pending_avatars.pop()
+        {
+            action = AppAction::BackendTask(task);
         }
         if matches!(action, AppAction::None) {
             action = self.username_refresh_action(ctx);
@@ -779,56 +764,17 @@ impl ScreenLike for IdentityHubScreen {
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
-        if let Some((network, identity_id, _)) = context.contacts_load()
-            && !self.contacts_state.owns_load((network, identity_id))
-        {
-            return;
-        }
-        self.home_state.record_payments(context, &result);
-        if self
-            .profile_cache
-            .record_result(&self.app_context, context, &result)
-            && let BackendTaskSuccessResult::DashPayProfile(snapshot) = &result
-        {
-            self.settings_tab.profile_refreshed(snapshot.owner);
-        }
         if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = &result {
-            handle_profile_updated(
-                &self.app_context,
-                &mut self.settings_tab,
-                &mut self.profile_cache,
-                context,
-                snapshot,
-            );
+            handle_profile_updated(&self.app_context, &mut self.settings_tab, context, snapshot);
             return;
         }
-        // A reload re-arms without cancelling the load before it, so lists
-        // can answer out of order; an older one would undo a confirmed note.
-        if let BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } = &result {
-            if self
-                .contacts_state
-                .accepts_contacts_from(context.dispatch_id())
-                && self.result_is_for_selected_identity(identity)
-            {
-                self.contacts_state
-                    .record_loaded_contacts(contacts.clone(), context.dispatch_id());
-            }
-            return;
-        }
-        if let BackendTaskSuccessResult::DashPayContactInfoUpdated {
-            identity,
-            contact_id,
-            ..
-        } = &result
-            && !self.is_own_contact_info_dispatch(context)
+        // Another screen's write: the snapshot shows it, and that screen
+        // reports it.
+        if matches!(
+            result,
+            BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
+        ) && !self.is_own_contact_info_dispatch(context)
         {
-            // Another screen's write: newer than any note the hub saved.
-            self.contacts_state.forget_confirmed_note(
-                self.app_context.network,
-                identity,
-                contact_id,
-            );
-            self.contacts_state.invalidate();
             return;
         }
         self.display_task_result(result);
@@ -864,23 +810,8 @@ impl ScreenLike for IdentityHubScreen {
         }
 
         match &result {
-            // Populate the Received/Sent request caches so the Contacts tab
-            // can render real RequestCard rows instead of hardcoded empties.
-            // The result arrives from LoadContactRequests,
-            // dispatched alongside LoadContacts in contacts::render_populated.
-            BackendTaskSuccessResult::DashPayContactRequests {
-                identity,
-                incoming,
-                outgoing,
-            } => {
-                if self.result_is_for_selected_identity(identity) {
-                    self.contacts_state
-                        .record_requests(incoming.clone(), outgoing.clone());
-                }
-            }
             // A confirmed contactInfo write — an unhide or a private-note
-            // save. Re-arm the load so the authoritative list replaces the
-            // optimistic local edit.
+            // save. The snapshot already holds it.
             BackendTaskSuccessResult::DashPayContactInfoUpdated {
                 identity,
                 contact_id,
@@ -892,9 +823,8 @@ impl ScreenLike for IdentityHubScreen {
                 };
                 let network = self.contact_info_write_network(identity, contact_id);
                 self.contacts_state
-                    .finish_contact_info_write(network, identity, contact_id, *published);
+                    .finish_contact_info_write(network, identity, contact_id);
                 if let Some(task) = self.forget_contact_info_task(&key) {
-                    self.contacts_state.invalidate();
                     let (message, kind) = if *published {
                         (contact_info_saved_message(&task), MessageType::Success)
                     } else {
@@ -939,7 +869,6 @@ impl ScreenLike for IdentityHubScreen {
                     identity_ids,
                 ) {
                     self.reset_contacts_for_identity_change();
-                    self.profile_cache.reset();
                 }
                 // Only the identities this result answers for; another unload
                 // still in flight keeps its own record.
@@ -965,33 +894,6 @@ impl ScreenLike for IdentityHubScreen {
             });
             self.contacts_state
                 .release_contact_info_write(network, &identity_id, &contact_id);
-        }
-        // A superseded contact-list load says nothing about the newest one.
-        if let Some((network, identity_id, kind)) = context.contacts_load()
-            && self.contacts_state.owns_load((network, identity_id))
-            && (kind != crate::model::dashpay::ContactsLoadKind::Contacts
-                || self
-                    .contacts_state
-                    .accepts_contacts_from(context.dispatch_id()))
-        {
-            let syncing = matches!(error, TaskError::MasternodeListNotReady { .. });
-            let delay = if syncing && !self.app_context.connection_status().masternodes_ready() {
-                Some(std::time::Duration::ZERO)
-            } else if syncing || contact_read_failure_is_transient(error) {
-                Some(std::time::Duration::from_secs(5))
-            } else {
-                None
-            };
-            self.contacts_state
-                .record_load_error(kind, delay.map(|delay| std::time::Instant::now() + delay));
-            if let Some(delay) = delay {
-                self.app_context.egui_ctx().request_repaint_after(delay);
-            }
-        }
-        if matches!(error, TaskError::MasternodeListNotReady { .. }) {
-            self.profile_cache.record_error_while_syncing(context);
-        } else {
-            self.profile_cache.record_error(context);
         }
         self.settings_tab.clear_pending_save(context);
         if let Some(offer) = self.settings_tab.usernames_card_mut().recovery_mut() {
@@ -1019,24 +921,15 @@ impl ScreenLike for IdentityHubScreen {
     }
 }
 
-/// Whether a failed contact read may succeed on its own after the endpoint delay.
-/// Extends the DAPI reachability check with a per-call deadline, which the
-/// network client also treats as retryable. Kept local to contact reads: the
-/// shared reachability check also decides all-addresses-exhausted reporting.
-fn contact_read_failure_is_transient(error: &TaskError) -> bool {
-    matches!(error, TaskError::DapiDeadlineExceeded { .. })
-        || error.contains_dapi_reachability_failure()
-}
-
 /// Release the request-card guard a failed contact action names. Both a task-level
 /// failure and a migration-gate refusal arrive as
-/// [`TaskError::DashPayContactRequestActionFailed`], carrying the request ID, so
+/// [`TaskError::DashPayContactRequestActionFailed`], carrying the request, so
 /// only that request's guard is released; every other guard stays protected until
 /// its own typed outcome arrives — a paid action still in flight must never have
 /// its row re-enabled by an unrelated failure.
 fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
-    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
-        state.release_request(request_id);
+    if let TaskError::DashPayContactRequestActionFailed { request, .. } = error {
+        state.release_request(request);
     }
 }
 
@@ -1069,10 +962,17 @@ fn contact_info_task_key(task: &DashPayTask) -> Option<ContactInfoTaskKey> {
             identity_id: identity.identity.id(),
             contact_id: *contact_id,
         }),
-        DashPayTask::RejectContactRequest { request_id, .. }
-        | DashPayTask::CancelContactRequest { request_id, .. } => {
-            Some(ContactInfoTaskKey::Request(*request_id))
+        DashPayTask::RejectContactRequest {
+            identity,
+            counterparty_id,
         }
+        | DashPayTask::CancelContactRequest {
+            identity,
+            counterparty_id,
+        } => Some(ContactInfoTaskKey::Request(ContactRequestKey {
+            owner: identity.identity.id(),
+            counterparty: *counterparty_id,
+        })),
         _ => None,
     }
 }
@@ -1087,25 +987,11 @@ fn contact_info_error_key(error: &TaskError) -> Option<ContactInfoTaskKey> {
             identity_id: *identity_id,
             contact_id: *contact_id,
         }),
-        TaskError::DashPayContactRequestActionFailed { request_id, .. } => {
-            Some(ContactInfoTaskKey::Request(*request_id))
+        TaskError::DashPayContactRequestActionFailed { request, .. } => {
+            Some(ContactInfoTaskKey::Request(*request))
         }
         _ => None,
     }
-}
-
-/// Whether a backend result loaded for `result_identity` may still be applied
-/// while `selected` is the identity on screen.
-///
-/// Switching identity cannot cancel a load already in flight, so a result for
-/// the previous identity can land after the switch. Applying it would paint one
-/// identity's contacts and requests under another's name — and hand the user
-/// rows that act under the wrong key.
-fn applies_to_selected_identity(
-    selected: Option<Identifier>,
-    result_identity: &Identifier,
-) -> bool {
-    selected.as_ref() == Some(result_identity)
 }
 
 /// Whether a completed removal leaves the Hub's identity-scoped caches holding
@@ -1145,7 +1031,6 @@ fn removal_invalidates_identity_caches(
 pub(super) fn handle_profile_updated(
     app_context: &AppContext,
     settings: &mut SettingsTab,
-    profiles: &mut super::profile_cache::ProfileCache,
     context: &BackendTaskContext,
     snapshot: &crate::model::dashpay::ProfileSnapshot,
 ) {
@@ -1154,18 +1039,7 @@ pub(super) fn handle_profile_updated(
     }
     if !app_context.profile_snapshot_is_current(snapshot) {
         settings.retry_stale_profile_save(context);
-        profiles.invalidate(snapshot.owner);
         return;
-    }
-    if let Some((display_name, bio, avatar_url)) = &snapshot.profile {
-        profiles.record_saved(
-            snapshot.owner,
-            super::profile_cache::ProfileFields {
-                display_name: display_name.clone(),
-                bio: bio.clone(),
-                avatar_url: avatar_url.clone(),
-            },
-        );
     }
     if settings.owns_profile_save(context) && settings.on_profile_saved().is_some() {
         MessageBanner::set_global(
@@ -1230,18 +1104,24 @@ mod tests {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
     }
 
+    /// The request between the owner `id(100)` and `id(counterparty)`.
+    fn req(counterparty: u8) -> ContactRequestKey {
+        ContactRequestKey {
+            owner: id(100),
+            counterparty: id(counterparty),
+        }
+    }
+
     #[test]
     fn stale_profile_success_does_not_show_confirmation() {
         let dir = tempfile::tempdir().unwrap();
         let app = crate::context::test_support::test_app_context(dir.path());
         let ctx = app.egui_ctx();
         let mut settings = SettingsTab::new();
-        let mut profiles = crate::ui::identity::profile_cache::ProfileCache::default();
 
         handle_profile_updated(
             &app,
             &mut settings,
-            &mut profiles,
             &BackendTaskContext::Other,
             &crate::model::dashpay::ProfileSnapshot {
                 network: app.network,
@@ -1293,119 +1173,6 @@ mod tests {
             .insert_local_qualified_identity(&qualified_identity, &None)
             .expect("seed identity");
         identity_id
-    }
-
-    /// Right after the app starts, the network's masternode list is not synced
-    /// yet, so the first profile load fails. The hub must ask for the profile
-    /// again once the list is ready, instead of leaving the identity without
-    /// its profile until the user loads it again by hand.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn profile_load_failed_while_syncing_is_retried_once_the_network_is_ready() {
-        let (_dir, context) = wired_test_context().await;
-        let owner = seed_user_identity(&context, 0x5A);
-        context.set_selected_identity(Some(owner));
-        context.connection_status().set_masternodes_ready(false);
-
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1280.0, 1000.0))
-            .build_ui_state(
-                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
-                    if let AppAction::BackendTaskWithContext {
-                        task: BackendTask::DashPayTask(task),
-                        context,
-                    } = state.0.ui(ui)
-                        && matches!(*task, DashPayTask::LoadProfile { .. })
-                    {
-                        state.1.push(context);
-                    }
-                },
-                (IdentityHubScreen::new(&context), Vec::new()),
-            );
-        harness.run_steps(4);
-        assert!(harness.state().1.is_empty(), "no read before readiness");
-        context.connection_status().set_masternodes_ready(true);
-        harness.run_steps(4);
-        let first_load = {
-            let loads = &harness.state().1;
-            assert_eq!(loads.len(), 1, "the hub asks for the profile once");
-            loads[0].clone()
-        };
-        // Readiness can drop again (a reconnect) while the read is running.
-        context.connection_status().set_masternodes_ready(false);
-
-        harness.state_mut().0.display_backend_task_error(
-            &first_load,
-            &TaskError::MasternodeListNotReady {
-                source_error: Box::new(dash_sdk::Error::Generic(
-                    "masternode list not yet synced".into(),
-                )),
-            },
-        );
-        harness.run_steps(4);
-        assert_eq!(
-            harness.state().1.len(),
-            1,
-            "no new load while the masternode list is still syncing"
-        );
-
-        context.connection_status().set_masternodes_ready(true);
-        harness.run_steps(4);
-        assert_eq!(
-            harness.state().1.len(),
-            2,
-            "the profile is asked for again once the masternode list is ready"
-        );
-        harness.run_steps(4);
-        assert_eq!(harness.state().1.len(), 2, "and only once");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn home_contacts_retry_after_startup_sync_without_tab_navigation() {
-        let (_dir, context) = wired_test_context().await;
-        let owner = seed_user_identity(&context, 0x5B);
-        context.set_selected_identity(Some(owner));
-        context.connection_status().set_masternodes_ready(false);
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1280.0, 1000.0))
-            .build_ui_state(
-                |ui, state: &mut (IdentityHubScreen, Vec<BackendTaskContext>)| {
-                    if let AppAction::BackendTasksWithContexts(tasks, _) = state.0.ui(ui) {
-                        for (task, _) in tasks {
-                            if matches!(&task, BackendTask::DashPayTask(task)
-                                if matches!(**task, DashPayTask::LoadContacts { .. }))
-                            {
-                                state.1.push(BackendTaskContext::from(&task));
-                            }
-                        }
-                    }
-                },
-                (IdentityHubScreen::new(&context), Vec::new()),
-            );
-        harness.run_steps(4);
-        assert!(harness.state().1.is_empty(), "no read before readiness");
-        context.connection_status().set_masternodes_ready(true);
-        harness.run_steps(4);
-        assert_eq!(harness.state().1.len(), 1);
-        // Readiness can drop again (a reconnect) while the read is running.
-        context.connection_status().set_masternodes_ready(false);
-        let first = harness.state().1[0].clone();
-        harness.state_mut().0.display_backend_task_error(
-            &first,
-            &TaskError::MasternodeListNotReady {
-                source_error: Box::new(dash_sdk::Error::Generic("syncing".into())),
-            },
-        );
-        harness.run_steps(4);
-        assert_eq!(harness.state().1.len(), 1, "wait for network readiness");
-        context.connection_status().set_masternodes_ready(true);
-        harness.run_steps(4);
-        assert_eq!(
-            harness.state().1.len(),
-            2,
-            "Home must fetch existing contacts after startup recovers"
-        );
-        harness.run_steps(4);
-        assert_eq!(harness.state().1.len(), 2, "retry only once");
     }
 
     /// Proof-verifying reads sent before the masternode list is synced fail
@@ -1463,20 +1230,13 @@ mod tests {
                         AppAction::BackendTask(task)
                         | AppAction::BackendTaskWithContext { task, .. } => vec![task],
                         AppAction::BackendTasks(tasks, _) => tasks,
-                        AppAction::BackendTasksWithContexts(tasks, _) => {
-                            tasks.into_iter().map(|(task, _)| task).collect()
-                        }
                         _ => Vec::new(),
                     };
                     for task in tasks {
-                        if let BackendTask::DashPayTask(task) = task {
-                            state.1.push(match *task {
-                                DashPayTask::LoadContacts { .. } => "contacts",
-                                DashPayTask::LoadContactRequests { .. } => "requests",
-                                DashPayTask::LoadProfile { .. } => "profile",
-                                DashPayTask::LoadPaymentHistory { .. } => "payments",
-                                _ => continue,
-                            });
+                        if let BackendTask::DashPayTask(task) = task
+                            && matches!(*task, DashPayTask::SyncNow { identity: Some(_) })
+                        {
+                            state.1.push("sync");
                         }
                     }
                 },
@@ -1489,8 +1249,8 @@ mod tests {
             "no read before readiness"
         );
         assert!(
-            harness.state().0.contacts_state.load_is_due(),
-            "Home asked for its contacts and was held, not skipped"
+            harness.state().0.dashpay_sync_due,
+            "Home asked for a sync and was held, not skipped"
         );
         {
             use egui_kittest::kittest::Queryable;
@@ -1499,118 +1259,10 @@ mod tests {
 
         context.connection_status().set_masternodes_ready(true);
         harness.run_steps(6);
-        let mut reads = harness.state().1.clone();
-        reads.sort_unstable();
-        assert_eq!(reads, ["contacts", "payments", "profile", "requests"]);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn home_contacts_retry_only_matching_transient_reads_and_keep_paid_guards() {
-        let (_dir, context) = wired_test_context().await;
-        context.connection_status().set_masternodes_ready(true);
-        let owner = seed_user_identity(&context, 0x5C);
-        let identity = context.get_identity_by_id(&owner).unwrap().unwrap();
-        let request_id = id(0x5D);
-        for requests in [false, true] {
-            let task = BackendTask::DashPayTask(Box::new(if requests {
-                DashPayTask::LoadContactRequests {
-                    identity: identity.clone(),
-                }
-            } else {
-                DashPayTask::LoadContacts {
-                    identity: identity.clone(),
-                }
-            }));
-            let own = BackendTaskContext::for_dispatch(&task);
-            for (dispatch, transient, retries) in [
-                (own.clone(), true, true),
-                (own.clone(), false, false),
-                (BackendTaskContext::Other, true, false),
-                (
-                    BackendTaskContext::DashPayContactsLoad {
-                        network: Network::Mainnet,
-                        identity_id: owner,
-                        kind: crate::model::dashpay::ContactsLoadKind::Contacts,
-                    },
-                    true,
-                    false,
-                ),
-                (
-                    BackendTaskContext::DashPayContactsLoad {
-                        network: Network::Testnet,
-                        identity_id: id(0x6F),
-                        kind: crate::model::dashpay::ContactsLoadKind::Contacts,
-                    },
-                    true,
-                    false,
-                ),
-            ] {
-                let mut hub = IdentityHubScreen::new(&context);
-                hub.contacts_state.reconcile_owner(&identity);
-                assert!(hub.contacts_state.claim_load());
-                assert!(hub.contacts_state.begin_request(request_id));
-                let before = std::time::Instant::now();
-                let error = if transient && requests {
-                    TaskError::MasternodeListNotReady {
-                        source_error: Box::new(dash_sdk::Error::Generic("syncing".into())),
-                    }
-                } else if transient {
-                    TaskError::DapiUnavailable {
-                        source_error: Box::new(dash_sdk::Error::Generic("unavailable".into())),
-                    }
-                } else {
-                    TaskError::NoIdentitiesFound
-                };
-                hub.display_backend_task_error(&dispatch, &error);
-                hub.contacts_state.retry_load_if_due(before);
-                assert!(
-                    !hub.contacts_state.load_is_due(),
-                    "do not spin on endpoint failures"
-                );
-                hub.contacts_state
-                    .retry_load_if_due(before + std::time::Duration::from_secs(6));
-                assert_eq!(hub.contacts_state.load_is_due(), retries);
-                assert!(hub.contacts_state.is_in_flight(&request_id));
-                assert!(!hub.contacts_state.begin_request(request_id));
-            }
-        }
-    }
-
-    /// A contact read that ran past its per-call deadline is a temporary
-    /// failure the network client itself retries, so Home retries it too
-    /// after the endpoint delay instead of leaving the load stranded.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn home_contacts_retry_a_read_that_hit_the_call_deadline() {
-        use dash_sdk::dapi_client::DapiClientError;
-        use dash_sdk::dapi_client::transport::TransportError;
-        let (_dir, context) = wired_test_context().await;
-        context.connection_status().set_masternodes_ready(true);
-        let owner = seed_user_identity(&context, 0x5E);
-        let identity = context.get_identity_by_id(&owner).unwrap().unwrap();
-        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-            identity: identity.clone(),
-        }));
-        let mut hub = IdentityHubScreen::new(&context);
-        hub.contacts_state.reconcile_owner(&identity);
-        assert!(hub.contacts_state.claim_reads().is_some());
-        let error = TaskError::from(dash_sdk::Error::DapiClientError(
-            DapiClientError::Transport(TransportError::Grpc(
-                dash_sdk::dapi_grpc::tonic::Status::deadline_exceeded("deadline"),
-            )),
-        ));
-        assert!(matches!(error, TaskError::DapiDeadlineExceeded { .. }));
-        let before = std::time::Instant::now();
-        hub.display_backend_task_error(&BackendTaskContext::for_dispatch(&task), &error);
-        hub.contacts_state.retry_load_if_due(before);
-        assert!(!hub.contacts_state.load_is_due(), "wait the endpoint delay");
-        hub.contacts_state
-            .retry_load_if_due(before + std::time::Duration::from_secs(6));
         assert_eq!(
-            hub.contacts_state.claim_reads(),
-            Some(std::collections::BTreeSet::from([
-                crate::model::dashpay::ContactsLoadKind::Contacts
-            ])),
-            "a deadline failure must be retried"
+            harness.state().1,
+            ["sync"],
+            "one sync of the selected identity once the network is ready"
         );
     }
 
@@ -1664,121 +1316,125 @@ mod tests {
         ));
     }
 
+    /// Publish `profile` as `owner`'s synced profile.
+    async fn sync_profile(
+        context: &AppContext,
+        owner: &Identifier,
+        profile: platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile,
+    ) {
+        let backend = context.wallet_backend().unwrap();
+        backend
+            .dashpay_set_profile(owner, Some(profile))
+            .await
+            .unwrap();
+        backend.refresh_dashpay_snapshots().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn authoritative_profile_refresh_rebases_seeded_settings_before_save() {
-        use crate::model::dashpay::ProfileSnapshot;
+    async fn a_synced_profile_rebases_the_settings_editor_before_save() {
         use egui_kittest::{Harness, kittest::Queryable};
+        use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let owner = identity.identity.id();
-        for absent in [false, true] {
-            for dirty in [false, true] {
-                let mut hub = IdentityHubScreen::new(&context);
-                hub.profile_cache.seed_cached(&context, &identity);
-                let AppAction::BackendTaskWithContext { context: load, .. } =
-                    hub.profile_cache.dispatch_pending()
-                else {
-                    panic!("load dispatch")
+        for dirty in [false, true] {
+            sync_profile(
+                &context,
+                &owner,
+                DashPayProfile {
+                    display_name: Some("Cached profile".into()),
+                    avatar_url: Some("https://example.com/cached.png".into()),
+                    bio: None,
+                    public_message: None,
+                    avatar_hash: None,
+                    avatar_fingerprint: None,
+                },
+            )
+            .await;
+            let hub = IdentityHubScreen::new(&context);
+            let mut editor = Harness::builder()
+                .with_size(egui::vec2(1100.0, 1100.0))
+                .build_ui_state(
+                    |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
+                        let hub = &mut state.0;
+                        hub.profiles.read(&hub.app_context, [owner]);
+                        if let AppAction::BackendTaskWithContext { task, .. } =
+                            hub.settings_tab.render(
+                                ui,
+                                &hub.app_context,
+                                hub.app_context.resolve_selected_identity().as_ref(),
+                                &hub.profiles,
+                            )
+                        {
+                            state.1 = Some(task);
+                        }
+                    },
+                    (hub, None),
+                );
+            editor.run();
+            let type_draft =
+                |editor: &mut Harness<'_, (IdentityHubScreen, Option<BackendTask>)>| {
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .focus();
+                    editor.run();
+                    editor
+                        .query_all_by_role(egui::accesskit::Role::TextInput)
+                        .next()
+                        .unwrap()
+                        .type_text(" draft");
+                    editor.run();
                 };
-                let mut editor = Harness::builder()
-                    .with_size(egui::vec2(1100.0, 1100.0))
-                    .build_ui_state(
-                        |ui, state: &mut (IdentityHubScreen, Option<BackendTask>)| {
-                            let hub = &mut state.0;
-                            if let AppAction::BackendTaskWithContext { task, .. } =
-                                hub.settings_tab.render(
-                                    ui,
-                                    &hub.app_context,
-                                    hub.app_context.resolve_selected_identity().as_ref(),
-                                    &mut hub.profile_cache,
-                                )
-                            {
-                                state.1 = Some(task);
-                            }
-                        },
-                        (hub, None),
-                    );
-                editor.run();
-                if dirty {
-                    editor
-                        .query_all_by_role(egui::accesskit::Role::TextInput)
-                        .next()
-                        .unwrap()
-                        .focus();
-                    editor.run();
-                    editor
-                        .query_all_by_role(egui::accesskit::Role::TextInput)
-                        .next()
-                        .unwrap()
-                        .type_text(" draft");
-                    editor.run();
-                }
-                let profile = (!absent).then(|| {
-                    (
-                        "Authoritative name".into(),
-                        "New biography".into(),
-                        "https://example.com/new.png".into(),
-                    )
-                });
-                let result = BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
-                    network: context.network,
-                    owner,
-                    revision: context.identity_profile_revision(owner),
-                    profile,
-                });
-                editor
-                    .state_mut()
-                    .0
-                    .display_backend_task_result(&load, result);
-                editor.run();
-                if !dirty {
-                    editor.get_by_label("Save social profile").click();
-                    editor.run();
-                    assert!(
-                        editor.state().1.is_none(),
-                        "refreshed fields must be a clean baseline"
-                    );
-                    editor
-                        .query_all_by_role(egui::accesskit::Role::TextInput)
-                        .next()
-                        .unwrap()
-                        .focus();
-                    editor.run();
-                    editor
-                        .query_all_by_role(egui::accesskit::Role::TextInput)
-                        .next()
-                        .unwrap()
-                        .type_text(" draft");
-                    editor.run();
-                }
+            if dirty {
+                type_draft(&mut editor);
+            }
+            sync_profile(
+                &context,
+                &owner,
+                DashPayProfile {
+                    display_name: Some("Synced name".into()),
+                    public_message: Some("New biography".into()),
+                    bio: Some("New biography".into()),
+                    avatar_url: Some("https://example.com/new.png".into()),
+                    avatar_hash: None,
+                    avatar_fingerprint: None,
+                },
+            )
+            .await;
+            editor.run();
+            if !dirty {
                 editor.get_by_label("Save social profile").click();
                 editor.run();
-                let Some(BackendTask::DashPayTask(task)) = editor.state_mut().1.take() else {
-                    panic!("save dispatch")
-                };
-                let DashPayTask::UpdateProfile {
-                    display_name,
-                    bio,
-                    avatar_url,
-                    ..
-                } = *task
-                else {
-                    panic!("profile save")
-                };
-                let expected_name = if dirty {
-                    "Cached profile draft"
-                } else if absent {
-                    "draft"
-                } else {
-                    "Authoritative name draft"
-                };
-                assert_eq!(display_name.as_deref(), Some(expected_name));
-                assert_eq!(bio.as_deref(), (!absent).then_some("New biography"));
-                assert_eq!(
-                    avatar_url.as_deref(),
-                    (!absent).then_some("https://example.com/new.png")
+                assert!(
+                    editor.state().1.is_none(),
+                    "synced fields must be a clean baseline"
                 );
+                type_draft(&mut editor);
             }
+            editor.get_by_label("Save social profile").click();
+            editor.run();
+            let Some(BackendTask::DashPayTask(task)) = editor.state_mut().1.take() else {
+                panic!("save dispatch")
+            };
+            let DashPayTask::UpdateProfile {
+                display_name,
+                bio,
+                avatar_url,
+                ..
+            } = *task
+            else {
+                panic!("profile save")
+            };
+            let expected_name = if dirty {
+                "Cached profile draft"
+            } else {
+                "Synced name draft"
+            };
+            assert_eq!(display_name.as_deref(), Some(expected_name));
+            assert_eq!(bio.as_deref(), Some("New biography"));
+            assert_eq!(avatar_url.as_deref(), Some("https://example.com/new.png"));
         }
     }
 
@@ -1885,10 +1541,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cached_profile_primes_avatar_without_overwriting_saved_or_absent_profile() {
+    async fn a_held_profile_primes_the_avatar_and_follows_the_synced_profile() {
+        use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
         let (_dir, context) = wired_test_context().await;
         let identity = seed_cached_profile(&context).await;
         let id = identity.identity.id();
+        context
+            .wallet_backend()
+            .unwrap()
+            .refresh_dashpay_snapshots()
+            .await;
         let mut harness = egui_kittest::Harness::builder().build_ui_state(
             |ui, screen: &mut IdentityHubScreen| {
                 screen.ui(ui);
@@ -1903,87 +1565,47 @@ mod tests {
                 .is_waiting_for_avatar("https://example.com/cached.png")
         );
         let fields = harness
-            .state_mut()
-            .profile_cache
-            .get_or_request(&identity)
+            .state()
+            .profiles
+            .get(&identity)
             .and_then(Option::as_ref)
-            .expect("persisted profile is immediately available offline");
+            .expect("the profile platform-wallet holds is available offline")
+            .clone();
         assert_eq!(fields.avatar_url, "https://example.com/cached.png");
-        harness.state_mut().profile_cache.record_saved(
-            id,
-            super::super::profile_cache::ProfileFields {
-                display_name: "Saved".into(),
-                ..Default::default()
+        sync_profile(
+            &context,
+            &id,
+            DashPayProfile {
+                display_name: Some("Saved".into()),
+                avatar_url: None,
+                bio: None,
+                public_message: None,
+                avatar_hash: None,
+                avatar_fingerprint: None,
             },
-        );
+        )
+        .await;
         harness.run_steps(2);
         assert_eq!(
             harness
-                .state_mut()
-                .profile_cache
-                .get_or_request(&identity)
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .display_name,
-            "Saved"
-        );
-        let cache = &mut harness.state_mut().profile_cache;
-        cache.reset();
-        cache.get_or_request(&identity);
-        let AppAction::BackendTaskWithContext { context: load, .. } = cache.dispatch_pending()
-        else {
-            panic!("profile load")
-        };
-        assert!(cache.record_result(
-            &context,
-            &load,
-            &BackendTaskSuccessResult::DashPayProfile(crate::model::dashpay::ProfileSnapshot {
-                network: context.network,
-                owner: id,
-                revision: context.identity_profile_revision(id),
-                profile: None
-            })
-        ));
-        harness.run_steps(2);
-        assert!(
-            harness
-                .state_mut()
-                .profile_cache
-                .get_or_request(&identity)
-                .unwrap()
-                .is_none(),
-            "authoritative absence must not be replaced by old persisted fields"
+                .state()
+                .profiles
+                .get(&identity)
+                .and_then(Option::as_ref)
+                .map(|profile| profile.display_name.as_str()),
+            Some("Saved")
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn contact_results_follow_fallback_and_explicit_identity_selection() {
-        let (_temp_dir, context) = wired_test_context().await;
-        let fallback_identity = seed_user_identity(&context, 1);
-        let screen = IdentityHubScreen::new(&context);
+    /// Give the identity-scoped caches state a reset would clear.
+    fn warm_caches(screen: &mut IdentityHubScreen) {
+        *screen.contacts_state.search_mut() = "warm".into();
+        screen.dashpay_sync_due = false;
+    }
 
-        assert_eq!(
-            context.selected_identity_id(),
-            None,
-            "the single-identity path must not require an explicit picker selection"
-        );
-        assert!(
-            screen.result_is_for_selected_identity(&fallback_identity),
-            "a contact result for the fallback-resolved identity must populate the Contacts tab"
-        );
-
-        let explicitly_selected = seed_user_identity(&context, 2);
-        context.set_selected_identity(Some(explicitly_selected));
-
-        assert!(
-            !screen.result_is_for_selected_identity(&fallback_identity),
-            "a late result for the previous fallback identity must be rejected after a switch"
-        );
-        assert!(
-            screen.result_is_for_selected_identity(&explicitly_selected),
-            "a result for the explicitly selected identity must apply after a switch"
-        );
+    /// Whether the identity-scoped caches were reset since [`warm_caches`].
+    fn caches_reset(screen: &mut IdentityHubScreen) -> bool {
+        screen.contacts_state.search_mut().is_empty() && screen.dashpay_sync_due
     }
 
     /// The Hub's identity-scoped caches follow the *effective* identity, which
@@ -2016,18 +1638,7 @@ mod tests {
             None,
             "precondition: the identity is effective by fallback, not by an explicit selection"
         );
-        assert!(
-            screen.contacts_state.claim_load(),
-            "precondition: the one-shot load guard starts unclaimed"
-        );
-        screen.profile_cache.record_saved(
-            fallback,
-            crate::ui::identity::profile_cache::ProfileFields {
-                display_name: "Alicia".into(),
-                bio: String::new(),
-                avatar_url: String::new(),
-            },
-        );
+        warm_caches(&mut screen);
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             network: screen.app_context.network,
@@ -2038,16 +1649,9 @@ mod tests {
         });
 
         assert!(
-            screen.contacts_state.claim_load(),
-            "the load guard must be re-armed, or Contacts renders the removed identity's \
-             rows and never re-fetches for the identity that replaced it"
-        );
-        assert!(
-            screen
-                .profile_cache
-                .get_or_request(&fallback_identity)
-                .is_none(),
-            "the removed identity's cached profile must be dropped"
+            caches_reset(&mut screen),
+            "the caches must be reset, or Contacts keeps the removed identity's rows and \
+             never syncs the identity that replaced it"
         );
     }
 
@@ -2089,15 +1693,7 @@ mod tests {
             "precondition: no explicit selection, so only the dispatch record names the target"
         );
 
-        assert!(screen.contacts_state.claim_load());
-        screen.profile_cache.record_saved(
-            unloaded,
-            crate::ui::identity::profile_cache::ProfileFields {
-                display_name: "Alicia".into(),
-                bio: String::new(),
-                avatar_url: String::new(),
-            },
-        );
+        warm_caches(&mut screen);
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             network: screen.app_context.network,
@@ -2108,33 +1704,9 @@ mod tests {
         });
 
         assert!(
-            screen.contacts_state.claim_load(),
-            "the load guard must be re-armed even though no live pointer still names the \
-             removed identity"
-        );
-        let unloaded_identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity(unloaded, PlatformVersion::latest())
-                .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::PendingCreation,
-            network: Network::Testnet,
-        };
-        assert!(
-            screen
-                .profile_cache
-                .get_or_request(&unloaded_identity)
-                .is_none(),
-            "the removed identity's cached profile must be dropped"
+            caches_reset(&mut screen),
+            "the caches must be reset even though no live pointer still names the removed \
+             identity"
         );
     }
 
@@ -2182,15 +1754,7 @@ mod tests {
         );
 
         // Now the first one's result lands, with nothing live naming it.
-        assert!(screen.contacts_state.claim_load());
-        screen.profile_cache.record_saved(
-            first,
-            crate::ui::identity::profile_cache::ProfileFields {
-                display_name: "Alicia".into(),
-                bio: String::new(),
-                avatar_url: String::new(),
-            },
-        );
+        warm_caches(&mut screen);
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             network: screen.app_context.network,
@@ -2201,32 +1765,8 @@ mod tests {
         });
 
         assert!(
-            screen.contacts_state.claim_load(),
+            caches_reset(&mut screen),
             "the first unload's caches must be reset when its own result arrives"
-        );
-        let first_identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity(first, PlatformVersion::latest())
-                .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::PendingCreation,
-            network: Network::Testnet,
-        };
-        assert!(
-            screen
-                .profile_cache
-                .get_or_request(&first_identity)
-                .is_none(),
-            "the first unloaded identity's cached profile must be dropped"
         );
         assert!(
             screen.pending_unloads.is_empty(),
@@ -2261,7 +1801,7 @@ mod tests {
         )));
 
         // Caches are warm and belong to the identity still in use.
-        assert!(screen.contacts_state.claim_load());
+        warm_caches(&mut screen);
 
         // An unrelated identity is removed — by another device, or by a screen
         // that is not this one. Nothing live names it, and this screen never
@@ -2275,30 +1815,13 @@ mod tests {
         });
 
         assert!(
-            !screen.contacts_state.claim_load(),
+            !caches_reset(&mut screen),
             "a removal naming no identity this screen cares about must not reset its caches"
         );
         assert!(
             screen.pending_unloads.contains(&failed),
             "and must not consume the failed unload's record, which belongs to another identity"
         );
-    }
-
-    #[test]
-    fn a_result_for_the_selected_identity_applies() {
-        assert!(applies_to_selected_identity(Some(id(1)), &id(1)));
-    }
-
-    #[test]
-    fn a_result_for_a_previously_selected_identity_is_discarded() {
-        // The load was dispatched for identity A; the user switched to B before
-        // it returned. A's contacts must never appear under B.
-        assert!(!applies_to_selected_identity(Some(id(2)), &id(1)));
-    }
-
-    #[test]
-    fn a_result_arriving_with_no_identity_selected_is_discarded() {
-        assert!(!applies_to_selected_identity(None, &id(1)));
     }
 
     /// A bare `WalletStorageNotReady` names no request, so it releases no guard.
@@ -2309,13 +1832,13 @@ mod tests {
     #[test]
     fn a_bare_storage_not_ready_releases_no_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1)));
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(1)));
+        assert!(state.begin_request(req(2)));
 
         release_request_guard_for_error(&mut state, &TaskError::WalletStorageNotReady);
 
         assert!(
-            state.is_in_flight(&id(1)) && state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(1)) && state.is_in_flight(&req(2)),
             "a bare storage-not-ready names no request and must leave every guard intact",
         );
     }
@@ -2327,23 +1850,23 @@ mod tests {
     #[test]
     fn a_gate_rejected_contact_action_releases_only_its_own_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1))); // genuinely executing
-        assert!(state.begin_request(id(2))); // about to be gate-rejected
+        assert!(state.begin_request(req(1))); // genuinely executing
+        assert!(state.begin_request(req(2))); // about to be gate-rejected
 
         release_request_guard_for_error(
             &mut state,
             &TaskError::DashPayContactRequestActionFailed {
-                request_id: id(2),
+                request: req(2),
                 source: Box::new(TaskError::WalletStorageNotReady),
             },
         );
 
         assert!(
-            !state.is_in_flight(&id(2)),
+            !state.is_in_flight(&req(2)),
             "the gate-rejected request's guard is released so its row un-sticks",
         );
         assert!(
-            state.is_in_flight(&id(1)),
+            state.is_in_flight(&req(1)),
             "a different action still in flight must keep its guard through the gate rejection",
         );
     }
@@ -2353,12 +1876,12 @@ mod tests {
     #[test]
     fn an_unrelated_error_preserves_the_request_guards() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1)));
+        assert!(state.begin_request(req(1)));
 
         release_request_guard_for_error(&mut state, &TaskError::WalletLocked);
 
         assert!(
-            state.is_in_flight(&id(1)),
+            state.is_in_flight(&req(1)),
             "only the request's own typed failure with its request ID releases a guard",
         );
     }
@@ -2366,12 +1889,12 @@ mod tests {
     #[test]
     fn unrelated_task_error_does_not_release_in_flight_paid_accept_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(2)));
 
         release_request_guard_for_error(&mut state, &TaskError::DocumentNotFound);
 
         assert!(
-            state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(2)),
             "a concurrent load error must not enable a second paid Accept"
         );
     }
@@ -2379,17 +1902,17 @@ mod tests {
     #[test]
     fn matching_request_error_releases_only_its_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
-        assert!(state.begin_request(id(3)));
+        assert!(state.begin_request(req(2)));
+        assert!(state.begin_request(req(3)));
         let error = TaskError::DashPayContactRequestActionFailed {
-            request_id: id(2),
+            request: req(2),
             source: Box::new(TaskError::DocumentNotFound),
         };
 
         release_request_guard_for_error(&mut state, &error);
 
-        assert!(!state.is_in_flight(&id(2)));
-        assert!(state.is_in_flight(&id(3)));
+        assert!(!state.is_in_flight(&req(2)));
+        assert!(state.is_in_flight(&req(3)));
     }
 
     fn contact_info_task(update: crate::model::dashpay::ContactInfoUpdate) -> DashPayTask {
@@ -2443,7 +1966,7 @@ mod tests {
         let (_temp_dir, app_context) = wired_test_context().await;
         let mut screen = IdentityHubScreen::new(&app_context);
         let state = &mut screen.contacts_state;
-        state.record_contacts(vec![crate::backend_task::dashpay::ContactData {
+        state.record_contacts_for_test(vec![crate::backend_task::dashpay::ContactData {
             identity_id: id(4),
             nickname: None,
             note: None,
@@ -2483,7 +2006,7 @@ mod tests {
         {
             let (_temp_dir, app_context) = wired_test_context().await;
             let mut screen = IdentityHubScreen::new(&app_context);
-            screen.contacts_state.record_contacts(vec![
+            screen.contacts_state.record_contacts_for_test(vec![
                 crate::backend_task::dashpay::ContactData {
                     identity_id: contact,
                     nickname: None,
@@ -2558,360 +2081,6 @@ mod tests {
                 "{outcome}: the dispatch record retires with its guard"
             );
         }
-    }
-
-    /// r4316990948: load A reads the old note and is still running when the
-    /// save lands and load B starts. B answers first with the saved note; A
-    /// answering afterwards must not put the old note back.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_stale_contacts_load_does_not_undo_a_confirmed_note() {
-        use crate::backend_task::dashpay::ContactData;
-        use crate::model::dashpay::ContactInfoUpdate;
-
-        let (_temp_dir, app_context) = wired_test_context().await;
-        let identity = crate::context::test_support::user_identity_with_signing_key(
-            id(0x31),
-            Network::Testnet,
-            false,
-        );
-        app_context
-            .insert_local_qualified_identity(&identity, &None)
-            .expect("seed identity");
-        app_context.set_selected_identity(Some(identity.identity.id()));
-        let (owner, contact) = (identity.identity.id(), id(4));
-        let listed = |note: Option<&str>| {
-            vec![ContactData {
-                identity_id: contact,
-                nickname: None,
-                note: note.map(Into::into),
-                is_hidden: false,
-                account_reference: 0,
-                username: None,
-                display_name: None,
-                avatar_url: None,
-                bio: None,
-            }]
-        };
-        let contacts_load = |screen: &mut IdentityHubScreen| {
-            let AppAction::BackendTasksWithContexts(tasks, _) =
-                super::super::contacts::load_action(&identity, &mut screen.contacts_state)
-            else {
-                panic!("the contact loads are dispatched");
-            };
-            tasks
-                .into_iter()
-                .find_map(|(task, context)| {
-                    matches!(&task, BackendTask::DashPayTask(t)
-                        if matches!(**t, DashPayTask::LoadContacts { .. }))
-                    .then_some(context)
-                })
-                .expect("a contact list load")
-        };
-
-        let mut screen = IdentityHubScreen::new(&app_context);
-        screen.contacts_state.reconcile_owner(&identity);
-        screen.contacts_state.record_contacts(listed(None));
-        screen.contacts_state.select_contact(&contact);
-        let load_a = contacts_load(&mut screen);
-
-        *screen
-            .contacts_state
-            .detail_mut()
-            .note_mut(&contact)
-            .expect("draft") = "Bao".into();
-        assert!(
-            screen
-                .contacts_state
-                .detail_mut()
-                .begin_save(owner, contact)
-                .is_some()
-        );
-        let action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::UpdateContactInfo {
-                identity: identity.clone(),
-                contact_id: contact,
-                update: ContactInfoUpdate::note(Some("Bao".into())),
-            },
-        )));
-        screen.capture_contact_info_update(&action);
-        let AppAction::BackendTaskWithContext { context: write, .. } =
-            screen.bind_contact_info_dispatch(action)
-        else {
-            panic!("the write is sent under its own dispatch");
-        };
-        screen.display_backend_task_result(
-            &write,
-            BackendTaskSuccessResult::DashPayContactInfoUpdated {
-                identity: owner,
-                contact_id: contact,
-                published: true,
-            },
-        );
-        let load_b = contacts_load(&mut screen);
-
-        let contacts_result = |note| BackendTaskSuccessResult::DashPayContactsWithInfo {
-            identity: owner,
-            contacts: listed(note),
-        };
-        screen.display_backend_task_result(&load_b, contacts_result(Some("Bao")));
-        screen.display_backend_task_result(&load_a, contacts_result(None));
-
-        assert_eq!(
-            screen
-                .contacts_state
-                .selected_contact()
-                .and_then(|c| c.note.as_deref()),
-            Some("Bao"),
-            "the older load must not put the old note back"
-        );
-        assert_eq!(
-            screen
-                .contacts_state
-                .detail_mut()
-                .note_mut(&contact)
-                .map(|draft| draft.clone()),
-            Some("Bao".into())
-        );
-    }
-
-    /// One event in the life of a confirmed note; see `ConfirmedNote`.
-    #[derive(Debug, Clone, Copy)]
-    enum NoteEvent {
-        /// The hub's write succeeds.
-        Saved,
-        /// The hub's write succeeds and is kept on this device only.
-        SavedOnThisDevice,
-        /// The hub's write fails.
-        Failed,
-        /// The hub's write succeeds after the hub moved to another network.
-        SavedOnTheNetworkLeft,
-        /// The legacy Contact Details screen saves the same contact.
-        SavedElsewhere,
-        /// A list from the load dispatched before the save.
-        ListFromBefore(&'static str),
-        /// A list from a load dispatched after the save.
-        ListFromAfter(&'static str),
-        IdentitySwitch,
-        /// The lists now belong to the same owner on another network.
-        NetworkSwitch,
-    }
-
-    /// Every event that creates, keeps or retires a confirmed note, with the
-    /// note the hub shows after it. The contact's note was "Old"; the hub
-    /// saves "Mine".
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_confirmed_note_lifecycle() {
-        use NoteEvent::*;
-        let cases: &[(&str, &[NoteEvent], &str)] = &[
-            (
-                "a list from before the save",
-                &[Saved, ListFromBefore("Old")],
-                "Mine",
-            ),
-            (
-                "a list from before a save kept on this device",
-                &[SavedOnThisDevice, ListFromBefore("Old")],
-                "Mine",
-            ),
-            (
-                "a published note wins over a save kept on this device",
-                &[SavedOnThisDevice, ListFromAfter("Old")],
-                "Old",
-            ),
-            (
-                "a read lagging behind the save",
-                &[Saved, ListFromAfter("Old")],
-                "Mine",
-            ),
-            (
-                "the saved note read back retires it",
-                &[Saved, ListFromAfter("Mine"), ListFromAfter("Old")],
-                "Old",
-            ),
-            (
-                "a newer note saved elsewhere",
-                &[Saved, ListFromAfter("Theirs")],
-                "Theirs",
-            ),
-            (
-                "another screen's save retires it",
-                &[Saved, SavedElsewhere, ListFromAfter("Old")],
-                "Old",
-            ),
-            (
-                "a failed save confirms nothing",
-                &[Failed, ListFromAfter("Old")],
-                "Old",
-            ),
-            (
-                "an identity switch keeps it",
-                &[Saved, IdentitySwitch, ListFromBefore("Old")],
-                "Mine",
-            ),
-            (
-                "a save landing after an identity switch waits out a lagging read",
-                &[IdentitySwitch, Saved, ListFromAfter("Old")],
-                "Mine",
-            ),
-            (
-                "another network's lists are not overridden",
-                &[Saved, NetworkSwitch, ListFromAfter("Old")],
-                "Old",
-            ),
-            (
-                "a save from the network left changes nothing here",
-                &[SavedOnTheNetworkLeft],
-                "Old",
-            ),
-        ];
-        let mut wrong = Vec::new();
-        for (name, events, shown) in cases {
-            let got = confirmed_note_after(events).await;
-            if got.as_deref() != Some(*shown) {
-                wrong.push(format!("{name}: shows {got:?}, expected {shown:?}"));
-            }
-        }
-        assert!(wrong.is_empty(), "{wrong:#?}");
-    }
-
-    /// The note the hub shows for the contact after `events`, asserting that
-    /// the hub's write was settled.
-    async fn confirmed_note_after(events: &[NoteEvent]) -> Option<String> {
-        use crate::backend_task::dashpay::ContactData;
-        use crate::model::dashpay::ContactInfoUpdate;
-
-        let (_temp_dir, app_context) = wired_test_context().await;
-        let identity = crate::context::test_support::user_identity_with_signing_key(
-            id(0x31),
-            Network::Testnet,
-            false,
-        );
-        app_context
-            .insert_local_qualified_identity(&identity, &None)
-            .expect("seed identity");
-        app_context.set_selected_identity(Some(identity.identity.id()));
-        let (owner, contact) = (identity.identity.id(), id(4));
-        let list = |note: &str| BackendTaskSuccessResult::DashPayContactsWithInfo {
-            identity: owner,
-            contacts: vec![ContactData {
-                identity_id: contact,
-                nickname: None,
-                note: Some(note.into()),
-                is_hidden: false,
-                account_reference: 0,
-                username: None,
-                display_name: None,
-                avatar_url: None,
-                bio: None,
-            }],
-        };
-        let contacts_load = |screen: &mut IdentityHubScreen, on_screen: &QualifiedIdentity| {
-            screen.contacts_state.invalidate();
-            let AppAction::BackendTasksWithContexts(tasks, _) =
-                super::super::contacts::load_action(on_screen, &mut screen.contacts_state)
-            else {
-                panic!("the contact loads are dispatched");
-            };
-            tasks
-                .into_iter()
-                .find_map(|(task, context)| {
-                    matches!(&task, BackendTask::DashPayTask(t)
-                        if matches!(**t, DashPayTask::LoadContacts { .. }))
-                    .then_some(context)
-                })
-                .expect("a contact list load")
-        };
-
-        let mut screen = IdentityHubScreen::new(&app_context);
-        screen.contacts_state.reconcile_owner(&identity);
-        // The identity whose lists are on screen; a network switch changes it.
-        let mut on_screen = identity.clone();
-        let before = contacts_load(&mut screen, &on_screen);
-        screen.display_backend_task_result(&before, list("Old"));
-        screen.contacts_state.select_contact(&contact);
-        *screen
-            .contacts_state
-            .detail_mut()
-            .note_mut(&contact)
-            .expect("draft") = "Mine".into();
-        assert!(
-            screen
-                .contacts_state
-                .detail_mut()
-                .begin_save(owner, contact)
-                .is_some()
-        );
-        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
-            identity: identity.clone(),
-            contact_id: contact,
-            update: ContactInfoUpdate::note(Some("Mine".into())),
-        }));
-        let action = AppAction::BackendTask(task.clone());
-        screen.capture_contact_info_update(&action);
-        let AppAction::BackendTaskWithContext { context: write, .. } =
-            screen.bind_contact_info_dispatch(action)
-        else {
-            panic!("the write is sent under its own dispatch");
-        };
-        let saved = BackendTaskSuccessResult::DashPayContactInfoUpdated {
-            identity: owner,
-            contact_id: contact,
-            published: true,
-        };
-
-        for event in events {
-            match *event {
-                NoteEvent::Saved => screen.display_backend_task_result(&write, saved.clone()),
-                NoteEvent::SavedOnThisDevice => screen.display_backend_task_result(
-                    &write,
-                    BackendTaskSuccessResult::DashPayContactInfoUpdated {
-                        identity: owner,
-                        contact_id: contact,
-                        published: false,
-                    },
-                ),
-                NoteEvent::Failed => {
-                    let error = TaskError::DashPayContactInfoActionFailed {
-                        identity_id: owner,
-                        contact_id: contact,
-                        source: Box::new(TaskError::WalletLocked),
-                    };
-                    screen.display_backend_task_error(&write, &error);
-                    screen.display_task_error(&error);
-                }
-                NoteEvent::SavedOnTheNetworkLeft => {
-                    for record in screen.contact_info_dispatches.values_mut() {
-                        record.1 = Network::Mainnet;
-                    }
-                    screen.display_backend_task_result(&write, saved.clone());
-                }
-                NoteEvent::SavedElsewhere => screen.display_backend_task_result(
-                    &BackendTaskContext::for_dispatch(&task),
-                    saved.clone(),
-                ),
-                NoteEvent::ListFromBefore(note) => {
-                    screen.display_backend_task_result(&before, list(note))
-                }
-                NoteEvent::ListFromAfter(note) => {
-                    let after = contacts_load(&mut screen, &on_screen);
-                    screen.display_backend_task_result(&after, list(note));
-                }
-                NoteEvent::IdentitySwitch => screen.reset_contacts_for_identity_change(),
-                NoteEvent::NetworkSwitch => {
-                    on_screen.network = Network::Mainnet;
-                    screen.contacts_state.reconcile_owner(&on_screen);
-                }
-            }
-        }
-        assert!(
-            !screen.contacts_state.detail().is_writing(&owner, &contact),
-            "the write is settled"
-        );
-        screen
-            .contacts_state
-            .matching_contacts()
-            .find(|c| c.identity_id == contact)
-            .and_then(|c| c.note.clone())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

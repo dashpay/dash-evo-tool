@@ -275,7 +275,7 @@ impl ProfileTimestamps {
         Ok(())
     }
 
-    fn get(&self, kv: &DetKv, owner: &Identifier) -> (i64, i64) {
+    pub(super) fn get(&self, kv: &DetKv, owner: &Identifier) -> (i64, i64) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let Some(value) = pending.get(owner).copied() else {
             return kv_timestamps(kv, owner);
@@ -551,7 +551,14 @@ impl<'a> DashpayView<'a> {
                 .dashpay()
                 .payments
                 .iter()
-                .map(|(storage_key, entry)| payment_to_det(owner, storage_key, entry, kv))
+                .map(|(storage_key, entry)| {
+                    payment_to_det(
+                        owner,
+                        storage_key,
+                        entry,
+                        kv_payment_timestamps(kv, storage_key),
+                    )
+                })
                 .collect();
             // Upstream stores payments keyed by the storage key in a BTreeMap
             // (lexicographic order). DET's UI sorts by `created_at DESC`; since
@@ -701,11 +708,11 @@ fn request_to_det_request(
     }
 }
 
-fn payment_to_det(
+pub(super) fn payment_to_det(
     owner: &Identifier,
     storage_key: &str,
     entry: &PaymentEntry,
-    kv: &DetKv,
+    (created_at, confirmed_at): (i64, Option<i64>),
 ) -> StoredPayment {
     use crate::model::dashpay::payment_txid_from_storage_key;
 
@@ -720,11 +727,9 @@ fn payment_to_det(
         PaymentStatus::Confirmed => DetPaymentStatus::Confirmed,
         PaymentStatus::Failed => DetPaymentStatus::Failed,
     };
-    // The upstream map key is `(txid, vout)` for incoming payments (a single
-    // tx can pay two contact outputs). Timestamps are keyed by the same
-    // composite key so each output keeps its own; the surfaced `tx_id` is the
-    // bare transaction id, which is what the UI displays and copies.
-    let (created_at, confirmed_at) = kv_payment_timestamps(kv, storage_key);
+    // Older versions keyed incoming payments by `(txid, vout)`; the surfaced
+    // `tx_id` is the bare transaction id, which is what the UI displays and
+    // copies.
     StoredPayment {
         id: 0,
         tx_id: payment_txid_from_storage_key(storage_key).to_string(),
@@ -739,7 +744,7 @@ fn payment_to_det(
     }
 }
 
-fn profile_to_det(
+pub(super) fn profile_to_det(
     owner: &Identifier,
     profile: &DashPayProfile,
     created_at: i64,
@@ -926,7 +931,7 @@ fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
     kv_get_or_default(kv, DetScope::Global, &key, "dashpay_contact_timestamps")
 }
 
-fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
+pub(super) fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
     let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
     kv_get_or_default(kv, DetScope::Global, &key, "dashpay_payment_timestamps")
 }
@@ -1050,40 +1055,6 @@ impl WalletBackend {
         self.inner
             .profile_timestamps
             .set(&self.kv(), owner, (created_at, updated_at))
-    }
-
-    /// Trigger an upstream DashPay refresh (contact requests + profiles)
-    /// for the wallet that owns `owner`. Callers invoke this BEFORE a
-    /// read on user-initiated refresh actions so the [`DashpayView`]
-    /// observes fresh state.
-    ///
-    /// Returns `Ok(())` if the owner is not known to any registered
-    /// wallet — passive screen loads that pre-empt sync would otherwise
-    /// fail noisily on cold start before any wallet is wired.
-    pub async fn dashpay_sync(
-        &self,
-        owner: &Identifier,
-    ) -> Result<(), crate::backend_task::error::TaskError> {
-        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
-            tracing::debug!(
-                owner = %owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-                "WalletBackend::dashpay_sync: no managing wallet found; skipping"
-            );
-            return Ok(());
-        };
-        let identity = wallet.identity();
-        let dashpay = identity.dashpay();
-        dashpay.sync_contact_requests().await.map_err(|e| {
-            crate::backend_task::error::TaskError::WalletBackend {
-                source: Arc::new(e),
-            }
-        })?;
-        dashpay.sync_profiles().await.map_err(|e| {
-            crate::backend_task::error::TaskError::WalletBackend {
-                source: Arc::new(e),
-            }
-        })?;
-        Ok(())
     }
 
     /// Persist a DashPay profile against the upstream `ManagedIdentity` for
@@ -1505,8 +1476,7 @@ impl WalletBackend {
 
     /// Upsert the address-index state for `(owner, contact)`. This is the
     /// non-incrementing setter — used by the receive-side path that knows
-    /// the new `highest_receive_index` or `bloom_registered_count`
-    /// outright. Concurrent writers race; callers that need atomic
+    /// the new `bloom_registered_count` outright. Concurrent writers race; callers that need atomic
     /// read-modify-write (the send-side increment) must use
     /// [`Self::dashpay_increment_send_index`] instead.
     pub fn dashpay_set_address_index(
@@ -1836,7 +1806,7 @@ mod tests {
         let counterparty = id_from_byte(2);
         let entry = PaymentEntry::new_sent(counterparty, 12_345, Some("lunch".to_string()));
 
-        let det = payment_to_det(&owner, "tx-abc", &entry, &empty_kv());
+        let det = payment_to_det(&owner, "tx-abc", &entry, (0, None));
         assert_eq!(det.tx_id, "tx-abc");
         assert_eq!(det.from_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, counterparty.to_buffer().to_vec());
@@ -1854,7 +1824,7 @@ mod tests {
         let counterparty = id_from_byte(2);
         let entry = PaymentEntry::new_received(counterparty, 7_500, None);
 
-        let det = payment_to_det(&owner, "tx-def", &entry, &empty_kv());
+        let det = payment_to_det(&owner, "tx-def", &entry, (0, None));
         assert_eq!(det.from_identity_id, counterparty.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.payment_type, DetPaymentDirection::Received);
@@ -1871,8 +1841,8 @@ mod tests {
         // counterparty + amount (no last-write-wins clobber).
         let e0 = PaymentEntry::new_received(c0, 1_000, None);
         let e1 = PaymentEntry::new_received(c1, 2_000, None);
-        let d0 = payment_to_det(&owner, "txhash:0", &e0, &empty_kv());
-        let d1 = payment_to_det(&owner, "txhash:1", &e1, &empty_kv());
+        let d0 = payment_to_det(&owner, "txhash:0", &e0, (0, None));
+        let d1 = payment_to_det(&owner, "txhash:1", &e1, (0, None));
         assert_eq!(d0.tx_id, "txhash");
         assert_eq!(d1.tx_id, "txhash");
         assert_eq!(d0.from_identity_id, c0.to_buffer().to_vec());

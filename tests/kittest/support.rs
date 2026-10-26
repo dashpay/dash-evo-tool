@@ -145,3 +145,19 @@ pub fn fresh_app_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
     drop(guard);
     (rt, app_context)
 }
+
+/// Publish `owner`'s DashPay profile into its snapshot, as a sync would; no
+/// profile when `display_name` is `None`.
+pub fn publish_profile(
+    app_context: &AppContext,
+    owner: dash_sdk::platform::Identifier,
+    display_name: Option<&str>,
+    avatar_url: Option<&str>,
+) {
+    let backend = app_context.wallet_backend().expect("wallet backend wired");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(backend.publish_profile_for_test(owner, display_name, avatar_url));
+}

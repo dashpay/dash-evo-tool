@@ -8,7 +8,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{ContactDetails, ContactInfoUpdate, validate_contact_note};
+use crate::model::dashpay::{
+    ContactData, ContactDetails, ContactInfoUpdate, shown_contact_details, validate_contact_note,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
@@ -19,6 +21,7 @@ use dash_sdk::query_types::Documents;
 use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData;
 use platform_wallet::wallet::identity::crypto::contact_info::encode_private_data_bounded;
 use platform_wallet::wallet::identity::network::ContactInfoPublishOutcome;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -59,7 +62,7 @@ where
 /// Save `update` for `contact_user_id` through platform-wallet.
 ///
 /// Every field the update preserves keeps the value the contacts list shows;
-/// see [`super::contacts::shown_contact_details`]. Notes are limited to 255 UTF-8
+/// see [`crate::model::dashpay::shown_contact_details`]. Notes are limited to 255 UTF-8
 /// bytes, and the details must fit the document size limit.
 ///
 /// # Errors
@@ -91,36 +94,114 @@ pub async fn create_or_update_contact_info(
     })
 }
 
-/// Read the details shown for `contact_id`, the ones a contact details
-/// editor starts from.
+/// Bring the contact details platform-wallet holds for `identity` up to date
+/// with the identity's stored `contactInfo` documents, read with the wallet
+/// seed: platform-wallet does not read them back for a wallet loaded without
+/// its seed, which is how wallets load after a restart.
+///
+/// For each established contact the precedence of
+/// [`shown_contact_details`] applies: a published DIP-0015 document, then
+/// platform-wallet's details on this device, then a document older versions
+/// of this app sealed under the legacy key root. A legacy document is taken
+/// over once, so a later cleared note is not undone by it.
 ///
 /// # Errors
 ///
-/// As for [`shown_details_for`].
-pub async fn load_contact_details(
+/// The details sync or the document fetch failed, the seed could not be used
+/// (a cancelled password prompt included), or the result could not be stored.
+pub(crate) async fn refresh_contact_details(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
-    identity: QualifiedIdentity,
-    contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, TaskError> {
+    identity: &QualifiedIdentity,
+) -> Result<(), TaskError> {
+    let _write_guard = app_context
+        .contact_info_writes
+        .acquire(identity.identity.id())
+        .await;
     let backend = app_context.wallet_backend()?;
-    let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
-    Ok(BackendTaskSuccessResult::DashPayContactDetails {
-        identity: identity.identity.id(),
-        contact_id,
-        details,
-    })
+    refresh_contact_details_locked(app_context, sdk, &backend, identity).await
 }
 
-/// The details shown for `contact_id`, with the precedence of
-/// [`super::contacts::shown_contact_details`]: published, then
-/// platform-wallet's on this device, then a legacy-key document.
+/// [`refresh_contact_details`] for a caller holding the owner's contact
+/// details write lock.
+async fn refresh_contact_details_locked(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    backend: &WalletBackend,
+    identity: &QualifiedIdentity,
+) -> Result<(), TaskError> {
+    let owner = identity.identity.id();
+    backend.dashpay_sync_contact_infos(&owner).await?;
+    let held = backend.dashpay_contact_details(&owner).await;
+    if held.is_empty() {
+        return Ok(());
+    }
+    let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
+    let published = stored.published?;
+    let legacy = stored.legacy?;
+    let mut synced = BTreeSet::new();
+    for contact_id in held.keys() {
+        if backend.dashpay_details_synced(&owner, contact_id)? {
+            synced.insert(*contact_id);
+        }
+    }
+    let plan = plan_details_refresh(held, published, &legacy, &synced);
+    backend
+        .dashpay_apply_contact_details(&owner, plan.updates)
+        .await?;
+    for contact_id in plan.now_held {
+        backend.dashpay_mark_details_synced(&owner, &contact_id)?;
+    }
+    Ok(())
+}
+
+/// What a contact details refresh changes in platform-wallet.
+#[derive(Debug, Default, PartialEq)]
+struct DetailsRefreshPlan {
+    /// The details to store, for contacts whose shown details differ from
+    /// the held ones.
+    updates: BTreeMap<Identifier, ContactDetails>,
+    /// Contacts platform-wallet holds the details of from now on, so a legacy
+    /// document no longer stands in for them.
+    now_held: Vec<Identifier>,
+}
+
+/// Decide a refresh of the `held` details from the `published` and `legacy`
+/// documents; `synced` lists the contacts already held before.
+fn plan_details_refresh(
+    held: BTreeMap<Identifier, ContactDetails>,
+    mut published: BTreeMap<Identifier, ContactDetails>,
+    legacy: &std::collections::HashMap<Identifier, ContactData>,
+    synced: &BTreeSet<Identifier>,
+) -> DetailsRefreshPlan {
+    let mut plan = DetailsRefreshPlan::default();
+    for (contact_id, local) in held {
+        let published = published.remove(&contact_id);
+        let was_published = published.is_some();
+        let synced_before = synced.contains(&contact_id);
+        let shown = shown_contact_details(
+            published,
+            Some(local.clone()),
+            synced_before,
+            legacy.get(&contact_id).map(ContactData::details),
+        );
+        // platform-wallet holds what was published, or what it now stores.
+        if !synced_before && (was_published || !shown.is_empty()) {
+            plan.now_held.push(contact_id);
+        }
+        if shown != local {
+            plan.updates.insert(contact_id, shown);
+        }
+    }
+    plan
+}
+
+/// The details shown for `contact_id` once [`refresh_contact_details`] ran.
 ///
 /// # Errors
 ///
-/// Fails when the details sync, the document fetch, or reading the published
-/// or legacy documents fails (a cancelled password prompt included), rather
-/// than guessing: a save keeps every field it does not replace from this.
+/// As for [`refresh_contact_details`]: a save keeps every field it does not
+/// replace from this read, so it must not guess.
 async fn shown_details_for(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -128,26 +209,12 @@ async fn shown_details_for(
     identity: &QualifiedIdentity,
     contact_id: &Identifier,
 ) -> Result<ContactDetails, TaskError> {
-    let owner = identity.identity.id();
-    backend.dashpay_sync_contact_infos(&owner).await?;
-    let local = backend
-        .dashpay_contact_details(&owner)
+    refresh_contact_details_locked(app_context, sdk, backend, identity).await?;
+    Ok(backend
+        .dashpay_contact_details(&identity.identity.id())
         .await
-        .remove(contact_id);
-    let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
-    let published = stored.published?.remove(contact_id);
-    let legacy = stored.legacy?;
-    let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
-        || super::contacts::holds_details(published.as_ref(), local.as_ref());
-    let legacy = legacy
-        .get(contact_id)
-        .map(super::contacts::ContactData::details);
-    Ok(super::contacts::shown_contact_details(
-        published,
-        local,
-        synced_before,
-        legacy,
-    ))
+        .remove(contact_id)
+        .unwrap_or_default())
 }
 
 /// The reads and writes one contact details save performs, behind a trait so
@@ -529,7 +596,7 @@ mod tests {
     async fn legacy_load<D, DF>(
         documents: Vec<Document>,
         derive_keys: D,
-    ) -> Result<std::collections::HashMap<Identifier, super::super::contacts::ContactData>, TaskError>
+    ) -> Result<std::collections::HashMap<Identifier, crate::model::dashpay::ContactData>, TaskError>
     where
         D: FnMut(u32) -> DF,
         DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
@@ -593,7 +660,7 @@ mod tests {
     async fn load_details(
         pages: Vec<Documents>,
     ) -> (
-        std::collections::HashMap<Identifier, super::super::contacts::ContactData>,
+        std::collections::HashMap<Identifier, crate::model::dashpay::ContactData>,
         bool,
     ) {
         let contract =
@@ -655,5 +722,90 @@ mod tests {
             details.get(&contact).and_then(|c| c.note.as_deref()),
             Some("newer")
         );
+    }
+
+    fn noted(note: &str) -> ContactDetails {
+        ContactDetails {
+            note: Some(note.to_owned()),
+            ..ContactDetails::default()
+        }
+    }
+
+    fn legacy_noted(contact: Identifier, note: &str) -> ContactData {
+        ContactData {
+            identity_id: contact,
+            nickname: None,
+            note: Some(note.to_owned()),
+            is_hidden: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    #[test]
+    fn published_details_replace_the_held_ones_and_are_held_from_then_on() {
+        let contact = Identifier::from([1; 32]);
+        let plan = plan_details_refresh(
+            BTreeMap::from([(contact, noted("old"))]),
+            BTreeMap::from([(contact, noted("published"))]),
+            &std::collections::HashMap::new(),
+            &BTreeSet::new(),
+        );
+        assert_eq!(
+            plan.updates,
+            BTreeMap::from([(contact, noted("published"))])
+        );
+        assert_eq!(plan.now_held, vec![contact]);
+    }
+
+    #[test]
+    fn a_legacy_document_is_taken_over_once() {
+        let contact = Identifier::from([2; 32]);
+        let legacy = std::collections::HashMap::from([(contact, legacy_noted(contact, "legacy"))]);
+        let first = plan_details_refresh(
+            BTreeMap::from([(contact, ContactDetails::default())]),
+            BTreeMap::new(),
+            &legacy,
+            &BTreeSet::new(),
+        );
+        assert_eq!(first.updates, BTreeMap::from([(contact, noted("legacy"))]));
+        assert_eq!(first.now_held, vec![contact]);
+
+        // The user cleared the note afterwards: the legacy document must not
+        // bring it back.
+        let later = plan_details_refresh(
+            BTreeMap::from([(contact, ContactDetails::default())]),
+            BTreeMap::new(),
+            &legacy,
+            &BTreeSet::from([contact]),
+        );
+        assert_eq!(later, DetailsRefreshPlan::default());
+    }
+
+    #[test]
+    fn nothing_changes_when_nothing_is_stored() {
+        let contact = Identifier::from([3; 32]);
+        let plan = plan_details_refresh(
+            BTreeMap::from([(contact, ContactDetails::default())]),
+            BTreeMap::new(),
+            &std::collections::HashMap::new(),
+            &BTreeSet::new(),
+        );
+        assert_eq!(plan, DetailsRefreshPlan::default());
+    }
+
+    #[test]
+    fn held_details_already_shown_are_not_rewritten() {
+        let contact = Identifier::from([4; 32]);
+        let plan = plan_details_refresh(
+            BTreeMap::from([(contact, noted("mine"))]),
+            BTreeMap::new(),
+            &std::collections::HashMap::new(),
+            &BTreeSet::from([contact]),
+        );
+        assert_eq!(plan, DetailsRefreshPlan::default());
     }
 }

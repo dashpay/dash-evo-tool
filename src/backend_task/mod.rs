@@ -2,7 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::dashpay::{ContactData, DashPayTask};
+use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::identity::IdentityTask;
@@ -11,6 +11,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
+use crate::model::dashpay::ContactRequestKey;
 use crate::model::dpns_voting::{
     DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
 };
@@ -198,21 +199,33 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
     )
 }
 
-/// The contact-request ID a wallet-touching `DashPayTask` acts on, if it is one
+/// The contact request a wallet-touching `DashPayTask` acts on, if it is one
 /// of the three paid contact actions the Identity Hub guards while in flight.
 ///
 /// The migration gate uses this to reject such an action with
 /// [`TaskError::DashPayContactRequestActionFailed`] so the Hub releases only that
 /// request's in-flight guard; every other task names no request and keeps the
 /// bare [`TaskError::WalletStorageNotReady`].
-pub(crate) fn dashpay_request_id(task: &BackendTask) -> Option<Identifier> {
+pub(crate) fn dashpay_request(task: &BackendTask) -> Option<ContactRequestKey> {
     let BackendTask::DashPayTask(task) = task else {
         return None;
     };
     match task.as_ref() {
-        DashPayTask::AcceptContactRequest { request_id, .. }
-        | DashPayTask::RejectContactRequest { request_id, .. }
-        | DashPayTask::CancelContactRequest { request_id, .. } => Some(*request_id),
+        DashPayTask::AcceptContactRequest {
+            identity,
+            counterparty_id,
+        }
+        | DashPayTask::RejectContactRequest {
+            identity,
+            counterparty_id,
+        }
+        | DashPayTask::CancelContactRequest {
+            identity,
+            counterparty_id,
+        } => Some(ContactRequestKey {
+            owner: identity.identity.id(),
+            counterparty: *counterparty_id,
+        }),
         _ => None,
     }
 }
@@ -354,17 +367,8 @@ pub enum BackendTaskContext {
         identity_id: Identifier,
         contact_id: Identifier,
     },
-    /// A read of the details shown for one contact.
-    DashPayContactDetailsLoad {
-        identity_id: Identifier,
-        contact_id: Identifier,
-    },
-    /// A read of an identity's contacts or contact requests.
-    DashPayContactsLoad {
-        network: Network,
-        identity_id: Identifier,
-        kind: crate::model::dashpay::ContactsLoadKind,
-    },
+    /// A DashPay sync of one identity, which also reads its contact details.
+    DashPaySync(Identifier),
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -534,19 +538,6 @@ impl BackendTaskContext {
         }
     }
 
-    pub(crate) fn contacts_load(
-        &self,
-    ) -> Option<(Network, Identifier, crate::model::dashpay::ContactsLoadKind)> {
-        match self.operation() {
-            Self::DashPayContactsLoad {
-                network,
-                identity_id,
-                kind,
-            } => Some((*network, *identity_id, *kind)),
-            _ => None,
-        }
-    }
-
     pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
         matches!(self.operation(), Self::DpnsContestRefresh)
     }
@@ -570,13 +561,10 @@ impl BackendTaskContext {
         }
     }
 
-    /// Identify a contact-details read through dispatch wrappers.
-    pub(crate) fn dashpay_contact_details_target(&self) -> Option<(Identifier, Identifier)> {
+    /// The identity a DashPay sync was for, through dispatch wrappers.
+    pub(crate) fn dashpay_sync_identity(&self) -> Option<Identifier> {
         match self.operation() {
-            Self::DashPayContactDetailsLoad {
-                identity_id,
-                contact_id,
-            } => Some((*identity_id, *contact_id)),
+            Self::DashPaySync(identity_id) => Some(*identity_id),
             _ => None,
         }
     }
@@ -703,23 +691,6 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::DashPayTask(task) => match task.as_ref() {
-                DashPayTask::LoadContacts { identity } => Self::DashPayContactsLoad {
-                    network: identity.network,
-                    identity_id: identity.identity.id(),
-                    kind: crate::model::dashpay::ContactsLoadKind::Contacts,
-                },
-                DashPayTask::LoadContactRequests { identity } => Self::DashPayContactsLoad {
-                    network: identity.network,
-                    identity_id: identity.identity.id(),
-                    kind: crate::model::dashpay::ContactsLoadKind::Requests,
-                },
-                DashPayTask::LoadContactDetails {
-                    identity,
-                    contact_id,
-                } => Self::DashPayContactDetailsLoad {
-                    identity_id: identity.identity.id(),
-                    contact_id: *contact_id,
-                },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
                 }
@@ -731,6 +702,9 @@ impl From<&BackendTask> for BackendTaskContext {
                     identity_id: identity.identity.id(),
                     contact_id: *contact_id,
                 },
+                DashPayTask::SyncNow {
+                    identity: Some(identity),
+                } => Self::DashPaySync(identity.identity.id()),
                 _ => Self::Other,
             },
             BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
@@ -898,40 +872,16 @@ pub enum BackendTaskSuccessResult {
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results
-    DashPayProfile(crate::model::dashpay::ProfileSnapshot),
     DashPayContactProfile(Option<Document>), // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
-    DashPayContactRequests {
-        /// The identity the requests were loaded for. An identity switch cannot
-        /// cancel an in-flight load, so the consumer must drop a result whose
-        /// identity is no longer the selected one.
-        identity: Identifier,
-        incoming: Vec<(Identifier, Document)>, // (request_id, document)
-        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
-    },
-    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo {
-        /// The identity the contacts were loaded for — see
-        /// [`BackendTaskSuccessResult::DashPayContactRequests`].
-        identity: Identifier,
-        contacts: Vec<ContactData>,
-    },
-    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
     DashPayContactRequestSent(String), // Username or ID of recipient
-    DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
-    DashPayContactRequestRejected(Identifier), // Request ID that was rejected
-    DashPayContactRequestCancelled(Identifier), // Request ID whose sent request was withdrawn
-    DashPayContactAlreadyEstablished {
-        request_id: Identifier,
-        contact_id: Identifier,
-    },
-    /// The details shown for one contact; see `DashPayTask::LoadContactDetails`.
-    DashPayContactDetails {
-        identity: Identifier,
-        contact_id: Identifier,
-        details: crate::model::dashpay::ContactDetails,
-    },
+    DashPayContactRequestAccepted(ContactRequestKey),
+    DashPayContactRequestRejected(ContactRequestKey),
+    /// The owner's sent request was withdrawn.
+    DashPayContactRequestCancelled(ContactRequestKey),
+    /// The request was answered before the action ran: the two are contacts.
+    DashPayContactAlreadyEstablished(ContactRequestKey),
     DashPayContactInfoUpdated {
         /// Identity that owns the encrypted `contactInfo` document.
         identity: Identifier,
@@ -949,12 +899,6 @@ pub enum BackendTaskSuccessResult {
         url: String,
         bytes: Option<Vec<u8>>,
     },
-    /// Received outputs the `EventBridge` saw on a freshly-detected wallet
-    /// transaction. The app dispatches `DetectIncomingContactPayments` for
-    /// these — the backend resolves each against the per-identity DashPay
-    /// address map and records the ones that match a contact. Non-DashPay
-    /// outputs are silently ignored, so this carries every received output.
-    DashPayIncomingDetected(Vec<crate::model::dashpay::DetectedIncomingOutput>),
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`
@@ -964,6 +908,8 @@ pub enum BackendTaskSuccessResult {
     /// Auto-accept contact QR payload, ready to render. The proof is built
     /// through the JIT chokepoint in the backend so the UI never touches a seed.
     DashPayAutoAcceptQrCode(String),
+    /// The DashPay snapshots changed; screens re-read them on the next frame.
+    DashPaySynced,
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {
@@ -1395,12 +1341,12 @@ impl AppContext {
             return Err(error);
         }
 
-        let _contact_request_claim = match dashpay_request_id(&task) {
-            Some(request_id) => match self.try_claim_contact_request_action(request_id) {
+        let _contact_request_claim = match dashpay_request(&task) {
+            Some(request) => match self.try_claim_contact_request_action(request) {
                 Some(claim) => Some(claim),
                 None => {
                     return Err(TaskError::DashPayContactRequestActionFailed {
-                        request_id,
+                        request,
                         source: Box::new(TaskError::DashPayContactRequestActionInProgress),
                     });
                 }
@@ -1469,9 +1415,9 @@ impl AppContext {
                     source: Box::new(TaskError::WalletStorageNotReady),
                 });
             }
-            return match dashpay_request_id(&task) {
-                Some(request_id) => Err(TaskError::DashPayContactRequestActionFailed {
-                    request_id,
+            return match dashpay_request(&task) {
+                Some(request) => Err(TaskError::DashPayContactRequestActionFailed {
+                    request,
                     source: Box::new(TaskError::WalletStorageNotReady),
                 }),
                 None => Err(TaskError::WalletStorageNotReady),
@@ -2538,46 +2484,50 @@ mod tests {
         }
     }
 
-    /// `dashpay_request_id` names a request only for the three guarded contact
+    /// `dashpay_request` names a request only for the three guarded contact
     /// actions; every other DashPay task — and every non-DashPay task — names
     /// none, so the migration gate keeps its bare variant for them.
     #[test]
-    fn dashpay_request_id_extracts_only_the_three_contact_actions() {
+    fn dashpay_request_extracts_only_the_three_contact_actions() {
         use crate::backend_task::dashpay::DashPayTask;
 
-        let request_id = Identifier::from([0x11; 32]);
+        let counterparty_id = Identifier::from([0x11; 32]);
+        let request = ContactRequestKey {
+            owner: qualified_identity(1).identity.id(),
+            counterparty: counterparty_id,
+        };
         let dashpay = |t: DashPayTask| BackendTask::DashPayTask(Box::new(t));
 
         assert_eq!(
-            dashpay_request_id(&dashpay(DashPayTask::AcceptContactRequest {
+            dashpay_request(&dashpay(DashPayTask::AcceptContactRequest {
                 identity: qualified_identity(1),
-                request_id,
+                counterparty_id,
             })),
-            Some(request_id)
+            Some(request)
         );
         assert_eq!(
-            dashpay_request_id(&dashpay(DashPayTask::RejectContactRequest {
+            dashpay_request(&dashpay(DashPayTask::RejectContactRequest {
                 identity: qualified_identity(1),
-                request_id,
+                counterparty_id,
             })),
-            Some(request_id)
+            Some(request)
         );
         assert_eq!(
-            dashpay_request_id(&dashpay(DashPayTask::CancelContactRequest {
+            dashpay_request(&dashpay(DashPayTask::CancelContactRequest {
                 identity: qualified_identity(1),
-                request_id,
+                counterparty_id,
             })),
-            Some(request_id)
+            Some(request)
         );
         assert_eq!(
-            dashpay_request_id(&dashpay(DashPayTask::SearchProfiles {
+            dashpay_request(&dashpay(DashPayTask::SearchProfiles {
                 search_query: String::new(),
             })),
             None,
             "a non-contact-action DashPay task names no request"
         );
         assert_eq!(
-            dashpay_request_id(&BackendTask::ReinitCoreClientAndSdk),
+            dashpay_request(&BackendTask::ReinitCoreClientAndSdk),
             None,
             "a non-DashPay task names no request"
         );
@@ -2589,20 +2539,31 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        let request_id = Identifier::from([0x33; 32]);
+        let request = ContactRequestKey {
+            owner: Identifier::from([0x32; 32]),
+            counterparty: Identifier::from([0x33; 32]),
+        };
         let first = ctx
-            .try_claim_contact_request_action(request_id)
+            .try_claim_contact_request_action(request)
             .expect("first execution claims the request");
 
-        assert!(ctx.contact_request_action_is_in_flight(&request_id));
+        assert!(ctx.contact_request_action_is_in_flight(&request));
         assert!(
-            ctx.try_claim_contact_request_action(request_id).is_none(),
+            ctx.try_claim_contact_request_action(request).is_none(),
             "another UI surface must not start the same paid request action"
+        );
+        let other_owner = ContactRequestKey {
+            owner: Identifier::from([0x34; 32]),
+            ..request
+        };
+        assert!(
+            ctx.try_claim_contact_request_action(other_owner).is_some(),
+            "another identity's request with the same person is a different request"
         );
 
         drop(first);
-        assert!(!ctx.contact_request_action_is_in_flight(&request_id));
-        assert!(ctx.try_claim_contact_request_action(request_id).is_some());
+        assert!(!ctx.contact_request_action_is_in_flight(&request));
+        assert!(ctx.try_claim_contact_request_action(request).is_some());
     }
 
     /// End-to-end: the migration gate wraps a rejected DashPay contact action in
@@ -2622,14 +2583,18 @@ mod tests {
             step: MigrationStep::Identities,
         });
 
-        let request_id = Identifier::from([0x22; 32]);
+        let counterparty_id = Identifier::from([0x22; 32]);
+        let request = ContactRequestKey {
+            owner: qualified_identity(9).identity.id(),
+            counterparty: counterparty_id,
+        };
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let contact_result = ctx
             .run_backend_task(
                 BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
                     identity: qualified_identity(9),
-                    request_id,
+                    counterparty_id,
                 })),
                 SenderAsync::new(tx, ctx.egui_ctx().clone()),
             )
@@ -2637,8 +2602,8 @@ mod tests {
         assert!(
             matches!(
                 &contact_result,
-                Err(TaskError::DashPayContactRequestActionFailed { request_id: r, source })
-                    if *r == request_id
+                Err(TaskError::DashPayContactRequestActionFailed { request: r, source })
+                    if *r == request
                         && matches!(source.as_ref(), TaskError::WalletStorageNotReady)
             ),
             "a gate-rejected contact action must name its request: {contact_result:?}"

@@ -21,12 +21,12 @@ use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::ProgressOverlay;
 use dash_evo_tool::ui::identity::home::{self, HomeState};
-use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
 use dash_evo_tool::ui::identity::register_dpns_name_screen::{
     RegisterDpnsNameScreen, RegisterDpnsNameSource,
 };
 use dash_evo_tool::ui::identity::settings::SettingsTab;
 use dash_evo_tool::ui::identity::username_request_screen::UsernameRequestScreen;
+use dash_evo_tool::ui::state::hub_profiles::HubProfiles;
 use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -350,7 +350,7 @@ fn mount_settings(app_context: Arc<AppContext>) -> Harness<'static, SettingsStat
                     ui,
                     &app_context,
                     app_context.resolve_selected_identity().as_ref(),
-                    &mut ProfileCache::default(),
+                    &HubProfiles::default(),
                 );
                 if !matches!(action, AppAction::None) {
                     state.1 = Some(action);
@@ -626,7 +626,7 @@ fn request_status_page_hides_the_voter_link_for_a_node_that_cannot_vote() {
 /// Home tab state plus the last non-empty action it returned.
 type HomeHarnessState = (
     HomeState,
-    ProfileCache,
+    HubProfiles,
     Option<AppAction>,
     dash_evo_tool::ui::state::AvatarCache,
     dash_evo_tool::ui::state::contacts_view::ContactsState,
@@ -645,7 +645,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     ui,
                     &app_context,
                     &identity,
-                    &mut state.1,
+                    &state.1,
                     &mut state.3,
                     &mut pending,
                 );
@@ -654,21 +654,17 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     &app_context,
                     &identity,
                     &mut state.0,
-                    &mut state.1,
+                    &state.1,
                     &mut state.4,
                 );
                 action |= header;
-                // As in the hub, a load goes out only on a frame nothing else took.
-                if matches!(action, AppAction::None) {
-                    action = home::load_action(&app_context, &mut state.0, &mut state.4);
-                }
                 if !matches!(action, AppAction::None) {
                     state.2 = Some(action);
                 }
             },
             (
                 HomeState::default(),
-                ProfileCache::default(),
+                HubProfiles::default(),
                 None,
                 Default::default(),
                 Default::default(),

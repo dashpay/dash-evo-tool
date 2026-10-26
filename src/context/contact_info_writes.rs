@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 /// Owner-wide locking also protects allocation of new contact derivation indexes.
+// TODO(upstream): dashpay/platform#5599 — platform-wallet does not serialize
+// an owner's contactInfo writes; without this lock concurrent edits are lost.
 #[derive(Debug, Default)]
 pub(crate) struct ContactInfoWrites {
     owners: Mutex<HashMap<Identifier, Weak<AsyncMutex<()>>>>,

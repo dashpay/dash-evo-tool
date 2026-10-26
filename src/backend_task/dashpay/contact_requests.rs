@@ -10,7 +10,7 @@ use crate::backend_task::dashpay::auto_accept_proof::{
 };
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactRequestKey, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::ContactRequestActionKind;
 // Upstream contact-request type: used to record the sent request in the
@@ -24,153 +24,16 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{Identity, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{
-    Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
+    Document, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use platform_wallet::ContactRequest as UpstreamContactRequest;
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-
-pub async fn load_contact_requests(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    identity: QualifiedIdentity,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    let identity_id = identity.identity.id();
-
-    tracing::info!(
-        "Loading contact requests for identity: {}",
-        identity_id.to_string(Encoding::Base58)
-    );
-
-    // Query for incoming contact requests (where toUserId == our identity)
-    let mut incoming_query = contact_request_query(app_context)?;
-
-    incoming_query = incoming_query.with_where(WhereClause {
-        field: "toUserId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
-    });
-
-    // Without this orderBy, the query returns 0 results even when documents exist
-    incoming_query = incoming_query.with_order_by(OrderClause {
-        field: "$createdAt".to_string(),
-        ascending: true,
-    });
-    incoming_query.limit = 50;
-
-    // Query for outgoing contact requests (where $ownerId == our identity)
-    let mut outgoing_query = contact_request_query(app_context)?;
-
-    outgoing_query = outgoing_query.with_where(WhereClause {
-        field: "$ownerId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
-    });
-
-    // Without this orderBy, the query may return 0 results even when documents exist
-    outgoing_query = outgoing_query.with_order_by(OrderClause {
-        field: "$createdAt".to_string(),
-        ascending: true,
-    });
-    outgoing_query.limit = 50;
-
-    // Fetch both types of requests
-    tracing::info!("Fetching incoming contact requests...");
-    let incoming_docs = Document::fetch_many(sdk, incoming_query).await?;
-    tracing::info!("Fetched {} incoming documents", incoming_docs.len());
-
-    tracing::info!("Fetching outgoing contact requests...");
-    let outgoing_docs = Document::fetch_many(sdk, outgoing_query).await?;
-    tracing::info!("Fetched {} outgoing documents", outgoing_docs.len());
-
-    // Convert to vec of tuples (id, document)
-    let mut incoming: Vec<(Identifier, Document)> = incoming_docs
-        .into_iter()
-        .filter_map(|(id, doc)| doc.map(|d| (id, d)))
-        .collect();
-
-    let mut outgoing: Vec<(Identifier, Document)> = outgoing_docs
-        .into_iter()
-        .filter_map(|(id, doc)| doc.map(|d| (id, d)))
-        .collect();
-
-    let backend = app_context.wallet_backend().ok();
-    pending_requests(
-        &mut incoming,
-        &mut outgoing,
-        |sender| match &backend {
-            Some(backend) => backend.dashpay_is_declined(&identity_id, sender),
-            None => false,
-        },
-        |recipient| match &backend {
-            Some(backend) => backend.dashpay_is_withdrawn(&identity_id, recipient),
-            None => false,
-        },
-    );
-
-    tracing::info!(
-        "After filtering: {} incoming, {} outgoing contact requests",
-        incoming.len(),
-        outgoing.len()
-    );
-
-    Ok(BackendTaskSuccessResult::DashPayContactRequests {
-        identity: identity_id,
-        incoming,
-        outgoing,
-    })
-}
-
-/// Keep only the requests still waiting for an answer: drop the pairs that
-/// are contacts (both sides sent a request, unless the owner withdrew theirs —
-/// a reply to a withdrawn request is a new request to answer), then every
-/// request the user resolved on this device; see [`retain_unresolved`].
-fn pending_requests(
-    incoming: &mut Vec<(Identifier, Document)>,
-    outgoing: &mut Vec<(Identifier, Document)>,
-    is_declined: impl Fn(&Identifier) -> bool,
-    is_withdrawn: impl Fn(&Identifier) -> bool,
-) {
-    let contacts_established = super::contacts::mutual_contacts(incoming, outgoing, &is_withdrawn);
-    // An outgoing document with an unreadable recipient is kept: it cannot be
-    // attributed, and hiding a request the user may still be waiting on is
-    // the worse failure.
-    incoming.retain(|(_, doc)| !contacts_established.contains(&doc.owner_id()));
-    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
-        Some(to_id) => !contacts_established.contains(&to_id),
-        None => true,
-    });
-    retain_unresolved(incoming, outgoing, is_declined, is_withdrawn);
-}
-
-/// Drop every request the user has already resolved: an incoming one they
-/// declined (per `is_declined`, keyed on the sender) or a sent one they withdrew
-/// (per `is_withdrawn`, keyed on the recipient).
-///
-/// The two directions are asked separately on purpose — withdrawing our request
-/// to Bob resolves nothing about the request Bob sends us afterwards, and a
-/// shared marker would silently hide it.
-///
-/// An outgoing document with an unreadable `toUserId` is kept: we cannot prove
-/// it was resolved, and hiding a request the user may still be waiting on is the
-/// worse failure.
-fn retain_unresolved(
-    incoming: &mut Vec<(Identifier, Document)>,
-    outgoing: &mut Vec<(Identifier, Document)>,
-    is_declined: impl Fn(&Identifier) -> bool,
-    is_withdrawn: impl Fn(&Identifier) -> bool,
-) {
-    incoming.retain(|(_, doc)| !is_declined(&doc.owner_id()));
-    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
-        Some(to) => !is_withdrawn(&to),
-        None => true,
-    });
-}
 
 /// Verify that `doc` is a contact request `owner` actually sent, and return its
 /// recipient. Guards the cancel path against acting on a stale UI row that
@@ -668,28 +531,58 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         .ok_or(TaskError::IdentityNotFound)
 }
 
+/// Fetch the contact request `sender` sent to `recipient` from Platform,
+/// rather than trusting the row the user clicked: the list may be stale by
+/// seconds or by an identity switch.
+///
+/// # Errors
+///
+/// [`TaskError::DocumentNotFound`] when there is none, or the query failed.
+async fn fetch_request_between(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    sender: Identifier,
+    recipient: Identifier,
+) -> Result<Document, TaskError> {
+    let mut query = contact_request_query(app_context)?
+        .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(sender.to_buffer()),
+        })
+        .with_where(WhereClause {
+            field: "toUserId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(recipient.to_buffer()),
+        });
+    query.limit = 1;
+    Document::fetch_many(sdk, query)
+        .await?
+        .into_values()
+        .flatten()
+        .next()
+        .ok_or(TaskError::DocumentNotFound)
+}
+
 pub async fn accept_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    request_id: Identifier,
+    counterparty_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = identity.identity.id();
+    let key = ContactRequestKey {
+        owner: owner_id,
+        counterparty: counterparty_id,
+    };
     let _action_guard = app_context
         .wallet_backend()?
-        .dashpay_lock_contact_request_action(&owner_id, &request_id)
+        .dashpay_lock_contact_request_action(&owner_id, &counterparty_id)
         .await;
 
-    // According to DashPay DIP, accepting means sending a contact request back
-    // First, we need to fetch the incoming contact request to get the sender's identity
-
-    // Fetch the specific contact request document by creating a query with its ID
-    let query_with_id =
-        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
-
-    let doc = Document::fetch(sdk, query_with_id)
-        .await?
-        .ok_or(TaskError::DocumentNotFound)?;
+    // Accepting means sending a contact request back, built from the
+    // received one.
+    let doc = fetch_request_between(app_context, sdk, counterparty_id, owner_id).await?;
 
     // Verify the request was addressed to us before acting on it, and get the
     // sender's identity (the owner of the incoming request).
@@ -724,12 +617,9 @@ pub async fn accept_contact_request(
         })
         .await?;
         return Ok(if restored {
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(key)
         } else {
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
-                request_id,
-                contact_id: from_identity_id,
-            }
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(key)
         });
     }
 
@@ -814,9 +704,7 @@ pub async fn accept_contact_request(
     .await;
 
     match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
-            request_id,
-        )),
+        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(key)),
         Err(e) => Err(e),
     }
 }
@@ -900,20 +788,14 @@ pub async fn reject_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    request_id: Identifier,
+    counterparty_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // A contactRequest document is immutable, and a contactInfo about someone
     // who is not a contact would publish whom this identity turned down, so
     // declining is local only: platform-wallet ignores the sender and the DET
     // marker retires the request.
-    let query_with_id =
-        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
-
-    let doc = Document::fetch(sdk, query_with_id)
-        .await?
-        .ok_or(TaskError::DocumentNotFound)?;
-
     let owner_id = identity.identity.id();
+    let doc = fetch_request_between(app_context, sdk, counterparty_id, owner_id).await?;
 
     // Verify the request was addressed to us before declining it.
     let from_identity_id = sender_of_received_request(&doc, &owner_id)?;
@@ -922,7 +804,7 @@ pub async fn reject_contact_request(
         app_context,
         owner_id,
         from_identity_id,
-        request_id,
+        document_id: doc.id(),
     };
     reject_flow(&ops).await
 }
@@ -939,20 +821,16 @@ trait RejectOps {
     /// is already established there; returns whether the ignore stands.
     fn ignore_sender(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
     fn mark_declined(&self) -> Result<(), TaskError>;
-    fn request_id(&self) -> Identifier;
-    fn sender_id(&self) -> Identifier;
+    fn key(&self) -> ContactRequestKey;
 }
 
 async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
     let result = if ops.ignore_sender().await? {
-        complete_rejection(ops.request_id(), || ops.mark_declined())?
+        complete_rejection(ops.key(), || ops.mark_declined())?
     } else {
         // The contact was established before the ignore took effect.
-        BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
-            request_id: ops.request_id(),
-            contact_id: ops.sender_id(),
-        }
+        BackendTaskSuccessResult::DashPayContactAlreadyEstablished(ops.key())
     };
     ops.clear_phase()?;
     Ok(result)
@@ -962,7 +840,8 @@ struct PlatformRejectOps<'a> {
     app_context: &'a Arc<AppContext>,
     owner_id: Identifier,
     from_identity_id: Identifier,
-    request_id: Identifier,
+    /// The request document, which older versions keyed progress records by.
+    document_id: Identifier,
 }
 
 impl RejectOps for PlatformRejectOps<'_> {
@@ -970,7 +849,7 @@ impl RejectOps for PlatformRejectOps<'_> {
         Ok(self
             .app_context
             .wallet_backend()?
-            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.from_identity_id)
             .await)
     }
 
@@ -979,7 +858,7 @@ impl RejectOps for PlatformRejectOps<'_> {
             .wallet_backend()?
             .dashpay_clear_contact_request_action(
                 &self.owner_id,
-                &self.request_id,
+                &self.document_id,
                 ContactRequestActionKind::Decline,
             )
     }
@@ -997,12 +876,11 @@ impl RejectOps for PlatformRejectOps<'_> {
             .dashpay_mark_declined(&self.owner_id, &self.from_identity_id)
     }
 
-    fn request_id(&self) -> Identifier {
-        self.request_id
-    }
-
-    fn sender_id(&self) -> Identifier {
-        self.from_identity_id
+    fn key(&self) -> ContactRequestKey {
+        ContactRequestKey {
+            owner: self.owner_id,
+            counterparty: self.from_identity_id,
+        }
     }
 }
 
@@ -1015,13 +893,11 @@ impl RejectOps for PlatformRejectOps<'_> {
 /// `contactRequest` document forever — so a failed write must surface rather
 /// than be reported as a completed rejection.
 fn complete_rejection(
-    request_id: Identifier,
+    key: ContactRequestKey,
     mark_declined: impl FnOnce() -> Result<(), TaskError>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     mark_declined()?;
-    Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
-        request_id,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(key))
 }
 
 /// What a cancellation attempt resolved to.
@@ -1088,7 +964,8 @@ struct PlatformCancelOps<'a> {
     owner_id: Identifier,
     /// The recipient of the request being withdrawn.
     to_identity_id: Identifier,
-    request_id: Identifier,
+    /// The request document, which older versions keyed progress records by.
+    document_id: Identifier,
 }
 
 impl CancelOps for PlatformCancelOps<'_> {
@@ -1096,7 +973,7 @@ impl CancelOps for PlatformCancelOps<'_> {
         Ok(self
             .app_context
             .wallet_backend()?
-            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.to_identity_id)
             .await)
     }
 
@@ -1105,7 +982,7 @@ impl CancelOps for PlatformCancelOps<'_> {
             .wallet_backend()?
             .dashpay_clear_contact_request_action(
                 &self.owner_id,
-                &self.request_id,
+                &self.document_id,
                 ContactRequestActionKind::Cancel,
             )
     }
@@ -1157,42 +1034,35 @@ pub async fn cancel_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    request_id: Identifier,
+    counterparty_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = identity.identity.id();
-
-    // Re-fetch the request rather than trusting the row the user clicked — the
-    // list may be stale by seconds or by an identity switch.
-    let query_with_id =
-        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
-
-    let doc = Document::fetch(sdk, query_with_id)
-        .await?
-        .ok_or(TaskError::DocumentNotFound)?;
+    let doc = fetch_request_between(app_context, sdk, owner_id, counterparty_id).await?;
 
     // Verify we sent it, and to whom.
     let to_identity_id = recipient_of_sent_request(&doc, &owner_id)?;
+    let key = ContactRequestKey {
+        owner: owner_id,
+        counterparty: to_identity_id,
+    };
 
     let ops = PlatformCancelOps {
         app_context,
         sdk,
         owner_id,
         to_identity_id,
-        request_id,
+        document_id: doc.id(),
     };
 
     match cancel_flow(&ops).await? {
         CancelOutcome::Withdrawn => Ok(BackendTaskSuccessResult::DashPayContactRequestCancelled(
-            request_id,
+            key,
         )),
         // The recipient answered: the pair is a contact now, so report the real
         // state and let the UI refresh into it.
-        CancelOutcome::AlreadyEstablished => {
-            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
-                request_id,
-                contact_id: to_identity_id,
-            })
-        }
+        CancelOutcome::AlreadyEstablished => Ok(
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(key),
+        ),
     }
 }
 
@@ -1200,6 +1070,7 @@ pub async fn cancel_contact_request(
 mod tests {
     use super::*;
     use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::platform::DocumentQuery;
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
@@ -1363,36 +1234,6 @@ mod tests {
         ));
     }
 
-    /// After the owner withdraws their request to
-    /// id(3), id(3)'s later request is listed for the owner to answer; the
-    /// pair is not taken for a contact and both rows dropped.
-    #[test]
-    fn a_reply_to_a_withdrawn_request_is_listed_to_answer() {
-        let owner = id(9);
-        let mut incoming = vec![
-            (id(10), request_doc(id(3), Some(owner))),
-            (id(11), request_doc(id(4), Some(owner))),
-        ];
-        let mut outgoing = vec![
-            (id(12), request_doc(owner, Some(id(3)))),
-            (id(13), request_doc(owner, Some(id(4)))),
-        ];
-
-        pending_requests(
-            &mut incoming,
-            &mut outgoing,
-            |_| false,
-            |peer| *peer == id(3),
-        );
-
-        assert_eq!(
-            incoming.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            vec![id(10)],
-            "id(3)'s reply waits for an answer; id(4) is a contact"
-        );
-        assert!(outgoing.is_empty(), "the withdrawn request is not listed");
-    }
-
     #[derive(Default)]
     struct ScriptedReEngage {
         withdrawn: bool,
@@ -1495,93 +1336,6 @@ mod tests {
             Err(TaskError::DashPayLocalStateRead { .. })
         ));
         assert!(!*ops.re_engaged.lock().unwrap());
-    }
-
-    #[test]
-    fn retain_unresolved_drops_declined_and_withdrawn_rows() {
-        // Incoming from id(1) — declined. Incoming from id(2) — still pending.
-        let mut incoming = vec![
-            (id(10), request_doc(id(1), Some(id(9)))),
-            (id(11), request_doc(id(2), Some(id(9)))),
-        ];
-        // Outgoing to id(3) — withdrawn. Outgoing to id(4) — still pending.
-        let mut outgoing = vec![
-            (id(12), request_doc(id(9), Some(id(3)))),
-            (id(13), request_doc(id(9), Some(id(4)))),
-        ];
-
-        retain_unresolved(
-            &mut incoming,
-            &mut outgoing,
-            |sender| *sender == id(1),
-            |recipient| *recipient == id(3),
-        );
-
-        assert_eq!(incoming.len(), 1, "the declined request must not be listed");
-        assert_eq!(incoming[0].0, id(11));
-        assert_eq!(
-            outgoing.len(),
-            1,
-            "the withdrawn request must not be listed"
-        );
-        assert_eq!(outgoing[0].0, id(13));
-    }
-
-    #[test]
-    fn retain_unresolved_keeps_rows_with_unreadable_recipients() {
-        let mut incoming = Vec::new();
-        let mut outgoing = vec![(id(12), request_doc(id(9), None))];
-
-        retain_unresolved(&mut incoming, &mut outgoing, |_| true, |_| true);
-
-        assert_eq!(
-            outgoing.len(),
-            1,
-            "a request we cannot attribute must stay visible rather than be silently hidden"
-        );
-    }
-
-    #[test]
-    fn a_withdrawn_outgoing_request_does_not_hide_a_later_incoming_one() {
-        // We (id 9) withdrew a request to id(2), so id(2) carries a withdrawal
-        // marker. Later id(2) sends us a genuine request: it is new, unresolved
-        // business and must be listed.
-        let mut incoming = vec![(id(20), request_doc(id(2), Some(id(9))))];
-        let mut outgoing = Vec::new();
-
-        retain_unresolved(
-            &mut incoming,
-            &mut outgoing,
-            /* is_declined = */ |_| false,
-            /* is_withdrawn = */ |recipient| *recipient == id(2),
-        );
-
-        assert_eq!(
-            incoming.len(),
-            1,
-            "withdrawing our own request must not silence the other side's new request"
-        );
-    }
-
-    #[test]
-    fn a_declined_incoming_request_does_not_hide_a_later_outgoing_one() {
-        // The mirror case: we declined id(2)'s request, then changed our mind
-        // and sent them one. Ours is pending until they answer it.
-        let mut incoming = Vec::new();
-        let mut outgoing = vec![(id(21), request_doc(id(9), Some(id(2))))];
-
-        retain_unresolved(
-            &mut incoming,
-            &mut outgoing,
-            /* is_declined = */ |sender| *sender == id(2),
-            /* is_withdrawn = */ |_| false,
-        );
-
-        assert_eq!(
-            outgoing.len(),
-            1,
-            "declining their earlier request must not silence the request we sent them"
-        );
     }
 
     // -----------------------------------------------------------------
@@ -1703,7 +1457,7 @@ mod tests {
 
     #[test]
     fn failed_mark_declined_write_surfaces_error_instead_of_rejected() {
-        let result = complete_rejection(id(7), || {
+        let result = complete_rejection(key(), || {
             Err(TaskError::DashpaySidecarStorage {
                 source: crate::wallet_backend::KvAdapterError::Truncated,
             })
@@ -1749,12 +1503,15 @@ mod tests {
             Ok(())
         }
 
-        fn request_id(&self) -> Identifier {
-            id(7)
+        fn key(&self) -> ContactRequestKey {
+            key()
         }
+    }
 
-        fn sender_id(&self) -> Identifier {
-            id(8)
+    fn key() -> ContactRequestKey {
+        ContactRequestKey {
+            owner: id(7),
+            counterparty: id(8),
         }
     }
 
@@ -1770,8 +1527,7 @@ mod tests {
 
         assert!(matches!(
             reject_flow(&ops).await,
-            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, contact_id })
-                if request_id == id(7) && contact_id == id(8)
+            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(request)) if request == key()
         ));
         assert!(!*ops.declined.lock().unwrap());
     }
@@ -1782,7 +1538,7 @@ mod tests {
 
         assert!(matches!(
             reject_flow(&ops).await,
-            Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(request)) if request == id(7)
+            Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(request)) if request == key()
         ));
         assert_eq!(*ops.ignored.lock().unwrap(), 1);
         assert!(*ops.declined.lock().unwrap());

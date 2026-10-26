@@ -25,9 +25,10 @@ pub mod auth_pubkey_cache;
 pub(crate) mod auth_pubkey_cache;
 mod avatar_cache;
 mod contact_info;
-mod contact_profile_cache;
+mod contact_usernames;
 mod coordinator_gate;
 mod dashpay;
+mod dashpay_snapshot;
 mod det_platform_signer;
 mod det_signer;
 mod event_bridge;
@@ -101,7 +102,7 @@ use identity_ops::Funding;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
-pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
+pub use contact_usernames::ContactUsernamesView;
 pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
@@ -440,6 +441,8 @@ struct Inner {
     dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
     /// Failed profile timestamp writes, retried locally without another broadcast.
     profile_timestamps: dashpay::ProfileTimestamps,
+    /// Frame-safe DashPay snapshots; see [`dashpay_snapshot`].
+    dashpay_snapshots: dashpay_snapshot::DashPaySnapshots,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -710,6 +713,7 @@ impl WalletBackend {
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
+                dashpay_snapshots: dashpay_snapshot::DashPaySnapshots::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -1783,6 +1787,7 @@ impl WalletBackend {
     /// every wallet is attempted even after one fails.
     pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
         self.inner.profile_timestamps.clear();
+        self.clear_dashpay_snapshots();
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
@@ -1869,8 +1874,8 @@ impl WalletBackend {
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
     /// orchestrates the parts: `SpvRuntime::start(ClientConfig)` followed by
-    /// `spawn_run_loop()`, plus the platform-address / identity / shielded sync
-    /// coordinators.
+    /// `spawn_run_loop()`, plus the platform-address / identity / shielded /
+    /// DashPay sync coordinators.
     ///
     /// `SpvRuntime::start()` initializes the network manager, disk storage,
     /// and SPV client. The sync loop runs separately on the tokio runtime;
@@ -1972,6 +1977,9 @@ impl WalletBackend {
         // If no wallets have called `bind_shielded` yet, each pass produces
         // an empty summary and returns immediately — safe no-op.
         let shielded_sync = Arc::downgrade(&self.inner.pwm.shielded_sync_arc());
+        // DashPay sync coordinator: contact requests, profiles, contactInfo and
+        // payments for every registered wallet, every 15 s.
+        let dashpay_sync = Arc::downgrade(&self.inner.pwm.dashpay_sync_arc());
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
@@ -1997,6 +2005,13 @@ impl WalletBackend {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
                     coordinator = "shielded-sync",
+                    "Coordinator start skipped: backend torn down before the quorum gate fired"
+                ),
+            }
+            match dashpay_sync.upgrade() {
+                Some(coordinator) => coordinator.start(),
+                None => tracing::warn!(
+                    coordinator = "dashpay-sync",
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
                 ),
             }
@@ -2087,7 +2102,7 @@ impl WalletBackend {
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
     ///    `PlatformEventManager` in place for the next `spawn_in_background`.
-    /// 2. `quiesce()` the three sync coordinators (cancel + drain the in-flight
+    /// 2. `quiesce()` the four sync coordinators (cancel + drain the in-flight
     ///    pass) via their `Arc` accessors — NOT `pwm.shutdown()` — so the event
     ///    adapter keeps running.
     /// 3. Re-arm the DET start gates ([`StartLatch::reset`] +
@@ -2103,8 +2118,9 @@ impl WalletBackend {
     /// SAFETY (restart-in-place vs the upstream coordinators): restarting the
     /// SAME coordinator instance is race-free because every coordinator clears
     /// its cancel slot under a `background_generation` guard in the pinned
-    /// platform rev — `identity_sync`, `shielded_sync`, and (since b4506492)
-    /// `platform_address_sync`. Without that guard a lagging old thread could
+    /// platform rev — `identity_sync`, `shielded_sync`, (since b4506492)
+    /// `platform_address_sync`, and `dashpay_sync` (through the shared
+    /// generation-guarded thread registry). Without that guard a lagging old thread could
     /// clobber a freshly-installed cancel token, leaking an uncancellable /
     /// duplicate loop; the guard makes the stale thread observe the bumped
     /// generation and stand down.
@@ -2138,9 +2154,27 @@ impl WalletBackend {
                 "Shielded sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
         }
+        if !self.inner.pwm.dashpay_sync_arc().quiesce().await {
+            tracing::warn!(
+                "DashPay sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
+    }
+
+    /// Report the masternode list ready, firing the coordinator start the way
+    /// the `EventBridge` does.
+    #[cfg(test)]
+    pub(crate) fn report_masternodes_ready_for_test(&self) {
+        self.inner.coordinator_gate.on_masternodes_ready();
+    }
+
+    /// Whether the DashPay sync coordinator's loop is running.
+    #[cfg(test)]
+    pub(crate) fn dashpay_sync_running_for_test(&self) -> bool {
+        self.inner.pwm.dashpay_sync().is_running()
     }
 
     /// Hold starts and stops pending, so tests can join multiple callers to
@@ -2430,12 +2464,10 @@ impl WalletBackend {
         AvatarCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned contact-profile cache. A contact's
-    /// profile belongs to an out-of-wallet identity and is never rehydrated
-    /// upstream, so this cache is the only offline source of a contact's
-    /// display name, avatar URL, bio, and DPNS username between network reads.
-    pub fn contact_profile_cache(&self) -> ContactProfileCacheView<'_> {
-        ContactProfileCacheView::new(&self.inner.app_kv)
+    /// View over the DPNS usernames DET stored for DashPay counterparties,
+    /// which platform-wallet does not hold.
+    pub fn contact_usernames(&self) -> ContactUsernamesView<'_> {
+        ContactUsernamesView::new(&self.inner.app_kv)
     }
 
     /// View over the encrypted HD wallet seed vault (T-W-00.5-v2).

@@ -170,12 +170,8 @@ fn combo_change_writes_selection_to_app_context() {
 }
 
 #[test]
-fn profile_screen_rejects_late_picker_profile_for_other_identity() {
-    use dash_evo_tool::app::AppAction;
-    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
-    use dash_evo_tool::ui::ScreenLike;
+fn profile_screen_shows_only_the_selected_identitys_profile() {
     use dash_evo_tool::ui::dashpay::{DashPayScreen, DashPaySubscreen};
-    use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
     with_isolated_data_dir(|| {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
@@ -187,150 +183,21 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
         ctx.insert_local_qualified_identity(&first, &None).unwrap();
         ctx.insert_local_qualified_identity(&second, &None).unwrap();
         ctx.set_selected_identity(Some(second.identity.id()));
-        let mut screen = DashPayScreen::new(&ctx, DashPaySubscreen::Profile);
-        let own_context = match screen.profile_screen.trigger_load_profile() {
-            AppAction::BackendTaskWithContext { context, .. } => context,
-            AppAction::BackendTask(task) => (&task).into(),
-            _ => panic!("own dispatch"),
-        };
-        screen.display_backend_task_result(
-            &own_context,
-            BackendTaskSuccessResult::DashPayProfile(
-                dash_evo_tool::model::dashpay::ProfileSnapshot {
-                    network: ctx.network(),
-                    owner: second.identity.id(),
-                    revision: ctx.identity_profile_revision(second.identity.id()),
-                    profile: Some((
-                        "Bob correct profile".into(),
-                        "Bob biography".into(),
-                        String::new(),
-                    )),
-                },
-            ),
-        );
-        let mut picker_load = ProfileCache::default();
-        picker_load.get_or_request(&first);
-        let AppAction::BackendTaskWithContext {
-            context: picker_context,
-            ..
-        } = picker_load.dispatch_pending()
-        else {
-            panic!("picker dispatch");
-        };
-        assert_eq!(
-            screen
-                .profile_screen
-                .selected_identity
-                .as_ref()
-                .unwrap()
-                .identity
-                .id(),
-            second.identity.id()
-        );
-        harness.state_mut().main_screens.insert(
-            dash_evo_tool::ui::RootScreenType::RootScreenDashPayProfile,
-            dash_evo_tool::ui::Screen::DashPayScreen(screen),
-        );
-        harness.state_mut().selected_main_screen =
-            dash_evo_tool::ui::RootScreenType::RootScreenDashPayProfile;
-        runtime
-            .block_on(harness.state().task_result_sender.send(
-                dash_evo_tool::app::TaskResult::Success {
-                    context: picker_context,
-                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(
-                        dash_evo_tool::model::dashpay::ProfileSnapshot {
-                            network: ctx.network(),
-                            owner: first.identity.id(),
-                            revision: ctx.identity_profile_revision(first.identity.id()),
-                            profile: Some((
-                                "Alice late picker profile".into(),
-                                "Alice biography".into(),
-                                String::new(),
-                            )),
-                        },
-                    )),
-                },
-            ))
-            .unwrap();
-        harness.run_steps(5);
-        assert!(
-            harness
-                .query_by_label("Alice late picker profile")
-                .is_none(),
-            "another identity's late picker profile must not be displayed for Bob"
-        );
-        assert!(harness.query_by_label("Bob correct profile").is_some());
+        crate::support::publish_profile(&ctx, first.identity.id(), Some("Alice profile"), None);
+        crate::support::publish_profile(&ctx, second.identity.id(), Some("Bob profile"), None);
+        let screen = DashPayScreen::new(&ctx, DashPaySubscreen::Profile);
         let root = dash_evo_tool::ui::RootScreenType::RootScreenDashPayProfile;
-        let dash_evo_tool::ui::Screen::DashPayScreen(screen) =
-            harness.state_mut().main_screens.get_mut(&root).unwrap()
-        else {
-            panic!("profile screen")
-        };
-        let AppAction::BackendTaskWithContext {
-            context: old_load, ..
-        } = screen.profile_screen.trigger_load_profile()
-        else {
-            panic!("old load")
-        };
-        let AppAction::BackendTaskWithContext {
-            context: current_load,
-            ..
-        } = screen.profile_screen.trigger_load_profile()
-        else {
-            panic!("current load")
-        };
-        for result in [
-            dash_evo_tool::app::TaskResult::Success {
-                context: old_load.clone(),
-                result: Box::new(BackendTaskSuccessResult::DashPayProfile(
-                    dash_evo_tool::model::dashpay::ProfileSnapshot {
-                        network: ctx.network(),
-                        owner: second.identity.id(),
-                        revision: ctx.identity_profile_revision(second.identity.id()),
-                        profile: Some(("Bob stale profile".into(), String::new(), String::new())),
-                    },
-                )),
-            },
-            dash_evo_tool::app::TaskResult::Error {
-                context: old_load,
-                error: dash_evo_tool::backend_task::error::TaskError::WalletBackendNotYetWired,
-            },
-            dash_evo_tool::app::TaskResult::Error {
-                context: dash_evo_tool::backend_task::BackendTaskContext::Unknown,
-                error: dash_evo_tool::backend_task::error::TaskError::WalletBackendNotYetWired,
-            },
-        ] {
-            runtime
-                .block_on(harness.state().task_result_sender.send(result))
-                .unwrap();
-        }
+        harness
+            .state_mut()
+            .main_screens
+            .insert(root, dash_evo_tool::ui::Screen::DashPayScreen(screen));
+        harness.state_mut().selected_main_screen = root;
         harness.run_steps(5);
+        // The selector names Bob by his synced profile name too.
+        assert!(harness.query_all_by_label("Bob profile").next().is_some());
         assert!(
-            harness.query_by_label("Loading profile...").is_some(),
-            "stale results and unrelated failures cannot end the current load"
+            harness.query_by_label("Alice profile").is_none(),
+            "another identity's profile must not be displayed for Bob"
         );
-        assert!(harness.query_by_label("Bob stale profile").is_none());
-        runtime
-            .block_on(harness.state().task_result_sender.send(
-                dash_evo_tool::app::TaskResult::Success {
-                    context: current_load,
-                    result: Box::new(BackendTaskSuccessResult::DashPayProfile(
-                        dash_evo_tool::model::dashpay::ProfileSnapshot {
-                            network: ctx.network(),
-                            owner: second.identity.id(),
-                            revision: ctx.identity_profile_revision(second.identity.id()),
-                            profile: Some((
-                                "Bob current profile".into(),
-                                String::new(),
-                                String::new(),
-                            )),
-                        },
-                    )),
-                },
-            ))
-            .unwrap();
-        harness.run_steps(5);
-        assert!(harness.query_by_label("Bob current profile").is_some());
-        assert!(harness.query_by_label("Loading profile...").is_none());
     });
 }

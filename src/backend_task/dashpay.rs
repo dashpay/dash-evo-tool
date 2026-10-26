@@ -15,14 +15,14 @@ pub mod errors;
 pub mod incoming_payments;
 pub mod payments;
 pub mod profile;
+pub mod sync;
 pub mod validation;
 
-pub use contacts::ContactData;
+pub use crate::model::dashpay::ContactData;
 
-use crate::model::dashpay::ContactInfoUpdate;
+use crate::model::dashpay::{ContactInfoUpdate, ContactRequestKey};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use errors::DashPayError;
 
@@ -45,34 +45,13 @@ fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, Dash
 // https://github.com/dashpay/dash-evo-tool/issues/1104
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
-    LoadProfile {
-        identity: QualifiedIdentity,
-    },
     UpdateProfile {
         identity: QualifiedIdentity,
         display_name: Option<String>,
         bio: Option<String>,
         avatar_url: Option<String>,
     },
-    LoadContacts {
-        identity: QualifiedIdentity,
-    },
-    /// Read the contact list from offline state only — rehydrated
-    /// relationships + private memos plus the DET contact-profile cache. No
-    /// network round-trip, so a view renders without connectivity.
-    LoadContactsOffline {
-        identity: QualifiedIdentity,
-    },
-    LoadContactRequests {
-        identity: QualifiedIdentity,
-    },
     FetchContactProfile {
-        identity: QualifiedIdentity,
-        contact_id: Identifier,
-    },
-    /// Read the nickname, note and hidden flag shown for one contact, with
-    /// the same precedence as the contacts list (published first).
-    LoadContactDetails {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     },
@@ -98,27 +77,27 @@ pub enum DashPayTask {
         account_label: Option<String>,
         qr_auto_accept: crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData,
     },
+    /// Accept the contact request `counterparty_id` sent this identity.
     AcceptContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
+        counterparty_id: Identifier,
     },
-    /// Decline a contact request this identity received. Local only: the
-    /// sender is ignored on this device and nothing is published.
+    /// Decline the contact request `counterparty_id` sent this identity.
+    /// Local only: the sender is ignored on this device and nothing is
+    /// published.
     RejectContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
+        counterparty_id: Identifier,
     },
-    /// Withdraw a still-pending contact request this identity sent.
+    /// Withdraw this identity's still-pending contact request to
+    /// `counterparty_id`.
     ///
     /// Platform cannot delete a `contactRequest` document, so the handler
     /// records the withdrawal on this device only — see
     /// [`contact_requests::cancel_contact_request`].
     CancelContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
-    },
-    LoadPaymentHistory {
-        identity: QualifiedIdentity,
+        counterparty_id: Identifier,
     },
     SendPaymentToContact {
         identity: QualifiedIdentity,
@@ -136,14 +115,17 @@ pub enum DashPayTask {
     RegisterDashPayAddresses {
         identity: QualifiedIdentity,
     },
-    /// Resolve received outputs (surfaced by the `EventBridge` when a wallet
-    /// transaction is first seen) against every local identity's DashPay
-    /// address map, recording the ones that pay a known contact. Idempotent
-    /// on re-scan — recording is keyed by `tx_id` with last-write-wins, and
-    /// the receive cursor only advances.
-    DetectIncomingContactPayments {
-        outputs: Vec<crate::model::dashpay::DetectedIncomingOutput>,
+    /// Run a DashPay sync pass now, then republish the DashPay snapshots.
+    /// With an identity, also read the contact details its `contactInfo`
+    /// documents hold with the wallet seed, which may ask for the wallet
+    /// password.
+    SyncNow {
+        identity: Option<QualifiedIdentity>,
     },
+    /// Republish the DashPay snapshots from platform-wallet's state, after
+    /// looking up what it does not hold when a sync pass completed. The frame
+    /// loop dispatches this; it never prompts and never fails.
+    RefreshSnapshots,
     /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
     /// derives the auto-accept key through the JIT chokepoint in the backend, so
     /// the UI never reads a seed.
@@ -160,13 +142,14 @@ impl AppContext {
         task: DashPayTask,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if matches!(task, DashPayTask::RefreshSnapshots) {
+            return sync::refresh(self, sdk).await;
+        }
         // DashPay resolves identities through their wallet; one stored after
         // that wallet bootstrapped is not registered with it yet.
         self.reconcile_managed_identities_for_loaded_wallets().await;
-        match task {
-            DashPayTask::LoadProfile { identity } => {
-                Ok(profile::load_profile(self, sdk, identity).await?)
-            }
+        let changes_state = task.changes_dashpay_state();
+        let result = match task {
             DashPayTask::UpdateProfile {
                 identity,
                 display_name,
@@ -175,23 +158,10 @@ impl AppContext {
             } => Ok(
                 profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await?,
             ),
-            DashPayTask::LoadContacts { identity } => {
-                Ok(contacts::load_contacts(self, sdk, identity).await?)
-            }
-            DashPayTask::LoadContactsOffline { identity } => {
-                Ok(contacts::load_contacts_offline(self, identity).await?)
-            }
-            DashPayTask::LoadContactRequests { identity } => {
-                Ok(contact_requests::load_contact_requests(self, sdk, identity).await?)
-            }
             DashPayTask::FetchContactProfile {
                 identity,
                 contact_id,
             } => Ok(profile::fetch_contact_profile(self, sdk, identity, contact_id).await?),
-            DashPayTask::LoadContactDetails {
-                identity,
-                contact_id,
-            } => Ok(contact_info::load_contact_details(self, sdk, identity, contact_id).await?),
             DashPayTask::FetchAvatar { url } => {
                 let bytes = avatar_processing::fetch_avatar_cached(self, &url).await;
                 Ok(BackendTaskSuccessResult::DashPayAvatar { url, bytes })
@@ -232,97 +202,48 @@ impl AppContext {
             .await?),
             DashPayTask::AcceptContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::accept_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
+                };
+                contact_requests::accept_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::RejectContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::reject_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
+                };
+                contact_requests::reject_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::CancelContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::cancel_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
-            DashPayTask::LoadPaymentHistory { identity } => {
-                let identity_id = identity.identity.id();
-                // Refresh-style action: kick upstream before reading so the
-                // view sees the latest contact / payment state.
-                if let Ok(backend) = self.wallet_backend()
-                    && let Err(e) = backend.dashpay_sync(&identity_id).await
-                {
-                    tracing::debug!(
-                        identity = %identity_id,
-                        error = ?e,
-                        "LoadPaymentHistory: dashpay_sync degraded; reading cached state"
-                    );
-                }
-
-                let records = payments::load_payment_history(self, &identity_id, None).await?;
-
-                // The WalletBackend DashPay adapter is the sole source of truth
-                // for contacts. Before it is wired (e.g. cold start) we surface
-                // an empty list — a missing backend means "not loaded yet".
-                let contacts = match self.wallet_backend() {
-                    Ok(backend) => backend.dashpay_view().contacts(&identity_id).await,
-                    Err(_) => Vec::new(),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
                 };
-
-                let results: Vec<_> = records
-                    .into_iter()
-                    .map(|rec| {
-                        let is_incoming = rec.to_identity == identity_id;
-                        let contact_id = if is_incoming {
-                            rec.from_identity
-                        } else {
-                            rec.to_identity
-                        };
-
-                        // Resolve the counterparty against saved DashPay contacts
-                        // only. A payment recipient who is not a mutual contact
-                        // (e.g. paid by DPNS username via the Pay screen) is not in
-                        // this list, so it falls back to "Unknown (<base58 prefix>)".
-                        // TODO(NEW-004): resolve non-contact counterparties to their
-                        // DPNS username. That needs a DPNS lookup by identity id
-                        // (network) or persisting the name resolved at send time —
-                        // deeper plumbing than this cached-read path, so deferred.
-                        let contact_name = contacts
-                            .iter()
-                            .find(|c| {
-                                Identifier::from_bytes(&c.contact_identity_id)
-                                    .map(|id| id == contact_id)
-                                    .unwrap_or(false)
-                            })
-                            .and_then(|c| c.username.clone().or(c.display_name.clone()))
-                            .unwrap_or_else(|| {
-                                let s = contact_id.to_string(Encoding::Base58);
-                                format!("Unknown ({})", &s[..s.len().min(8)])
-                            });
-
-                        (
-                            rec.tx_id.unwrap_or_default(),
-                            contact_name,
-                            rec.amount,
-                            is_incoming,
-                            rec.memo.unwrap_or_default(),
-                        )
+                contact_requests::cancel_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
                     })
-                    .collect();
-
-                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(results))
             }
             DashPayTask::SendPaymentToContact {
                 identity,
@@ -365,15 +286,8 @@ impl AppContext {
                     errors: result.errors.len(),
                 })
             }
-            DashPayTask::DetectIncomingContactPayments { outputs } => {
-                let recorded =
-                    incoming_payments::detect_incoming_contact_payments(self, &outputs).await?;
-                if recorded == 0 {
-                    Ok(BackendTaskSuccessResult::None)
-                } else {
-                    Ok(BackendTaskSuccessResult::Refresh)
-                }
-            }
+            DashPayTask::SyncNow { identity } => sync::sync_now(self, sdk, identity).await,
+            DashPayTask::RefreshSnapshots => sync::refresh(self, sdk).await,
             DashPayTask::GenerateAutoAcceptQrCode {
                 identity,
                 account_reference,
@@ -389,6 +303,35 @@ impl AppContext {
                     proof.to_qr_string(),
                 ))
             }
+        };
+        // A write is shown as soon as its result lands, not after the next
+        // periodic refresh.
+        if changes_state && let Ok(backend) = self.wallet_backend() {
+            backend.refresh_dashpay_snapshots().await;
+        }
+        result
+    }
+}
+
+impl DashPayTask {
+    /// Whether the task can change what the DashPay snapshots show.
+    fn changes_dashpay_state(&self) -> bool {
+        match self {
+            Self::UpdateProfile { .. }
+            | Self::SendContactRequest { .. }
+            | Self::SendContactRequestWithProof { .. }
+            | Self::AcceptContactRequest { .. }
+            | Self::RejectContactRequest { .. }
+            | Self::CancelContactRequest { .. }
+            | Self::SendPaymentToContact { .. }
+            | Self::UpdateContactInfo { .. } => true,
+            Self::FetchContactProfile { .. }
+            | Self::FetchAvatar { .. }
+            | Self::SearchProfiles { .. }
+            | Self::RegisterDashPayAddresses { .. }
+            | Self::GenerateAutoAcceptQrCode { .. }
+            | Self::SyncNow { .. }
+            | Self::RefreshSnapshots => false,
         }
     }
 }

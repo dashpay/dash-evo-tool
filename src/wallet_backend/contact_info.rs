@@ -86,6 +86,57 @@ impl WalletBackend {
             .collect()
     }
 
+    /// Store `details` as what platform-wallet holds for each of `owner`'s
+    /// established contacts, on this device only. Contacts that are not
+    /// established are skipped; nothing happens when no wallet manages
+    /// `owner`.
+    ///
+    /// # Errors
+    ///
+    /// The details could not be persisted
+    /// ([`TaskError::WalletBackend`]); those stored before the failure stay.
+    // TODO(upstream): dashpay/platform#5595 — platform-wallet applies
+    // contactInfo it decrypts itself, but not what a seedless wallet's host
+    // decrypts; this writes the result DET opened through the same setter.
+    pub(crate) async fn dashpay_apply_contact_details(
+        &self,
+        owner: &Identifier,
+        details: BTreeMap<Identifier, ContactDetails>,
+    ) -> Result<(), TaskError> {
+        use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData;
+        if details.is_empty() {
+            return Ok(());
+        }
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(());
+        };
+        let persister = wallet.persister().clone();
+        let mut state = wallet.state_mut().await;
+        let Some(managed) = state.identity_manager.managed_identity_mut(owner) else {
+            return Ok(());
+        };
+        for (contact_id, details) in details {
+            managed
+                .set_contact_metadata(
+                    &contact_id,
+                    ContactInfoPrivateData {
+                        alias_name: details.nickname,
+                        note: details.note,
+                        display_hidden: details.hidden,
+                        accepted_accounts: Vec::new(),
+                    },
+                    &persister,
+                )
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(PlatformWalletError::from_store_failure(
+                        self.inner.wallet_persister.as_ref(),
+                        e,
+                    )),
+                })?;
+        }
+        Ok(())
+    }
+
     /// Save `details` for `contact_id` and publish them through
     /// platform-wallet, which writes the identity's `contactInfo` document.
     ///
@@ -240,7 +291,7 @@ impl WalletBackend {
 
 /// Open `documents` (oldest first) through `crypto`; the newest readable
 /// document per contact wins.
-// TODO(upstream): dip15-contactinfo-reader — replace with a platform-wallet
+// TODO(upstream): dashpay/platform#5595 — replace with a platform-wallet
 // contactInfo-only, provider-backed read for seedless wallets once one exists;
 // platform-wallet's own drain is crate-private and runs unrelated contact work.
 // Upstream request drafted, not yet filed.

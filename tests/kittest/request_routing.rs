@@ -763,3 +763,58 @@ fn failed_restore_from_previous_version_frees_its_button() {
         );
     });
 }
+
+/// A document query sent on one network whose page arrives after a switch to
+/// another reaches none of the new network's screens: the Documents screen,
+/// back in view, neither shows the old page nor keeps waiting for it.
+#[test]
+fn a_result_sent_before_a_network_switch_stays_off_the_new_network() {
+    use dash_evo_tool::app::BootPhase;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+    use std::time::{Duration, Instant};
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        let query = documents(&mut harness).begin_fetch_for_test().unwrap();
+        harness.state_mut().test_record_visible_dispatch(&query);
+
+        let first = harness.state().current_app_context().network();
+        let second = if first == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+        harness.state_mut().change_network(second);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while harness.state().current_app_context().network() != second
+            || harness.state().boot_phase() != BootPhase::Ready
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the switch did not finish in time"
+            );
+            harness.step();
+        }
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenDocumentQuery;
+        harness.run_steps(3);
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: query,
+                result: Box::new(BackendTaskSuccessResult::PageDocuments(
+                    Default::default(),
+                    Some(Start::StartAfter(vec![1])),
+                )),
+            },
+        );
+        assert!(
+            harness.query_by_label("Next Page").is_none(),
+            "the previous network's page is not shown on the new network"
+        );
+        assert!(
+            !documents(&mut harness).fetch_pending_for_test(),
+            "the query that ended with the previous network is no longer awaited"
+        );
+    });
+}

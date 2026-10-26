@@ -100,7 +100,9 @@ impl AppState {
                 ScreenOwner::Root(root) => self.main_screens.get_mut(&root),
                 ScreenOwner::Stacked(id) => self.screen_stack.by_id_mut(id),
             },
-            ResultRoute::Owner(_) | ResultRoute::ClosedOwner => None,
+            ResultRoute::Owner(_) | ResultRoute::ClosedOwner | ResultRoute::PreviousNetwork(_) => {
+                None
+            }
             ResultRoute::Visible => Some(self.visible_screen_mut()),
         }
     }
@@ -142,10 +144,40 @@ impl AppState {
                 return ResultRoute::Visible;
             }
         };
+        let active_network = self.current_app_context().network;
         match self.request_owners.take(context) {
-            Some(owner) if self.has_screen(owner) => ResultRoute::Owner(owner),
+            Some((owner, network)) if network != active_network => {
+                ResultRoute::PreviousNetwork(owner)
+            }
+            Some((owner, _)) if self.has_screen(owner) => ResultRoute::Owner(owner),
             Some(_) => ResultRoute::ClosedOwner,
             None => ResultRoute::Visible,
+        }
+    }
+
+    /// End the wait of a screen whose task was dispatched on a network that is
+    /// no longer active, without handing it that network's result. A root
+    /// screen outlives the switch and would otherwise wait for good; stacked
+    /// screens are closed by the switch.
+    pub(super) fn end_previous_network_request(
+        &mut self,
+        owner: ScreenOwner,
+        context: &BackendTaskContext,
+    ) {
+        let error = TaskError::NetworkSwitchedBeforeResult;
+        let ended = TaskResult::Error {
+            context: context.clone(),
+            error: TaskError::NetworkSwitchedBeforeResult,
+        };
+        if deliver_legacy_recovery_result(
+            &mut self.main_screens,
+            self.screen_stack.iter_mut(),
+            &ended,
+        ) {
+            return;
+        }
+        if let Some(screen) = self.result_screen_mut(ResultRoute::Owner(owner)) {
+            screen.display_backend_task_error(context, &error);
         }
     }
 
@@ -156,7 +188,8 @@ impl AppState {
     #[doc(hidden)]
     pub fn test_record_visible_dispatch(&mut self, context: &BackendTaskContext) {
         let owner = self.visible_owner();
-        self.request_owners.record(context, owner);
+        let network = self.current_app_context().network;
+        self.request_owners.record(context, owner, network);
     }
 
     /// Test seam: from now on, record each task dispatched with a context
@@ -213,7 +246,7 @@ impl AppState {
         };
         if let Some(owner) = owner {
             for (_, context) in &tasks {
-                self.request_owners.record(context, owner);
+                self.request_owners.record(context, owner, network);
             }
         }
         self.execute_requests(tasks, mode);
@@ -248,6 +281,9 @@ impl AppState {
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
+        if let ResultRoute::PreviousNetwork(_) = route {
+            return;
+        }
         let visible = self.visible_owner();
         for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
             if !route.delivers_to(ScreenOwner::Root(root), visible)
@@ -264,6 +300,9 @@ impl AppState {
         context: &BackendTaskContext,
         error: &TaskError,
     ) {
+        if let ResultRoute::PreviousNetwork(_) = route {
+            return;
+        }
         let visible = self.visible_owner();
         for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
             if !route.delivers_to(ScreenOwner::Root(root), visible)

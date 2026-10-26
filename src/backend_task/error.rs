@@ -1618,6 +1618,12 @@ pub enum TaskError {
     #[error("This action could not start because the app is closing. Reopen the app and try again.")]
     TaskManagerShuttingDown,
 
+    /// A screen's task was dispatched on a network the user has since switched
+    /// away from. Ends that screen's wait without delivering the previous
+    /// network's result; the original outcome is reported separately.
+    #[error("The network changed before this action finished. Run it again on this network.")]
+    NetworkSwitchedBeforeResult,
+
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
     DapiDiscovery(#[from] crate::backend_task::dapi_discovery::DapiDiscoveryError),

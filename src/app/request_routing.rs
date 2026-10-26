@@ -6,14 +6,18 @@
 //! its result or error to that screen wherever it is: a hidden root screen, or
 //! a screen covered on the stack. When that screen has been closed, no screen
 //! receives the result ([`ResultRoute::ClosedOwner`]): it is not the visible
-//! screen's to act on, so banners report it instead. An undispatched task, or
-//! a dispatch sent before a network switch, goes to the visible screen
-//! ([`ResultRoute::Visible`]).
+//! screen's to act on, so banners report it instead. An undispatched task goes
+//! to the visible screen ([`ResultRoute::Visible`]).
 //!
-//! Known limitation: a network switch forgets every sender, so a result that
-//! arrives after it goes to the screen in view. A root screen that sent it
-//! therefore still receives it when it is the one in view, and accepts it if
-//! its own pending request was not reset by the switch.
+//! Each dispatch is also recorded with the network it was sent on. Its result
+//! reaches screens only while that network is active: one arriving after a
+//! switch to another network ([`ResultRoute::PreviousNetwork`]) reaches no
+//! screen and no observer, and banners report it as for a closed sender. A
+//! switch back before it arrives delivers it as usual.
+//!
+//! Known limitation: results without a dispatch id — undispatched app tasks
+//! and mid-task `Progress` updates — carry no network and still go to the
+//! screen in view.
 //!
 //! Stacked screens have no identity of their own (`ScreenType` equality
 //! ignores its payload), so [`ScreenStack`] gives each pushed screen an id
@@ -25,6 +29,7 @@ use std::ops::Deref;
 
 use crate::backend_task::BackendTaskContext;
 use crate::ui::{RootScreenType, Screen};
+use dash_sdk::dpp::dashcore::Network;
 
 /// The identity of one screen pushed onto the [`ScreenStack`]. Never reused,
 /// so a closed screen's id cannot name a screen opened later.
@@ -47,8 +52,12 @@ pub enum ResultRoute {
     /// not another screen's to act on, so no screen takes it; banners report
     /// it instead.
     ClosedOwner,
-    /// No open or closed sender is on record — an undispatched task, or one
-    /// sent before a network switch — so the screen in view takes it.
+    /// The task was dispatched on a network that is no longer active. No
+    /// screen of the current network takes it, and banners report it as for
+    /// a closed sender.
+    PreviousNetwork(ScreenOwner),
+    /// No sender is on record — an undispatched task — so the screen in view
+    /// takes it.
     Visible,
 }
 
@@ -58,15 +67,20 @@ impl ResultRoute {
         match self {
             Self::Owner(owner) => owner == screen,
             Self::Visible => screen == visible,
-            Self::ClosedOwner => false,
+            Self::ClosedOwner | Self::PreviousNetwork(_) => false,
         }
     }
     /// The open screen that dispatched the task.
     pub fn owner(self) -> Option<ScreenOwner> {
         match self {
             Self::Owner(owner) => Some(owner),
-            Self::ClosedOwner | Self::Visible => None,
+            Self::ClosedOwner | Self::PreviousNetwork(_) | Self::Visible => None,
         }
+    }
+    /// Whether the screen that sent the task can no longer take its result:
+    /// it was closed, or the network it ran on was switched away from.
+    pub fn sender_gone(self) -> bool {
+        matches!(self, Self::ClosedOwner | Self::PreviousNetwork(_))
     }
 }
 
@@ -79,6 +93,8 @@ mod delivery_tests {
         assert!(ResultRoute::Visible.delivers_to(root, root));
         assert!(ResultRoute::Owner(root).delivers_to(root, root));
         assert!(!ResultRoute::ClosedOwner.delivers_to(root, root));
+        assert!(!ResultRoute::PreviousNetwork(root).delivers_to(root, root));
+        assert!(ResultRoute::PreviousNetwork(root).sender_gone());
     }
 }
 
@@ -173,27 +189,25 @@ impl<S> Deref for ScreenStack<S> {
 /// holds only requests still running.
 #[derive(Debug, Default)]
 pub struct RequestOwners {
-    owners: HashMap<u64, ScreenOwner>,
+    owners: HashMap<u64, (ScreenOwner, Network)>,
 }
 
 impl RequestOwners {
-    /// Record `owner` as the sender of `context`. Contexts without a dispatch
-    /// id belong to no screen and are not recorded.
-    pub fn record(&mut self, context: &BackendTaskContext, owner: ScreenOwner) {
+    /// Record `owner` as the sender of `context`, dispatched on `network`.
+    /// Contexts without a dispatch id belong to no screen and are not
+    /// recorded.
+    pub fn record(&mut self, context: &BackendTaskContext, owner: ScreenOwner, network: Network) {
         if let Some(dispatch_id) = context.dispatch_id() {
-            self.owners.insert(dispatch_id, owner);
+            self.owners.insert(dispatch_id, (owner, network));
         }
     }
 
-    /// The sender of `context`, forgotten as it is returned: the result of a
-    /// dispatch arrives only once.
-    pub fn take(&mut self, context: &BackendTaskContext) -> Option<ScreenOwner> {
+    /// The sender of `context` and the network it was dispatched on,
+    /// forgotten as they are returned: the result of a dispatch arrives only
+    /// once. Entries outlive a network switch, so a late result is still told
+    /// apart from an undispatched one.
+    pub fn take(&mut self, context: &BackendTaskContext) -> Option<(ScreenOwner, Network)> {
         self.owners.remove(&context.dispatch_id()?)
-    }
-
-    /// Forget every sender.
-    pub fn clear(&mut self) {
-        self.owners.clear();
     }
 
     /// How many dispatches still wait for their result.
@@ -212,7 +226,6 @@ mod tests {
     use super::*;
     use crate::backend_task::BackendTask;
     use crate::backend_task::identity::IdentityTask;
-    use dash_sdk::dpp::dashcore::Network;
 
     fn dispatch() -> BackendTaskContext {
         BackendTaskContext::for_dispatch(&BackendTask::IdentityTask(
@@ -275,14 +288,14 @@ mod tests {
         let mut owners = RequestOwners::default();
         let context = dispatch();
         let owner = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
-        owners.record(&context, owner);
+        owners.record(&context, owner, Network::Testnet);
 
         assert_eq!(
             owners.take(&dispatch()),
             None,
             "another dispatch has no owner"
         );
-        assert_eq!(owners.take(&context), Some(owner));
+        assert_eq!(owners.take(&context), Some((owner, Network::Testnet)));
         assert_eq!(owners.take(&context), None);
         assert!(owners.is_empty());
     }
@@ -291,8 +304,12 @@ mod tests {
     fn undispatched_contexts_have_no_owner() {
         let mut owners = RequestOwners::default();
         let owner = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
-        owners.record(&BackendTaskContext::Other, owner);
-        owners.record(&BackendTaskContext::TokenBalanceRefresh, owner);
+        owners.record(&BackendTaskContext::Other, owner, Network::Testnet);
+        owners.record(
+            &BackendTaskContext::TokenBalanceRefresh,
+            owner,
+            Network::Testnet,
+        );
 
         assert!(owners.is_empty());
         assert_eq!(owners.take(&BackendTaskContext::Other), None);
@@ -307,21 +324,23 @@ mod tests {
             network: Network::Testnet,
             operation: Box::new(dispatch()),
         };
-        owners.record(&context, owner);
+        owners.record(&context, owner, Network::Testnet);
 
         assert_eq!(owners.len(), 1);
-        assert_eq!(owners.take(&context), Some(owner));
+        assert_eq!(owners.take(&context), Some((owner, Network::Testnet)));
     }
 
     #[test]
-    fn clearing_forgets_every_owner() {
+    fn an_owner_keeps_the_network_its_dispatch_was_sent_on() {
         let mut owners = RequestOwners::default();
-        owners.record(
-            &dispatch(),
-            ScreenOwner::Root(RootScreenType::RootScreenIdentityHub),
-        );
-        owners.clear();
+        let owner = ScreenOwner::Root(RootScreenType::RootScreenDocumentQuery);
+        let on_testnet = dispatch();
+        let on_mainnet = dispatch();
+        owners.record(&on_testnet, owner, Network::Testnet);
+        owners.record(&on_mainnet, owner, Network::Mainnet);
 
+        assert_eq!(owners.take(&on_mainnet), Some((owner, Network::Mainnet)));
+        assert_eq!(owners.take(&on_testnet), Some((owner, Network::Testnet)));
         assert!(owners.is_empty());
     }
 }

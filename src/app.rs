@@ -1923,9 +1923,9 @@ impl AppState {
         // network chooser is a root screen, so no stacked screen can start the
         // switch that removes it.
         self.screen_stack.clear();
-        // Results of tasks sent before the switch go to the screen in view:
-        // pushed screens are gone, and root screens now show the new network.
-        self.request_owners.clear();
+        // Senders are kept: each records the network its task ran on, so a
+        // result arriving after the switch is kept off this network's screens
+        // (`ResultRoute::PreviousNetwork`).
 
         self.connection_status.reset();
 
@@ -2325,6 +2325,12 @@ impl App for AppState {
             // delivered there, in view or not. A closed sender's result reaches
             // no screen; undispatched results go to the screen in view.
             let route = self.take_result_route(&task_result);
+            if let ResultRoute::PreviousNetwork(sender) = route
+                && let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
+                    &task_result
+            {
+                self.end_previous_network_request(sender, context);
+            }
             let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
 
@@ -2339,11 +2345,12 @@ impl App for AppState {
                 TaskResult::CacheUpdated(_) | TaskResult::Repaint => false,
             };
 
-            let recovery_delivered = deliver_legacy_recovery_result(
-                &mut self.main_screens,
-                self.screen_stack.iter_mut(),
-                &task_result,
-            );
+            let recovery_delivered = !matches!(route, ResultRoute::PreviousNetwork(_))
+                && deliver_legacy_recovery_result(
+                    &mut self.main_screens,
+                    self.screen_stack.iter_mut(),
+                    &task_result,
+                );
             if recovery_delivered && matches!(task_result, TaskResult::Success { .. }) {
                 continue;
             }
@@ -2376,11 +2383,17 @@ impl App for AppState {
                     self.dpns_background.record_vote_result(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
-                            deliver_identity_removal_result(
-                                ctx,
-                                &mut self.main_screens,
-                                &unboxed_message,
-                            );
+                            if let ResultRoute::PreviousNetwork(_) = route {
+                                // The banner alone: the identities were on the
+                                // previous network, not on this one's screens.
+                                crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
+                            } else {
+                                deliver_identity_removal_result(
+                                    ctx,
+                                    &mut self.main_screens,
+                                    &unboxed_message,
+                                );
+                            }
                         }
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::CacheUpdated(update) => {
@@ -2536,14 +2549,17 @@ impl App for AppState {
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            if tracked_top_up && !owner_in_view {
+                            if tracked_top_up
+                                && !owner_in_view
+                                && !matches!(route, ResultRoute::PreviousNetwork(_))
+                            {
                                 // Not this screen's top-up, but the balances it shows changed.
                                 self.visible_screen_mut().refresh();
                             }
                             // No refresh for any other task whose screen is closed:
                             // `refresh()` resets some screens, such as a running
                             // document query, and the screen in view did not send it.
-                            if route == ResultRoute::ClosedOwner
+                            if route.sender_gone()
                                 && !tracked_top_up
                                 && let Some(message) = closed_send_form_message(&unboxed_message)
                             {
@@ -2646,7 +2662,7 @@ impl App for AppState {
                     let screen_owned = !chooser_owned
                         && !recovery_delivered
                         && !foreign_top_up
-                        && route != ResultRoute::ClosedOwner;
+                        && !route.sender_gone();
                     let suppress_stale_error = screen_owned
                         && self.result_screen_mut(route).is_some_and(|screen| {
                             screen.should_suppress_backend_task_error(&context, &err)

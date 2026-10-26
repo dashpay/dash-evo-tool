@@ -404,8 +404,8 @@ fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
         harness.step();
         assert_eq!(count(&harness, WALLET_SEND_WAITING), 1);
 
-        let home_load = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-            identity: identity.clone(),
+        let home_load = BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+            identity: Some(identity.clone()),
         }));
         let load_failure = TaskError::NoIdentitiesFound;
         let load_message = load_failure.to_string();

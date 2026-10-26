@@ -55,11 +55,11 @@ fn identity_hub_screen_type_creates_hub_screen() {
 }
 
 pub(crate) mod loads {
-    //! The hub's own data loads: each is dispatched once per arrival, so one
-    //! that is lost on the way out or on the way back never comes again.
+    //! The hub's DashPay sync: asked for once per arrival, refresh, identity
+    //! switch or Contacts entry, on a frame nothing else took.
 
     use crate::identity_home::{key, seed_identity};
-    use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
+    use crate::support::{fresh_app_context, with_isolated_data_dir};
     use dash_evo_tool::app::AppAction;
     use dash_evo_tool::backend_task::dashpay::DashPayTask;
     use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
@@ -68,6 +68,7 @@ pub(crate) mod loads {
     use dash_evo_tool::ui::identity::IdentityHubScreen;
     use dash_evo_tool::ui::{RootScreenType, ScreenLike};
     use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::platform::Identifier;
     use egui::accesskit::Role;
     use egui_kittest::Harness;
@@ -96,7 +97,7 @@ pub(crate) mod loads {
 
     /// Looks for an action `wanted` recognises among those the hub has returned
     /// and not yet reported, rendering one more frame at a time until there is
-    /// one, so a test does not depend on which frame a load goes out in.
+    /// one, so a test does not depend on which frame a sync goes out in.
     fn step_until<T>(
         hub: &mut HubHarness,
         what: &str,
@@ -117,27 +118,27 @@ pub(crate) mod loads {
         panic!("{what} was never dispatched");
     }
 
-    fn contacts_load(action: &AppAction) -> Option<()> {
-        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
-            return None;
-        };
-        tasks
-            .iter()
-            .any(|(task, _)| {
-                matches!(task, BackendTask::DashPayTask(task)
-                    if matches!(**task, DashPayTask::LoadContacts { .. }))
-            })
-            .then_some(())
-    }
-
-    fn payments_load(action: &AppAction) -> Option<BackendTaskContext> {
+    /// The identity a DashPay sync was asked for.
+    fn sync_request(action: &AppAction) -> Option<Identifier> {
         match action {
-            AppAction::BackendTaskWithContext {
-                task: BackendTask::DashPayTask(task),
-                context,
-            } if matches!(**task, DashPayTask::LoadPaymentHistory { .. }) => Some(context.clone()),
+            AppAction::BackendTask(BackendTask::DashPayTask(task)) => match &**task {
+                DashPayTask::SyncNow {
+                    identity: Some(identity),
+                } => Some(identity.identity.id()),
+                _ => None,
+            },
             _ => None,
         }
+    }
+
+    /// Renders a few frames and reports whether any asked for a sync.
+    fn syncs_again(hub: &mut HubHarness) -> bool {
+        hub.state_mut().1.clear();
+        hub.run_steps(6);
+        hub.state()
+            .1
+            .iter()
+            .any(|action| sync_request(action).is_some())
     }
 
     /// Clicks `label` in the very next frame and hands over what that frame
@@ -160,12 +161,11 @@ pub(crate) mod loads {
         );
     }
 
-    /// The hub with both of Home's loads already sent, then re-armed the way a
-    /// refresh re-arms them: the contact load is due on the next frame.
-    fn hub_with_loads_due(app_context: &Arc<AppContext>) -> HubHarness {
+    /// The hub with its first sync sent, then re-armed the way a refresh
+    /// re-arms it: a sync is due on the next frame.
+    fn hub_with_sync_due(app_context: &Arc<AppContext>) -> HubHarness {
         let mut hub = mount_hub(app_context);
-        step_until(&mut hub, "the first contact load", contacts_load);
-        step_until(&mut hub, "the first payment history load", payments_load);
+        step_until(&mut hub, "the first sync", sync_request);
         hub.state_mut().0.refresh();
         hub
     }
@@ -176,36 +176,28 @@ pub(crate) mod loads {
         seed_identity(app_context, vec![transfer_key.clone()], vec![transfer_key])
     }
 
-    /// A header button can be clicked on the very frame a load would go out.
-    /// The click wins that frame; the load must still go out afterwards, since
+    /// A header button can be clicked on the very frame a sync would go out.
+    /// The click wins that frame; the sync must still go out afterwards, since
     /// cancelling the opened screen returns to the hub without refreshing it.
     #[test]
-    fn a_header_click_does_not_swallow_the_load_due_on_its_frame() {
+    fn a_header_click_does_not_swallow_the_sync_due_on_its_frame() {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             seed_identity_that_can_move_funds(&app_context);
-            let mut hub = hub_with_loads_due(&app_context);
+            let mut hub = hub_with_sync_due(&app_context);
             click_move_to_wallet(&mut hub);
-            step_until(&mut hub, "the contact load after the click", contacts_load);
-
-            // The payment history load is due on the frame after it.
-            click_move_to_wallet(&mut hub);
-            step_until(
-                &mut hub,
-                "the payment history load after the click",
-                payments_load,
-            );
+            step_until(&mut hub, "the sync after the click", sync_request);
         });
     }
 
-    /// A sidebar click on the frame a load is due must still navigate: an
-    /// automatic load never takes a frame the user has claimed.
+    /// A sidebar click on the frame a sync is due must still navigate: an
+    /// automatic sync never takes a frame the user has claimed.
     #[test]
-    fn a_sidebar_click_is_not_replaced_by_the_load_due_on_its_frame() {
+    fn a_sidebar_click_is_not_replaced_by_the_sync_due_on_its_frame() {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             seed_identity_that_can_move_funds(&app_context);
-            let mut hub = hub_with_loads_due(&app_context);
+            let mut hub = hub_with_sync_due(&app_context);
 
             let actions = click_in_one_frame(&mut hub, "Wallets");
             assert!(
@@ -220,15 +212,14 @@ pub(crate) mod loads {
                 ),
                 "the click must open Wallets, got {actions:?}"
             );
-            step_until(&mut hub, "the contact load after the click", contacts_load);
-            step_until(&mut hub, "the payment history load after it", payments_load);
+            step_until(&mut hub, "the sync after the click", sync_request);
         });
     }
 
     /// The breadcrumb's add-identity entries are applied after the tab has
-    /// rendered. Opening one on the frame a load is due must not spend the load.
+    /// rendered. Opening one on the frame a sync is due must not spend it.
     #[test]
-    fn a_breadcrumb_add_does_not_swallow_the_load_due_on_its_frame() {
+    fn a_breadcrumb_add_does_not_swallow_the_sync_due_on_its_frame() {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             seed_identity_that_can_move_funds(&app_context);
@@ -238,8 +229,7 @@ pub(crate) mod loads {
             let crumb = app_context.identity_display_label(&identity);
             hub.get_by_role_and_label(Role::Link, &crumb).click();
             hub.run();
-            step_until(&mut hub, "the first contact load", contacts_load);
-            step_until(&mut hub, "the first payment history load", payments_load);
+            step_until(&mut hub, "the first sync", sync_request);
             hub.state_mut().0.refresh();
 
             let actions = click_in_one_frame(&mut hub, "Load an existing identity");
@@ -247,18 +237,15 @@ pub(crate) mod loads {
                 matches!(actions.as_slice(), [AppAction::AddScreen(_)]),
                 "the click must open the load-identity screen, got {actions:?}"
             );
-            step_until(&mut hub, "the contact load after the click", contacts_load);
-            step_until(&mut hub, "the payment history load after it", payments_load);
+            step_until(&mut hub, "the sync after the click", sync_request);
         });
     }
 
-    /// Choosing another identity in the breadcrumb is applied after the tab has
-    /// rendered, on the frame that then asks for the loads. The new identity's
-    /// lists must be asked for once, not again when its Home first renders.
+    /// Choosing another identity in the breadcrumb asks for one sync of the new
+    /// identity, not another when its Home first renders.
     #[test]
-    fn switching_identity_in_the_breadcrumb_loads_the_new_identity_once() {
+    fn switching_identity_in_the_breadcrumb_syncs_the_new_identity_once() {
         use crate::identity_home::seed_identity_with_id;
-        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
@@ -274,290 +261,73 @@ pub(crate) mod loads {
             hub.get_by_role_and_label(Role::Link, &label_of(&shown))
                 .click();
             hub.run();
-            step_until(&mut hub, "the first contact load", contacts_load);
-            step_until(&mut hub, "the first payment history load", payments_load);
+            step_until(&mut hub, "the first sync", sync_request);
 
-            let load = |action: &AppAction| match action {
-                AppAction::BackendTasksWithContexts(tasks, _) => {
-                    tasks.iter().find_map(|(task, _)| match task {
-                        BackendTask::DashPayTask(task) => match &**task {
-                            DashPayTask::LoadContacts { identity } => {
-                                Some(("contacts", identity.identity.id()))
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                }
-                AppAction::BackendTaskWithContext {
-                    task: BackendTask::DashPayTask(task),
-                    ..
-                } => match &**task {
-                    DashPayTask::LoadPaymentHistory { identity } => {
-                        Some(("payments", identity.identity.id()))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
             hub.state_mut().1.clear();
             hub.get_by_role_and_label(Role::Button, &label_of(&second))
                 .click_accesskit();
             hub.step();
             assert_eq!(
-                step_until(&mut hub, "the first load after the switch", load),
-                ("contacts", second)
+                step_until(&mut hub, "the sync after the switch", sync_request),
+                second
             );
-            assert_eq!(
-                step_until(&mut hub, "the load after it", load),
-                ("payments", second),
-                "the contact lists must be asked for once"
-            );
+            assert!(!syncs_again(&mut hub), "the new identity is synced once");
         });
     }
 
-    /// The Contacts tab's own load is settled in the same place as Home's: it
-    /// goes out once the tab is populated, on a frame nothing else took.
+    /// Entering the Contacts tab asks for a sync of the identity it lists.
     #[test]
-    fn the_contacts_tab_load_goes_out_once_its_tab_is_populated() {
-        use dash_evo_tool::model::dashpay::ProfileSnapshot;
+    fn entering_the_contacts_tab_asks_for_a_sync() {
         use dash_evo_tool::ui::identity::IdentityHubTab;
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             let owner = seed_identity_that_can_move_funds(&app_context);
             let mut hub = mount_hub(&app_context);
-            hub.state_mut().0.select_tab(IdentityHubTab::Contacts);
-            hub.state_mut().0.refresh();
-            hub.state_mut().1.clear();
+            step_until(&mut hub, "the first sync", sync_request);
+            assert!(!syncs_again(&mut hub), "one sync per arrival");
 
-            // Without a social profile the tab is gated; the hub asks for one.
-            let profile_request = step_until(&mut hub, "the profile load", |action| match action {
-                AppAction::BackendTaskWithContext {
-                    task: BackendTask::DashPayTask(task),
-                    context,
-                } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
-                _ => None,
-            });
-            hub.state_mut().0.display_backend_task_result(
-                &profile_request,
-                BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
-                    network: app_context.network(),
-                    owner,
-                    revision: app_context.identity_profile_revision(owner),
-                    profile: Some(("Alex".into(), String::new(), String::new())),
-                }),
-            );
-            step_until(&mut hub, "the Contacts tab's load", contacts_load);
-        });
-    }
-
-    const SETUP_CHECKLIST: &str = "Finish setting up your identity";
-
-    fn profile_load(action: &AppAction) -> Option<BackendTaskContext> {
-        match action {
-            AppAction::BackendTaskWithContext {
-                task: BackendTask::DashPayTask(task),
-                context,
-            } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
-            _ => None,
-        }
-    }
-
-    const AVATAR_URL: &str = "https://example.com/alex.png";
-
-    fn avatar_fetch(action: &AppAction) -> Option<()> {
-        matches!(action, AppAction::BackendTask(BackendTask::DashPayTask(task))
-            if matches!(&**task, DashPayTask::FetchAvatar { url } if url == AVATAR_URL))
-        .then_some(())
-    }
-
-    fn images(hub: &HubHarness) -> usize {
-        hub.query_all_by_role(Role::Image).count()
-    }
-
-    fn named_contact(name: &str) -> dash_evo_tool::backend_task::dashpay::ContactData {
-        dash_evo_tool::backend_task::dashpay::ContactData {
-            identity_id: Identifier::from([0xD8; 32]),
-            nickname: Some(name.into()),
-            note: None,
-            is_hidden: false,
-            account_reference: 0,
-            username: None,
-            display_name: None,
-            avatar_url: None,
-            bio: None,
-        }
-    }
-
-    fn deliver_contacts(hub: &mut HubHarness, owner: Identifier, name: &str) {
-        let app_context = hub.state().0.app_context.clone();
-        let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-            identity: app_context.resolve_selected_identity().expect("identity"),
-        }));
-        hub.state_mut().0.display_backend_task_result(
-            &BackendTaskContext::from(&task),
-            BackendTaskSuccessResult::DashPayContactsWithInfo {
-                identity: owner,
-                contacts: vec![named_contact(name)],
-            },
-        );
-    }
-
-    /// Mount the hub for `owner` and answer its profile and contact loads.
-    fn hub_with_loaded_home(app_context: &Arc<AppContext>, owner: Identifier) -> HubHarness {
-        use dash_evo_tool::model::dashpay::ProfileSnapshot;
-        let mut hub = mount_hub(app_context);
-        let request = step_until(&mut hub, "the profile load", profile_load);
-        hub.state_mut().0.display_backend_task_result(
-            &request,
-            BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
-                network: app_context.network(),
-                owner,
-                revision: app_context.identity_profile_revision(owner),
-                profile: Some(("Alex".into(), String::new(), AVATAR_URL.into())),
-            }),
-        );
-        deliver_contacts(&mut hub, owner, "Bao");
-        step_until(&mut hub, "the profile photo load", avatar_fetch);
-        let without_photo = images(&hub);
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(8, 8)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .expect("png");
-        let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchAvatar {
-            url: AVATAR_URL.into(),
-        }));
-        hub.state_mut().0.display_backend_task_result(
-            &BackendTaskContext::from(&task),
-            BackendTaskSuccessResult::DashPayAvatar {
-                url: AVATAR_URL.into(),
-                bytes: Some(png.into_inner()),
-            },
-        );
-        hub.run();
-        assert!(images(&hub) > without_photo, "the profile photo is shown");
-        assert!(hub.query_by_label("Bao").is_some(), "the contact is shown");
-        assert!(
-            hub.query_by_label(SETUP_CHECKLIST).is_some(),
-            "profile and contacts are known"
-        );
-        hub
-    }
-
-    /// Whether the hub asks for the contact lists, the profile and its photo
-    /// again, rendering one frame at a time until all went out.
-    fn reloads_all(hub: &mut HubHarness) -> bool {
-        let (mut contacts, mut profile, mut photo) = (false, false, false);
-        for _ in 0..16 {
-            for action in hub.state_mut().1.drain(..) {
-                contacts |= contacts_load(&action).is_some();
-                profile |= profile_load(&action).is_some();
-                photo |= avatar_fetch(&action).is_some();
-            }
-            if contacts && profile && photo {
-                return true;
-            }
-            hub.step();
-        }
-        false
-    }
-
-    /// Coming back to the hub for the same identity shows what it already had
-    /// from the first frame on, and reloads it behind.
-    #[test]
-    fn returning_to_the_same_identity_keeps_its_home_and_reloads_it() {
-        with_isolated_data_dir(|| {
-            let (_runtime, app_context) = fresh_app_context();
-            let owner = seed_identity_that_can_move_funds(&app_context);
-            let mut hub = hub_with_loaded_home(&app_context, owner);
-            let with_photo = images(&hub);
-
-            hub.state_mut().0.refresh_on_arrival();
-            hub.state_mut().1.clear();
-            hub.step();
-            assert!(
-                hub.query_by_label("Bao").is_some(),
-                "the contacts must stay on screen"
-            );
-            assert_eq!(images(&hub), with_photo, "the profile photo must stay");
-            assert!(
-                hub.query_by_label(SETUP_CHECKLIST).is_some(),
-                "the profile and the contacts must stay known"
-            );
-            assert!(
-                reloads_all(&mut hub),
-                "the profile, its photo and the contacts must be reloaded"
+            hub.get_by_role_and_label(Role::Button, "Contacts")
+                .click_accesskit();
+            assert_eq!(
+                step_until(&mut hub, "the Contacts tab's sync", sync_request),
+                owner
             );
         });
     }
 
-    /// A first profile load that fails is not retried on every frame, but
-    /// coming back to the hub asks again.
+    /// Coming back to the hub asks for a sync again, and a sync that failed is
+    /// not retried on every frame.
     #[test]
-    fn returning_retries_a_profile_whose_first_load_failed() {
+    fn returning_to_the_hub_syncs_again() {
         use dash_evo_tool::backend_task::error::TaskError;
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             seed_identity_that_can_move_funds(&app_context);
             let mut hub = mount_hub(&app_context);
-            let request = step_until(&mut hub, "the profile load", profile_load);
+            step_until(&mut hub, "the first sync", sync_request);
             hub.state_mut()
                 .0
-                .display_backend_task_error(&request, &TaskError::DocumentNotFound);
-            hub.state_mut().1.clear();
-            hub.run_steps(8);
-            assert!(
-                !hub.state()
-                    .1
-                    .iter()
-                    .any(|action| profile_load(action).is_some()),
-                "a failed load must not be retried on every frame"
-            );
+                .display_backend_task_error(&BackendTaskContext::Unknown, &TaskError::WalletLocked);
+            assert!(!syncs_again(&mut hub), "a failed sync is not retried");
 
             hub.state_mut().0.refresh_on_arrival();
-            step_until(&mut hub, "the profile load after coming back", profile_load);
+            step_until(&mut hub, "the sync after coming back", sync_request);
         });
     }
 
-    /// Coming back after another identity was selected shows nothing of the
-    /// previous one.
+    /// A finished sync is not followed by another.
     #[test]
-    fn returning_to_another_identity_drops_the_previous_home() {
-        use crate::identity_home::seed_identity_with_id;
+    fn a_finished_sync_is_not_repeated() {
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
-            let other = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
-            let owner = seed_identity_that_can_move_funds(&app_context);
-            let mut hub = hub_with_loaded_home(&app_context, owner);
-
-            app_context.set_selected_identity(Some(other));
-            hub.state_mut().0.refresh_on_arrival();
-            hub.step();
-            assert!(hub.query_by_label("Bao").is_none());
-            assert!(
-                hub.query_by_label(SETUP_CHECKLIST).is_none(),
-                "nothing is known yet about the identity now shown"
+            seed_identity_that_can_move_funds(&app_context);
+            let mut hub = mount_hub(&app_context);
+            step_until(&mut hub, "the first sync", sync_request);
+            hub.state_mut().0.display_backend_task_result(
+                &BackendTaskContext::Unknown,
+                BackendTaskSuccessResult::DashPaySynced,
             );
-        });
-    }
-
-    /// The reload after coming back replaces what was kept.
-    #[test]
-    fn the_reload_after_returning_replaces_the_kept_contacts() {
-        with_isolated_data_dir(|| {
-            let (_runtime, app_context) = fresh_app_context();
-            let owner = seed_identity_that_can_move_funds(&app_context);
-            let mut hub = hub_with_loaded_home(&app_context, owner);
-
-            hub.state_mut().0.refresh_on_arrival();
-            hub.step();
-            deliver_contacts(&mut hub, owner, "Cy");
-            hub.run();
-            assert!(
-                hub.query_by_label("Cy").is_some(),
-                "the fresh list is shown"
-            );
-            assert!(hub.query_by_label("Bao").is_none(), "the kept list is gone");
+            assert!(!syncs_again(&mut hub));
         });
     }
 
@@ -587,26 +357,6 @@ pub(crate) mod loads {
                 assert_eq!(roster_reads_per_frame(&mut hub, tab), home, "{tab:?}");
             }
         });
-    }
-
-    /// Puts the hub behind the Send screen Home opens, delivers `results`
-    /// there, then cancels that screen: the hub comes back to `hub` the way
-    /// Cancel leaves it, without a refresh.
-    fn receive_behind_the_send_screen(
-        runtime: &tokio::runtime::Runtime,
-        app: &mut Harness<'static, dash_evo_tool::app::AppState>,
-        hub: &mut HubHarness,
-        results: Vec<(BackendTaskContext, BackendTaskSuccessResult)>,
-    ) {
-        use dash_evo_tool::app::TaskResult;
-        let results = results
-            .into_iter()
-            .map(|(context, result)| TaskResult::Success {
-                context,
-                result: Box::new(result),
-            })
-            .collect();
-        receive_task_results_behind_the_send_screen(runtime, app, hub, results);
     }
 
     /// Moves the hub into `app`, delivers `results` while the Send screen
@@ -667,114 +417,5 @@ pub(crate) mod loads {
         };
         hub.state_mut().0 = hub_screen;
         hub.run();
-    }
-
-    /// Home asks for its payment history, then Send is opened before the answer
-    /// arrives. The answer must still reach the hub behind that screen: Cancel
-    /// returns without refreshing, so nothing would ask for it again.
-    #[test]
-    fn payment_history_reaches_the_hub_behind_an_open_send_screen() {
-        with_isolated_data_dir(|| {
-            let runtime = tokio::runtime::Runtime::new().expect("runtime");
-            let _guard = runtime.enter();
-            let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
-            let app_context = app.state().current_app_context().clone();
-            seed_identity_that_can_move_funds(&app_context);
-
-            let mut hub = mount_hub(&app_context);
-            let request = step_until(&mut hub, "the payment history load", payments_load);
-            assert!(hub.query_by_label("Recent payments").is_none());
-
-            let history = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-                String::new(),
-                "Alice".into(),
-                1_000,
-                true,
-                String::new(),
-            )]);
-            receive_behind_the_send_screen(&runtime, &mut app, &mut hub, vec![(request, history)]);
-            assert!(
-                hub.query_by_label("Recent payments").is_some(),
-                "the payment history that arrived behind the Send screen must be shown"
-            );
-        });
-    }
-
-    /// The same for Home's contact lists: they are asked for once per arrival,
-    /// so answers that arrive behind the Send screen must reach the hub — but
-    /// only those loaded for the identity it shows.
-    #[test]
-    fn contact_lists_reach_the_hub_behind_an_open_send_screen() {
-        use crate::identity_home::seed_identity_with_id;
-        use dash_evo_tool::backend_task::dashpay::ContactData;
-        use dash_sdk::dpp::document::{Document, DocumentV0};
-        with_isolated_data_dir(|| {
-            let runtime = tokio::runtime::Runtime::new().expect("runtime");
-            let _guard = runtime.enter();
-            let mut app = mount_app(RootScreenType::RootScreenWalletsBalances);
-            let app_context = app.state().current_app_context().clone();
-            let other = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
-            let shown = seed_identity_that_can_move_funds(&app_context);
-
-            let mut hub = mount_hub(&app_context);
-            step_until(&mut hub, "the contact load", contacts_load);
-            assert!(hub.query_by_label("Bao").is_none());
-
-            let contact = |name: &str| ContactData {
-                identity_id: Identifier::from([0xD8; 32]),
-                nickname: Some(name.into()),
-                note: None,
-                is_hidden: false,
-                account_reference: 0,
-                username: None,
-                display_name: None,
-                avatar_url: None,
-                bio: None,
-            };
-            let request = Identifier::from([0xC7; 32]);
-            let answer = |result: BackendTaskSuccessResult| {
-                let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-                    identity: app_context.resolve_selected_identity().expect("identity"),
-                }));
-                (BackendTaskContext::from(&task), result)
-            };
-            let results = vec![
-                answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
-                    identity: shown,
-                    contacts: vec![contact("Bao")],
-                }),
-                answer(BackendTaskSuccessResult::DashPayContactRequests {
-                    identity: shown,
-                    incoming: vec![(
-                        request,
-                        Document::V0(DocumentV0 {
-                            id: request,
-                            owner_id: other,
-                            ..Default::default()
-                        }),
-                    )],
-                    outgoing: vec![],
-                }),
-                // A load some other screen ran for another identity.
-                answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
-                    identity: other,
-                    contacts: vec![contact("Zed")],
-                }),
-            ];
-            receive_behind_the_send_screen(&runtime, &mut app, &mut hub, results);
-
-            assert!(
-                hub.query_by_label("Zed").is_none(),
-                "another identity's contacts must never be shown"
-            );
-            assert!(
-                hub.query_by_label("Bao").is_some(),
-                "the contacts that arrived behind the Send screen must be shown"
-            );
-            assert!(
-                hub.query_by_label("Accept").is_some(),
-                "and so must the request received meanwhile"
-            );
-        });
     }
 }

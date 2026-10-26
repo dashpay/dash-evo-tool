@@ -813,7 +813,7 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
     with_isolated_data_dir(|| {
         use dash_evo_tool::app::AppAction;
         use dash_evo_tool::backend_task::{
-            BackendTask, BackendTaskContext, BackendTaskSuccessResult, dashpay::DashPayTask,
+            BackendTask, BackendTaskSuccessResult, dashpay::DashPayTask,
         };
         use dash_evo_tool::ui::ScreenLike;
         use dash_evo_tool::ui::identity::IdentityHubScreen;
@@ -825,25 +825,15 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
         // The hub holds its proof-verifying reads until the masternode list is
         // synced; these tests start on a synced network.
         app_context.connection_status().set_masternodes_ready(true);
+        let url = "https://example.invalid/synthetic-avatar.png";
+        crate::support::publish_profile(&app_context, avatar_id, Some("Profile name"), Some(url));
         let screen = IdentityHubScreen::new(&app_context);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .build_ui_state(
-                |ui,
-                 state: &mut (
-                    IdentityHubScreen,
-                    Option<(Identifier, BackendTaskContext)>,
-                    Vec<String>,
-                )| {
+                |ui, state: &mut (IdentityHubScreen, Vec<String>)| {
                     let tasks = match state.0.ui(ui) {
-                        AppAction::BackendTaskWithContext { task, context } => {
-                            if let BackendTask::DashPayTask(profile_task) = &task
-                                && let DashPayTask::LoadProfile { identity } = profile_task.as_ref()
-                            {
-                                state.1 = Some((identity.identity.id(), context));
-                            }
-                            vec![task]
-                        }
+                        AppAction::BackendTaskWithContext { task, .. } => vec![task],
                         AppAction::BackendTask(task) => vec![task],
                         AppAction::BackendTasks(tasks, _) => tasks,
                         _ => Vec::new(),
@@ -852,30 +842,16 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
                         if let BackendTask::DashPayTask(task) = task
                             && let DashPayTask::FetchAvatar { url } = *task
                         {
-                            state.2.push(url);
+                            state.1.push(url);
                         }
                     }
                 },
-                (screen, None, Vec::new()),
+                (screen, Vec::new()),
             );
         harness.run_steps(5);
-        let (owner, context) = harness.state_mut().1.take().expect("profile dispatch");
-        assert_eq!(owner, avatar_id);
-        let url = "https://example.invalid/synthetic-avatar.png";
-        harness.state_mut().0.display_backend_task_result(
-            &context,
-            BackendTaskSuccessResult::DashPayProfile(
-                dash_evo_tool::model::dashpay::ProfileSnapshot {
-                    network: app_context.network(),
-                    owner: avatar_id,
-                    revision: app_context.identity_profile_revision(avatar_id),
-                    profile: Some(("Profile name".into(), String::new(), url.into())),
-                },
-            ),
-        );
         open_picker(&mut harness);
         assert_eq!(
-            harness.state().2,
+            harness.state().1,
             [url],
             "picker must request the avatar before completion"
         );
@@ -892,7 +868,7 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
             });
         harness.run_steps(5);
         assert_eq!(
-            harness.state().2,
+            harness.state().1,
             [url],
             "a loaded avatar must not be fetched again"
         );
@@ -916,42 +892,11 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
             "identity without avatar retains monogram"
         );
 
-        harness.state_mut().1 = None;
-        harness.state_mut().2.clear();
+        harness.state_mut().1.clear();
         harness.state_mut().0.refresh();
-        harness.run_steps(3);
-        let (owner, mut context) = harness.state_mut().1.take().expect("profile reload");
-        if owner != avatar_id {
-            harness.state_mut().0.display_backend_task_result(
-                &context,
-                BackendTaskSuccessResult::DashPayProfile(
-                    dash_evo_tool::model::dashpay::ProfileSnapshot {
-                        network: app_context.network(),
-                        owner,
-                        revision: app_context.identity_profile_revision(owner),
-                        profile: None,
-                    },
-                ),
-            );
-            harness.run_steps(3);
-            let (owner, next) = harness.state_mut().1.take().expect("avatar owner's reload");
-            assert_eq!(owner, avatar_id);
-            context = next;
-        }
-        harness.state_mut().0.display_backend_task_result(
-            &context,
-            BackendTaskSuccessResult::DashPayProfile(
-                dash_evo_tool::model::dashpay::ProfileSnapshot {
-                    network: app_context.network(),
-                    owner: avatar_id,
-                    revision: app_context.identity_profile_revision(avatar_id),
-                    profile: Some(("".into(), String::new(), url.into())),
-                },
-            ),
-        );
         harness.run_steps(5);
         assert_eq!(
-            harness.state().2,
+            harness.state().1,
             [url],
             "refresh must request a new avatar before failure"
         );
@@ -964,7 +909,7 @@ fn ui_polish_picker_uses_profile_avatar_and_keeps_missing_avatar_fallback() {
             });
         harness.run_steps(5);
         assert_eq!(
-            harness.state().2,
+            harness.state().1,
             [url],
             "a failed avatar must not trigger repeated fetches"
         );

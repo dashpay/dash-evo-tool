@@ -375,6 +375,12 @@ impl IdentityHubScreen {
         self.selected_tab = tab;
     }
 
+    /// Show `contacts` for the identity on screen, as a sync would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn show_contacts_for_test(&mut self, contacts: Vec<crate::model::dashpay::ContactData>) {
+        self.contacts_state.record_contacts_for_test(contacts);
+    }
+
     /// Retire a request row the backend just resolved (accepted, declined, or
     /// cancelled) and confirm it to the user.
     fn resolve_request(&mut self, request: &ContactRequestKey, confirmation: &str) {

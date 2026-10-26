@@ -7,10 +7,8 @@
 use crate::identity_home::key;
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
-use dash_evo_tool::backend_task::dashpay::{ContactData, DashPayTask};
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use dash_evo_tool::backend_task::dashpay::ContactData;
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::dashpay::ProfileSnapshot;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
@@ -102,34 +100,12 @@ fn seed_identity_named(app_context: &Arc<AppContext>, names: &[&str]) -> Identif
     identity_id
 }
 
-/// Renders frames until the hub asks for `owner`'s social profile, then answers
-/// with a published one so every tab shows its populated state.
+/// Publishes `owner`'s social profile so every tab shows its populated state.
 fn deliver_profile(hub: &mut HubHarness, owner: Identifier) {
-    for _ in 0..16 {
-        let request = hub.state().1.iter().find_map(|action| match action {
-            AppAction::BackendTaskWithContext {
-                task: BackendTask::DashPayTask(task),
-                context,
-            } if matches!(**task, DashPayTask::LoadProfile { .. }) => Some(context.clone()),
-            _ => None,
-        });
-        if let Some(request) = request {
-            let app_context = hub.state().0.app_context.clone();
-            hub.state_mut().0.display_backend_task_result(
-                &request,
-                BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
-                    network: app_context.network(),
-                    owner,
-                    revision: app_context.identity_profile_revision(owner),
-                    profile: Some(("Alex".into(), String::new(), String::new())),
-                }),
-            );
-            hub.state_mut().1.clear();
-            return;
-        }
-        hub.step();
-    }
-    panic!("the hub never asked for the social profile");
+    let app_context = hub.state().0.app_context.clone();
+    crate::support::publish_profile(&app_context, owner, Some("Alex"), None);
+    hub.run_steps(2);
+    hub.state_mut().1.clear();
 }
 
 fn deliver_contact(hub: &mut HubHarness, owner: Identifier) {
@@ -147,32 +123,22 @@ fn deliver_contact_named(
 
 fn deliver_contact_with(
     hub: &mut HubHarness,
-    owner: Identifier,
+    _owner: Identifier,
     nickname: &str,
     username: Option<String>,
     is_hidden: bool,
 ) {
-    let app_context = hub.state().0.app_context.clone();
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-        identity: app_context.resolve_selected_identity().expect("identity"),
-    }));
-    hub.state_mut().0.display_backend_task_result(
-        &BackendTaskContext::from(&task),
-        BackendTaskSuccessResult::DashPayContactsWithInfo {
-            identity: owner,
-            contacts: vec![ContactData {
-                identity_id: Identifier::from([0xD8; 32]),
-                nickname: Some(nickname.into()),
-                note: None,
-                is_hidden,
-                account_reference: 0,
-                username,
-                display_name: None,
-                avatar_url: None,
-                bio: None,
-            }],
-        },
-    );
+    hub.state_mut().0.show_contacts_for_test(vec![ContactData {
+        identity_id: Identifier::from([0xD8; 32]),
+        nickname: Some(nickname.into()),
+        note: None,
+        is_hidden,
+        account_reference: 0,
+        username,
+        display_name: None,
+        avatar_url: None,
+        bio: None,
+    }]);
 }
 
 /// The hub on `tab` for an identity with a published profile and one contact.

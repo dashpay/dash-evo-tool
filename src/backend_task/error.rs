@@ -2611,6 +2611,16 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A token that cannot be transferred cannot be tradeable either.
+    #[error(
+        "The token at position {token_position} cannot be traded because it cannot be transferred. Allow transfers or turn trading off, then try again."
+    )]
+    NonTransferableTokenTradeable {
+        token_position: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract authoring (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
@@ -2714,6 +2724,13 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
+
+    /// The token creator asked for a token that cannot be transferred, on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+    )]
+    NonTransferableTokenNotSupported,
 
     /// A token operation run by the wallet runtime failed for a reason the
     /// SDK error classification has no specific variant for. Built by
@@ -4573,6 +4590,17 @@ impl From<SdkError> for TaskError {
                             TaskError::ReferencedDocumentPreceded {
                                 document_id,
                                 preceding_document_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(BasicError::NonTransferableTokenTradeableError(
+                        e,
+                    )) => {
+                        let token_position = e.token_contract_position();
+                        Some(Box::new(move |source_error| {
+                            TaskError::NonTransferableTokenTradeable {
+                                token_position,
                                 source_error,
                             }
                         }))
@@ -7187,6 +7215,7 @@ mod tests {
     /// source and tell the user what to do instead.
     #[test]
     fn contest_vote_and_token_transfer_refusals_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::basic::data_contract::NonTransferableTokenTradeableError;
         use dash_sdk::dpp::consensus::state::document::document_contest_maximum_contenders_reached_error::DocumentContestMaximumContendersReachedError;
         use dash_sdk::dpp::consensus::state::document::referenced_document_preceded_error::ReferencedDocumentPrecededError;
         use dash_sdk::dpp::consensus::state::token::TokenNotTransferableError;
@@ -7244,6 +7273,19 @@ mod tests {
                 .into(),
                 |e| matches!(e, TaskError::ReferencedDocumentPreceded { .. }),
                 "Someone else asked for this username first.",
+            ),
+            (
+                NonTransferableTokenTradeableError::new(3).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::NonTransferableTokenTradeable {
+                            token_position: 3,
+                            ..
+                        }
+                    )
+                },
+                "Allow transfers or turn trading off, then try again.",
             ),
         ];
 

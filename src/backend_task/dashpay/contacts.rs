@@ -3,7 +3,9 @@ use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{ContactDetails, contact_request_recipient};
+use crate::model::dashpay::{
+    ContactData, ContactDetails, contact_request_recipient, holds_details, shown_contact_details,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
@@ -301,43 +303,6 @@ pub(super) async fn stored_contact_details(
     Ok(StoredContactDetails { published, legacy })
 }
 
-/// The details the contacts list shows for one contact, and that a save
-/// keeps for every field it does not replace.
-///
-/// A published DIP-0015 document wins: Platform holds the latest saved state
-/// from any device. Without one, platform-wallet's details on this device
-/// win; a legacy-key document stands in only while platform-wallet has never
-/// held details for the contact (`synced_before` false). Once it has, its
-/// details win even when empty, so a cleared note or an unhide is never
-/// undone by an old legacy document.
-pub(super) fn shown_contact_details(
-    published: Option<ContactDetails>,
-    local: Option<ContactDetails>,
-    synced_before: bool,
-    legacy: Option<ContactDetails>,
-) -> ContactDetails {
-    if let Some(published) = published {
-        return published;
-    }
-    if synced_before {
-        return local.unwrap_or_default();
-    }
-    local
-        .filter(|details| !details.is_empty())
-        .or(legacy)
-        .unwrap_or_default()
-}
-
-/// Whether platform-wallet's side holds details worth recording as its own:
-/// a published DIP-0015 document (even an empty one), or non-empty details on
-/// this device.
-pub(super) fn holds_details(
-    published: Option<&ContactDetails>,
-    local: Option<&ContactDetails>,
-) -> bool {
-    published.is_some() || local.is_some_and(|details| !details.is_empty())
-}
-
 /// The people both sides have sent a contact request to, minus anyone the
 /// owner withdrew their request from: a reply to a withdrawn request is a new
 /// request for the owner to answer, not an established contact.
@@ -356,30 +321,6 @@ pub(super) fn mutual_contacts(
                 .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
         })
         .collect()
-}
-
-impl ContactData {
-    pub(super) fn details(&self) -> ContactDetails {
-        ContactDetails {
-            nickname: self.nickname.clone(),
-            note: self.note.clone(),
-            hidden: self.is_hidden,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContactData {
-    pub identity_id: Identifier,
-    pub nickname: Option<String>,
-    pub note: Option<String>,
-    pub is_hidden: bool,
-    pub account_reference: u32,
-    // Profile data (fetched from Platform)
-    pub username: Option<String>,
-    pub display_name: Option<String>,
-    pub avatar_url: Option<String>,
-    pub bio: Option<String>,
 }
 
 pub async fn load_contacts(
@@ -641,7 +582,7 @@ pub async fn load_contacts_offline(
             continue;
         }
 
-        let cached = backend.contact_profile_cache().get(&contact_id);
+        let username = backend.contact_usernames().get(&contact_id);
         let memo = backend
             .dashpay_get_private_info(&owner_id, &contact_id)
             .unwrap_or_else(|error| {
@@ -666,20 +607,11 @@ pub async fn load_contacts_offline(
             nickname: details.nickname,
             note: details.note,
             is_hidden: details.hidden,
-            // Carry the cached account reference so the "Account #N" badge shows
-            // and offline ordering matches the post-refresh view. Falls back to
-            // 0 ("default account") when no network read has cached one yet.
-            account_reference: cached
-                .as_ref()
-                .and_then(|c| c.account_reference)
-                .unwrap_or(0),
-            username: cached.as_ref().and_then(|c| c.username.clone()),
-            display_name: cached
-                .as_ref()
-                .and_then(|c| c.display_name.clone())
-                .or_else(|| sc.display_name.clone()),
-            avatar_url: cached.as_ref().and_then(|c| c.avatar_url.clone()),
-            bio: cached.as_ref().and_then(|c| c.bio.clone()),
+            account_reference: 0,
+            username,
+            display_name: sc.display_name.clone(),
+            avatar_url: None,
+            bio: None,
         });
     }
 
@@ -689,37 +621,18 @@ pub async fn load_contacts_offline(
     })
 }
 
-/// Write each contact's fetched display profile into the DET contact-profile
-/// cache so later offline reads can serve it. Skips contacts with no
-/// displayable field. Best-effort: write misses are logged and ignored.
+/// Store each contact's fetched DPNS username so later offline reads show
+/// it. Best-effort: write misses are logged and ignored.
 fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData]) {
-    use crate::wallet_backend::CachedContactProfile;
-
     let Ok(backend) = app_context.wallet_backend() else {
         return;
     };
-    let cache = backend.contact_profile_cache();
+    let usernames = backend.contact_usernames();
     for contact in contacts {
-        let profile = CachedContactProfile {
-            username: contact.username.clone(),
-            display_name: contact.display_name.clone(),
-            avatar_url: contact.avatar_url.clone(),
-            bio: contact.bio.clone(),
-            // Carry the account reference so the offline read can show the
-            // "Account #N" badge and sort consistently. 0 means "default
-            // account / not set", so it is not worth caching on its own.
-            account_reference: (contact.account_reference != 0)
-                .then_some(contact.account_reference),
-        };
-        if profile.is_empty() {
-            continue;
-        }
-        if let Err(e) = cache.put(&contact.identity_id, &profile) {
-            tracing::debug!(
-                contact = %contact.identity_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-                error = ?e,
-                "Failed to cache contact profile for offline use"
-            );
+        if let Some(username) = &contact.username
+            && let Err(e) = usernames.put(&contact.identity_id, Some(username))
+        {
+            tracing::debug!(error = ?e, "Failed to store a contact's username for offline use");
         }
     }
 }

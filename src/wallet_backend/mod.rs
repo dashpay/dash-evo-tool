@@ -25,9 +25,10 @@ pub mod auth_pubkey_cache;
 pub(crate) mod auth_pubkey_cache;
 mod avatar_cache;
 mod contact_info;
-mod contact_profile_cache;
+mod contact_usernames;
 mod coordinator_gate;
 mod dashpay;
+mod dashpay_snapshot;
 mod det_platform_signer;
 mod det_signer;
 mod event_bridge;
@@ -101,7 +102,7 @@ use identity_ops::Funding;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
-pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
+pub use contact_usernames::ContactUsernamesView;
 pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
@@ -440,6 +441,8 @@ struct Inner {
     dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
     /// Failed profile timestamp writes, retried locally without another broadcast.
     profile_timestamps: dashpay::ProfileTimestamps,
+    /// Frame-safe DashPay snapshots; see [`dashpay_snapshot`].
+    dashpay_snapshots: dashpay_snapshot::DashPaySnapshots,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -702,6 +705,7 @@ impl WalletBackend {
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 profile_timestamps: dashpay::ProfileTimestamps::default(),
+                dashpay_snapshots: dashpay_snapshot::DashPaySnapshots::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -1775,6 +1779,7 @@ impl WalletBackend {
     /// every wallet is attempted even after one fails.
     pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
         self.inner.profile_timestamps.clear();
+        self.clear_dashpay_snapshots();
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
@@ -2422,12 +2427,10 @@ impl WalletBackend {
         AvatarCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned contact-profile cache. A contact's
-    /// profile belongs to an out-of-wallet identity and is never rehydrated
-    /// upstream, so this cache is the only offline source of a contact's
-    /// display name, avatar URL, bio, and DPNS username between network reads.
-    pub fn contact_profile_cache(&self) -> ContactProfileCacheView<'_> {
-        ContactProfileCacheView::new(&self.inner.app_kv)
+    /// View over the DPNS usernames DET stored for DashPay counterparties,
+    /// which platform-wallet does not hold.
+    pub fn contact_usernames(&self) -> ContactUsernamesView<'_> {
+        ContactUsernamesView::new(&self.inner.app_kv)
     }
 
     /// View over the encrypted HD wallet seed vault (T-W-00.5-v2).

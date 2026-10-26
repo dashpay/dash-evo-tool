@@ -59,7 +59,7 @@ where
 /// Save `update` for `contact_user_id` through platform-wallet.
 ///
 /// Every field the update preserves keeps the value the contacts list shows;
-/// see [`super::contacts::shown_contact_details`]. Notes are limited to 255 UTF-8
+/// see [`crate::model::dashpay::shown_contact_details`]. Notes are limited to 255 UTF-8
 /// bytes, and the details must fit the document size limit.
 ///
 /// # Errors
@@ -113,7 +113,7 @@ pub async fn load_contact_details(
 }
 
 /// The details shown for `contact_id`, with the precedence of
-/// [`super::contacts::shown_contact_details`]: published, then
+/// [`crate::model::dashpay::shown_contact_details`]: published, then
 /// platform-wallet's on this device, then a legacy-key document.
 ///
 /// # Errors
@@ -138,11 +138,11 @@ async fn shown_details_for(
     let published = stored.published?.remove(contact_id);
     let legacy = stored.legacy?;
     let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
-        || super::contacts::holds_details(published.as_ref(), local.as_ref());
+        || crate::model::dashpay::holds_details(published.as_ref(), local.as_ref());
     let legacy = legacy
         .get(contact_id)
-        .map(super::contacts::ContactData::details);
-    Ok(super::contacts::shown_contact_details(
+        .map(crate::model::dashpay::ContactData::details);
+    Ok(crate::model::dashpay::shown_contact_details(
         published,
         local,
         synced_before,
@@ -488,7 +488,7 @@ mod tests {
     async fn legacy_load<D, DF>(
         documents: Vec<Document>,
         derive_keys: D,
-    ) -> Result<std::collections::HashMap<Identifier, super::super::contacts::ContactData>, TaskError>
+    ) -> Result<std::collections::HashMap<Identifier, crate::model::dashpay::ContactData>, TaskError>
     where
         D: FnMut(u32) -> DF,
         DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
@@ -552,7 +552,7 @@ mod tests {
     async fn load_details(
         pages: Vec<Documents>,
     ) -> (
-        std::collections::HashMap<Identifier, super::super::contacts::ContactData>,
+        std::collections::HashMap<Identifier, crate::model::dashpay::ContactData>,
         bool,
     ) {
         let contract =

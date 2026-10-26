@@ -59,7 +59,6 @@ use platform_wallet::PlatformWallet;
 
 use super::payments::ProbeDeadline;
 use crate::backend_task::error::TaskError;
-use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
     TransactionConfirmation, TransactionStatus, WalletSeedHash, WalletTransaction,
 };
@@ -450,37 +449,6 @@ pub(super) fn received_outputs_for_record(
     } else {
         Some((tx.clone(), owned))
     }
-}
-
-/// Extract every received output of a freshly-seen transaction as a
-/// [`DetectedIncomingOutput`] candidate for incoming DashPay
-/// contact-payment detection.
-///
-/// Unlike [`received_outputs_for_record`], which exists to advance funding
-/// screens, this carries the `(txid, address, value)` the detector needs to
-/// resolve `address → (contact, index)` and record the payment. Only
-/// `OutputRole::Received` outputs with a decodable address are candidates —
-/// `Change` is excluded because contact payments always land on a freshly
-/// derived receiving address, never on our own change. The detector applies
-/// the authoritative DashPay-address match downstream; this is the cheap
-/// pre-filter that keeps the event hot path free of any owner/KV lookup.
-pub(super) fn incoming_payment_candidates(
-    record: &TransactionRecord,
-) -> Vec<DetectedIncomingOutput> {
-    let txid = record.txid.to_string();
-    record
-        .output_details
-        .iter()
-        .filter(|out| matches!(out.role, OutputRole::Received))
-        .filter_map(|out| {
-            out.address.as_ref().map(|address| DetectedIncomingOutput {
-                txid: txid.clone(),
-                vout: out.index,
-                address: address.to_string(),
-                amount_duffs: out.value,
-            })
-        })
-        .collect()
 }
 
 /// The wallet's BIP-44 external (receive) addresses — the SPV-watched gap-limit
@@ -2326,73 +2294,6 @@ mod tests {
         let counterparty = addr(4);
         let rec = record_with_outputs(3, &[(7_000, counterparty, OutputRole::Sent)]);
         assert!(received_outputs_for_record(&rec).is_none());
-    }
-
-    #[test]
-    fn incoming_candidates_surface_received_outputs() {
-        let recv = addr(5);
-        let rec = record_with_outputs(5, &[(42_000, recv.clone(), OutputRole::Received)]);
-
-        let candidates = incoming_payment_candidates(&rec);
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].address, recv.to_string());
-        assert_eq!(candidates[0].amount_duffs, 42_000);
-        assert_eq!(candidates[0].txid, rec.txid.to_string());
-        assert_eq!(candidates[0].vout, 0);
-    }
-
-    #[test]
-    fn two_received_outputs_carry_distinct_vouts() {
-        // One transaction paying two different contact addresses must yield two
-        // candidates whose vouts differ — otherwise downstream keying by
-        // (txid, vout) collapses them and one payment is lost.
-        let recv_a = addr(5);
-        let recv_b = addr(6);
-        let rec = record_with_outputs(
-            7,
-            &[
-                (11_000, recv_a.clone(), OutputRole::Received),
-                (22_000, recv_b.clone(), OutputRole::Received),
-            ],
-        );
-
-        let candidates = incoming_payment_candidates(&rec);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].vout, 0);
-        assert_eq!(candidates[1].vout, 1);
-        assert_ne!(candidates[0].vout, candidates[1].vout);
-        assert_eq!(candidates[0].amount_duffs, 11_000);
-        assert_eq!(candidates[1].amount_duffs, 22_000);
-    }
-
-    #[test]
-    fn incoming_candidates_exclude_change_and_sent() {
-        let recv = addr(6);
-        let change = addr(7);
-        let counterparty = addr(8);
-        let rec = record_with_outputs(
-            6,
-            &[
-                (10_000, recv.clone(), OutputRole::Received),
-                (3_000, change, OutputRole::Change),
-                (9_000, counterparty, OutputRole::Sent),
-            ],
-        );
-
-        let candidates = incoming_payment_candidates(&rec);
-
-        // Only the Received output is a contact-payment candidate; change
-        // lands on our own address and sent leaves the wallet.
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].address, recv.to_string());
-    }
-
-    #[test]
-    fn pure_outgoing_transaction_yields_no_incoming_candidates() {
-        let counterparty = addr(9);
-        let rec = record_with_outputs(9, &[(7_000, counterparty, OutputRole::Sent)]);
-        assert!(incoming_payment_candidates(&rec).is_empty());
     }
 
     #[test]

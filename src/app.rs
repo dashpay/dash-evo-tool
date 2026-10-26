@@ -1487,6 +1487,8 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    /// When the frame loop last asked for the DashPay snapshots to be republished.
+    dashpay_snapshots_refreshed_at: Option<Instant>,
     /// Per-network start of a migration wait that deferred scheduled-vote casting.
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
     /// Networks with a scheduled-vote sweep currently running.
@@ -2099,6 +2101,7 @@ impl AppState {
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
+            dashpay_snapshots_refreshed_at: None,
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             scheduled_vote_sweeps_in_progress: BTreeSet::new(),
             unconfirmed_vote_checks: BTreeMap::new(),
@@ -3782,16 +3785,6 @@ impl App for AppState {
                                 screen.display_backend_task_result(&context, result);
                             }
                         }
-                        BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
-                            // The EventBridge surfaced received outputs on a
-                            // freshly-seen wallet transaction. Run the owner-
-                            // scoped detect-match-record off the frame thread;
-                            // matches come back as a `Refresh` to repaint the
-                            // payment history, misses as `None`.
-                            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
-                                DashPayTask::DetectIncomingContactPayments { outputs },
-                            )));
-                        }
                         BackendTaskSuccessResult::PlatformReadyDiscoverIdentities => {
                             // Platform is reachable: run the automatic all-wallets
                             // identity discovery sweep. The latch inside makes it a
@@ -4200,6 +4193,22 @@ impl App for AppState {
         if self.last_repaint_request.elapsed() >= Duration::from_secs(1) {
             ctx.request_repaint_after(Duration::from_secs(1));
             self.last_repaint_request = Instant::now();
+        }
+
+        // Republish the DashPay snapshots after each background sync pass, and
+        // now and then for changes no pass reports (a newly loaded identity).
+        if self.boot.phase().renders_screens()
+            && !self.network_selection_required
+            && let Ok(backend) = active_context.wallet_backend()
+            && crate::model::dashpay::snapshot_refresh_due(
+                backend.dashpay_pass_completed(),
+                self.dashpay_snapshots_refreshed_at.map(|at| at.elapsed()),
+            )
+        {
+            self.dashpay_snapshots_refreshed_at = Some(Instant::now());
+            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
+                DashPayTask::RefreshSnapshots,
+            )));
         }
 
         // Periodically cast any scheduled masternode votes that have come due.

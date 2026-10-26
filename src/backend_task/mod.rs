@@ -926,12 +926,6 @@ pub enum BackendTaskSuccessResult {
         url: String,
         bytes: Option<Vec<u8>>,
     },
-    /// Received outputs the `EventBridge` saw on a freshly-detected wallet
-    /// transaction. The app dispatches `DetectIncomingContactPayments` for
-    /// these — the backend resolves each against the per-identity DashPay
-    /// address map and records the ones that match a contact. Non-DashPay
-    /// outputs are silently ignored, so this carries every received output.
-    DashPayIncomingDetected(Vec<crate::model::dashpay::DetectedIncomingOutput>),
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`
@@ -941,6 +935,8 @@ pub enum BackendTaskSuccessResult {
     /// Auto-accept contact QR payload, ready to render. The proof is built
     /// through the JIT chokepoint in the backend so the UI never touches a seed.
     DashPayAutoAcceptQrCode(String),
+    /// The DashPay snapshots changed; screens re-read them on the next frame.
+    DashPaySynced,
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {

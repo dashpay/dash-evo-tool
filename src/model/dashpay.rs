@@ -82,7 +82,7 @@ pub struct ProfileSnapshot {
 }
 
 /// DashPay profile data — the local snapshot of an identity's published profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredProfile {
     pub identity_id: Vec<u8>,
     pub display_name: Option<String>,
@@ -120,6 +120,40 @@ impl ContactDetails {
     pub fn is_empty(&self) -> bool {
         self.nickname.is_none() && self.note.is_none() && !self.hidden
     }
+}
+
+/// The details the contacts list shows for one contact, and that a save
+/// keeps for every field it does not replace.
+///
+/// A published DIP-0015 document wins: Platform holds the latest saved state
+/// from any device. Without one, platform-wallet's details on this device
+/// win; a legacy-key document stands in only while platform-wallet has never
+/// held details for the contact (`synced_before` false). Once it has, its
+/// details win even when empty, so a cleared note or an unhide is never
+/// undone by an old legacy document.
+pub fn shown_contact_details(
+    published: Option<ContactDetails>,
+    local: Option<ContactDetails>,
+    synced_before: bool,
+    legacy: Option<ContactDetails>,
+) -> ContactDetails {
+    if let Some(published) = published {
+        return published;
+    }
+    if synced_before {
+        return local.unwrap_or_default();
+    }
+    local
+        .filter(|details| !details.is_empty())
+        .or(legacy)
+        .unwrap_or_default()
+}
+
+/// Whether platform-wallet's side holds details worth recording as its own:
+/// a published DIP-0015 document (even an empty one), or non-empty details on
+/// this device.
+pub fn holds_details(published: Option<&ContactDetails>, local: Option<&ContactDetails>) -> bool {
+    published.is_some() || local.is_some_and(|details| !details.is_empty())
 }
 
 /// Explicit field-by-field intent for a contact details write.
@@ -278,7 +312,7 @@ pub struct StoredContactRequest {
 }
 
 /// DashPay payment record. `amount` is in credits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredPayment {
     pub id: i64,
     pub tx_id: String,
@@ -290,6 +324,84 @@ pub struct StoredPayment {
     pub status: PaymentStatus,
     pub created_at: i64,
     pub confirmed_at: Option<i64>,
+}
+
+/// An established contact as the DashPay screens show it: the private
+/// details the owner keeps about them plus their public profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContactData {
+    pub identity_id: Identifier,
+    pub nickname: Option<String>,
+    pub note: Option<String>,
+    pub is_hidden: bool,
+    pub account_reference: u32,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+}
+
+impl ContactData {
+    /// The private details the owner keeps about this contact.
+    pub fn details(&self) -> ContactDetails {
+        ContactDetails {
+            nickname: self.nickname.clone(),
+            note: self.note.clone(),
+            hidden: self.is_hidden,
+        }
+    }
+}
+
+/// A contact request still waiting for an answer, identified by the other
+/// identity: DashPay keeps at most one request per direction and pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingContactRequest {
+    /// The sender of an incoming request, the recipient of an outgoing one.
+    pub counterparty_id: Identifier,
+    /// Unix milliseconds the request was created at; `0` when unknown.
+    pub created_at_ms: u64,
+    pub account_reference: u32,
+    /// Whether the request carries a proof that lets it be accepted at once.
+    pub has_auto_accept_proof: bool,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// What this device knows about an identity's own DashPay profile.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ProfileState {
+    /// Not synced from Platform yet.
+    #[default]
+    Unknown,
+    /// Synced; the identity has published no profile.
+    Absent,
+    Present(StoredProfile),
+}
+
+impl ProfileState {
+    /// The published profile, if one is known.
+    pub fn profile(&self) -> Option<&StoredProfile> {
+        match self {
+            Self::Present(profile) => Some(profile),
+            Self::Unknown | Self::Absent => None,
+        }
+    }
+}
+
+/// One identity's DashPay state: what platform-wallet synced from Platform,
+/// combined with this device's own records (withdrawn and declined requests,
+/// private memos, payment times).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DashPaySnapshot {
+    pub profile: ProfileState,
+    /// Established contacts, hidden ones included (see
+    /// [`ContactData::is_hidden`]).
+    pub contacts: Vec<ContactData>,
+    pub incoming: Vec<PendingContactRequest>,
+    pub outgoing: Vec<PendingContactRequest>,
+    /// Newest first.
+    pub payments: Vec<StoredPayment>,
 }
 
 /// DashPay contact address index tracking per DIP-0015.
@@ -308,48 +420,28 @@ pub struct ContactAddressIndex {
     pub bloom_registered_count: u32,
 }
 
-/// A received output observed on-chain that may be an incoming DashPay
-/// contact payment.
-///
-/// The [`EventBridge`](crate::wallet_backend::EventBridge) extracts these
-/// from freshly-seen wallet transactions and hands them to the
-/// detect-match-record path, which resolves each `address` against the
-/// per-identity DashPay address map. Outputs whose address is not a
-/// registered contact-receiving address are ignored — this carries every
-/// received output, not only the DashPay ones, so the detector owns the
-/// matching decision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetectedIncomingOutput {
-    /// Hex transaction id of the observed transaction.
-    pub txid: String,
-    /// Index of this output within the transaction (the `vout`). A single
-    /// transaction can pay two different contact addresses, so the payment is
-    /// keyed by `(txid, vout)` — `txid` alone would let the second output
-    /// overwrite the first.
-    pub vout: u32,
-    /// Base58 receiving address the output paid into.
-    pub address: String,
-    /// Output value in duffs.
-    pub amount_duffs: u64,
+/// Least time between two snapshot refreshes the frame loop asks for.
+const SNAPSHOT_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(1);
+/// Longest time the frame loop goes without a snapshot refresh.
+const SNAPSHOT_REFRESH_MAX_GAP: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Whether the frame loop should ask for the DashPay snapshots to be
+/// republished: after a sync pass completed, or once the last refresh is old,
+/// but never twice within a second. `since_last` is `None` before the first.
+pub fn snapshot_refresh_due(pass_completed: bool, since_last: Option<std::time::Duration>) -> bool {
+    match since_last {
+        None => true,
+        Some(elapsed) if elapsed < SNAPSHOT_REFRESH_MIN_GAP => false,
+        Some(elapsed) => pass_completed || elapsed >= SNAPSHOT_REFRESH_MAX_GAP,
+    }
 }
 
-/// Build the storage key that distinguishes each output of one transaction.
+/// Recover the bare transaction id from a payment storage key.
 ///
-/// Upstream `record_dashpay_payment` keys its payment map by an opaque `tx_id`
-/// `String` with last-write-wins semantics, so two contact outputs in the same
-/// transaction would collide on the bare txid. Keying by `"{txid}:{vout}"`
-/// keeps every output a distinct record while remaining an idempotent upsert
-/// per `(txid, vout)` on re-scan.
-pub fn payment_storage_key(txid: &str, vout: u32) -> String {
-    format!("{txid}:{vout}")
-}
-
-/// Recover the bare transaction id from a [`payment_storage_key`].
-///
-/// Splits on the last `:` and validates that the suffix is a `vout` integer;
-/// returns the input unchanged when it carries no `:vout` suffix (a plain txid,
-/// e.g. a legacy or sent-payment record keyed by txid alone). The transaction
-/// id itself never contains a `:`, so the last-colon split is unambiguous.
+/// Older versions recorded each incoming payment under `"{txid}:{vout}"`;
+/// every other payment is keyed by its bare txid, which is returned unchanged.
+/// A transaction id never contains a `:`, so the last-colon split is
+/// unambiguous.
 pub fn payment_txid_from_storage_key(key: &str) -> &str {
     match key.rsplit_once(':') {
         Some((txid, vout)) if !vout.is_empty() && vout.bytes().all(|b| b.is_ascii_digit()) => txid,
@@ -623,18 +715,24 @@ mod tests {
     }
 
     #[test]
-    fn storage_key_distinguishes_outputs_of_one_tx() {
-        let a = payment_storage_key("abc123", 0);
-        let b = payment_storage_key("abc123", 1);
-        assert_ne!(a, b, "two outputs of one tx must produce distinct keys");
-        assert_eq!(a, "abc123:0");
-        assert_eq!(b, "abc123:1");
+    fn snapshots_refresh_after_a_pass_or_when_old_but_not_twice_a_second() {
+        use std::time::Duration;
+        assert!(
+            snapshot_refresh_due(false, None),
+            "the first frame refreshes"
+        );
+        assert!(snapshot_refresh_due(true, Some(Duration::from_secs(2))));
+        assert!(!snapshot_refresh_due(false, Some(Duration::from_secs(2))));
+        assert!(!snapshot_refresh_due(
+            true,
+            Some(Duration::from_millis(500))
+        ));
+        assert!(snapshot_refresh_due(false, Some(Duration::from_secs(15))));
     }
 
     #[test]
-    fn storage_key_round_trips_to_bare_txid() {
-        let key = payment_storage_key("deadbeef", 7);
-        assert_eq!(payment_txid_from_storage_key(&key), "deadbeef");
+    fn a_per_output_key_reads_as_its_bare_txid() {
+        assert_eq!(payment_txid_from_storage_key("deadbeef:7"), "deadbeef");
     }
 
     #[test]

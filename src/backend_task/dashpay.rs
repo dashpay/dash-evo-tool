@@ -15,9 +15,10 @@ pub mod errors;
 pub mod incoming_payments;
 pub mod payments;
 pub mod profile;
+pub mod sync;
 pub mod validation;
 
-pub use contacts::ContactData;
+pub use crate::model::dashpay::ContactData;
 
 use crate::model::dashpay::ContactInfoUpdate;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -133,14 +134,12 @@ pub enum DashPayTask {
     RegisterDashPayAddresses {
         identity: QualifiedIdentity,
     },
-    /// Resolve received outputs (surfaced by the `EventBridge` when a wallet
-    /// transaction is first seen) against every local identity's DashPay
-    /// address map, recording the ones that pay a known contact. Idempotent
-    /// on re-scan — recording is keyed by `tx_id` with last-write-wins, and
-    /// the receive cursor only advances.
-    DetectIncomingContactPayments {
-        outputs: Vec<crate::model::dashpay::DetectedIncomingOutput>,
-    },
+    /// Run a DashPay sync pass now, then republish the DashPay snapshots.
+    SyncNow,
+    /// Republish the DashPay snapshots from platform-wallet's state, after
+    /// looking up what it does not hold when a sync pass completed. The frame
+    /// loop dispatches this; it never prompts and never fails.
+    RefreshSnapshots,
     /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
     /// derives the auto-accept key through the JIT chokepoint in the backend, so
     /// the UI never reads a seed.
@@ -157,10 +156,14 @@ impl AppContext {
         task: DashPayTask,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if matches!(task, DashPayTask::RefreshSnapshots) {
+            return sync::refresh(self, sdk).await;
+        }
         // DashPay resolves identities through their wallet; one stored after
         // that wallet bootstrapped is not registered with it yet.
         self.reconcile_managed_identities_for_loaded_wallets().await;
-        match task {
+        let changes_state = task.changes_dashpay_state();
+        let result = match task {
             DashPayTask::LoadProfile { identity } => {
                 Ok(profile::load_profile(self, sdk, identity).await?)
             }
@@ -362,15 +365,8 @@ impl AppContext {
                     errors: result.errors.len(),
                 })
             }
-            DashPayTask::DetectIncomingContactPayments { outputs } => {
-                let recorded =
-                    incoming_payments::detect_incoming_contact_payments(self, &outputs).await?;
-                if recorded == 0 {
-                    Ok(BackendTaskSuccessResult::None)
-                } else {
-                    Ok(BackendTaskSuccessResult::Refresh)
-                }
-            }
+            DashPayTask::SyncNow => sync::sync_now(self).await,
+            DashPayTask::RefreshSnapshots => sync::refresh(self, sdk).await,
             DashPayTask::GenerateAutoAcceptQrCode {
                 identity,
                 account_reference,
@@ -386,6 +382,41 @@ impl AppContext {
                     proof.to_qr_string(),
                 ))
             }
+        };
+        // A write is shown as soon as its result lands, not after the next
+        // periodic refresh.
+        if changes_state && let Ok(backend) = self.wallet_backend() {
+            backend.refresh_dashpay_snapshots().await;
+        }
+        result
+    }
+}
+
+impl DashPayTask {
+    /// Whether the task can change what the DashPay snapshots show.
+    fn changes_dashpay_state(&self) -> bool {
+        match self {
+            Self::UpdateProfile { .. }
+            | Self::LoadProfile { .. }
+            | Self::LoadContacts { .. }
+            | Self::LoadContactRequests { .. }
+            | Self::LoadContactDetails { .. }
+            | Self::LoadPaymentHistory { .. }
+            | Self::SendContactRequest { .. }
+            | Self::SendContactRequestWithProof { .. }
+            | Self::AcceptContactRequest { .. }
+            | Self::RejectContactRequest { .. }
+            | Self::CancelContactRequest { .. }
+            | Self::SendPaymentToContact { .. }
+            | Self::UpdateContactInfo { .. } => true,
+            Self::LoadContactsOffline { .. }
+            | Self::FetchContactProfile { .. }
+            | Self::FetchAvatar { .. }
+            | Self::SearchProfiles { .. }
+            | Self::RegisterDashPayAddresses { .. }
+            | Self::GenerateAutoAcceptQrCode { .. }
+            | Self::SyncNow
+            | Self::RefreshSnapshots => false,
         }
     }
 }

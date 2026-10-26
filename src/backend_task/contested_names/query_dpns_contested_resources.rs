@@ -153,7 +153,7 @@ impl AppContext {
         // Held to the end of the pass and taken before any other lock, so a
         // pass that waits here holds nothing a running pass needs.
         let _pass = self.dpns_contest_refresh_pass.lock().await;
-        let data_contract = self.dpns_contract.as_ref();
+        let data_contract = self.dpns_contract();
         let document_type = data_contract
             .document_type_for_name("domain")
             .map_err(|_| TaskError::ContractSchemaMismatch {
@@ -474,12 +474,12 @@ mod tests {
         context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
             crate::wallet_backend::kv_test_support::InMemoryKv::default(),
         )));
-        let document_type = context
-            .dpns_contract
+        let dpns_contract = context.dpns_contract();
+        let document_type = dpns_contract
             .document_type_for_name("domain")
             .expect("domain document type");
         let page_from = |start_at_value| VotePollsByDocumentTypeQuery {
-            contract_id: context.dpns_contract.id(),
+            contract_id: context.dpns_contract().id(),
             document_type_name: document_type.name().to_owned(),
             index_name: document_type
                 .find_contested_index()
@@ -743,9 +743,8 @@ mod tests {
     async fn load_node_without_votes(context: &Arc<AppContext>, sdk: &mut Sdk) -> Identifier {
         use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
         use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
-        use dash_sdk::query_types::ResourceVotesByIdentity;
+        use dash_sdk::query_types::{ResourceVoteWithCount, ResourceVotesByIdentity};
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
         context
@@ -781,7 +780,7 @@ mod tests {
             .expect("load the node");
         let node_id = node.identity.id();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: node_id,
                     offset: None,
@@ -804,8 +803,8 @@ mod tests {
         name: &str,
         winner: Option<(ContestedDocumentVotePollWinnerInfo, BlockInfo)>,
     ) {
-        let document_type = context
-            .dpns_contract
+        let dpns_contract = context.dpns_contract();
+        let document_type = dpns_contract
             .document_type_for_name("domain")
             .expect("domain document type");
         let query = ContestedDocumentVotePollDriveQuery {
@@ -820,7 +819,7 @@ mod tests {
                     .clone(),
                 index_values: vec![Value::from("dash"), Value::Text(name.to_owned())],
                 document_type_name: document_type.name().to_owned(),
-                contract_id: context.dpns_contract.id(),
+                contract_id: context.dpns_contract().id(),
             },
             allow_include_locked_and_abstaining_vote_tally: true,
             result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,

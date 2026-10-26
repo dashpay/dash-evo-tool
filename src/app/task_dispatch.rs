@@ -55,6 +55,37 @@ where
     }
 }
 
+/// Requests still awaiting an outcome, with the request id a paid DashPay
+/// action reports under.
+type PendingRequests = Arc<Mutex<Vec<(BackendTaskContext, Option<Identifier>)>>>;
+
+/// Settle every request a stopped worker left without an outcome. One join
+/// covers the whole batch, so each unfinished request hears of the failure
+/// under its own context; the screen waiting on it is released instead of
+/// loading for good.
+async fn report_interrupted(
+    joined: Result<(), tokio::task::JoinError>,
+    pending: PendingRequests,
+    sender: SenderAsync<TaskResult>,
+) {
+    let Err(source) = joined else {
+        return;
+    };
+    let source = BackendTaskJoinError::from(source);
+    let unfinished = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
+    for (context, request_id) in unfinished {
+        let error = request_error(
+            request_id,
+            TaskError::BackendTaskFailed {
+                source: source.clone(),
+            },
+        );
+        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
+            tracing::error!(%error, "Could not deliver interrupted backend request");
+        }
+    }
+}
+
 pub(super) fn spawn(
     app_context: Arc<AppContext>,
     manager: &TaskManager,
@@ -62,7 +93,7 @@ pub(super) fn spawn(
     tasks: Vec<(BackendTask, BackendTaskContext)>,
     mode: BackendTasksExecutionMode,
 ) -> Vec<TaskResult> {
-    let pending = Arc::new(Mutex::new(
+    let pending: PendingRequests = Arc::new(Mutex::new(
         tasks
             .iter()
             .map(|(task, context)| {
@@ -112,25 +143,7 @@ pub(super) fn spawn(
                 }
             });
         },
-        move |joined| async move {
-            if let Err(source) = joined {
-                let source = BackendTaskJoinError::from(source);
-                let unfinished =
-                    std::mem::take(&mut *join_pending.lock().unwrap_or_else(|e| e.into_inner()));
-                for (context, request_id) in unfinished {
-                    let error = request_error(
-                        request_id,
-                        TaskError::BackendTaskFailed {
-                            source: source.clone(),
-                        },
-                    );
-                    if let Err(error) = join_sender.send(TaskResult::Error { context, error }).await
-                    {
-                        tracing::error!(%error, "Could not deliver interrupted backend request");
-                    }
-                }
-            }
-        },
+        move |joined| report_interrupted(joined, join_pending, join_sender),
     );
     if registration.is_err() {
         let unfinished = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
@@ -188,5 +201,56 @@ mod tests {
             results.as_slice(),
             [Ok(0), Err(TaskError::BackendTaskPanicked), Ok(2)]
         ));
+    }
+
+    /// A worker that stops part-way settles each request it had not finished
+    /// under that request's own context, so every screen waiting on one of
+    /// them, such as Home's contact reads, is released.
+    #[tokio::test]
+    async fn stopped_worker_settles_each_unfinished_request() {
+        use crate::model::dashpay::ContactsLoadKind;
+        use dash_sdk::dpp::dashcore::Network;
+        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
+                network: Network::Testnet,
+                identity_id: Identifier::from([0x45; 32]),
+                kind,
+            }),
+        };
+        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
+        let requests = read(u64::MAX, ContactsLoadKind::Requests);
+        for contexts in [
+            vec![contacts.clone(), requests.clone()],
+            vec![contacts.clone(), BackendTaskContext::Other],
+            vec![BackendTaskContext::Other, BackendTaskContext::Other],
+        ] {
+            let pending: PendingRequests = Arc::new(Mutex::new(
+                contexts
+                    .iter()
+                    .cloned()
+                    .map(|context| (context, None))
+                    .collect(),
+            ));
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+            let sender = SenderAsync::new(tx, egui::Context::default());
+            let joined = tokio::task::spawn_blocking(|| panic!("batch child panic")).await;
+
+            report_interrupted(joined, pending.clone(), sender).await;
+
+            let mut reported = Vec::new();
+            while let Ok(result) = rx.try_recv() {
+                let TaskResult::Error {
+                    context,
+                    error: TaskError::BackendTaskFailed { .. },
+                } = result
+                else {
+                    panic!("expected a typed backend task failure, got {result:?}");
+                };
+                reported.push(context);
+            }
+            assert_eq!(reported, contexts);
+            assert!(pending.lock().unwrap().is_empty());
+        }
     }
 }

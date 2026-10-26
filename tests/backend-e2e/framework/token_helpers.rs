@@ -92,6 +92,7 @@ pub fn build_register_token_task(
             groups: BTreeMap::new(),
             document_schemas: None,
             marketplace_rules: owner_only,
+            transferable: true,
         }),
     }))
 }

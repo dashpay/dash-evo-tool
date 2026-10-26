@@ -1,9 +1,10 @@
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::secp256k1::Message;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,8 +29,10 @@ impl AutoAcceptProofData {
         key_data.extend_from_slice(&self.proof_key); // The actual key
 
         // Encode key data in base58 using dashcore's base58 implementation
-        use dash_sdk::dpp::dashcore::base58;
-        let key_data_base58 = base58::encode_slice(&key_data);
+        let key_data_base58 = dash_sdk::dpp::platform_value::string_encoding::encode(
+            &key_data,
+            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+        );
 
         // For QR codes without username (identity-based)
         format!(
@@ -85,8 +88,7 @@ impl AutoAcceptProofData {
             key_data_base58.ok_or("Missing proof key data in QR code".to_string())?;
 
         // Decode the key data from base58
-        use dash_sdk::dpp::dashcore::base58;
-        let key_data = base58::decode(&key_data_base58)
+        let key_data = dash_sdk::dpp::dashcore::base58::decode(&key_data_base58)
             .map_err(|e| format!("Invalid base58 key data: {}", e))?;
 
         // Parse key data format: key_type (1) + timestamp (4) + key_size (1) + key (32-64)
@@ -170,7 +172,7 @@ pub async fn generate_auto_accept_proof(
     .map_err(|e| TaskError::DashPay(DashPayError::from(e)))?;
 
     // Extract the private key bytes (32 bytes)
-    let proof_key = auto_accept_xprv.private_key.secret_bytes();
+    let proof_key = *auto_accept_xprv.private_key.to_bytes();
 
     Ok(AutoAcceptProofData {
         identity_id: identity.identity.id(),
@@ -208,16 +210,13 @@ pub fn create_auto_accept_proof_bytes_with_key(
     hasher.update(&message_data);
     let message_hash = hasher.finalize();
 
-    // Create secp256k1 message and sign
-    let secp = Secp256k1::new();
-    let message = Message::from_digest_slice(&message_hash)
-        .map_err(|e| format!("Failed to create message: {}", e))?;
-
-    let secret_key = SecretKey::from_slice(signing_key_bytes)
+    // Sign the digest. The key erases itself when it drops. The signature is
+    // low-S with a low R ground as Dash Core grinds it; any ECDSA verifier
+    // accepts it.
+    let secret_key = EcdsaSecretKey::from_bytes(signing_key_bytes)
         .map_err(|e| format!("Failed to create secret key: {}", e))?;
 
-    let signature = secp.sign_ecdsa(&message, &secret_key);
-    let sig_bytes = signature.serialize_compact();
+    let sig_bytes = secret_key.sign(&message_hash.into()).to_bytes();
 
     // Build the proof bytes
     let mut proof_bytes = Vec::new();
@@ -274,9 +273,7 @@ pub async fn verify_auto_accept_proof(
     let mut hasher = Sha256::new();
     hasher.update(&message_data);
     let message_hash = hasher.finalize();
-    let secp = Secp256k1::new();
-    let message = Message::from_digest_slice(&message_hash)
-        .map_err(|e| format!("Failed to create message: {}", e))?;
+    let message = Message::from_digest(message_hash.into());
 
     // Derive expected pubkey from our seed and key index (timestamp)
     // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
@@ -299,20 +296,70 @@ pub async fn verify_auto_accept_proof(
         .ok_or("Private key not found")?;
     let xprv = derive_auto_accept_key(&wallet_seed[..], our_identity.network, key_index)
         .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
-    let pubkey = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(
-        &secp,
-        &dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(
-            &xprv.private_key.secret_bytes(),
-        )
-        .map_err(|e| format!("Failed to create secret key: {}", e))?,
-    );
-    let sig = dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature::from_compact(signature_bytes)
+    let pubkey = dash_sdk::dpp::secp256k1::PublicKey::from(xprv.private_key.public_key());
+    let sig = dash_sdk::dpp::secp256k1::ecdsa::Signature::from_compact(signature_bytes)
         .map_err(|e| format!("Invalid signature bytes: {}", e))?;
 
-    match secp.verify_ecdsa(&message, &sig, &pubkey) {
+    match dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, message, &pubkey) {
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
 }
 
 // No local persistence required
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey, ecdsa};
+
+    /// The proof's signature verifies, the way `verify_auto_accept_proof`
+    /// checks it, against the public key of the key it was signed with. The
+    /// signature is low-S with a low R ground as Dash Core grinds it; R lands
+    /// low half the time on its own, so this signs for many accounts.
+    #[test]
+    fn proof_signature_verifies_and_has_low_r() {
+        let key_bytes = [0x2Bu8; 32];
+        let public_key =
+            PublicKey::from_secret_key(&SecretKey::from_secret_bytes(key_bytes).expect("valid"));
+        let sender = Identifier::from([0x01; 32]);
+        let recipient = Identifier::from([0x02; 32]);
+        let expires_at = 1_900_000_000u64;
+
+        for account_reference in 0..32u32 {
+            let proof = create_auto_accept_proof_bytes_with_key(
+                expires_at,
+                &key_bytes,
+                &sender,
+                &recipient,
+                account_reference,
+            )
+            .expect("proof");
+
+            assert_eq!(proof[0], 0, "key type");
+            assert_eq!(
+                &proof[1..5],
+                &(expires_at as u32).to_be_bytes(),
+                "key index"
+            );
+            assert_eq!(proof[5], 64, "signature size");
+            assert_eq!(proof.len(), 6 + 64);
+
+            let mut message_data = Vec::new();
+            message_data.extend_from_slice(&sender.to_buffer());
+            message_data.extend_from_slice(&recipient.to_buffer());
+            message_data.extend_from_slice(&account_reference.to_le_bytes());
+            let digest: [u8; 32] = Sha256::digest(&message_data).into();
+
+            let signature = ecdsa::Signature::from_compact(&proof[6..]).expect("compact");
+            let mut normalized = signature;
+            normalized.normalize_s();
+            assert_eq!(normalized, signature, "high S for {account_reference}");
+            assert!(
+                ecdsa::verify(&signature, Message::from_digest(digest), &public_key).is_ok(),
+                "proof does not verify for {account_reference}"
+            );
+            assert!(proof[6] < 0x80, "R is not low for {account_reference}");
+        }
+    }
+}

@@ -11,6 +11,9 @@ use dash_sdk::dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dash_sdk::dpp::dashcore::Address;
 use std::sync::Arc;
 
+// TODO(shielded-identity-transfers): moving credits between identities and the
+// shielded pool (protocol version 14), and shielding to another wallet, are not
+// offered yet. See https://github.com/dashpay/dash-evo-tool/issues/1105
 /// The shielded-pool operations DET dispatches into the upstream
 /// `platform-wallet` coordinator.
 ///
@@ -339,7 +342,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         assert!(ctx.wallet_backend().is_err(), "precondition");
 

@@ -100,9 +100,10 @@ impl AppContext {
     /// The lookup for every DPNS name whose records point at `identity_id`.
     pub(super) fn owned_dpns_names_query(&self, identity_id: Identifier) -> DocumentQuery {
         DocumentQuery {
+            integer_range_clauses: vec![],
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
+            data_contract: self.dpns_contract(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
                 field: "records.identity".to_string(),
@@ -180,6 +181,8 @@ mod tests {
     /// Mock the owned-names lookup of `owner` to return one name.
     async fn expect_owned_name(sdk: &mut dash_sdk::Sdk, ctx: &AppContext, owner: Identifier) {
         let document = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: owner,
             owner_id: owner,
             creator_id: None,

@@ -22,7 +22,7 @@ pub enum DerivationError {
     #[error("The wallet keys could not be derived. The wallet data may be invalid.")]
     Bip32(#[from] dash_sdk::dpp::key_wallet::bip32::Error),
 
-    /// A secp256k1 operation on derived key material failed.
+    /// An ECDSA operation on derived key material failed.
     #[error("The wallet key material could not be processed. The wallet data may be invalid.")]
-    Secp256k1(#[from] dash_sdk::dpp::dashcore::secp256k1::Error),
+    Ecdsa(#[from] dash_sdk::dpp::dashcore::ecdsa::EcdsaError),
 }

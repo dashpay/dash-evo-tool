@@ -7,6 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::validation::{TextLengthError, validate_char_count};
 
+/// Independent reads used to populate an identity's contact lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContactsLoadKind {
+    Contacts,
+    Requests,
+}
+
 /// Maximum number of characters stored in a DashPay payment memo.
 pub const MAX_PAYMENT_MEMO_CHARS: usize = 100;
 /// Maximum number of characters stored in a contact-request account label.
@@ -436,6 +443,8 @@ mod tests {
             properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(99),
             owner_id: id(1),
             creator_id: None,

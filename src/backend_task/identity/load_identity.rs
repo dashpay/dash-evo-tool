@@ -19,7 +19,6 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::ProTxHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::KeyType;
@@ -268,10 +267,7 @@ impl AppContext {
                 if let Ok(private_key) =
                     PrivateKey::from_byte_array(&voting_private_key_bytes, self.network)
                 {
-                    let voting_address = private_key
-                        .public_key(&Secp256k1::new())
-                        .pubkey_hash()
-                        .to_byte_array();
+                    let voting_address = private_key.public_key().pubkey_hash().to_byte_array();
                     let voter_identifier = voter_identity_id(
                         ProTxHash::from_byte_array(identity_id.to_buffer()),
                         &voting_address,
@@ -334,7 +330,6 @@ impl AppContext {
                 })
                 .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
 
-            let secp = Secp256k1::new();
             #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
                 HashMap<Vec<u8>, [u8; 32]>,
@@ -342,12 +337,12 @@ impl AppContext {
             ) = input_private_keys
                 .into_iter()
                 .map(|private_key| {
-                    let public_key = private_key.public_key(&secp);
+                    let public_key = private_key.public_key();
                     let public_key_bytes = public_key.to_bytes();
                     let pub_key_hash = public_key.pubkey_hash().to_byte_array();
                     (
-                        (public_key_bytes, private_key.inner.secret_bytes()),
-                        (pub_key_hash, private_key.inner.secret_bytes()),
+                        (public_key_bytes, *private_key.inner.to_bytes()),
+                        (pub_key_hash, *private_key.inner.to_bytes()),
                     )
                 })
                 .unzip();
@@ -1042,7 +1037,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
-        let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
+        let address = private_key.public_key().pubkey_hash();
         let other_node = Identifier::from([0x75; 32]);
         let other_voter =
             Identifier::create_voter_identifier(other_node.as_bytes(), address.as_ref());
@@ -1125,7 +1120,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
-        let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
+        let address = private_key.public_key().pubkey_hash();
         let voter = Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
         let mut voter_identity =
             Identity::create_basic_identity(voter, PlatformVersion::latest()).unwrap();

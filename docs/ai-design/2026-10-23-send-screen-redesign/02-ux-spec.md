@@ -245,7 +245,7 @@ A fixed section shows its value as text with the label "Set by Shield". It has n
 | 420–639 pt | Labels above controls. Chip rows wrap (`horizontal_wrapped`). The Summary stays 2 columns |
 | < 420 pt | Chips drop the balance text (shown in their tooltip and the status line). The Summary becomes stacked label/value pairs. Recipient rows stack address over amount. Buttons go full-width, Send on top |
 
-The form scrolls in the existing `ScrollArea`. The status lines wrap and are never truncated. Addresses are middle-ellipsised (`yX12…9fab`) with the full value in a tooltip and copy-on-click.
+The form scrolls in the existing `ScrollArea`. The status lines wrap and are never truncated. In the form, addresses are middle-ellipsised (`yX12…9fab`), with the full value in a tooltip and copy-on-click. The confirmation shows them in full (§10).
 
 ## 14. Accessibility (WCAG 2.2 AA within egui's limits)
 

@@ -193,7 +193,7 @@ impl PlatformWalletPersistence for PersistFaultInjector<'_> {
     ) -> Result<(), PersistenceError> {
         self.faults.record_store();
         self.faults.apply_pending_discard();
-        if self.faults.commit_before_write.fetch_update(
+        if self.faults.commit_before_write.try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |remaining| remaining.checked_sub(1),

@@ -1545,6 +1545,8 @@ pub enum DesiredAppAction {
     None,
     Refresh,
     AddScreenType(Box<ScreenType>),
+    /// Switch to another root screen (e.g. a sibling sub-screen).
+    SetMainScreen(RootScreenType),
     BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
@@ -1558,6 +1560,9 @@ impl DesiredAppAction {
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
+            }
+            DesiredAppAction::SetMainScreen(root_screen_type) => {
+                AppAction::SetMainScreen(*root_screen_type)
             }
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask((**backend_task).clone())

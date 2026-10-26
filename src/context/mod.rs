@@ -1,6 +1,7 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dapi_addresses;
 mod dpns_vote_attention;
 mod dpns_vote_operations;
 mod dpns_vote_preferences;
@@ -48,7 +49,6 @@ use crate::wallet_backend::{
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
-use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
@@ -60,6 +60,7 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
+use dash_sdk::{ProtocolVersionInfo, Sdk};
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
@@ -378,6 +379,13 @@ pub struct AppContext {
     /// double-checked `ArcSwapOption` read still serves the steady state
     /// lock-free; this `Mutex` is held only across the one-time build.
     wallet_backend_build: tokio::sync::Mutex<()>,
+    /// Serialises connection rebuilds ([`Self::reinit_core_client_and_sdk`]):
+    /// two rebuilds retargeting the SDK's shared DAPI address list at once
+    /// could each remove the other's addresses and leave a mixed or empty
+    /// list. The config is read under it, so the last rebuild applies the
+    /// newest addresses. Held across the whole rebuild, which never awaits;
+    /// taken before any other lock of this context, never under one.
+    connection_rebuild: Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -642,6 +650,7 @@ impl AppContext {
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
+            connection_rebuild: Mutex::new(()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
@@ -1112,26 +1121,14 @@ impl AppContext {
         self.system_contracts.try_get(platform_version)
     }
 
-    /// The protocol version the current SDK has seen in a response whose
-    /// proof and quorum signature were verified, or `None` before any such
-    /// response. A rebuilt connection is a new SDK and starts from `None`.
-    /// The number may be one this build does not define; see
-    /// [`Self::proven_platform_version`].
-    pub fn proven_protocol_version(&self) -> Option<u32> {
-        match self.sdk.load().query_settings().verified_protocol_version {
-            0 => None,
-            version => Some(version),
-        }
-    }
-
-    /// The platform version the connected network has proven
-    /// ([`Self::proven_protocol_version`]), when this build defines it.
-    /// `None` before the network proves a version and for a version newer
-    /// than any this build knows, so every capability reading it fails
-    /// closed.
-    pub fn proven_platform_version(&self) -> Option<&'static PlatformVersion> {
-        self.proven_protocol_version()
-            .and_then(PlatformVersion::get_optional)
+    /// The current SDK's view of the network's protocol version
+    /// ([`dash_sdk::Sdk::protocol_version_info`]): the version proven by a
+    /// response whose proof and quorum signature were verified (`None` before
+    /// any; a rebuilt connection is a new SDK and starts from `None`), the
+    /// version transitions are built at, and whether the proven version is
+    /// newer than any this build defines.
+    pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
+        self.sdk.load().protocol_version_info()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1176,8 +1173,18 @@ impl AppContext {
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`. The new SDK starts from
-    /// nothing learned from the old endpoints.
+    /// nothing learned from the old endpoints except the bans of addresses
+    /// that stay.
+    ///
+    /// The new SDK is built over the old SDK's address list, moved in place to
+    /// the configured addresses first. Every clone of the old SDK shares that
+    /// list, the wallet backend's and the upstream wallet components'
+    /// included, so they reach the new addresses too.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
+        let _rebuild = self
+            .connection_rebuild
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
             let cfg_lock = self.config.read()?;
@@ -1208,11 +1215,19 @@ impl AppContext {
             }
         };
 
+        // One address list per context: the wallet backend, and the upstream
+        // wallet components it feeds, hold clones of the SDK they were built
+        // with and are never given the new one. So the list they share with
+        // the current SDK moves to the new addresses in place, keeping the
+        // bans of addresses that stay, and the new SDK is built over it.
+        let shared_addresses = self.sdk.load().address_list().clone();
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+
         let provider = self.spv_context_provider.read()?.clone();
         // Like a cold start: the network minimum, raised by the new
         // connection's first proven response. Nothing learned from the old
-        // endpoints is carried over.
-        let new_sdk = initialize_sdk(address_list, self.network, provider)
+        // endpoints is carried over except the bans of addresses that stay.
+        let new_sdk = initialize_sdk(shared_addresses, self.network, provider)
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
 
         // 4. Swap in the new SDK and client
@@ -1830,6 +1845,68 @@ impl AppContext {
 mod tests {
     use super::*;
 
+    /// Regression: a connection rebuild gave the app a new SDK while the
+    /// wallet backend kept the one it was built with, so wallet operations
+    /// kept sending to the old DAPI addresses. The new SDK is built over the
+    /// old SDK's address list, moved in place, so the new addresses, and any
+    /// ban, reach the wallet backend too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rebuilt_connection_moves_the_wallet_backend_to_the_new_addresses() {
+        use dash_sdk::dapi_client::Address;
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let new_addresses = ["https://10.0.0.1:443", "https://10.0.0.2:443"];
+        ctx.config.write().expect("config").dapi_addresses = Some(new_addresses.join(","));
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let expected: HashSet<String> = new_addresses
+            .iter()
+            .map(|uri| uri.parse::<Address>().expect("address").to_string())
+            .collect();
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), expected);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), expected);
+
+        let banned: Address = new_addresses[0].parse().expect("address");
+        assert!(backend.sdk().address_list().ban(&banned));
+        assert!(
+            ctx.sdk.load().address_list().is_banned(&banned),
+            "the app's SDK and the wallet's SDK share one list"
+        );
+    }
+
+    /// Without a wallet backend, a rebuild still moves the app to the new
+    /// addresses.
+    #[test]
+    fn a_rebuilt_connection_without_a_wallet_backend_uses_the_new_addresses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.9:443".to_string());
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let sdk = ctx.sdk.load();
+        let uris: Vec<String> = sdk
+            .address_list()
+            .ban_info()
+            .into_iter()
+            .map(|info| info.uri)
+            .collect();
+        assert_eq!(uris.len(), 1);
+        assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
+    }
+
     #[test]
     fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
         use crate::wallet_backend::DetScope;
@@ -1934,28 +2011,25 @@ mod tests {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(temp_dir.path());
-        assert_eq!(ctx.proven_protocol_version(), None, "boot");
-        assert!(ctx.proven_platform_version().is_none(), "boot");
+        assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
         prove_protocol_version(&ctx, 13);
-        assert_eq!(ctx.proven_protocol_version(), Some(13));
-        assert_eq!(
-            ctx.proven_platform_version().map(|v| v.protocol_version),
-            Some(13)
-        );
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(13));
+        assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
-        assert_eq!(ctx.proven_protocol_version(), None, "rebuilt connection");
-        assert!(
-            ctx.proven_platform_version().is_none(),
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
             "rebuilt connection"
         );
     }
 
-    /// A proven version this build does not define is reported as proven, but
-    /// no platform version is derived from it: nothing here knows its rules.
+    /// A proven version this build does not define is reported as proven and
+    /// flagged as newer than this build: nothing here knows its rules.
     #[test]
-    fn an_unknown_proven_version_has_no_platform_version() {
+    fn an_unknown_proven_version_is_flagged_as_newer() {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         use dash_sdk::dpp::version::LATEST_VERSION;
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1963,8 +2037,10 @@ mod tests {
 
         prove_protocol_version(&ctx, LATEST_VERSION + 1);
 
-        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION + 1));
-        assert!(ctx.proven_platform_version().is_none());
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(LATEST_VERSION + 1));
+        assert_eq!(info.maximum_supported_version, LATEST_VERSION);
+        assert!(info.newer_protocol_available);
     }
 
     /// Contest windows stay consistent as the SDK ratchets upward from each

@@ -397,6 +397,15 @@ impl Display for QualifiedIdentity {
 /// encrypted form; selecting such a key would fail at signing time.
 struct ObtainableKeys<'a>(&'a QualifiedIdentity);
 
+/// Names only the identity: the view carries no state of its own.
+impl std::fmt::Debug for ObtainableKeys<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ObtainableKeys")
+            .field(&self.0.identity.id())
+            .finish()
+    }
+}
+
 #[async_trait]
 impl Signer<IdentityPublicKey> for ObtainableKeys<'_> {
     async fn sign(

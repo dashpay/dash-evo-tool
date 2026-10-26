@@ -34,7 +34,7 @@ impl AppContext {
         let signature = self
             .with_identity_secret_key(identity_id, target.clone(), key_id, |secret_key| {
                 // Identity keys are compressed by convention.
-                Ok(dash_signed_message(message.as_str(), &secret_key, true))
+                dash_signed_message(message.as_str(), &secret_key, true)
             })
             .await?;
 

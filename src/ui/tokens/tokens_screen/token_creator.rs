@@ -28,13 +28,14 @@ use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{
-    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
+    MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
     TokenNameLanguage, TokensScreen,
 };
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        self.reconcile_selected_preset();
 
         // 1) If we've successfully completed contract creation, show a success UI
         if self.token_creator_status == TokenCreatorStatus::Complete {
@@ -401,11 +402,7 @@ impl TokensScreen {
                                                     Some(variant),
                                                     format!("{text} - {description}"),
                                                 ).clicked() {
-                                                    let preset = TokenConfigurationPreset {
-                                                        features: variant,
-                                                        action_taker: AuthorizedActionTakers::ContractOwner,
-                                                    };
-                                                    self.change_to_preset(preset);
+                                                    self.change_to_preset(creator_preset(variant));
                                                 }
                                             }
                                         });
@@ -720,11 +717,7 @@ impl TokensScreen {
                                                 Some(variant),
                                                 text,
                                             ).clicked() {
-                                                let preset = TokenConfigurationPreset {
-                                                    features: variant,
-                                                    action_taker: AuthorizedActionTakers::ContractOwner, // Or from a field the user selects
-                                                };
-                                                self.change_to_preset(preset);
+                                                self.change_to_preset(creator_preset(variant));
                                             }
                                         }
                                     });
@@ -1313,59 +1306,77 @@ impl TokensScreen {
     }
 
     pub fn change_to_preset(&mut self, preset: TokenConfigurationPreset) {
-        let basic_rules = preset.default_basic_change_control_rules_v0();
-        let advanced_rules = preset.default_advanced_change_control_rules_v0();
-        let emergency_rules = preset.default_emergency_action_change_control_rules_v0();
+        let rules = PresetRules::from_preset(&preset);
 
-        self.manual_minting_rules = basic_rules.clone().into();
-        self.manual_burning_rules = basic_rules.clone().into();
-        self.freeze_rules = advanced_rules.clone().into();
-        self.unfreeze_rules = advanced_rules.clone().into();
-        self.destroy_frozen_funds_rules = advanced_rules.clone().into();
-        self.emergency_action_rules = emergency_rules.clone().into();
-        self.max_supply_change_rules = advanced_rules.clone().into();
-        self.conventions_change_rules = basic_rules.clone().into();
-        self.perpetual_distribution_rules = advanced_rules.clone().into();
-        self.new_tokens_destination_identity_rules = basic_rules.clone().into();
-        self.minting_allow_choosing_destination_rules = basic_rules.clone().into();
-        self.authorized_main_control_group_change =
-            preset.default_main_control_group_can_be_modified();
-
-        // Marketplace settings
-        self.marketplace_rules =
-            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-                // Most restrictive = no one can change marketplace rules
-                ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                    admin_action_takers: AuthorizedActionTakers::NoOne,
-                    changing_authorized_action_takers_to_no_one_allowed: false,
-                    changing_admin_action_takers_to_no_one_allowed: false,
-                    self_changing_admin_action_takers_allowed: false,
-                })
-            } else {
-                advanced_rules.clone().into()
-            };
-
-        // Direct purchase pricing rules follow the same pattern as marketplace rules
-        self.change_direct_purchase_pricing_rules =
-            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-                ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                    admin_action_takers: AuthorizedActionTakers::NoOne,
-                    changing_authorized_action_takers_to_no_one_allowed: false,
-                    changing_admin_action_takers_to_no_one_allowed: false,
-                    self_changing_admin_action_takers_allowed: false,
-                })
-            } else {
-                advanced_rules.clone().into()
-            };
+        self.manual_minting_rules = rules.manual_minting.into();
+        self.manual_burning_rules = rules.manual_burning.into();
+        self.freeze_rules = rules.freeze.into();
+        self.unfreeze_rules = rules.unfreeze.into();
+        self.destroy_frozen_funds_rules = rules.destroy_frozen_funds.into();
+        self.emergency_action_rules = rules.emergency_action.into();
+        self.max_supply_change_rules = rules.max_supply_change.into();
+        self.conventions_change_rules = rules.conventions_change.into();
+        self.perpetual_distribution_rules = rules.perpetual_distribution.into();
+        self.new_tokens_destination_identity_rules = rules.new_tokens_destination_identity.into();
+        self.minting_allow_choosing_destination_rules =
+            rules.minting_allow_choosing_destination.into();
+        self.marketplace_rules = rules.marketplace.into();
+        self.change_direct_purchase_pricing_rules = rules.direct_purchase_pricing.into();
+        self.authorized_main_control_group_change = rules.main_control_group_change;
 
         // Reset optional identity/group inputs related to control group modification
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
 
-        // Set `selected_token_preset` so UI shows current preset (Optional)
         self.selected_token_preset = Some(preset.features);
+    }
+
+    /// Whether every rule a preset controls currently holds exactly that preset's value.
+    fn rules_match_preset(&self, features: TokenConfigurationPresetFeatures) -> bool {
+        let PresetRules {
+            manual_minting,
+            manual_burning,
+            freeze,
+            unfreeze,
+            destroy_frozen_funds,
+            emergency_action,
+            max_supply_change,
+            conventions_change,
+            perpetual_distribution,
+            new_tokens_destination_identity,
+            minting_allow_choosing_destination,
+            marketplace,
+            direct_purchase_pricing,
+            main_control_group_change,
+        } = PresetRules::from_preset(&creator_preset(features));
+
+        self.manual_minting_rules.rules == manual_minting
+            && self.manual_burning_rules.rules == manual_burning
+            && self.freeze_rules.rules == freeze
+            && self.unfreeze_rules.rules == unfreeze
+            && self.destroy_frozen_funds_rules.rules == destroy_frozen_funds
+            && self.emergency_action_rules.rules == emergency_action
+            && self.max_supply_change_rules.rules == max_supply_change
+            && self.conventions_change_rules.rules == conventions_change
+            && self.perpetual_distribution_rules.rules == perpetual_distribution
+            && self.new_tokens_destination_identity_rules.rules == new_tokens_destination_identity
+            && self.minting_allow_choosing_destination_rules.rules
+                == minting_allow_choosing_destination
+            && self.marketplace_rules.rules == marketplace
+            && self.change_direct_purchase_pricing_rules.rules == direct_purchase_pricing
+            && self.authorized_main_control_group_change == main_control_group_change
+    }
+
+    /// Keeps the preset shown on screen truthful: once the rules stop matching it
+    /// (the form was reset, or a rule was edited in Advanced mode) no preset is
+    /// shown — "Select a preset..." in Simple mode, "Custom" in Advanced mode — so
+    /// the creator never displays one preset while building another.
+    pub(super) fn reconcile_selected_preset(&mut self) {
+        if let Some(features) = self.selected_token_preset
+            && !self.rules_match_preset(features)
+        {
+            self.selected_token_preset = None;
+        }
     }
 
     fn close_token_creator_confirmation_popup(&mut self) {
@@ -1624,5 +1635,60 @@ impl TokensScreen {
                 self.reset_token_creator();
             }
         });
+    }
+}
+
+/// The preset the Token Creator offers for `features`: the contract owner is the
+/// one authorized for every action the preset allows.
+fn creator_preset(features: TokenConfigurationPresetFeatures) -> TokenConfigurationPreset {
+    TokenConfigurationPreset {
+        features,
+        action_taker: AuthorizedActionTakers::ContractOwner,
+    }
+}
+
+/// Every rule a Token Creator preset sets, taken from the Platform preset
+/// definition. The single mapping used both to apply a preset and to check that
+/// the rules on screen still match it.
+struct PresetRules {
+    manual_minting: ChangeControlRulesV0,
+    manual_burning: ChangeControlRulesV0,
+    freeze: ChangeControlRulesV0,
+    unfreeze: ChangeControlRulesV0,
+    destroy_frozen_funds: ChangeControlRulesV0,
+    emergency_action: ChangeControlRulesV0,
+    max_supply_change: ChangeControlRulesV0,
+    conventions_change: ChangeControlRulesV0,
+    perpetual_distribution: ChangeControlRulesV0,
+    new_tokens_destination_identity: ChangeControlRulesV0,
+    minting_allow_choosing_destination: ChangeControlRulesV0,
+    marketplace: ChangeControlRulesV0,
+    direct_purchase_pricing: ChangeControlRulesV0,
+    main_control_group_change: AuthorizedActionTakers,
+}
+
+impl PresetRules {
+    fn from_preset(preset: &TokenConfigurationPreset) -> Self {
+        let basic = preset.default_basic_change_control_rules_v0();
+        let advanced = preset.default_advanced_change_control_rules_v0();
+
+        Self {
+            manual_minting: basic.clone(),
+            manual_burning: basic.clone(),
+            freeze: advanced.clone(),
+            unfreeze: advanced.clone(),
+            destroy_frozen_funds: advanced.clone(),
+            emergency_action: preset.default_emergency_action_change_control_rules_v0(),
+            max_supply_change: advanced.clone(),
+            conventions_change: basic.clone(),
+            perpetual_distribution: advanced.clone(),
+            new_tokens_destination_identity: basic.clone(),
+            minting_allow_choosing_destination: basic,
+            // Marketplace and direct-purchase pricing follow the advanced rules; for
+            // "Most Restrictive" those are already "no one, never changeable".
+            marketplace: advanced.clone(),
+            direct_purchase_pricing: advanced,
+            main_control_group_change: preset.default_main_control_group_can_be_modified(),
+        }
     }
 }

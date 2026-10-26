@@ -2392,8 +2392,16 @@ impl TokensScreen {
         self.new_tokens_destination_other_identity = "".to_string();
         self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
+        self.new_tokens_destination_identity_should_default_to_contract_owner = true;
+        self.allow_transfers_to_frozen_identities = true;
+        self.perpetual_dist_interval_unit = IntervalTimeUnit::Day;
 
+        // The rules above are back to their defaults, so no preset applies any more.
+        self.selected_token_preset = None;
+        self.cached_build_args = None;
         self.show_token_creator_confirmation_popup = false;
+        // The dialog caches its summary text; drop it so it is rebuilt from the new form.
+        self.token_creator_confirmation_dialog = None;
 
         // Reset document schemas
         self.document_schemas_input = String::new();
@@ -3750,5 +3758,222 @@ mod tests {
             .parse_token_build_args()
             .expect_err("Should fail if token name is empty");
         assert_eq!(err, "Please enter a token name");
+    }
+
+    /// Fills the minimum inputs `parse_token_build_args` needs, the way a user
+    /// would in Simple mode: an identity, a token name and an initial supply.
+    fn fill_minimal_creator_inputs(screen: &mut TokensScreen, app_context: &Arc<AppContext>) {
+        let identity_id = Identifier::from([7; 32]);
+        let identity = Identity::create_basic_identity(identity_id, app_context.platform_version())
+            .expect("basic identity");
+        screen.selected_identity = Some(QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        });
+        screen.token_names_input = vec![(
+            "PresetCoin".to_string(),
+            "PresetCoins".to_string(),
+            TokenNameLanguage::English,
+            true,
+        )];
+        screen.base_supply_amount = Some(Amount::new(1_000, 8));
+    }
+
+    /// Asserts that every rule in `args` equals what `features` defines, computed
+    /// straight from the Platform preset rather than through the creator.
+    fn assert_build_args_match_preset(
+        args: &TokenBuildArgs,
+        features: TokenConfigurationPresetFeatures,
+    ) {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+
+        let preset = TokenConfigurationPreset {
+            features,
+            action_taker: AuthorizedActionTakers::ContractOwner,
+        };
+        let basic = ChangeControlRules::V0(preset.default_basic_change_control_rules_v0());
+        let advanced = ChangeControlRules::V0(preset.default_advanced_change_control_rules_v0());
+        let emergency =
+            ChangeControlRules::V0(preset.default_emergency_action_change_control_rules_v0());
+
+        let cases = [
+            ("manual minting", &args.manual_minting_rules, &basic),
+            ("manual burning", &args.manual_burning_rules, &basic),
+            ("freeze", &args.freeze_rules, &advanced),
+            ("unfreeze", &args.unfreeze_rules, &advanced),
+            (
+                "destroy frozen funds",
+                &args.destroy_frozen_funds_rules,
+                &advanced,
+            ),
+            ("emergency action", &args.emergency_action_rules, &emergency),
+            (
+                "max supply change",
+                &args.max_supply_change_rules,
+                &advanced,
+            ),
+            ("conventions change", &args.conventions_change_rules, &basic),
+            ("marketplace", &args.marketplace_rules, &advanced),
+            (
+                "direct purchase pricing",
+                &args.change_direct_purchase_pricing_rules,
+                &advanced,
+            ),
+            (
+                "perpetual distribution",
+                args.distribution_rules.perpetual_distribution_rules(),
+                &advanced,
+            ),
+            (
+                "new tokens destination identity",
+                args.distribution_rules
+                    .new_tokens_destination_identity_rules(),
+                &basic,
+            ),
+            (
+                "minting allow choosing destination",
+                args.distribution_rules
+                    .minting_allow_choosing_destination_rules(),
+                &basic,
+            ),
+            (
+                "distribution direct purchase pricing",
+                args.distribution_rules
+                    .change_direct_purchase_pricing_rules(),
+                &advanced,
+            ),
+        ];
+        for (name, actual, expected) in cases {
+            assert_eq!(
+                actual, expected,
+                "{name} rules differ from the {features:?} preset shown on screen"
+            );
+        }
+        assert_eq!(
+            args.main_control_group_change_authorized,
+            preset.default_main_control_group_can_be_modified(),
+            "main control group change rule differs from the {features:?} preset shown on screen"
+        );
+    }
+
+    const ALL_PRESETS: [TokenConfigurationPresetFeatures; 5] = [
+        TokenConfigurationPresetFeatures::MostRestrictive,
+        TokenConfigurationPresetFeatures::WithOnlyEmergencyAction,
+        TokenConfigurationPresetFeatures::WithMintingAndBurningActions,
+        TokenConfigurationPresetFeatures::WithAllAdvancedActions,
+        TokenConfigurationPresetFeatures::WithExtremeActions,
+    ];
+
+    fn owner_preset(
+        features: TokenConfigurationPresetFeatures,
+    ) -> dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset
+    {
+        dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset {
+            features,
+            action_taker: AuthorizedActionTakers::ContractOwner,
+        }
+    }
+
+    /// Regression: choosing "All Allowed", leaving the Token Creator (subscreen tab or
+    /// left panel) and coming back used to keep "All Allowed" on screen while every
+    /// rule had been reset to "no one", so the token was created with no actions
+    /// allowed. Whatever preset is shown must be the one that gets built.
+    #[test]
+    fn token_creator_preset_shown_after_navigation_reset_is_the_one_built() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        // A confirmation left open caches its summary of the old form.
+        screen.token_creator_confirmation_dialog = Some(
+            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
+                "Confirm Token Contract Registration",
+                "stale summary",
+            ),
+        );
+        // Navigating away from the creator (`SetMainScreenThenGoToMainScreen`) runs this.
+        screen.reset_token_creator();
+        assert!(
+            screen.token_creator_confirmation_dialog.is_none(),
+            "a reset form must not reuse the previous confirmation summary"
+        );
+
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        let shown = screen.selected_token_preset;
+        let args = screen.parse_token_build_args().expect("token build args");
+
+        // Either no preset is shown (Simple mode keeps "Create Token" disabled until
+        // the user picks one), or the shown preset is exactly what gets built.
+        if let Some(features) = shown {
+            assert_build_args_match_preset(&args, features);
+        }
+    }
+
+    /// Every preset picked in a freshly opened creator is built exactly as defined.
+    #[test]
+    fn token_creator_builds_exactly_the_selected_preset() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+
+        for features in ALL_PRESETS {
+            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+            fill_minimal_creator_inputs(&mut screen, &app_context);
+            screen.change_to_preset(owner_preset(features));
+
+            assert_eq!(screen.selected_token_preset, Some(features));
+            let args = screen.parse_token_build_args().expect("token build args");
+            assert_build_args_match_preset(&args, features);
+        }
+    }
+
+    /// The preset shown stays only while the rules still match it: an Advanced-mode
+    /// rule edit turns it into "Custom", an untouched preset keeps its label.
+    #[test]
+    fn token_creator_preset_label_follows_the_rules() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+
+        for features in ALL_PRESETS {
+            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+            screen.change_to_preset(owner_preset(features));
+            screen.reconcile_selected_preset();
+            assert_eq!(
+                screen.selected_token_preset,
+                Some(features),
+                "an untouched {features:?} preset must stay selected"
+            );
+        }
+
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.manual_minting_rules.rules.authorized_to_make_change = AuthorizedActionTakers::NoOne;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, None);
+
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, None);
     }
 }

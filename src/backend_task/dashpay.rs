@@ -32,7 +32,7 @@ use errors::DashPayError;
 /// Every `contactRequest` read in this module goes through here, so the
 /// contract handle and the error attribution are stated once.
 fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, DashPayError> {
-    DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest").map_err(|e| {
+    DocumentQuery::new(app_context.dashpay_contract(), "contactRequest").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactRequest",
             source: Box::new(e.into()),
@@ -40,6 +40,9 @@ fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, Dash
     })
 }
 
+// TODO(dashpay-invitations): creating and claiming DashPay invitations, and
+// withdrawing credits to a contact, are not offered yet. See
+// https://github.com/dashpay/dash-evo-tool/issues/1104
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
     LoadProfile {

@@ -140,7 +140,6 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
     use dash_evo_tool::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
@@ -175,15 +174,14 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
         w.seed_hash()
     };
     let epk = {
-        let secp = Secp256k1::new();
         let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).expect("master key");
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },
             ChildNumber::Hardened { index: 1 },
             ChildNumber::Hardened { index: 0 },
         ]);
-        let account = master.derive_priv(&secp, &path).expect("derive account");
-        ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+        let account = master.derive_priv(&path).expect("derive account");
+        ExtendedPubKey::from_priv(&account).encode().to_vec()
     };
     seed_legacy_unprotected_hd_wallet_row(
         &db,

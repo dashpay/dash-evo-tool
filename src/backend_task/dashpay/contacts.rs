@@ -229,7 +229,7 @@ pub async fn load_contacts(
     identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     // Query for contact requests where we are the sender (ownerId)
     let mut outgoing_query = contact_request_query(app_context)?;

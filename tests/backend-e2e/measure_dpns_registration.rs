@@ -167,7 +167,7 @@ async fn register_and_log(
         .expect("the DPNS contract should define preorder");
     let signing_key = identity
         .document_signing_key(
-            SigningScope::ContractWide {
+            SigningScope::Contract {
                 contract_id: dpns.id(),
             },
             &preorder,

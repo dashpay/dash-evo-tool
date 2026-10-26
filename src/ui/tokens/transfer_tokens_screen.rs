@@ -99,7 +99,7 @@ impl TransferTokensScreen {
             id.signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: identity_token_balance.data_contract_id,
                 },
             ))
@@ -523,7 +523,7 @@ impl ScreenLike for TransferTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenTransfer,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.identity_token_balance.data_contract_id,
                         },
                     );

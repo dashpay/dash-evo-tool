@@ -2004,11 +2004,11 @@ fn signing_scope<'a>(
     document_type: Option<&'a DocumentType>,
 ) -> SigningScope<'a> {
     match (contract, document_type) {
-        (Some(contract), Some(document_type)) => SigningScope::Document {
+        (Some(contract), Some(document_type)) => SigningScope::DocumentType {
             contract_id: contract.contract.id(),
             document_type_name: document_type.name().as_str(),
         },
-        (Some(contract), None) => SigningScope::ContractWide {
+        (Some(contract), None) => SigningScope::Contract {
             contract_id: contract.contract.id(),
         },
         (None, _) => SigningScope::NonBatch,

@@ -87,7 +87,7 @@ impl UpdateTokenConfigScreen {
             .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
             ))
@@ -1015,7 +1015,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                         &self.identity,
                         &mut self.signing_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.identity_token_info.data_contract.contract.id(),
                         },
                     );

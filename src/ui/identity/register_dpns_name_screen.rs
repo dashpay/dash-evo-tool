@@ -601,7 +601,7 @@ impl RegisterDpnsNameScreen {
                             .as_ref()
                             .and_then(|doc_type| {
                                 identity.document_signing_key(
-                                    SigningScope::ContractWide {
+                                    SigningScope::Contract {
                                         contract_id: self.app_context.dpns_contract().id(),
                                     },
                                     &doc_type.as_ref(),
@@ -616,7 +616,7 @@ impl RegisterDpnsNameScreen {
                         &mut self.selected_key,
                         TransactionType::DocumentAction,
                         document_type.as_ref(),
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.app_context.dpns_contract().id(),
                         },
                     );

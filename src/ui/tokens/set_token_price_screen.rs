@@ -175,7 +175,7 @@ impl SetTokenPriceScreen {
             .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
             ));
@@ -1012,7 +1012,7 @@ impl ScreenLike for SetTokenPriceScreen {
                         &self.identity_token_info.identity,
                         &mut self.selected_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.identity_token_info.data_contract.contract.id(),
                         },
                     );

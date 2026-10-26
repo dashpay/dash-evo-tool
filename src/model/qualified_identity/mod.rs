@@ -8,9 +8,7 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
-use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, document_security_levels, now_ms, select_identity_signing_key,
-};
+use crate::model::identity_key_usability::{KeyLookupOnly, KeyRequirements, SigningScope};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -27,6 +25,7 @@ use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -1167,14 +1166,16 @@ impl QualifiedIdentity {
 
     /// The key to sign document transitions on `document_type` with, within
     /// `scope`: a live AUTHENTICATION key at a level the type accepts
-    /// ([`document_security_levels`]) whose contract bounds permit `scope`,
+    /// ([`SecurityLevel::accepted_for_requirement`]) whose contract bounds
+    /// permit `scope`,
     /// in upstream platform-wallet's order (see [`Self::signing_key_now`]).
     pub fn document_signing_key(
         &self,
         scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
-        let levels = document_security_levels(*document_type);
+        let levels =
+            SecurityLevel::accepted_for_requirement(document_type.security_level_requirement());
         self.signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
             &levels,
@@ -1184,7 +1185,7 @@ impl QualifiedIdentity {
 
     /// The key to sign an action on document type `document_type_name` of
     /// `contract` with: a live AUTHENTICATION key at a level the type accepts
-    /// ([`document_security_levels`]), of one of `key_types`, whose bounds
+    /// ([`SecurityLevel::accepted_for_requirement`]), of one of `key_types`, whose bounds
     /// permit that document type, in upstream platform-wallet's order (see
     /// [`Self::signing_key_now`]). `None` when the contract has no such type
     /// or no key qualifies.
@@ -1195,12 +1196,13 @@ impl QualifiedIdentity {
         key_types: &[KeyType],
     ) -> Option<&IdentityPublicKey> {
         let document_type = contract.document_type_for_name(document_type_name).ok()?;
-        let levels = document_security_levels(document_type);
+        let levels =
+            SecurityLevel::accepted_for_requirement(document_type.security_level_requirement());
         self.signing_key_now(
             KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &levels,
-                SigningScope::Document {
+                SigningScope::DocumentType {
                     contract_id: contract.id(),
                     document_type_name,
                 },
@@ -1225,16 +1227,10 @@ impl QualifiedIdentity {
     }
 
     /// The ENCRYPTION key whose wallet seeds DashPay auto-accept proofs
-    /// (DIP-15): the first enabled ECDSA_SECP256K1 one, at any security level
-    /// (lowest key id first).
-    // TODO(upstream): call platform-wallet's `select_own_encryption_key` once
-    // it is public; this mirrors its policy until then.
+    /// (DIP-15): upstream platform-wallet's `select_own_encryption_key`, the
+    /// first enabled ECDSA_SECP256K1 one at any security level.
     pub fn auto_accept_proof_key(&self) -> Option<&IdentityPublicKey> {
-        self.identity.public_keys().values().find(|key| {
-            key.purpose() == Purpose::ENCRYPTION
-                && key.key_type() == KeyType::ECDSA_SECP256K1
-                && !key.is_disabled()
-        })
+        platform_wallet::select_own_encryption_key(&self.identity).ok()
     }
 
     /// The key as the identity holds it now for `snapshot`, a copy taken
@@ -1249,28 +1245,25 @@ impl QualifiedIdentity {
             .unwrap_or(snapshot)
     }
 
-    /// The key to sign with for `requirements` now: the automatic choice of
-    /// [`select_identity_signing_key`] among the keys this device holds the
-    /// private half of. Upstream platform-wallet's order: every qualifying
-    /// unlimited key at any accepted level before any limited one, then key
-    /// id order, so a budgeted application key is spent only when no
-    /// unlimited key can sign.
+    /// The key to sign with for `requirements` now: upstream platform-wallet's
+    /// choice ([`KeyRequirements::select`]) among the keys this device holds
+    /// the private half of. Every qualifying unlimited key at any accepted
+    /// level comes before any limited one, then key id order, so a budgeted
+    /// application key is spent only when no unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
-            self.can_sign_with(key)
-        })
+        requirements.select(&self.identity, self)
     }
 
-    /// The key [`select_identity_signing_key`] would pick for `requirements`
-    /// now, whether or not this device holds its private half. For
-    /// informational lookups only (e.g. pointing the user at a key whose
-    /// private half they should load) — never for signing; use
-    /// [`Self::signing_key_now`] for that.
+    /// The key upstream platform-wallet would pick for `requirements` now,
+    /// whether or not this device holds its private half. For informational
+    /// lookups only (e.g. pointing the user at a key whose private half they
+    /// should load) — never for signing; use [`Self::signing_key_now`] for
+    /// that.
     pub fn matching_key_now(
         &self,
         requirements: KeyRequirements<'_>,
     ) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |_| true)
+        requirements.select(&self.identity, &KeyLookupOnly)
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -3659,7 +3652,7 @@ mod protocol_v14_compat_tests {
             auth_key(1, SecurityLevel::MASTER),
             auth_key(2, SecurityLevel::CRITICAL),
         ]);
-        let scope = SigningScope::ContractWide {
+        let scope = SigningScope::Contract {
             contract_id: dpns.id(),
         };
         assert_eq!(
@@ -3708,7 +3701,7 @@ mod protocol_v14_compat_tests {
         let limited = auth_key(3).with_limits(Some(1_000), None);
         let plain = auth_key(4);
         let mut qi = identity_holding(&[expired, elsewhere, limited, plain]);
-        let scope = SigningScope::ContractWide {
+        let scope = SigningScope::Contract {
             contract_id: dpns.id(),
         };
         assert_eq!(

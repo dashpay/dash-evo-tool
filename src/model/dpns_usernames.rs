@@ -117,49 +117,30 @@ impl SeenMarkAttempts {
 }
 
 /// Whether `key` may sign documents that require `required` security: an enabled,
-/// unexpired authentication key at least as strong as required, and never a master
-/// key. The rule for choosing a key automatically.
+/// unexpired authentication key at a level that meets `required` (never a master
+/// key), whose bounds certainly cover the DPNS contract. The rule for choosing a
+/// key automatically, as upstream platform-wallet's selector applies it.
 pub fn key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> bool {
-    chosen_key_can_sign_documents(key, required)
-        && super::identity_key_usability::is_auto_selectable(
-            key,
-            dpns_signing_scope(),
-            super::identity_key_usability::now_ms(),
-        )
+    let levels = dash_sdk::dpp::identity::SecurityLevel::accepted_for_requirement(required);
+    dpns_key_requirements(&levels).auto_selectable(key)
 }
 
-/// Whether the user may sign documents that require `required` security with
-/// `key` they chose: an enabled authentication key at least as strong as
-/// required, never a master key, and not bound to another contract.
-///
-/// Unlike [`key_can_sign_documents`], an expired key is allowed: the key chooser
-/// offers it with a warning, and whether it has expired is Platform's call by
-/// network time, not this device's clock.
-// TODO(upstream): call platform-wallet's public explicit-key validation once it
-// exists (`resolve_authentication_signing_key` is private) and route the
-// registration through `register_name_with_signer`.
-pub fn chosen_key_can_sign_documents(
-    key: &dash_sdk::platform::IdentityPublicKey,
-    required: dash_sdk::dpp::identity::SecurityLevel,
-) -> bool {
-    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-    key.purpose() == Purpose::AUTHENTICATION
-        && !key.is_disabled()
-        && super::identity_key_usability::bounds_permit(key.contract_bounds(), dpns_signing_scope())
-            == Some(true)
-        && key.security_level() != SecurityLevel::MASTER
-        && key.security_level() <= required
-}
-
-/// The scope a username registration signs in: the DPNS contract.
-fn dpns_signing_scope() -> super::identity_key_usability::SigningScope<'static> {
-    super::identity_key_usability::SigningScope::ContractWide {
-        contract_id: dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS.id(),
-    }
+/// The key requirements of a username registration at `levels`: an
+/// AUTHENTICATION key of any type, signing across the DPNS contract (preorder
+/// and domain).
+pub fn dpns_key_requirements(
+    levels: &[dash_sdk::dpp::identity::SecurityLevel],
+) -> super::identity_key_usability::KeyRequirements<'_> {
+    super::identity_key_usability::KeyRequirements::new(
+        dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+        levels,
+        super::identity_key_usability::SigningScope::Contract {
+            contract_id: dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS.id(),
+        },
+    )
 }
 
 /// The weakest key security level that may sign both DPNS documents a registration
@@ -1208,41 +1189,26 @@ mod tests {
         ));
     }
 
-    /// A key the user picked stays usable after it expires: the chooser offers
-    /// it with a warning, and Platform decides by network time. Automatic
-    /// choice still skips it. The other rules hold for both.
+    /// Automatic choice skips an expired key and a key bound to a contract
+    /// group, as upstream platform-wallet's selector does.
     #[test]
-    fn a_chosen_key_is_not_refused_for_its_expiry() {
-        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
-        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        let key = |purpose, level| {
-            let mut key = dash_sdk::platform::IdentityPublicKey::random_key(
-                1,
-                Some(1),
-                dash_sdk::dpp::version::PlatformVersion::latest(),
-            );
-            key.set_purpose(purpose);
-            key.set_security_level(level);
-            key.with_limits(None, Some(1))
-        };
+    fn automatic_choice_skips_expired_and_group_bound_keys() {
+        use crate::context::test_support::{auth_key, bound_to};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
         let high = SecurityLevel::HIGH;
-        let expired = key(Purpose::AUTHENTICATION, high);
-        assert!(!key_can_sign_documents(&expired, high));
-        assert!(chosen_key_can_sign_documents(&expired, high));
-
-        for refused in [
-            key(Purpose::AUTHENTICATION, SecurityLevel::MEDIUM),
-            key(Purpose::AUTHENTICATION, SecurityLevel::MASTER),
-            key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
-        ] {
-            assert!(
-                !chosen_key_can_sign_documents(&refused, high),
-                "{refused:?}"
-            );
-        }
-        let mut disabled = key(Purpose::AUTHENTICATION, high);
-        disabled.set_disabled_at(1);
-        assert!(!chosen_key_can_sign_documents(&disabled, high));
+        assert!(key_can_sign_documents(&auth_key(1, high), high));
+        assert!(!key_can_sign_documents(
+            &auth_key(1, high).with_limits(None, Some(1)),
+            high
+        ));
+        let grouped = bound_to(
+            auth_key(2, high),
+            ContractBounds::ContractGroup {
+                id: dash_sdk::platform::Identifier::new([7; 32]),
+            },
+        );
+        assert!(!key_can_sign_documents(&grouped, high));
     }
 
     /// A testnet identity publishing `published` keys and holding `held` of them.

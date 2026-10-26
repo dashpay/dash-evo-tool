@@ -226,7 +226,7 @@ pub fn get_selected_wallet(
         // Attempt to retrieve the public key from the identity.
         qualified_identity
             .document_signing_key(
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: dpns_contract.id(),
                 },
                 &preorder_document_type,

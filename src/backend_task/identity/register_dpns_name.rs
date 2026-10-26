@@ -1,4 +1,4 @@
-use crate::model::identity_key_usability::SigningScope;
+use crate::model::identity_key_usability::{KeyLookupOnly, SigningScope};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -31,7 +31,7 @@ use dash_sdk::{
 
 use super::refresh_loaded_identities_dpns_names::name_acquired_at;
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
-use crate::model::dpns_usernames::{chosen_key_can_sign_documents, dpns_signing_requirement};
+use crate::model::dpns_usernames::{dpns_key_requirements, dpns_signing_requirement};
 
 fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
     match error {
@@ -125,6 +125,33 @@ where
         })
 }
 
+/// The key the user chose to sign a username registration with, checked by
+/// upstream platform-wallet's `check_signing_key` before any fee is spent.
+/// A refusal Platform would give (an expired key, a key bound elsewhere) gets
+/// its own message; any other mismatch is [`TaskError::NoDocumentSigningKey`].
+fn chosen_registration_key(
+    identity: &QualifiedIdentity,
+    key_id: dash_sdk::dpp::identity::KeyID,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> Result<dash_sdk::platform::IdentityPublicKey, TaskError> {
+    let key = identity
+        .identity
+        .get_public_key_by_id(key_id)
+        .ok_or(TaskError::NoDocumentSigningKey)?;
+    let levels = dash_sdk::dpp::identity::SecurityLevel::accepted_for_requirement(required);
+    // Whether this device holds the key is left to signing, whose refusal
+    // names what to do (unlock or import the wallet holding it).
+    match dpns_key_requirements(&levels).check(key, &KeyLookupOnly) {
+        Ok(()) => Ok(key.clone()),
+        Err(refusal) => match *refusal {
+            refusal @ SdkError::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(_)) => {
+                Err(TaskError::from(refusal))
+            }
+            _ => Err(TaskError::NoDocumentSigningKey),
+        },
+    }
+}
+
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
@@ -188,25 +215,21 @@ impl AppContext {
         let joined_until = availability.join_deadline();
 
         let public_key = match input.signing_key_id {
-            Some(key_id) => qualified_identity
-                .identity
-                .get_public_key_by_id(key_id)
-                // A key the user chose may have expired: the chooser offers
-                // it with a warning, and Platform decides by network time.
-                .filter(|key| {
-                    chosen_key_can_sign_documents(
-                        key,
-                        dpns_signing_requirement(&self.dpns_contract()),
-                    )
-                }),
-            None => qualified_identity.document_signing_key(
-                SigningScope::ContractWide {
-                    contract_id: dpns_contract.id(),
-                },
-                &preorder_document_type,
-            ),
-        }
-        .ok_or(TaskError::NoDocumentSigningKey)?;
+            Some(key_id) => chosen_registration_key(
+                &qualified_identity,
+                key_id,
+                dpns_signing_requirement(&dpns_contract),
+            )?,
+            None => qualified_identity
+                .document_signing_key(
+                    SigningScope::Contract {
+                        contract_id: dpns_contract.id(),
+                    },
+                    &preorder_document_type,
+                )
+                .cloned()
+                .ok_or(TaskError::NoDocumentSigningKey)?,
+        };
 
         let estimated_fee = self.fee_estimator().estimate_username_registration(
             input.name_input.chars().count(),
@@ -421,6 +444,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::model::dpns_usernames::UsernameAvailability;
     use dash_sdk::dpp::block::block_info::BlockInfo;
     use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
@@ -1349,5 +1373,56 @@ mod tests {
             ),
             "expected the re-check to stop the registration, got {result:?}"
         );
+    }
+
+    /// A key the user chose is checked as upstream platform-wallet's
+    /// `check_signing_key` checks it, before any fee is spent: an expired key
+    /// is refused with the expired-key message, a key bound to a contract
+    /// group is left to Platform, and a key at a level, purpose or state the
+    /// registration cannot use is refused.
+    #[test]
+    fn a_chosen_registration_key_is_checked_before_paying() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+            IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use dash_sdk::dpp::identity::{KeyID, Purpose};
+
+        let mut disabled = auth_key(6, SecurityLevel::HIGH);
+        disabled.set_disabled_at(1);
+        let mut transfer = auth_key(7, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::HIGH).with_limits(None, Some(1)),
+            auth_key(2, SecurityLevel::HIGH),
+            bound_to(
+                auth_key(3, SecurityLevel::HIGH),
+                ContractBounds::ContractGroup {
+                    id: Identifier::new([7; 32]),
+                },
+            ),
+            auth_key(4, SecurityLevel::MEDIUM),
+            auth_key(5, SecurityLevel::MASTER),
+            disabled,
+            transfer,
+        ]);
+        let chosen =
+            |key_id: KeyID| chosen_registration_key(&identity, key_id, SecurityLevel::HIGH);
+
+        assert!(matches!(
+            chosen(1),
+            Err(TaskError::SigningKeyExpired { key_id: 1, .. })
+        ));
+        for accepted in [2, 3] {
+            assert_eq!(chosen(accepted).map(|key| key.id()).ok(), Some(accepted));
+        }
+        for refused in [4, 5, 6, 7, 9] {
+            assert!(
+                matches!(chosen(refused), Err(TaskError::NoDocumentSigningKey)),
+                "key {refused}"
+            );
+        }
     }
 }

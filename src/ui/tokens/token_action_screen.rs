@@ -179,7 +179,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
             .signing_key_now(KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: identity_token_info.data_contract.contract.id(),
                 },
             ))
@@ -535,7 +535,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &self.common.identity_token_info.identity,
                     &mut self.common.selected_key,
                     TransactionType::TokenAction,
-                    SigningScope::ContractWide {
+                    SigningScope::Contract {
                         contract_id: self.common.identity_token_info.data_contract.contract.id(),
                     },
                 );

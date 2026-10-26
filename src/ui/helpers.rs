@@ -151,7 +151,7 @@ pub fn compute_allowed_security_levels(
 ) -> Vec<SecurityLevel> {
     match (transaction_type, document_type) {
         (TransactionType::DocumentAction, Some(doc_type)) => {
-            crate::model::identity_key_usability::document_security_levels(doc_type.as_ref())
+            SecurityLevel::accepted_for_requirement(doc_type.security_level_requirement())
         }
         _ => transaction_type.allowed_security_levels(),
     }

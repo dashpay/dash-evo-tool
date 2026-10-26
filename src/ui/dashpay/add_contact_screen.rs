@@ -337,7 +337,7 @@ impl ScreenLike for AddContactScreen {
                             identity,
                             &mut self.selected_key,
                             TransactionType::ContactRequest,
-                            SigningScope::Document {
+                            SigningScope::DocumentType {
                                 contract_id: self.app_context.dashpay_contract().id(),
                                 document_type_name: "contactRequest",
                             },

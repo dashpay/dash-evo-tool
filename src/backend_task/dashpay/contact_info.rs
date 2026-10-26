@@ -490,7 +490,7 @@ async fn lookup_contact_info(
     identity: &QualifiedIdentity,
     contact_user_id: Identifier,
 ) -> Result<ContactInfoLookup, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
         DashPayError::QueryCreation {
@@ -591,7 +591,7 @@ pub async fn create_or_update_contact_info(
     contact_user_id: Identifier,
     update: ContactInfoUpdate,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let identity_id = identity.identity.id();
     let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
     let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
@@ -714,6 +714,11 @@ pub async fn create_or_update_contact_info(
         let mut rng = StdRng::from_entropy();
         let entropy = Bytes32::random_with_rng(&mut rng);
 
+        // Before protocol version 14 this entropy-only id is the document's id,
+        // which Platform recomputes from the entropy. From protocol version 14
+        // (`Document::document_id_depends_on_nonce`) the id also commits to the
+        // identity contract nonce, so this one is only a placeholder that building
+        // the create transition replaces. Read the id from the confirmed document.
         let document_id = Document::generate_document_id_v0(
             &dashpay_contract.id(),
             &identity_id,
@@ -722,6 +727,8 @@ pub async fn create_or_update_contact_info(
         );
 
         let document = DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: document_id,
             owner_id: identity_id,
             creator_id: None,
@@ -843,6 +850,8 @@ mod tests {
             properties.insert("privateData".to_string(), private_data);
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(1),
             owner_id: id(2),
             creator_id: None,
@@ -878,6 +887,8 @@ mod tests {
             ),
         ]);
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(document_id),
             owner_id: id(254),
             creator_id: None,

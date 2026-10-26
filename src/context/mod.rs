@@ -18,7 +18,10 @@ pub(crate) mod lock_probe;
 pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
+#[cfg(test)]
+mod platform_version_guard;
 mod settings_db;
+mod system_contracts;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_balances;
@@ -51,15 +54,14 @@ use connection_status::ConnectionStatus;
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
-use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v13::PLATFORM_V13;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -70,6 +72,7 @@ use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use system_contracts::{SystemContracts, SystemContractsCache};
 
 use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
@@ -162,6 +165,15 @@ impl DpnsVoteDispatchCoordinator {
     }
 }
 
+/// What epoch adoption is keyed on. See [`AppContext::adopt_epoch`].
+#[derive(Debug, Default)]
+struct EpochAdoption {
+    /// The connection generation, bumped by every rebuild.
+    generation: u64,
+    /// The index of the last adopted proved epoch on this generation.
+    epoch_index: Option<EpochIndex>,
+}
+
 #[derive(Debug)]
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
@@ -179,11 +191,9 @@ pub struct AppContext {
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
-    pub(crate) dpns_contract: Arc<DataContract>,
-    pub(crate) withdraws_contract: Arc<DataContract>,
-    pub(crate) dashpay_contract: Arc<DataContract>,
-    pub(crate) token_history_contract: Arc<DataContract>,
-    pub(crate) keyword_search_contract: Arc<DataContract>,
+    /// The system contracts at the SDK's protocol version; read through
+    /// [`Self::dpns_contract`] and its siblings.
+    system_contracts: SystemContractsCache,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
     /// One-shot-per-session latch for the automatic all-wallets identity sweep.
@@ -318,6 +328,9 @@ pub struct AppContext {
     /// Updated alongside fee_multiplier when epoch info is fetched.
     /// 0 means not yet fetched from the network.
     platform_protocol_version: AtomicU32,
+    /// The connection generation and the last adopted proved epoch. See
+    /// [`Self::adopt_epoch`] and [`Self::replace_connection`].
+    epoch_adoption: Mutex<EpochAdoption>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -389,7 +402,9 @@ pub struct AppContext {
     /// two rebuilds retargeting the SDK's shared DAPI address list at once
     /// could each remove the other's addresses and leave a mixed or empty
     /// list. The config is read under it, so the last rebuild applies the
-    /// newest addresses. Held across the whole rebuild, which never awaits;
+    /// newest addresses. The epoch adoption lock covers only the reset and the
+    /// publish ([`Self::replace_connection`]), not the retarget, and is taken
+    /// under this one. Held across the whole rebuild, which never awaits;
     /// taken before any other lock of this context, never under one.
     connection_rebuild: Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
@@ -551,21 +566,13 @@ impl AppContext {
                 return None;
             }
         };
-        let platform_version = sdk.version();
-
-        let load_contract = |contract: SystemDataContract, label: &str| {
-            load_system_data_contract(contract, platform_version)
-                .inspect_err(|e| tracing::error!(?network, "Failed to load {label} contract: {e}"))
-                .ok()
+        let system_contracts = match SystemContracts::load(sdk.version()) {
+            Ok(contracts) => SystemContractsCache::new(contracts),
+            Err(e) => {
+                tracing::error!(?network, "Failed to load the system contracts: {e}");
+                return None;
+            }
         };
-
-        let dpns_contract = load_contract(SystemDataContract::DPNS, "DPNS")?;
-        let withdrawal_contract = load_contract(SystemDataContract::Withdrawals, "Withdrawals")?;
-        let token_history_contract =
-            load_contract(SystemDataContract::TokenHistory, "TokenHistory")?;
-        let keyword_search_contract =
-            load_contract(SystemDataContract::KeywordSearch, "KeywordSearch")?;
-        let dashpay_contract = load_contract(SystemDataContract::Dashpay, "Dashpay")?;
 
         let addr = format!(
             "http://{}:{}",
@@ -608,11 +615,7 @@ impl AppContext {
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
-            dpns_contract: Arc::new(dpns_contract),
-            withdraws_contract: Arc::new(withdrawal_contract),
-            dashpay_contract: Arc::new(dashpay_contract),
-            token_history_contract: Arc::new(token_history_contract),
-            keyword_search_contract: Arc::new(keyword_search_contract),
+            system_contracts,
             core_client: core_client.into(),
             has_wallet: false.into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
@@ -662,6 +665,7 @@ impl AppContext {
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
             platform_protocol_version: AtomicU32::new(0),
+            epoch_adoption: Mutex::new(EpochAdoption::default()),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -881,6 +885,13 @@ impl AppContext {
     pub fn set_platform_protocol_version(&self, version: u32) {
         self.platform_protocol_version
             .store(version, Ordering::Relaxed);
+    }
+
+    /// Raise the cached platform protocol version to `version`; a lower one
+    /// is ignored. What the network proves never moves it back.
+    pub(crate) fn raise_platform_protocol_version(&self, version: u32) {
+        self.platform_protocol_version
+            .fetch_max(version, Ordering::Relaxed);
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -1110,8 +1121,63 @@ impl AppContext {
         }
     }
 
+    /// The platform version the SDK builds, validates and signs with: the
+    /// network's minimum until a proven response ratchets it to the version
+    /// the network runs.
     pub fn platform_version(&self) -> &'static PlatformVersion {
-        default_platform_version(&self.network)
+        self.sdk.load().version()
+    }
+
+    /// The DPNS contract at [`Self::platform_version`].
+    pub(crate) fn dpns_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().dpns)
+    }
+
+    /// The withdrawals contract at [`Self::platform_version`].
+    pub(crate) fn withdraws_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().withdrawals)
+    }
+
+    /// The DashPay contract at [`Self::platform_version`].
+    pub(crate) fn dashpay_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().dashpay)
+    }
+
+    /// The token history contract at [`Self::platform_version`].
+    pub(crate) fn token_history_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().token_history)
+    }
+
+    /// The keyword search contract at [`Self::platform_version`].
+    pub(crate) fn keyword_search_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.system_contracts().keyword_search)
+    }
+
+    fn system_contracts(&self) -> Arc<SystemContracts> {
+        self.system_contracts.get(self.platform_version())
+    }
+
+    /// The system contracts exactly as `platform_version` defines them, for a
+    /// caller that verifies at a version other than [`Self::platform_version`].
+    /// Fails rather than serving another version's contracts.
+    pub(crate) fn system_contracts_at(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Result<Arc<SystemContracts>, Box<dash_sdk::dpp::ProtocolError>> {
+        self.system_contracts.try_get(platform_version)
+    }
+
+    /// The platform version of the connected network, once its protocol
+    /// version has been fetched; [`Self::platform_version`] until then, or for
+    /// a protocol version this build does not know.
+    ///
+    /// For values that differ between protocol versions and must match the
+    /// network, such as fees introduced by a newer protocol.
+    pub fn connected_platform_version(&self) -> &'static PlatformVersion {
+        match self.platform_protocol_version() {
+            0 => self.platform_version(),
+            version => PlatformVersion::get_optional(version).unwrap_or(self.platform_version()),
+        }
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1119,6 +1185,7 @@ impl AppContext {
         // and purpose checks when signing a state transition.
         if self.user_role().at_least(UserRole::Developer) {
             Some(StateTransitionCreationOptions {
+                contest_fund: None,
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
                     allow_signing_with_any_purpose: true,
@@ -1126,8 +1193,7 @@ impl AppContext {
                 batch_feature_version: None,
                 method_feature_version: None,
                 base_feature_version: None,
-                // Action fee agreements are a protocol-14 field; DET builds
-                // protocol-13 transitions only (`DET_PLATFORM_VERSION`).
+                // Signing overrides only; DET agrees to no document action fee.
                 action_fee_agreement: None,
             })
         } else {
@@ -1135,12 +1201,138 @@ impl AppContext {
         }
     }
 
-    /// Rebuild the Dash RPC `core_client` and move the SDK to the DAPI
-    /// addresses of the updated `NetworkConfig` in `self.config`.
+    /// The generation of the connection to the network: bumped each time the
+    /// connection is rebuilt. Production reads take it together with the SDK
+    /// check, via [`Self::connection_snapshot_for`].
+    #[cfg(test)]
+    pub(crate) fn connection_generation(&self) -> u64 {
+        self.epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+    }
+
+    /// Adopt the fee multiplier and protocol version of the proved epoch
+    /// `epoch_index`, read on connection `generation`. Returns whether it was
+    /// adopted.
     ///
-    /// The SDK itself is kept: its address list is changed in place, and
-    /// every clone of the SDK shares that list, the wallet backend's and the
-    /// upstream wallet components' included, so they all follow.
+    /// Dropped when the connection was rebuilt since the read was sent, or
+    /// when an epoch newer than it was adopted already: epoch reads run
+    /// concurrently (platform info, fee refusals) and can finish out of
+    /// order. The protocol version only moves up. The lock covers the checks
+    /// and both stores, so an adoption and a rebuild cannot interleave;
+    /// nothing is awaited under it.
+    pub(crate) fn adopt_epoch(
+        &self,
+        generation: u64,
+        epoch_index: EpochIndex,
+        fee_multiplier_permille: u64,
+        protocol_version: u32,
+    ) -> bool {
+        let mut adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation != adoption.generation
+            || adoption
+                .epoch_index
+                .is_some_and(|adopted| epoch_index < adopted)
+        {
+            return false;
+        }
+        adoption.epoch_index = Some(epoch_index);
+        self.set_fee_multiplier_permille(fee_multiplier_permille);
+        self.raise_platform_protocol_version(protocol_version);
+        true
+    }
+
+    /// Raise the protocol version to `protocol_version`, proved on connection
+    /// `generation`; dropped if the connection was rebuilt since. Returns
+    /// whether it was applied.
+    pub(crate) fn raise_platform_protocol_version_on(
+        &self,
+        generation: u64,
+        protocol_version: u32,
+    ) -> bool {
+        let adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation != adoption.generation {
+            return false;
+        }
+        self.raise_platform_protocol_version(protocol_version);
+        true
+    }
+
+    /// Replace the connection's SDK with `new_sdk` and forget everything
+    /// learned from the old connection: bump the generation, so reads still in
+    /// flight on it are dropped, forget the adopted epoch, and put the
+    /// protocol version back to unknown and the fee multiplier to the default.
+    /// The new endpoints may serve another protocol version or a reset devnet;
+    /// capabilities stay closed until the new connection proves its epoch.
+    ///
+    /// The reset is written before the new SDK is published, under the
+    /// adoption lock: whoever loads the new SDK sees the reset state, and a
+    /// [`Self::connection_snapshot_for`] sees either the old generation and
+    /// SDK or the new ones. A task still holding the old SDK may see the reset
+    /// state, which closes capabilities and uses default fees: fail closed.
+    pub(crate) fn replace_connection(&self, new_sdk: Arc<Sdk>) {
+        self.replace_connection_observed(new_sdk, |_| {});
+    }
+
+    /// [`Self::replace_connection`]; `observe` runs where the two halves meet (test seam).
+    fn replace_connection_observed(&self, new_sdk: Arc<Sdk>, observe: impl Fn(&Self)) {
+        let mut adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        adoption.generation += 1;
+        adoption.epoch_index = None;
+        self.set_fee_multiplier_permille(PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE);
+        self.set_platform_protocol_version(0);
+        observe(self);
+        self.sdk.store(new_sdk);
+    }
+
+    /// The connection generation and whether `sdk` is the current SDK (not
+    /// one a rebuild replaced, nor a copy), read together under the adoption
+    /// lock. An epoch read takes this before it is sent and passes the
+    /// generation to [`Self::adopt_epoch`].
+    pub(crate) fn connection_snapshot_for(&self, sdk: &Sdk) -> (u64, bool) {
+        let adoption = self
+            .epoch_adoption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = std::ptr::eq(sdk, Arc::as_ptr(&self.sdk.load_full()));
+        (adoption.generation, current)
+    }
+
+    /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
+    /// the new connection's epoch, so its protocol version and fee multiplier
+    /// are known again. A failed epoch read only leaves them unknown until
+    /// the next one; it does not fail the rebuild.
+    pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
+        Arc::clone(self).reinit_core_client_and_sdk()?;
+        let sdk = self.sdk.load_full();
+        if let Err(error) = self.refresh_current_epoch(&sdk).await {
+            tracing::warn!(
+                %error,
+                "Could not read the current epoch after rebuilding the connection; \
+                 protocol features stay closed until the next read"
+            );
+        }
+        Ok(())
+    }
+
+    /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
+    /// updated `NetworkConfig` from `self.config`, and forget the state
+    /// learned from the old connection ([`Self::replace_connection`]).
+    ///
+    /// The new SDK is built over the old SDK's address list, moved in place to
+    /// the configured addresses first. Every clone of the old SDK shares that
+    /// list, the wallet backend's and the upstream wallet components'
+    /// included, so they reach the new addresses too.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         let _rebuild = self
             .connection_rebuild
@@ -1158,7 +1350,7 @@ impl AppContext {
         let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
 
-        // 3. Parse DAPI addresses from config
+        // 3. Parse DAPI addresses from config and rebuild the SDK
         let address_list = match &cfg.dapi_addresses {
             Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
                 .map_err(|source| {
@@ -1176,13 +1368,34 @@ impl AppContext {
             }
         };
 
-        // 4. Swap in the new client, then move the SDK's shared address list
-        // to the new addresses, keeping the bans of addresses that stay.
+        // One address list per context: the wallet backend, and the upstream
+        // wallet components it feeds, hold clones of the SDK they were built
+        // with and are never given the new one. So the list they share with
+        // the current SDK moves to the new addresses in place, keeping the
+        // bans of addresses that stay, and the new SDK is built over it.
+        let shared_addresses = self.sdk.load().address_list().clone();
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+
+        let provider = self.spv_context_provider.read()?.clone();
+        // Like a cold start: the network minimum, raised by the new
+        // connection's first proven response. No protocol version or fee
+        // learned from the old endpoints is carried over; only the bans of
+        // addresses that stay are.
+        let new_sdk = initialize_sdk(shared_addresses, self.network, provider)
+            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+
+        // 4. Swap in the new SDK and client
         {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
         }
-        dapi_addresses::retarget_address_list(self.sdk.load().address_list(), address_list);
+        self.replace_connection(Arc::new(new_sdk));
+
+        // Rebind the provider to hold the new AppContext reference.
+        // bind_app_context also registers the provider with the SDK.
+        self.spv_context_provider
+            .read()?
+            .bind_app_context(self.clone());
 
         Ok(())
     }
@@ -1778,32 +1991,8 @@ impl AppContext {
 
     /// Returns the DashPay contract identifier.
     pub fn dashpay_contract_id(&self) -> Identifier {
-        self.dashpay_contract.id()
+        self.dashpay_contract().id()
     }
-}
-
-/// The platform version DET uses locally: validation, building and signing
-/// state transitions, loading system contracts, and the SDK's initial
-/// protocol-version seed.
-///
-/// Protocol 13 is what mainnet and testnet run. The pinned upstream crates
-/// already know protocol 14 (`PlatformVersion::latest()`), but DET must not
-/// build or validate protocol-14 structures until it supports them, so every
-/// local use goes through this constant instead of `latest()`.
-// TODO(pv14): raise to PLATFORM_V14 together with protocol-14 support.
-pub(crate) const DET_PLATFORM_VERSION: &PlatformVersion = &PLATFORM_V13;
-
-/// Returns the default platform version for the given network.
-// Seeded (`with_initial_version`), not pinned, so `Sdk`'s protocol-version
-// ratchet stays active and follows the network upward.
-// TODO(platform#4231): the fix is merged upstream and included in the current
-// platform pin; restore the live `ExtendedEpochInfo::fetch_current` in
-// `PlatformInfoTaskRequestType::CurrentEpochInfo` and reconsider this seeding.
-// TODO(pv14): devnet should seed at PV14 per upstream rs-sdk `min_protocol_version`
-// (devnets run the development line); DET seeds every network at
-// `DET_PLATFORM_VERSION` until it supports protocol 14.
-pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
-    DET_PLATFORM_VERSION
 }
 
 #[cfg(test)]
@@ -1812,9 +2001,9 @@ mod tests {
 
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations
-    /// kept sending to the old DAPI addresses. The SDK is now kept and its
-    /// shared address list moved in place, so the new addresses, and any ban,
-    /// reach the wallet backend too.
+    /// kept sending to the old DAPI addresses. The new SDK is built over the
+    /// old SDK's address list, moved in place, so the new addresses, and any
+    /// ban, reach the wallet backend too.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rebuilt_connection_moves_the_wallet_backend_to_the_new_addresses() {
         use dash_sdk::dapi_client::Address;
@@ -1824,16 +2013,10 @@ mod tests {
         let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let new_addresses = ["https://10.0.0.1:443", "https://10.0.0.2:443"];
         ctx.config.write().expect("config").dapi_addresses = Some(new_addresses.join(","));
-        let sdk_before = ctx.sdk.load_full();
 
         Arc::clone(&ctx)
             .reinit_core_client_and_sdk()
             .expect("rebuild");
-
-        assert!(
-            Arc::ptr_eq(&sdk_before, &ctx.sdk.load_full()),
-            "the SDK is kept; only its addresses change"
-        );
 
         let addresses_of = |list: &AddressList| -> HashSet<String> {
             list.ban_info().into_iter().map(|info| info.uri).collect()
@@ -1911,33 +2094,124 @@ mod tests {
         }
     }
 
+    /// Before any proven response, a context builds, validates and signs at
+    /// the lowest protocol version its network still runs (upstream's
+    /// per-network minimum): 13 on mainnet, not an older table.
     #[test]
-    fn platform_version_is_v13_for_every_network() {
+    fn platform_version_starts_at_the_network_minimum() {
+        use crate::context::test_support::test_app_context_for_network;
+        use dash_sdk::sdk::min_protocol_version;
+
+        assert_eq!(min_protocol_version(Network::Mainnet), 13);
         for network in [
             Network::Mainnet,
             Network::Testnet,
             Network::Devnet,
             Network::Regtest,
         ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ctx = test_app_context_for_network(tmp.path(), network);
             assert_eq!(
-                default_platform_version(&network).protocol_version,
-                PLATFORM_V13.protocol_version
+                ctx.platform_version().protocol_version,
+                min_protocol_version(network),
+                "{network:?}"
             );
         }
     }
 
-    /// Contest timing is read from this pin on the voting side and from the live
-    /// SDK version on the identity side. The SDK only ratchets upward from the
-    /// pin, so both sides describe one contest as long as every newer version
-    /// this build knows keeps the pinned windows.
+    /// Once the SDK runs at protocol 14, the context builds with 14 and serves
+    /// the system contracts protocol 14 defines — not the ones loaded at boot.
     #[test]
-    fn contest_durations_match_the_pin_for_every_version_the_sdk_can_report() {
+    fn platform_version_and_system_contracts_follow_the_sdk() {
+        use crate::context::test_support::test_app_context_for_network;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
+        let v14 = PlatformVersion::get(14).expect("protocol 14");
+        let boot_dashpay = ctx.dashpay_contract();
+        assert_ne!(
+            *boot_dashpay,
+            load_system_data_contract(SystemDataContract::Dashpay, v14).unwrap(),
+            "precondition: protocol 14 redefines the DashPay contract"
+        );
+
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+
+        assert_eq!(ctx.platform_version().protocol_version, 14);
+        for (served, contract) in [
+            (ctx.dashpay_contract(), SystemDataContract::Dashpay),
+            (ctx.withdraws_contract(), SystemDataContract::Withdrawals),
+            (
+                ctx.token_history_contract(),
+                SystemDataContract::TokenHistory,
+            ),
+            (ctx.dpns_contract(), SystemDataContract::DPNS),
+            (
+                ctx.keyword_search_contract(),
+                SystemDataContract::KeywordSearch,
+            ),
+        ] {
+            assert_eq!(*served, load_system_data_contract(contract, v14).unwrap());
+        }
+        assert_eq!(ctx.dashpay_contract().id(), boot_dashpay.id());
+    }
+
+    /// A task that loads the new SDK always sees the reset connection state:
+    /// the new SDK never pairs with the old connection's protocol version or
+    /// fee multiplier.
+    #[test]
+    fn the_new_sdk_is_published_only_after_the_connection_state_is_reset() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
+        let new_sdk = Arc::new(dash_sdk::Sdk::new_mock());
+        let new_sdk_ptr = Arc::as_ptr(&new_sdk);
+
+        ctx.replace_connection_observed(new_sdk, |ctx| {
+            if Arc::as_ptr(&ctx.sdk.load_full()) == new_sdk_ptr {
+                assert_eq!(ctx.platform_protocol_version(), 0, "new SDK, old protocol");
+                assert_eq!(
+                    ctx.fee_multiplier_permille(),
+                    crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+                    "new SDK, old fee multiplier"
+                );
+            }
+        });
+
+        assert_eq!(Arc::as_ptr(&ctx.sdk.load_full()), new_sdk_ptr);
+        assert_eq!(ctx.platform_protocol_version(), 0);
+    }
+
+    /// Until the network's version is fetched, the connected version is the
+    /// one the SDK builds with.
+    #[test]
+    fn connected_platform_version_falls_back_to_the_sdk_version() {
+        use crate::context::test_support::test_app_context_for_network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context_for_network(tmp.path(), Network::Mainnet);
+        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(
+            ctx.connected_platform_version().protocol_version,
+            ctx.sdk.load().protocol_version_number()
+        );
+    }
+
+    /// Contest windows stay consistent as the SDK ratchets upward from each
+    /// network minimum to a newer supported protocol.
+    #[test]
+    fn contest_durations_match_the_network_minimum_for_every_supported_version() {
         use crate::model::dpns::contest_durations;
 
         let newest = PlatformVersion::latest().protocol_version;
         for network in [Network::Mainnet, Network::Testnet] {
-            let pinned = contest_durations(network, default_platform_version(&network));
-            for protocol_version in DET_PLATFORM_VERSION.protocol_version..=newest {
+            let minimum = dash_sdk::sdk::min_protocol_version(network);
+            let pinned = contest_durations(
+                network,
+                PlatformVersion::get(minimum).expect("network minimum"),
+            );
+            for protocol_version in minimum..=newest {
                 let live = PlatformVersion::get(protocol_version).expect("known version");
                 assert_eq!(
                     contest_durations(network, live),

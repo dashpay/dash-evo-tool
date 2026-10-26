@@ -28,7 +28,9 @@ impl AppContext {
         let network = self.network;
         let wif = self
             .with_identity_secret_key(identity_id, target.clone(), key_id, |secret_key| {
-                let private_key = PrivateKey::new(secret_key, network);
+                let private_key =
+                    PrivateKey::from_byte_array(secret_key.as_secret_bytes(), network)
+                        .map_err(|_| TaskError::IdentityKeyMalformed)?;
                 Ok(Secret::new(private_key.to_wif()))
             })
             .await?;

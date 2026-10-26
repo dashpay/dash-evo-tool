@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
@@ -28,6 +29,22 @@ pub enum Capability {
     ShieldedProtocol,
 }
 
+/// The connected network's protocol version, when this build defines it.
+///
+/// `None` before the version is fetched (0) and for a version newer than any
+/// this build knows, which a proved epoch can report after a network upgrade.
+/// Every capability reads the version through this, so both fail closed: this
+/// build cannot tell what an unknown version's rules allow.
+fn known_protocol_version(ctx: &AppContext) -> Option<&'static PlatformVersion> {
+    PlatformVersion::get_optional(ctx.platform_protocol_version())
+}
+
+/// Whether the connected protocol version is one this build defines and is
+/// at least `activation`.
+fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
+    known_protocol_version(ctx).is_some_and(|version| version.protocol_version >= activation)
+}
+
 impl Capability {
     fn is_met(self, ctx: &AppContext) -> bool {
         match self {
@@ -35,10 +52,8 @@ impl Capability {
                 // A closed gate makes the capability unavailable on every network.
                 None => false,
                 // The version fetched from the connected network, not the hardcoded
-                // default — the capability is per-network. The boot value (0, "not
-                // fetched yet") is below any activation version, so a network whose
-                // version is not known yet reads as unmet rather than optimistic.
-                Some(activation) => ctx.platform_protocol_version() >= activation,
+                // default — the capability is per-network.
+                Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
         }
     }
@@ -416,6 +431,33 @@ mod tests {
             assert!(
                 !FeatureGate::ShieldedOperations.is_available(&ctx),
                 "ShieldedOperations must stay closed for {role:?} while the capability is unmet"
+            );
+        }
+    }
+
+    /// A protocol version this build does not define closes every protocol
+    /// capability: nothing here knows that version's rules. The newest
+    /// version this build defines keeps them open.
+    #[test]
+    fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let capabilities = [Capability::ShieldedProtocol];
+
+        ctx.set_platform_protocol_version(LATEST_VERSION);
+        for capability in capabilities {
+            assert!(
+                capability.is_met(&ctx),
+                "{capability:?} on protocol {LATEST_VERSION}"
+            );
+        }
+
+        ctx.set_platform_protocol_version(LATEST_VERSION + 1);
+        for capability in capabilities {
+            assert!(
+                !capability.is_met(&ctx),
+                "{capability:?} on unknown protocol {}",
+                LATEST_VERSION + 1
             );
         }
     }

@@ -447,19 +447,54 @@ mod tests {
     use dash_sdk::dpp::version::LATEST_VERSION;
     use dash_sdk::platform::DataContract;
 
-    /// Mocks the proved DPNS-contract fetch that drives the protocol-version
-    /// ratchet — the only network read the epoch task still performs while
-    /// dashpay/platform#4231 is unresolved. The mock reports `LATEST_VERSION` in
-    /// the response metadata, so a successful fetch ratchets the SDK exactly as a
-    /// live network would; a failed one leaves the version unconfirmed.
+    /// Mocks the DPNS-contract fetch that drives the protocol-version ratchet,
+    /// the epoch task's fallback when the current epoch cannot be read (the
+    /// mock has no epoch response). The fallback takes only a version the SDK
+    /// verified, and a mock expectation is made up, never verified, so the
+    /// SDK first accepts `LATEST_VERSION` from metadata it is told was proved,
+    /// as it does after a live network's quorum-signed response. A successful
+    /// fetch then ratchets the app exactly as a live network would; a failed
+    /// one leaves the version unconfirmed.
     async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let contract = DataContract::clone(&ctx.dpns_contract);
+        let sdk = mock_sdk_with_unproved_dpns_contract(ctx).await;
+        sdk.verify_response_metadata(
+            "get_data_contract",
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                protocol_version: LATEST_VERSION,
+                height: 1,
+                ..Default::default()
+            },
+        )
+        .expect("proved metadata is accepted");
+        sdk
+    }
+
+    /// The DPNS-contract fetch alone: its expectation proves nothing about the
+    /// network's protocol version.
+    async fn mock_sdk_with_unproved_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
+        let contract = DataContract::clone(&ctx.dpns_contract());
         let mut sdk = Sdk::new_mock();
         sdk.mock()
             .expect_fetch(contract.id(), Some(contract))
             .await
             .expect("register DPNS contract response");
         sdk
+    }
+
+    /// A DPNS fetch whose response the SDK never verified does not confirm
+    /// the network's protocol version: features stay gated off.
+    #[tokio::test]
+    async fn an_unproved_response_leaves_the_protocol_version_unconfirmed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(&ctx).await));
+
+        refresh_platform_protocol_version(&ctx)
+            .await
+            .expect("refresh platform metadata");
+
+        assert_eq!(ctx.platform_protocol_version(), 0);
     }
 
     #[tokio::test]

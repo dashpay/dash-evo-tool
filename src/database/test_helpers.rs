@@ -161,13 +161,11 @@ pub fn legacy_master_epk_bytes(
     network: dash_sdk::dpp::dashcore::Network,
 ) -> Vec<u8> {
     use dash_sdk::dpp::dashcore::Network;
-
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
 
     let coin_type = if network == Network::Mainnet { 5 } else { 1 };
-
     let master = ExtendedPrivKey::new_master(network, seed).expect("master key");
     let path = DerivationPath::from(vec![
         ChildNumber::Hardened { index: 44 },

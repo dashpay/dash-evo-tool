@@ -97,3 +97,99 @@ fn token_creator_defaults_to_app_scoped_identity() {
         );
     });
 }
+
+/// Leaving the Token Creator through the left panel (e.g. to top up the identity)
+/// and coming back through the Tokens subscreen tab keeps the whole form,
+/// including the chosen preset.
+#[test]
+fn token_creator_form_survives_left_panel_and_tab_navigation() {
+    use crate::identity_home::{key, seed_identity};
+    use dash_evo_tool::ui::RootScreenType;
+    use dash_sdk::dpp::identity::Purpose;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
+        let app_context = harness.state().current_app_context().clone();
+        let auth_key = key(1, Purpose::AUTHENTICATION);
+        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
+        harness.run_steps(5);
+
+        let type_into = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>,
+                         index: usize,
+                         text: &str| {
+            harness
+                .query_all_by_role(Role::TextInput)
+                .nth(index)
+                .expect("token creator text input")
+                .focus();
+            harness.event(egui::Event::Text(text.to_owned()));
+            harness.run_steps(2);
+        };
+        // Simple mode inputs, top to bottom: name, description, initial supply, max supply.
+        type_into(&mut harness, 0, "PresetCoin");
+        type_into(&mut harness, 1, "Kept across navigation");
+        type_into(&mut harness, 2, "1000");
+
+        harness.get_by_value("Select a preset...").click();
+        harness.run_steps(2);
+        harness
+            .get_by_label("All Allowed - All actions enabled")
+            .click();
+        harness.run_steps(3);
+
+        let assert_form_kept = |harness: &Harness<'static, dash_evo_tool::app::AppState>,
+                                route: &str| {
+            assert!(
+                harness.query_all_by_value("PresetCoin").count() >= 1,
+                "the token name must survive {route}"
+            );
+            assert!(
+                harness.query_all_by_value("Kept across navigation").count() >= 1,
+                "the description must survive {route}"
+            );
+            assert!(
+                harness.query_by_value("All Allowed").is_some(),
+                "the chosen preset must survive {route}"
+            );
+            assert!(
+                !harness
+                    .get_by_role_and_label(Role::Button, "Create Token")
+                    .accesskit_node()
+                    .is_disabled(),
+                "\"Create Token\" must stay enabled after {route}"
+            );
+        };
+        assert_form_kept(&harness, "filling the form");
+
+        // Leave through the left panel (as when topping up the identity) and come back.
+        harness
+            .get_by_role_and_label(Role::Button, "Identities")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Tokens")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Token Creator")
+            .click();
+        harness.run_steps(3);
+        assert_form_kept(&harness, "a left-panel round trip");
+
+        // Leave through the Tokens subscreen tabs and come back.
+        harness
+            .get_by_role_and_label(Role::Button, "My Tokens")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Token Creator")
+            .click();
+        harness.run_steps(3);
+        assert_form_kept(&harness, "a subscreen-tab round trip");
+    });
+}

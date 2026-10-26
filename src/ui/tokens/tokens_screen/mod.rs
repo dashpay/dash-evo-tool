@@ -255,6 +255,18 @@ pub enum ContractSearchStatus {
     Error,
 }
 
+/// What the Token Creator's preset selector shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokenPresetSelection {
+    /// No preset chosen and no rule edited yet: "Select a preset...".
+    #[default]
+    Unselected,
+    /// The rules are exactly this preset's.
+    Preset(TokenConfigurationPresetFeatures),
+    /// The rules were chosen individually, or no longer match the preset picked earlier.
+    Custom,
+}
+
 #[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
     #[default]
@@ -1132,7 +1144,7 @@ pub struct TokensScreen {
     //           Token Creator
     // ====================================
     show_advanced_token_creator: bool,
-    selected_token_preset: Option<TokenConfigurationPresetFeatures>,
+    selected_token_preset: TokenPresetSelection,
     show_pop_up_info: Option<String>,
     identity_id_string: String,
     pub selected_identity: Option<QualifiedIdentity>,
@@ -1492,7 +1504,7 @@ impl TokensScreen {
 
             // Token Creator
             show_advanced_token_creator: false,
-            selected_token_preset: None,
+            selected_token_preset: TokenPresetSelection::Unselected,
             show_pop_up_info: None,
             identity_id_string: String::new(),
             selected_identity: None,
@@ -2291,6 +2303,22 @@ impl TokensScreen {
         Ok(map)
     }
 
+    /// Leaving the screen keeps the Token Creator form (e.g. to top up the
+    /// identity and come back); only a finished creation starts over.
+    fn keep_token_creator_across_navigation(&mut self) {
+        if self.token_creator_status == TokenCreatorStatus::Complete {
+            self.reset_token_creator();
+        }
+    }
+
+    /// Drops the Token Creator form after a network switch: its identity, key and
+    /// wallet belong to the previous network.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.selected_wallet = None;
+        self.wallet_open_attempted = false;
+        self.reset_token_creator();
+    }
+
     fn reset_token_creator(&mut self) {
         self.identity_id_string = String::new();
         self.selected_identity = None;
@@ -2404,7 +2432,7 @@ impl TokensScreen {
         self.perpetual_dist_interval_unit = IntervalTimeUnit::Day;
 
         // The rules above are back to their defaults, so no preset applies any more.
-        self.selected_token_preset = None;
+        self.selected_token_preset = TokenPresetSelection::Unselected;
         self.cached_build_args = None;
         self.show_token_creator_confirmation_popup = false;
         // The dialog caches its summary text; drop it so it is rebuilt from the new form.
@@ -2920,7 +2948,7 @@ impl ScreenLike for TokensScreen {
                 self.selected_contract_id = None;
                 self.selected_contract_description = None;
 
-                self.reset_token_creator();
+                self.keep_token_creator_across_navigation();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token = None;
@@ -4012,42 +4040,97 @@ mod tests {
         }
     }
 
-    /// Regression: choosing "All Allowed", leaving the Token Creator (subscreen tab or
-    /// left panel) and coming back used to keep "All Allowed" on screen while every
-    /// rule had been reset to "no one", so the token was created with no actions
-    /// allowed. Whatever preset is shown must be the one that gets built.
+    /// Regression: choosing "All Allowed", leaving the Token Creator (subscreen tab,
+    /// left panel) and coming back used to reset every rule to "no one" while the
+    /// selector kept showing "All Allowed", so the token was created with no actions
+    /// allowed. Now the whole form survives and the shown preset is what gets built.
     #[test]
-    fn token_creator_preset_shown_after_navigation_reset_is_the_one_built() {
+    fn token_creator_form_and_preset_survive_navigation() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
+        fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.change_to_preset(owner_preset(
             TokenConfigurationPresetFeatures::WithExtremeActions,
         ));
-        // A confirmation left open caches its summary of the old form.
+        screen.token_description_input = "Kept across navigation".to_string();
+        screen.start_as_paused_input = true;
+
+        // What `SetMainScreenThenGoToMainScreen` (tabs, left panel) does on the way out.
+        screen.keep_token_creator_across_navigation();
+        screen.reconcile_selected_preset();
+
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
+        );
+        assert!(screen.can_create_in_simple_mode());
+        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
+        assert_eq!(screen.token_description_input, "Kept across navigation");
+        assert!(screen.start_as_paused_input);
+        assert!(screen.selected_identity.is_some());
+        let args = screen.parse_token_build_args().expect("token build args");
+        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
+    }
+
+    /// After a successful creation, leaving the success screen gives a fresh
+    /// creator: no preset, "Create Token" blocked, no stale confirmation.
+    #[test]
+    fn token_creator_starts_fresh_after_a_successful_creation() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.allow_transfers_to_frozen_identities = false;
         screen.token_creator_confirmation_dialog = Some(
             crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
                 "Confirm Token Contract Registration",
                 "stale summary",
             ),
         );
-        // Navigating away from the creator (`SetMainScreenThenGoToMainScreen`) runs this.
-        screen.reset_token_creator();
-        assert!(
-            screen.token_creator_confirmation_dialog.is_none(),
-            "a reset form must not reuse the previous confirmation summary"
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::RegisteredTokenContract,
         );
 
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        let shown = screen.selected_token_preset;
-        let args = screen.parse_token_build_args().expect("token build args");
+        screen.keep_token_creator_across_navigation();
+        screen.reconcile_selected_preset();
 
-        // Either no preset is shown (Simple mode keeps "Create Token" disabled until
-        // the user picks one), or the shown preset is exactly what gets built.
-        if let Some(features) = shown {
-            assert_build_args_match_preset(&args, features);
-        }
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::NotStarted);
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert!(screen.token_creator_confirmation_dialog.is_none());
+        assert!(screen.allow_transfers_to_frozen_identities);
+
+        // Even with the other required fields filled in again, a preset is needed.
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        assert!(!screen.can_create_in_simple_mode());
+    }
+
+    /// A network switch drops the form: its identity belongs to the old network.
+    #[test]
+    fn token_creator_starts_fresh_after_a_network_switch() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+
+        screen.reset_for_network_switch();
+
+        assert!(screen.selected_identity.is_none());
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert!(!screen.can_create_in_simple_mode());
     }
 
     /// Every preset picked in a freshly opened creator is built exactly as defined.
@@ -4059,46 +4142,91 @@ mod tests {
         for features in ALL_PRESETS {
             let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
             fill_minimal_creator_inputs(&mut screen, &app_context);
+            assert!(
+                !screen.can_create_in_simple_mode(),
+                "a creator with no preset chosen must not allow creating"
+            );
             screen.change_to_preset(owner_preset(features));
+            screen.reconcile_selected_preset();
 
-            assert_eq!(screen.selected_token_preset, Some(features));
+            assert_eq!(
+                screen.selected_token_preset,
+                TokenPresetSelection::Preset(features),
+                "an untouched {features:?} preset must stay selected"
+            );
+            assert!(screen.can_create_in_simple_mode());
             let args = screen.parse_token_build_args().expect("token build args");
             assert_build_args_match_preset(&args, features);
         }
     }
 
-    /// The preset shown stays only while the rules still match it: an Advanced-mode
-    /// rule edit turns it into "Custom", an untouched preset keeps its label.
+    /// Editing one rule after picking a preset shows "Custom", still allows
+    /// creating, and builds the edited rules; picking a preset again re-applies it.
     #[test]
-    fn token_creator_preset_label_follows_the_rules() {
+    fn token_creator_shows_custom_when_rules_leave_the_preset() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
-
-        for features in ALL_PRESETS {
-            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-            screen.change_to_preset(owner_preset(features));
-            screen.reconcile_selected_preset();
-            assert_eq!(
-                screen.selected_token_preset,
-                Some(features),
-                "an untouched {features:?} preset must stay selected"
-            );
-        }
-
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.change_to_preset(owner_preset(
             TokenConfigurationPresetFeatures::WithExtremeActions,
         ));
+
         screen.manual_minting_rules.rules.authorized_to_make_change = AuthorizedActionTakers::NoOne;
         screen.reconcile_selected_preset();
-        assert_eq!(screen.selected_token_preset, None);
 
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+        assert_eq!(screen.preset_selection_label(), "Custom");
+        assert!(screen.can_create_in_simple_mode());
+        let args = screen.parse_token_build_args().expect("token build args");
+        let ChangeControlRules::V0(minting) = &args.manual_minting_rules;
+        assert_eq!(
+            minting.authorized_to_make_change,
+            AuthorizedActionTakers::NoOne,
+            "the edited rule must be built"
+        );
+        let ChangeControlRules::V0(burning) = &args.manual_burning_rules;
+        assert_eq!(
+            burning.authorized_to_make_change,
+            AuthorizedActionTakers::ContractOwner,
+            "untouched rules keep the preset's value"
+        );
+
         screen.change_to_preset(owner_preset(
             TokenConfigurationPresetFeatures::WithExtremeActions,
         ));
+        screen.reconcile_selected_preset();
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
+        );
+        let args = screen.parse_token_build_args().expect("token build args");
+        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
+
+        // The main control group rule counts too.
         screen.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         screen.reconcile_selected_preset();
-        assert_eq!(screen.selected_token_preset, None);
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+    }
+
+    /// Editing a rule before choosing any preset is a "Custom" choice, not "Select a preset...".
+    #[test]
+    fn token_creator_rule_edit_without_preset_is_custom() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+
+        screen.reconcile_selected_preset();
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert_eq!(screen.preset_selection_label(), "Select a preset...");
+
+        screen.freeze_rules.rules.authorized_to_make_change = AuthorizedActionTakers::ContractOwner;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+        assert!(screen.can_create_in_simple_mode());
     }
 }

@@ -749,6 +749,11 @@ impl Screen {
                 screen.invalidate_address_input();
                 return;
             }
+            Screen::TokensScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::DashPayScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.contacts_list.app_context = app_context.clone();
@@ -806,7 +811,6 @@ impl Screen {
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
             GroveSTARKScreen,
-            TokensScreen,
             TransferTokensScreen,
             ClaimTokensScreen,
             ViewTokenClaimsScreen,
@@ -842,6 +846,7 @@ impl Screen {
             SingleKeyWalletSendScreen,
             CreateAssetLockScreen,
             AddressBalanceScreen,
+            TokensScreen,
             PlatformInfoScreen,
             DashPayScreen,
             IdentityHubScreen,

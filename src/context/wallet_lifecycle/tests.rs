@@ -7755,7 +7755,11 @@ async fn identity_creation_below_the_network_fee_is_refused_before_the_wallet_is
     // 0.002 DASH covers the base of the fee, but not the share of any key.
     let info = build_identity_registration_with_seed(&ctx, &wallet, &seed, 0, 200_000)
         .expect("registration info");
-    let key_count = info.keys.to_public_keys_map().expect("public keys").len() as u64;
+    let key_count = info
+        .keys
+        .to_public_keys_map(ctx.platform_version())
+        .expect("public keys")
+        .len() as u64;
 
     let error = ctx
         .run_identity_task(IdentityTask::RegisterIdentity(info), &ctx.sdk(), sender)

@@ -33,20 +33,17 @@ const AUTH_ROW: &str = "Authentication key ›";
 /// A key with a chosen id and purpose. Deterministic data, because the row
 /// label this test navigates by is derived from the purpose.
 fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-    use dash_sdk::dpp::platform_value::BinaryData;
-    IdentityPublicKeyV0 {
-        id,
-        key_type: KeyType::ECDSA_HASH160,
-        purpose,
-        security_level: SecurityLevel::CRITICAL,
-        read_only: false,
-        data: BinaryData::new(vec![id as u8; 20]),
-        disabled_at: None,
-        contract_bounds: None,
-    }
-    .into()
+    use dash_sdk::dpp::version::PlatformVersion;
+    let mut key = IdentityPublicKey::default_versioned(PlatformVersion::latest())
+        .expect("identity key structure");
+    key.set_id(id);
+    key.set_purpose(purpose);
+    key.set_security_level(SecurityLevel::CRITICAL);
+    key.set_key_type(KeyType::ECDSA_HASH160);
+    key.set_data(vec![id as u8; 20].into());
+    key
 }
 
 /// A plain user identity carrying `purposes` as public keys and no private key

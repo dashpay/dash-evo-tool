@@ -25,12 +25,10 @@ use rand::Rng;
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel,
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use dash_sdk::sdk::min_protocol_version;
@@ -150,19 +148,16 @@ fn v093_masternode_blob() -> Vec<u8> {
 }
 
 fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+    crate::context::test_support::identity_public_key(
         id,
         purpose,
-        security_level: SecurityLevel::MASTER,
-        contract_bounds: None,
-        key_type: KeyType::ECDSA_HASH160,
-        read_only: false,
+        SecurityLevel::MASTER,
+        KeyType::ECDSA_HASH160,
         // 20 bytes: the shape of a hash160 key. The import never checks a key
         // against its public data, so a stand-in value is enough here — row A's
         // keys, the ones that matter, use matching public hashes in the v0.9.3 template instead.
-        data: BinaryData::new(vec![id as u8; 20]),
-        disabled_at: None,
-    })
+        vec![id as u8; 20],
+    )
 }
 
 /// Encode a `QualifiedIdentity` the way v0.9.3 did — same manual `Encode`, same

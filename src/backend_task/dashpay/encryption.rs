@@ -296,6 +296,7 @@ pub fn decrypt_account_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use bip39::rand::{self, RngCore};
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 
@@ -319,18 +320,14 @@ mod tests {
     /// Build an `IdentityPublicKey` carrying a raw ECDSA_SECP256K1 public key
     /// in its `data` field — the shape `generate_ecdh_shared_key` expects.
     fn ecdsa_identity_public_key(public_key: &PublicKey) -> IdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::ENCRYPTION,
-            security_level: SecurityLevel::MEDIUM,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: public_key.serialize().to_vec().into(),
-            disabled_at: None,
-        })
+        identity_public_key(
+            0,
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM,
+            KeyType::ECDSA_SECP256K1,
+            public_key.serialize().to_vec(),
+        )
     }
 
     /// DIP-15 CBC known-answer key/IV. The blobs below were generated

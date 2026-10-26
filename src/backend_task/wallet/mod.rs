@@ -374,6 +374,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -386,13 +387,11 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::PublicKey;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::Receiver;
 
@@ -575,20 +574,17 @@ mod tests {
         secret: [u8; 32],
     ) -> Identifier {
         let platform_version = PlatformVersion::latest();
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: key_id,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let public_key = identity_public_key(
+            key_id,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         let mut private_keys = KeyStorage::default();
         private_keys.insert_at(
             (MAIN, key_id),
@@ -716,20 +712,17 @@ mod tests {
     async fn a_dead_placeholder_at_the_named_placement_falls_through_to_a_live_sibling() {
         let fixture = wallet_fixture().await;
         let secret = [0x27; 32];
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 7,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let public_key = identity_public_key(
+            7,
+            Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         // One key, filed `InVault` under both stores — the dual-filed shape a
         // blob written under two conventions carries.
         let mut private_keys = KeyStorage::default();

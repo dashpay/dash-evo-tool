@@ -546,6 +546,7 @@ fn holds_a_voting_key(record: &QualifiedIdentity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::{
         KeyStorage, WalletDerivationPath,
     };
@@ -555,7 +556,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::platform_value::BinaryData;
@@ -608,16 +608,13 @@ mod tests {
             .expect("derive the public half");
         TestKey {
             secret,
-            public: IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            public: identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
+                SecurityLevel::HIGH,
                 key_type,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                BinaryData::new(data),
+            ),
         }
     }
 

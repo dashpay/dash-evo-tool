@@ -780,19 +780,13 @@ mod tests {
     }
 
     fn derived_request(key_type: KeyType) -> QualifiedIdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        QualifiedIdentityPublicKey::from(dash_sdk::platform::IdentityPublicKey::from(
-            IdentityPublicKeyV0 {
-                id: 0,
-                key_type,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: None,
-                data: Vec::new().into(),
-            },
+        QualifiedIdentityPublicKey::from(crate::context::test_support::identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            key_type,
+            Vec::new(),
         ))
     }
 
@@ -1047,7 +1041,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_add_rejects_occupied_indices_including_a_disabled_hash160_alias() {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 
         let stage = stage_derivation(true).await;
@@ -1066,19 +1059,15 @@ mod tests {
             .unwrap()
             .pubkey_hash()
             .into();
-        identity.identity.add_public_key(
-            IdentityPublicKeyV0 {
-                id: 4,
-                key_type: KeyType::ECDSA_HASH160,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: Some(1),
-                data: hash.to_vec().into(),
-            }
-            .into(),
+        let mut disabled = crate::context::test_support::identity_public_key(
+            4,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            hash.to_vec(),
         );
+        disabled.set_disabled_at(1);
+        identity.identity.add_public_key(disabled);
         stage
             .staged
             .ctx

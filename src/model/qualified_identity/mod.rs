@@ -1510,10 +1510,10 @@ impl QualifiedIdentity {
 #[cfg(test)]
 mod key_placement_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::key_placement::{KeyPlacement, PROBE_ORDER};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
@@ -1524,16 +1524,13 @@ mod key_placement_tests {
     /// A key whose `data()` is derived from `material`, so two keys sharing an
     /// id can still be told apart the way the resolver tells them apart.
     fn key(id: KeyID, purpose: Purpose, material: u8) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![material; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![material; 20]),
+        )
     }
 
     /// An identity publishing `published`, holding the private halves in `held`.
@@ -1647,16 +1644,14 @@ mod key_placement_tests {
     #[test]
     fn a_key_disabled_since_it_was_saved_is_still_found() {
         let active = key(1, Purpose::AUTHENTICATION, 0xBB);
-        let disabled = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 1,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xBB; 20]),
-            disabled_at: Some(1),
-        });
+        let mut disabled = identity_public_key(
+            1,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            vec![0xBB; 20],
+        );
+        disabled.set_disabled_at(1);
 
         // Stored while active; the live key is the disabled one.
         let identity = qi(
@@ -1950,8 +1945,8 @@ mod key_placement_tests {
 #[cfg(test)]
 mod key_resolution_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
@@ -1959,16 +1954,13 @@ mod key_resolution_tests {
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
     fn voting_key(id: KeyID) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xAA; 20]),
-            disabled_at: None,
-        })
+            Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xAA; 20]),
+        )
     }
 
     /// A masternode publishing `key` on its MAIN identity, with a private-half
@@ -2017,16 +2009,13 @@ mod key_resolution_tests {
         // Generated with the previous pin's blsful Basic signer using this synthetic key.
         let secret = [0x11; 32];
         let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
-        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 3,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::BLS12_381,
-            read_only: false,
-            data: BinaryData::new(public.to_bytes().to_vec()),
-            disabled_at: None,
-        });
+        let key = identity_public_key(
+            3,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::BLS12_381,
+            BinaryData::new(public.to_bytes().to_vec()),
+        );
         let identity = masternode_with(&key, &[(MAIN, PrivateKeyData::Clear(secret))]);
         let signature = identity
             .sign(&key, b"DET BLS adapter parity")
@@ -2423,8 +2412,8 @@ mod key_resolution_tests {
 #[cfg(test)]
 mod masternode_key_presence_tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -2433,16 +2422,13 @@ mod masternode_key_presence_tests {
     /// purpose is read by [`QualifiedIdentity::masternode_key_presence`]; the
     /// key type and data are inert placeholders.
     fn key_with_purpose(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0u8; 20]),
+        )
     }
 
     /// Assemble a masternode-shaped `QualifiedIdentity`: `voting` attaches a

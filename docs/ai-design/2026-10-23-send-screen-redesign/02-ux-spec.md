@@ -209,6 +209,8 @@ Total    ≈ 0.5001 DASH
 <route note, if any>
 ```
 
+Implemented deviation (A16 in `04-implementation-notes.md`): the confirmation shows the recipient address whole, not shortened, because of the address-poisoning risk.
+
 Buttons: [Cancel] [Send] (Confirm on the right; Escape = Cancel). The action is built at the moment Send is pressed, so the dialog shows exactly what will be sent even if Auto would re-resolve later. Danger mode stays as it is today (irreversible send).
 
 The waiting and success states are unchanged: a spinner with "Sending…", then the success message with [Send another] [Back to wallet].

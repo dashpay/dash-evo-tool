@@ -447,6 +447,37 @@ impl WalletBackend {
     pub async fn sync_shielded_now(&self, force: bool) {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
     }
+
+    /// Run a Platform-address sync pass after an operation spent
+    /// Platform-address credits, waiting up to `wait` for it.
+    ///
+    /// Upstream's shield drops the proven post-state of its input addresses,
+    /// so until a pass runs, both the shield planner and DET's per-address
+    /// balances still hold the spent credits, and a shield Max quoted from
+    /// them is refused. The pass refreshes upstream's balances and fires the
+    /// push that rewrites DET's, which moves the send form's quote key.
+    ///
+    /// Best-effort: the pass runs on its own thread, so an expired wait ends
+    /// only the wait, and nothing here can fail the spend. While another pass
+    /// is in flight this one is skipped; the background loop's next pass
+    /// catches up.
+    pub(crate) async fn sync_platform_addresses_after_spend(&self, wait: std::time::Duration) {
+        let coordinator = self.inner.pwm.platform_address_sync_arc();
+        // rustc cannot prove the pass's future `Send` (rust#100013), so it
+        // runs the way upstream's own loop runs it: `block_on` on a thread
+        // of its own.
+        let runtime = tokio::runtime::Handle::current();
+        let pass = tokio::task::spawn_blocking(move || runtime.block_on(coordinator.sync_now()));
+        match tokio::time::timeout(wait, pass).await {
+            Ok(Ok(_summary)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(?error, "Platform-address sync after a spend did not finish");
+            }
+            Err(_elapsed) => {
+                tracing::debug!("Platform-address sync after a spend is still running");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

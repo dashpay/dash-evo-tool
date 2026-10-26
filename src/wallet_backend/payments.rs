@@ -2404,6 +2404,26 @@ mod tests {
         );
     }
 
+    /// After a spend from Platform addresses a sync pass runs, so the shield
+    /// planner and DET's per-address balances stop showing the spent credits
+    /// and the next shield Max is quoted from the new balances.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spend_from_platform_addresses_runs_an_address_sync_pass() {
+        let (_dir, _ctx, backend, _seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let coordinator = backend.inner.pwm.platform_address_sync_arc();
+        assert_eq!(coordinator.last_sync_unix_seconds(), None, "precondition");
+
+        backend
+            .sync_platform_addresses_after_spend(std::time::Duration::from_secs(60))
+            .await;
+
+        assert!(
+            coordinator.last_sync_unix_seconds().is_some(),
+            "no Platform-address sync pass ran after the spend"
+        );
+    }
+
     /// While an operation that can reserve Core inputs is in flight, its
     /// reservation lands at an instant no quote can see, so neither Max is
     /// quoted: both report the operation instead of a number, without a dry

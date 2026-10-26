@@ -60,6 +60,10 @@ pub enum ShieldedTask {
     },
 }
 
+/// How long a shield from Platform waits for the address sync pass it starts
+/// before reporting success; a slower pass finishes in the background.
+const POST_SHIELD_ADDRESS_SYNC_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
     match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
         None => None,
@@ -156,6 +160,11 @@ impl AppContext {
                     .await?;
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
+                // The spent credits stay in both the planner's and DET's
+                // Platform balances until a pass reads them back.
+                backend
+                    .sync_platform_addresses_after_spend(POST_SHIELD_ADDRESS_SYNC_WAIT)
+                    .await;
 
                 Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
             }

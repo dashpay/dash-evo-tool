@@ -6,7 +6,7 @@ use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::secp256k1::{self, PublicKey};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// A secp256k1 secret key erased when dropped, for the ECDH below.
 ///
@@ -26,16 +26,20 @@ impl EcdhSecretKey {
     fn from_secret_bytes(scalar: &[u8; 32]) -> Result<Self, secp256k1::Error> {
         secp256k1::SecretKey::from_secret_bytes(*scalar).map(Self)
     }
+}
 
-    /// Overwrite the held key. Called on drop.
-    fn erase(&mut self) {
+impl Zeroize for EcdhSecretKey {
+    /// Overwrite the held key through secp256k1's volatile erase.
+    fn zeroize(&mut self) {
         self.0.non_secure_erase();
     }
 }
 
+impl ZeroizeOnDrop for EcdhSecretKey {}
+
 impl Drop for EcdhSecretKey {
     fn drop(&mut self) {
-        self.erase();
+        self.zeroize();
     }
 }
 
@@ -325,16 +329,16 @@ mod tests {
     use bip39::rand::{self, RngCore};
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 
-    /// The erase that `Drop` runs leaves none of the original key bytes
-    /// behind. Checked through `erase` itself, because reading a value after
+    /// The zeroize that `Drop` runs leaves none of the original key bytes
+    /// behind. Checked through `zeroize` itself, because reading a value after
     /// its drop has run is not allowed.
     #[test]
-    fn ecdh_secret_key_erase_overwrites_the_key() {
+    fn ecdh_secret_key_zeroize_overwrites_the_key() {
         let scalar = [0x5a; 32];
         let mut key = EcdhSecretKey::from_secret_bytes(&scalar).expect("valid scalar");
         assert_eq!(key.0.to_secret_bytes(), scalar);
 
-        key.erase();
+        key.zeroize();
 
         assert_ne!(key.0.to_secret_bytes(), scalar);
     }

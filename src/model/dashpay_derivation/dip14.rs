@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::platform::Identifier;
+use zeroize::Zeroizing;
 
 use super::DerivationError;
 
@@ -55,7 +56,7 @@ pub fn ckd_priv_256(
     }
 
     let hmac_result = Hmac::<sha512::Hash>::from_engine(hmac_engine);
-    let hmac_bytes = hmac_result.to_byte_array();
+    let hmac_bytes = Zeroizing::new(hmac_result.to_byte_array());
 
     // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
     let (i_l, i_r) = hmac_bytes.split_at(32);

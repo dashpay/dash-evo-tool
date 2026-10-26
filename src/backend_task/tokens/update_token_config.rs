@@ -1,10 +1,10 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::tokens::transitions::ConfigUpdateResult;
@@ -53,16 +53,21 @@ impl AppContext {
         let result = actor
             .update_config(common, change_item.clone(), public_note, group_info)
             .await?;
-        match result {
-            ConfigUpdateResult::Document(document) => {
-                tracing::info!("TokenConfigUpdate: document id={}", document.id());
-            }
-            ConfigUpdateResult::GroupActionWithDocument(power, document) => {
+        let estimated_fee = self.fee_estimator().estimate_token_transition();
+        let success = BackendTaskSuccessResult::UpdatedTokenConfig(
+            change_item.to_string(),
+            FeeResult::estimated_only(estimated_fee),
+        );
+        match config_update_outcome(&result) {
+            ConfigUpdateOutcome::ProposalRecorded => {
+                // The token keeps its settings until the group closes the action.
                 tracing::info!(
-                    "TokenConfigUpdate: group action power={}, document id={}",
-                    power,
-                    document.id()
+                    "TokenConfigUpdate: group proposal recorded, waiting for other group members"
                 );
+                return Ok(success);
+            }
+            ConfigUpdateOutcome::Applied => {
+                tracing::info!("TokenConfigUpdate: settings change applied");
             }
         }
 
@@ -99,14 +104,27 @@ impl AppContext {
             identity_token_info.token_position,
         )?;
 
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_token_transition();
-        let fee_result = FeeResult::estimated_only(estimated_fee);
-        Ok(BackendTaskSuccessResult::UpdatedTokenConfig(
-            change_item.to_string(),
-            fee_result,
-        ))
+        Ok(success)
+    }
+}
+
+/// What a settings update Platform accepted did to the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigUpdateOutcome {
+    /// The new setting is in effect.
+    Applied,
+    /// A group action that stays open: the setting changes once the group
+    /// closes it, so the token's stored settings are still current.
+    ProposalRecorded,
+}
+
+fn config_update_outcome(result: &ConfigUpdateResult) -> ConfigUpdateOutcome {
+    match result {
+        ConfigUpdateResult::Document(_)
+        | ConfigUpdateResult::GroupActionWithDocument(_, Some(_)) => ConfigUpdateOutcome::Applied,
+        ConfigUpdateResult::GroupActionWithDocument(_, None) => {
+            ConfigUpdateOutcome::ProposalRecorded
+        }
     }
 }
 
@@ -122,6 +140,30 @@ fn validate_supported_change(item: &TokenConfigurationChangeItem) -> Result<(), 
 mod sdk_adapter_tests {
     use super::*;
     use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+
+    /// A group proposal Platform recorded without the history document (the
+    /// action is still open) is a success that leaves the settings unchanged;
+    /// a closed action or a direct update applies them.
+    #[test]
+    fn open_group_config_update_is_a_recorded_proposal() {
+        use dash_sdk::dpp::document::{Document, DocumentV0};
+        let document = || Document::V0(DocumentV0::default());
+        assert_eq!(
+            config_update_outcome(&ConfigUpdateResult::GroupActionWithDocument(1, None)),
+            ConfigUpdateOutcome::ProposalRecorded
+        );
+        assert_eq!(
+            config_update_outcome(&ConfigUpdateResult::GroupActionWithDocument(
+                2,
+                Some(document())
+            )),
+            ConfigUpdateOutcome::Applied
+        );
+        assert_eq!(
+            config_update_outcome(&ConfigUpdateResult::Document(document())),
+            ConfigUpdateOutcome::Applied
+        );
+    }
 
     #[test]
     fn backend_rejects_shielded_configuration_before_submission() {

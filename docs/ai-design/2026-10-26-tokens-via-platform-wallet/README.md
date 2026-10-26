@@ -35,7 +35,7 @@ broadcasts them with the SDK builders.
   front, so the confirmation names the identity that actually receives the
   tokens.
 
-## Upstream gaps (pin 063589bf)
+## Upstream gaps
 
 1. **No wallet-independent token handle.** An identity no wallet holds cannot
    act (an accepted product decision).
@@ -43,10 +43,12 @@ broadcasts them with the SDK builders.
 3. **The mint recipient is normalised silently** (only a `debug!` log upstream).
 4. **No passthrough for `PutSettings` / `user_fee_increase`.** DET does not use
    them for tokens.
-5. **`ConfigUpdateResult::GroupActionWithDocument` requires a document.**
-   A group settings-update proposal whose proof carries no document is reported
-   as a proof error, even if Platform accepted it. DET's earlier raw broadcast
-   accepted any proof result. This needs a backend-e2e group test to confirm.
+5. **`ConfigUpdateResult::GroupActionWithDocument` required a document.**
+   A group settings-update proposal is proved without one while the action stays
+   open, so it was reported as a proof error even though Platform accepted it.
+   Fixed upstream in dashpay/platform#5584 (`Option<Document>`); DET treats
+   `None` as a recorded proposal and keeps the stored settings until the group
+   closes the action.
 
 ## Not changed
 

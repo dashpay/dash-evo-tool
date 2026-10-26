@@ -328,9 +328,6 @@ impl TokenActor<'_> {
             .map_err(|e| TaskError::from_token_operation(TokenOperationKind::Purchase, e))
     }
 
-    // TODO(upstream): the SDK's ConfigUpdateResult requires a document for a
-    // group action, so a group proposal proved without one surfaces as a proof
-    // error although Platform accepted it; needs a backend-e2e group run.
     pub(crate) async fn update_config(
         &self,
         common: TokenActionCommon<'_>,

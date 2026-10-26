@@ -1183,6 +1183,44 @@ mod tests {
         assert!(ordered, "pages follow the order the write lookup uses");
     }
 
+    /// A contactInfo document as Platform returns it: DPP decodes the fixed
+    /// 32-byte `encToUserId` as `Value::Bytes32`, whoever wrote the document.
+    /// Its saved note must still load.
+    #[tokio::test]
+    async fn the_contact_details_load_reads_a_document_as_platform_returns_it() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
+        let platform_version = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::Dashpay, platform_version)
+            .expect("DashPay contract fixture");
+        let document_type = contract
+            .document_type_for_name("contactInfo")
+            .expect("contactInfo type");
+        let contact = id(201);
+        let mut written = saved_note_document(1, contact, "kept");
+        written.set_created_at(Some(1));
+        written.set_updated_at(Some(1));
+        let bytes = written
+            .serialize(document_type, &contract, platform_version)
+            .expect("serialize");
+        let returned =
+            Document::from_bytes(&bytes, document_type, platform_version).expect("deserialize");
+        assert!(
+            matches!(
+                returned.properties().get("encToUserId"),
+                Some(Value::Bytes32(_))
+            ),
+            "precondition: Platform returns encToUserId as Bytes32"
+        );
+
+        let (details, _) = load_details(vec![contact_details_page([returned])]).await;
+
+        assert_eq!(
+            details.get(&contact).and_then(|c| c.note.clone()),
+            Some("kept".to_string())
+        );
+    }
+
     /// With two documents for one contact, the load shows the one a save
     /// rewrites: the first in that order.
     #[tokio::test]

@@ -202,7 +202,7 @@ Rule: validate on blur or on a completed paste, never on every keystroke. Errors
 
 ```
 From     Main · Core
-To       yX12…full address…9fab   (or "bob (full identity ID)" / "your private balance in Main")
+To       <the full recipient address>   (or "bob (<the full identity ID>)" / "your private balance in Main")
 Amount   0.5000 DASH
 Fee      ≈ 0.0001 DASH
 Total    ≈ 0.5001 DASH

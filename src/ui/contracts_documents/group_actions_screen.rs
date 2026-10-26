@@ -15,6 +15,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::TokenActionAvailability;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -80,6 +81,9 @@ pub struct GroupActionsScreen {
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
+    /// Whether `selected_identity` can send token transactions, read once per
+    /// selected identity rather than every frame.
+    selected_identity_token_actions: Option<(Identifier, TokenActionAvailability)>,
 
     // Backend task status
     fetch_group_actions_status: FetchGroupActionsStatus,
@@ -146,6 +150,7 @@ impl GroupActionsScreen {
             identity_token_balances,
             selected_identity: None,
             selected_identity_str: String::new(),
+            selected_identity_token_actions: None,
 
             // Backend task status
             fetch_group_actions_status: FetchGroupActionsStatus::NotStarted,
@@ -154,6 +159,23 @@ impl GroupActionsScreen {
             // App Context
             app_context: app_context.clone(),
         }
+    }
+
+    /// Why the selected identity cannot sign group token actions, if it cannot.
+    fn selected_identity_token_action_block(&mut self) -> Option<&'static str> {
+        let identity_id = self.selected_identity.as_ref()?.identity.id();
+        let availability = match self.selected_identity_token_actions {
+            Some((cached_id, availability)) if cached_id == identity_id => availability,
+            _ => {
+                let availability = crate::ui::tokens::load_token_action_availability(
+                    &self.app_context,
+                    &identity_id,
+                );
+                self.selected_identity_token_actions = Some((identity_id, availability));
+                availability
+            }
+        };
+        availability.unavailable_reason()
     }
 
     fn render_group_actions(
@@ -169,6 +191,12 @@ impl GroupActionsScreen {
         if group_actions.is_empty() {
             ui.label("No active group actions found.");
             return action;
+        }
+
+        let blocked = self.selected_identity_token_action_block();
+        if let Some(reason) = blocked {
+            ui.label(reason);
+            ui.add_space(10.0);
         }
 
         let text_style = TextStyle::Body;
@@ -237,6 +265,11 @@ impl GroupActionsScreen {
                                     if !Self::supports_token_event_action(token_event) {
                                         ui.add_enabled(false, egui::Button::new("Take Action"))
                                             .on_hover_text("The app cannot sign this action yet.");
+                                        return;
+                                    }
+                                    if let Some(reason) = blocked {
+                                        ui.add_enabled(false, egui::Button::new("Take Action"))
+                                            .on_disabled_hover_text(reason);
                                         return;
                                     }
                                     if ComponentStyles::add_primary_button(
@@ -497,6 +530,7 @@ impl GroupActionsScreen {
 impl ScreenLike for GroupActionsScreen {
     fn refresh(&mut self) {
         self.fetch_group_actions_status = FetchGroupActionsStatus::NotStarted;
+        self.selected_identity_token_actions = None;
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
@@ -703,5 +737,25 @@ mod sdk_adapter_tests {
         assert!(GroupActionsScreen::supports_token_event_action(
             &TokenEvent::Mint(12, identity, None)
         ));
+    }
+
+    /// Co-signing a group token action is a token transaction, so an identity
+    /// no wallet in the app holds is told why it cannot take the action.
+    #[test]
+    fn a_wallet_less_identity_cannot_take_group_token_actions() {
+        use crate::context::test_support::{bare_user_identity, test_app_context};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let identity = bare_user_identity(Identifier::from([8; 32]), ctx.network());
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the wallet-less identity");
+        let mut screen = GroupActionsScreen::new(&ctx);
+        assert_eq!(screen.selected_identity_token_action_block(), None);
+
+        screen.selected_identity = Some(identity);
+        assert_eq!(
+            screen.selected_identity_token_action_block(),
+            Some(crate::model::token::TOKEN_ACTIONS_NEED_WALLET)
+        );
     }
 }

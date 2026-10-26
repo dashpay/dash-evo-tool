@@ -1,5 +1,6 @@
 use super::token_action_screen::{
-    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, parse_identity_id, positive_amount,
+    FILL_IN_THE_FORM, StepCounter, TokenAction, TokenActionCtx, TokenActionScreen,
+    parse_identity_id, positive_amount,
 };
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
@@ -186,6 +187,14 @@ impl TokenAction for MintAction {
 
     fn inputs_ready(&self) -> bool {
         self.can_mint && positive_amount(&self.amount).is_some() && self.recipient().is_some()
+    }
+
+    fn disabled_reason(&self) -> &'static str {
+        if self.can_mint {
+            FILL_IN_THE_FORM
+        } else {
+            "This token cannot be minted until its configuration sets a default recipient for new tokens."
+        }
     }
 
     fn build_action(
@@ -415,5 +424,19 @@ mod tests {
         action.recipient_identity_id = Identifier::from([6; 32]).to_string(Encoding::Base58);
 
         assert!(!action.inputs_ready());
+    }
+
+    /// There is no form to fill in on a token that cannot be minted, so the
+    /// disabled button must not tell the user to fill one in.
+    #[test]
+    fn the_disabled_mint_button_explains_why_the_token_cannot_be_minted() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+
+        let unmintable = MintAction::new(&token_info(&context, None, false), &context);
+        assert_ne!(unmintable.disabled_reason(), FILL_IN_THE_FORM);
+
+        let mintable = MintAction::new(&token_info(&context, None, true), &context);
+        assert_eq!(mintable.disabled_reason(), FILL_IN_THE_FORM);
     }
 }

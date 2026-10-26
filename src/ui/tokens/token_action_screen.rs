@@ -98,6 +98,9 @@ impl TokenActionCtx<'_> {
     }
 }
 
+/// Default tooltip on a disabled primary button: the form is incomplete.
+pub const FILL_IN_THE_FORM: &str = "Fill in the form to continue.";
+
 /// The per-action differences between the otherwise-identical token action screens.
 pub trait TokenAction: Sized + 'static {
     /// Verb used in breadcrumbs, headings and buttons (e.g. `"Pause"`).
@@ -129,6 +132,12 @@ pub trait TokenAction: Sized + 'static {
     /// button stays disabled until it does.
     fn inputs_ready(&self) -> bool {
         true
+    }
+
+    /// Tooltip on the disabled primary button: what the user must do before
+    /// the action can run.
+    fn disabled_reason(&self) -> &'static str {
+        FILL_IN_THE_FORM
     }
 
     /// Validates inputs and builds the dispatch action. Returns `None` after showing
@@ -607,7 +616,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 ui.add_space(10.0);
                 let ready = self.action.inputs_ready();
                 if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
-                    .disabled_tooltip("Fill in the form to continue.")
+                    .disabled_tooltip(self.action.disabled_reason())
                     .clicked()
                 {
                     let message = self.action.confirm_message(&self.ctx());

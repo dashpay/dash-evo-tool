@@ -402,9 +402,10 @@ impl GroupActionsScreen {
         action: &mut AppAction,
     ) {
         match token_event {
-            TokenEvent::Mint(amount, _identifier, note_opt) => {
+            TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
+                mint_screen.action.recipient_identity_id = recipient.to_string(Encoding::Base58);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
                     *amount,
@@ -703,5 +704,54 @@ mod sdk_adapter_tests {
         assert!(GroupActionsScreen::supports_token_event_action(
             &TokenEvent::Mint(12, identity, None)
         ));
+    }
+
+    /// Co-signing a group Mint must reuse the proposer's recipient: the field
+    /// is read-only while co-signing, so leaving it empty made the screen
+    /// unable to sign at all.
+    #[test]
+    fn co_signing_a_mint_keeps_the_proposed_recipient() {
+        use crate::ui::tokens::token_action_screen::TokenAction;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let recipient = Identifier::from([9; 32]);
+        let mut screen = GroupActionsScreen::new(&context);
+        let mut action = AppAction::None;
+        screen.handle_token_event_action(
+            &TokenEvent::Mint(12, recipient, None),
+            Identifier::from([8; 32]),
+            info,
+            &mut action,
+        );
+
+        let AppAction::AddScreen(Screen::MintTokensScreen(mint)) = action else {
+            panic!("co-signing a mint must open the Mint screen");
+        };
+        assert_eq!(
+            mint.action.recipient_identity_id,
+            recipient.to_string(Encoding::Base58)
+        );
+        assert!(mint.action.inputs_ready());
     }
 }

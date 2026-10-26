@@ -31,7 +31,7 @@ pub type MintTokensScreen = TokenActionScreen<MintAction>;
 pub struct MintAction {
     pub amount: Option<Amount>,
     amount_input: Option<AmountInput>,
-    recipient_identity_id: String,
+    pub recipient_identity_id: String,
     known_identities: Vec<QualifiedIdentity>,
     /// The token sends new tokens to a configured identity unless told otherwise.
     has_default_destination: bool,

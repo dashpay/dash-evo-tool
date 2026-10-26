@@ -1227,8 +1227,6 @@ impl WalletSendScreen {
         }
     }
 
-    /// Returns the destination address string, from the validated address if
-    /// available or an empty string otherwise.
     /// The recipient on the confirmation. Addresses are shown whole: a
     /// lookalike sharing only the first and last characters must not pass
     /// the last check before an irreversible payment (address poisoning).

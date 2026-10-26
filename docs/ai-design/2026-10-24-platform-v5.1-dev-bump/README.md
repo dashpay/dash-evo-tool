@@ -52,8 +52,6 @@ proof is never checked against the wrong schema.
 
 - `context/platform_version_guard.rs` compares the protocol 13 client tables
   with a recorded snapshot, so an upstream change to them is reviewed.
-- `backend_task/protocol_13_transitions.rs` checks that transitions DET builds
-  on a protocol 13 network use encodings protocol 13 decodes.
 
 ## Mainnet compatibility
 

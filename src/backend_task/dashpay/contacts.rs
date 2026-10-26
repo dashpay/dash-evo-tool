@@ -258,6 +258,19 @@ where
     Ok(contact_info_map)
 }
 
+/// Run `sync` once no contact details save of `owner` is in flight.
+///
+/// A save stores its details on this device before it publishes them; a
+/// sync in between would put the older published details back over them.
+async fn after_details_saves<T>(
+    writes: &crate::context::ContactInfoWrites,
+    owner: Identifier,
+    sync: impl Future<Output = T>,
+) -> T {
+    let _write_guard = writes.acquire(owner).await;
+    sync.await
+}
+
 /// The details the owner's stored `contactInfo` documents hold.
 pub(super) struct StoredContactDetails {
     /// From DIP-0015 documents platform-wallet can read, newest per contact;
@@ -478,7 +491,13 @@ pub async fn load_contacts(
                     "LoadContacts: DashPay sync degraded; using cached state"
                 );
             }
-            if let Err(error) = backend.dashpay_sync_contact_infos(&identity_id).await {
+            let synced = after_details_saves(
+                &app_context.contact_info_writes,
+                identity_id,
+                backend.dashpay_sync_contact_infos(&identity_id),
+            )
+            .await;
+            if let Err(error) = synced {
                 tracing::debug!(
                     ?error,
                     "LoadContacts: contact details sync degraded; using cached state"
@@ -764,6 +783,27 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// The contacts list's details sync waits for a save of the same owner,
+    /// so it cannot put older published details over the save's own.
+    #[tokio::test]
+    async fn the_list_details_sync_waits_for_a_save() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let writes = crate::context::ContactInfoWrites::default();
+        let owner = Identifier::from([1; 32]);
+        let ran = AtomicBool::new(false);
+        let save = writes.acquire(owner).await;
+
+        let mut sync = Box::pin(after_details_saves(&writes, owner, async {
+            ran.store(true, Ordering::SeqCst);
+        }));
+        assert!(futures::poll!(&mut sync).is_pending());
+        assert!(!ran.load(Ordering::SeqCst), "the sync waits for the save");
+
+        drop(save);
+        sync.await;
+        assert!(ran.load(Ordering::SeqCst));
+    }
 
     /// After a restart the offline list shows the details platform-wallet
     /// holds (synced from Platform) rather than this device's older copy, so

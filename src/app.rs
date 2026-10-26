@@ -897,13 +897,16 @@ mod backend_task_join_tests {
     async fn panicking_paid_contact_action_keeps_its_request_correlation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
-        let request_id = Identifier::from([0x44; 32]);
+        let request = crate::model::dashpay::ContactRequestKey {
+            owner: Identifier::from([0x43; 32]),
+            counterparty: Identifier::from([0x44; 32]),
+        };
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
         forward_backend_task_join_error(
             join_handle.await,
             sender,
-            Some(request_id),
+            Some(request),
             BackendTaskContext::Unknown,
         )
         .await;
@@ -916,11 +919,11 @@ mod backend_task_join_tests {
             result,
             TaskResult::Error {
                 error: TaskError::DashPayContactRequestActionFailed {
-                    request_id: correlated,
+                    request: correlated,
                     source,
                 },
                 ..
-            } if correlated == request_id
+            } if correlated == request
                 && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
         ));
     }
@@ -1286,21 +1289,21 @@ impl TaskResult {
 async fn forward_backend_task_join_error(
     join_result: Result<(), tokio::task::JoinError>,
     sender: egui_mpsc::SenderAsync<TaskResult>,
-    request_id: Option<Identifier>,
+    request: Option<crate::model::dashpay::ContactRequestKey>,
     context: BackendTaskContext,
 ) {
     if let Err(source) = join_result {
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
-        let error = match (context.dashpay_contact_info_target(), request_id) {
+        let error = match (context.dashpay_contact_info_target(), request) {
             (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
                 identity_id,
                 contact_id,
                 source: Box::new(stopped),
             },
-            (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
-                request_id,
+            (None, Some(request)) => TaskError::DashPayContactRequestActionFailed {
+                request,
                 source: Box::new(stopped),
             },
             (None, None) => stopped,
@@ -2519,7 +2522,7 @@ impl AppState {
             captured.push((task, context));
             return;
         }
-        let request_id = crate::backend_task::dashpay_request_id(&task);
+        let request = crate::backend_task::dashpay_request(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let watcher_context = context.clone();
@@ -2542,7 +2545,7 @@ impl AppState {
                 forward_backend_task_join_error(
                     join_result,
                     watcher_sender,
-                    request_id,
+                    request,
                     watcher_context,
                 )
             },

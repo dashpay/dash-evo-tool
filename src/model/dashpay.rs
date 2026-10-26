@@ -352,6 +352,18 @@ impl ContactData {
     }
 }
 
+/// One identity's contact request exchange with one counterparty: what an
+/// Accept, Decline or Cancel acts on. Platform holds at most one request each
+/// way between two identities, so the pair names the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContactRequestKey {
+    /// The identity acting on the request.
+    pub owner: Identifier,
+    /// The other identity: the sender of a received request, the recipient
+    /// of a sent one.
+    pub counterparty: Identifier,
+}
+
 /// A contact request still waiting for an answer, identified by the other
 /// identity: DashPay keeps at most one request per direction and pair.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1408,14 +1408,14 @@ pub enum TaskError {
     },
 
     /// A request-card action failed after the UI disabled that request's paid
-    /// action buttons. The request ID lets the screen release only its guard.
+    /// action buttons. The request lets the screen release only its guard.
     ///
-    /// A naming envelope only: it adds the request ID the screen needs and
+    /// A naming envelope only: it adds the request the screen needs and
     /// forwards the underlying failure's own message, which already tells the
     /// user what went wrong and what to do about it.
     #[error("{source}")]
     DashPayContactRequestActionFailed {
-        request_id: Identifier,
+        request: crate::model::dashpay::ContactRequestKey,
         #[source]
         source: Box<TaskError>,
     },
@@ -3297,9 +3297,9 @@ impl TaskError {
                 contact_id,
                 source: Box::new((*source).contextualize_dapi_availability(availability)),
             },
-            Self::DashPayContactRequestActionFailed { request_id, source } => {
+            Self::DashPayContactRequestActionFailed { request, source } => {
                 Self::DashPayContactRequestActionFailed {
-                    request_id,
+                    request,
                     source: Box::new((*source).contextualize_dapi_availability(availability)),
                 }
             }
@@ -4637,11 +4637,14 @@ mod tests {
 
     #[test]
     fn dapi_availability_context_recurses_through_contact_request_envelope() {
-        let request_id = Identifier::from([7; 32]);
+        let request = crate::model::dashpay::ContactRequestKey {
+            owner: Identifier::from([6; 32]),
+            counterparty: Identifier::from([7; 32]),
+        };
         let source = dapi_connection_refused_error();
         let original_source = dapi_sdk_source_ptr(&source);
         let error = TaskError::DashPayContactRequestActionFailed {
-            request_id,
+            request,
             source: Box::new(source),
         };
 
@@ -4650,10 +4653,10 @@ mod tests {
         assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
         match contextualized {
             TaskError::DashPayContactRequestActionFailed {
-                request_id: actual_request_id,
+                request: actual_request,
                 source,
             } => {
-                assert_eq!(actual_request_id, request_id);
+                assert_eq!(actual_request, request);
                 assert!(matches!(
                     source.as_ref(),
                     TaskError::DapiAllAddressesExhausted { .. }
@@ -4797,7 +4800,10 @@ mod tests {
     fn a_request_action_failure_shows_the_underlying_reason_to_the_user() {
         let cause = TaskError::DocumentNotFound;
         let wrapped = TaskError::DashPayContactRequestActionFailed {
-            request_id: Identifier::from([7; 32]),
+            request: crate::model::dashpay::ContactRequestKey {
+                owner: Identifier::from([6; 32]),
+                counterparty: Identifier::from([7; 32]),
+            },
             source: Box::new(TaskError::DocumentNotFound),
         };
 

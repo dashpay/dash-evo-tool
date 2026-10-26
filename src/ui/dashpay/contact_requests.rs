@@ -4,7 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactRequestKey, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -29,7 +29,8 @@ use super::format_relative_time;
 
 #[derive(Debug, Clone)]
 pub struct ContactRequest {
-    pub request_id: Identifier,
+    /// The selected identity and the other identity of the request.
+    pub request: ContactRequestKey,
     pub from_identity: Identifier,
     pub to_identity: Identifier,
     pub from_username: Option<String>,
@@ -54,13 +55,14 @@ pub struct ContactRequests {
     pub app_context: Arc<AppContext>,
     incoming_requests: BTreeMap<Identifier, ContactRequest>,
     outgoing_requests: BTreeMap<Identifier, ContactRequest>,
+    /// Counterparties whose request was accepted or rejected here.
     accepted_requests: HashSet<Identifier>,
     rejected_requests: HashSet<Identifier>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     active_tab: RequestTab,
     loading: bool,
-    request_in_flight: Option<Identifier>,
+    request_in_flight: Option<ContactRequestKey>,
     request_task_in_flight: Option<DashPayTask>,
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
@@ -330,7 +332,7 @@ impl ContactRequests {
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
                 if self
                     .app_context
-                    .contact_request_action_is_in_flight(&request.request_id)
+                    .contact_request_action_is_in_flight(&request.request)
                 {
                     MessageBanner::set_global(
                         ui.ctx(),
@@ -340,11 +342,11 @@ impl ContactRequests {
                 } else if let Some(identity) = &self.selected_identity {
                     // Don't mark as accepted yet - wait for backend confirmation
                     self.loading = true;
-                    self.request_in_flight = Some(request.request_id);
+                    self.request_in_flight = Some(request.request);
 
                     let request_task = DashPayTask::AcceptContactRequest {
                         identity: identity.clone(),
-                        request_id: request.request_id,
+                        counterparty_id: request.request.counterparty,
                     };
                     self.request_task_in_flight = Some(request_task.clone());
                     let task = BackendTask::DashPayTask(Box::new(request_task));
@@ -363,7 +365,7 @@ impl ContactRequests {
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
                 if self
                     .app_context
-                    .contact_request_action_is_in_flight(&request.request_id)
+                    .contact_request_action_is_in_flight(&request.request)
                 {
                     MessageBanner::set_global(
                         ui.ctx(),
@@ -372,13 +374,13 @@ impl ContactRequests {
                     );
                 } else if let Some(identity) = &self.selected_identity {
                     self.loading = true;
-                    self.request_in_flight = Some(request.request_id);
+                    self.request_in_flight = Some(request.request);
 
                     // Don't mark as rejected yet - wait for backend confirmation
 
                     let request_task = DashPayTask::RejectContactRequest {
                         identity: identity.clone(),
-                        request_id: request.request_id,
+                        counterparty_id: request.request.counterparty,
                     };
                     self.request_task_in_flight = Some(request_task.clone());
                     let task = BackendTask::DashPayTask(Box::new(request_task));
@@ -615,14 +617,14 @@ impl ContactRequests {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             // Check if this request has been accepted or rejected
-                                            if self.accepted_requests.contains(&request.request_id) {
+                                            if self.accepted_requests.contains(&request.request.counterparty) {
                                                 // Show checkmark and "Accepted" text
                                                 ui.label(
                                                     RichText::new("Accepted")
                                                         .color(egui::Color32::from_rgb(0, 150, 0))
                                                         .strong()
                                                 );
-                                            } else if self.rejected_requests.contains(&request.request_id) {
+                                            } else if self.rejected_requests.contains(&request.request.counterparty) {
                                                 // Show X and "Rejected" text
                                                 ui.label(
                                                     RichText::new("Rejected")
@@ -891,12 +893,10 @@ impl ScreenLike for ContactRequests {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         let completed_request = match &result {
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)
-            | BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
-                self.request_in_flight.as_ref() == Some(request_id)
-            }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
-                self.request_in_flight.as_ref() == Some(request_id)
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request)
+            | BackendTaskSuccessResult::DashPayContactRequestRejected(request)
+            | BackendTaskSuccessResult::DashPayContactAlreadyEstablished(request) => {
+                self.request_in_flight.as_ref() == Some(request)
             }
             _ => false,
         };
@@ -947,7 +947,7 @@ impl ScreenLike for ContactRequests {
                 self.has_fetched_requests = true;
 
                 // Process incoming requests
-                for (id, doc) in incoming.iter() {
+                for (_, doc) in incoming.iter() {
                     let properties = doc.properties();
                     let from_identity = doc.owner_id();
 
@@ -960,7 +960,10 @@ impl ScreenLike for ContactRequests {
                     let timestamp = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
 
                     let request = ContactRequest {
-                        request_id: *id,
+                        request: ContactRequestKey {
+                            owner: current_identity_id,
+                            counterparty: from_identity,
+                        },
                         from_identity,
                         to_identity: current_identity_id,
                         from_username: None,
@@ -973,7 +976,8 @@ impl ScreenLike for ContactRequests {
                         auto_accept_proof: None,
                     };
 
-                    self.incoming_requests.insert(*id, request.clone());
+                    self.incoming_requests
+                        .insert(from_identity, request.clone());
                     // Contact-request mirror dropped — upstream
                     // `incoming_contact_requests` already records this
                     // request, and `DashpayView::contact_requests`
@@ -982,9 +986,11 @@ impl ScreenLike for ContactRequests {
                 }
 
                 // Process outgoing requests
-                for (id, doc) in outgoing.iter() {
+                for (_, doc) in outgoing.iter() {
                     let properties = doc.properties();
-                    let to_identity = contact_request_recipient(doc).unwrap_or_default();
+                    let Some(to_identity) = contact_request_recipient(doc) else {
+                        continue;
+                    };
 
                     let account_reference = properties
                         .get("accountReference")
@@ -995,7 +1001,10 @@ impl ScreenLike for ContactRequests {
                     let timestamp = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
 
                     let request = ContactRequest {
-                        request_id: *id,
+                        request: ContactRequestKey {
+                            owner: current_identity_id,
+                            counterparty: to_identity,
+                        },
                         from_identity: current_identity_id,
                         to_identity,
                         from_username: None,
@@ -1008,7 +1017,7 @@ impl ScreenLike for ContactRequests {
                         auto_accept_proof: None,
                     };
 
-                    self.outgoing_requests.insert(*id, request.clone());
+                    self.outgoing_requests.insert(to_identity, request.clone());
                     // Contact-request mirror dropped — upstream
                     // `sent_contact_requests` already records this
                     // request, and `DashpayView::contact_requests`
@@ -1028,25 +1037,25 @@ impl ScreenLike for ContactRequests {
             BackendTaskSuccessResult::DashPayContactProfile(None) => {
                 // No profile found for this identity — nothing to update
             }
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request) => {
                 // Mark as accepted only after successful backend operation
-                self.accepted_requests.insert(request_id);
+                self.accepted_requests.insert(request.counterparty);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Contact request accepted successfully",
                     MessageType::Success,
                 );
             }
-            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request) => {
                 // Mark as rejected only after successful backend operation
-                self.rejected_requests.insert(request_id);
+                self.rejected_requests.insert(request.counterparty);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Contact request rejected",
                     MessageType::Success,
                 );
             }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { .. } => {
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
                 // Message display is handled globally by AppState
             }
             _ => {
@@ -1056,9 +1065,9 @@ impl ScreenLike for ContactRequests {
     }
 }
 
-fn request_error_id(error: &TaskError) -> Option<&Identifier> {
+fn request_error_id(error: &TaskError) -> Option<&ContactRequestKey> {
     match error {
-        TaskError::DashPayContactRequestActionFailed { request_id, .. } => Some(request_id),
+        TaskError::DashPayContactRequestActionFailed { request, .. } => Some(request),
         _ => None,
     }
 }
@@ -1107,7 +1116,10 @@ mod tests {
     #[test]
     fn classifies_a_missing_key_carried_by_a_request_action_failure() {
         let mapped = classify_request_error(&TaskError::DashPayContactRequestActionFailed {
-            request_id: Identifier::from([2; 32]),
+            request: ContactRequestKey {
+                owner: Identifier::from([1; 32]),
+                counterparty: Identifier::from([2; 32]),
+            },
             source: Box::new(TaskError::DashPay(DashPayError::MissingEncryptionKey)),
         });
         assert!(
@@ -1131,13 +1143,16 @@ mod tests {
 
     #[test]
     fn request_error_id_correlates_only_the_matching_paid_action() {
-        let request_id = Identifier::from([2; 32]);
+        let request = ContactRequestKey {
+            owner: Identifier::from([1; 32]),
+            counterparty: Identifier::from([2; 32]),
+        };
         let error = TaskError::DashPayContactRequestActionFailed {
-            request_id,
+            request,
             source: Box::new(TaskError::DocumentNotFound),
         };
 
-        assert_eq!(request_error_id(&error), Some(&request_id));
+        assert_eq!(request_error_id(&error), Some(&request));
         assert_eq!(request_error_id(&TaskError::DocumentNotFound), None);
     }
 }

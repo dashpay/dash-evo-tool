@@ -20,7 +20,7 @@ pub mod validation;
 
 pub use crate::model::dashpay::ContactData;
 
-use crate::model::dashpay::ContactInfoUpdate;
+use crate::model::dashpay::{ContactInfoUpdate, ContactRequestKey};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -96,24 +96,27 @@ pub enum DashPayTask {
         account_label: Option<String>,
         qr_auto_accept: crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData,
     },
+    /// Accept the contact request `counterparty_id` sent this identity.
     AcceptContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
+        counterparty_id: Identifier,
     },
-    /// Decline a contact request this identity received. Local only: the
-    /// sender is ignored on this device and nothing is published.
+    /// Decline the contact request `counterparty_id` sent this identity.
+    /// Local only: the sender is ignored on this device and nothing is
+    /// published.
     RejectContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
+        counterparty_id: Identifier,
     },
-    /// Withdraw a still-pending contact request this identity sent.
+    /// Withdraw this identity's still-pending contact request to
+    /// `counterparty_id`.
     ///
     /// Platform cannot delete a `contactRequest` document, so the handler
     /// records the withdrawal on this device only — see
     /// [`contact_requests::cancel_contact_request`].
     CancelContactRequest {
         identity: QualifiedIdentity,
-        request_id: Identifier,
+        counterparty_id: Identifier,
     },
     LoadPaymentHistory {
         identity: QualifiedIdentity,
@@ -237,31 +240,49 @@ impl AppContext {
             .await?),
             DashPayTask::AcceptContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::accept_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
+                };
+                contact_requests::accept_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::RejectContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::reject_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
+                };
+                contact_requests::reject_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::CancelContactRequest {
                 identity,
-                request_id,
-            } => contact_requests::cancel_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                counterparty_id,
+            } => {
+                let request = ContactRequestKey {
+                    owner: identity.identity.id(),
+                    counterparty: counterparty_id,
+                };
+                contact_requests::cancel_contact_request(self, sdk, identity, counterparty_id)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                        request,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
                 // Refresh-style action: kick upstream before reading so the

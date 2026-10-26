@@ -14,7 +14,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::dashpay::ContactInfoField;
+use crate::model::dashpay::{ContactInfoField, ContactRequestKey};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
@@ -116,7 +116,7 @@ enum ContactInfoTaskKey {
         identity_id: Identifier,
         contact_id: Identifier,
     },
-    Request(Identifier),
+    Request(ContactRequestKey),
 }
 
 impl IdentityHubScreen {
@@ -368,10 +368,10 @@ impl IdentityHubScreen {
     /// Retire a request row the backend just resolved (accepted, declined, or
     /// cancelled), confirm it to the user, and re-arm the Contacts load so the
     /// authoritative lists replace the local edit.
-    fn resolve_request(&mut self, request_id: &Identifier, confirmation: &str) {
+    fn resolve_request(&mut self, request: &ContactRequestKey, confirmation: &str) {
         self.pending_contact_info_tasks
-            .remove(&ContactInfoTaskKey::Request(*request_id));
-        self.contacts_state.remove_request(request_id);
+            .remove(&ContactInfoTaskKey::Request(*request));
+        self.contacts_state.remove_request(request);
         self.contacts_state.invalidate();
         MessageBanner::set_global(
             self.app_context.egui_ctx(),
@@ -385,19 +385,19 @@ impl IdentityHubScreen {
         result: &BackendTaskSuccessResult,
     ) -> bool {
         match result {
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
-                self.resolve_request(request_id, "Contact request accepted.");
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request) => {
+                self.resolve_request(request, "Contact request accepted.");
             }
-            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
-                self.resolve_request(request_id, "Contact request declined.");
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request) => {
+                self.resolve_request(request, "Contact request declined.");
             }
-            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
-                self.resolve_request(request_id, "Contact request cancelled.");
+            BackendTaskSuccessResult::DashPayContactRequestCancelled(request) => {
+                self.resolve_request(request, "Contact request cancelled.");
             }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(request) => {
                 self.pending_contact_info_tasks
-                    .remove(&ContactInfoTaskKey::Request(*request_id));
-                self.contacts_state.remove_request(request_id);
+                    .remove(&ContactInfoTaskKey::Request(*request));
+                self.contacts_state.remove_request(request);
                 self.contacts_state.invalidate();
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -1030,13 +1030,13 @@ fn contact_read_failure_is_transient(error: &TaskError) -> bool {
 
 /// Release the request-card guard a failed contact action names. Both a task-level
 /// failure and a migration-gate refusal arrive as
-/// [`TaskError::DashPayContactRequestActionFailed`], carrying the request ID, so
+/// [`TaskError::DashPayContactRequestActionFailed`], carrying the request, so
 /// only that request's guard is released; every other guard stays protected until
 /// its own typed outcome arrives — a paid action still in flight must never have
 /// its row re-enabled by an unrelated failure.
 fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
-    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
-        state.release_request(request_id);
+    if let TaskError::DashPayContactRequestActionFailed { request, .. } = error {
+        state.release_request(request);
     }
 }
 
@@ -1069,10 +1069,17 @@ fn contact_info_task_key(task: &DashPayTask) -> Option<ContactInfoTaskKey> {
             identity_id: identity.identity.id(),
             contact_id: *contact_id,
         }),
-        DashPayTask::RejectContactRequest { request_id, .. }
-        | DashPayTask::CancelContactRequest { request_id, .. } => {
-            Some(ContactInfoTaskKey::Request(*request_id))
+        DashPayTask::RejectContactRequest {
+            identity,
+            counterparty_id,
         }
+        | DashPayTask::CancelContactRequest {
+            identity,
+            counterparty_id,
+        } => Some(ContactInfoTaskKey::Request(ContactRequestKey {
+            owner: identity.identity.id(),
+            counterparty: *counterparty_id,
+        })),
         _ => None,
     }
 }
@@ -1087,8 +1094,8 @@ fn contact_info_error_key(error: &TaskError) -> Option<ContactInfoTaskKey> {
             identity_id: *identity_id,
             contact_id: *contact_id,
         }),
-        TaskError::DashPayContactRequestActionFailed { request_id, .. } => {
-            Some(ContactInfoTaskKey::Request(*request_id))
+        TaskError::DashPayContactRequestActionFailed { request, .. } => {
+            Some(ContactInfoTaskKey::Request(*request))
         }
         _ => None,
     }
@@ -1228,6 +1235,14 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    /// The request between the owner `id(100)` and `id(counterparty)`.
+    fn req(counterparty: u8) -> ContactRequestKey {
+        ContactRequestKey {
+            owner: id(100),
+            counterparty: id(counterparty),
+        }
     }
 
     #[test]
@@ -1510,7 +1525,10 @@ mod tests {
         context.connection_status().set_masternodes_ready(true);
         let owner = seed_user_identity(&context, 0x5C);
         let identity = context.get_identity_by_id(&owner).unwrap().unwrap();
-        let request_id = id(0x5D);
+        let request = ContactRequestKey {
+            owner,
+            counterparty: id(0x5D),
+        };
         for requests in [false, true] {
             let task = BackendTask::DashPayTask(Box::new(if requests {
                 DashPayTask::LoadContactRequests {
@@ -1548,7 +1566,7 @@ mod tests {
                 let mut hub = IdentityHubScreen::new(&context);
                 hub.contacts_state.reconcile_owner(&identity);
                 assert!(hub.contacts_state.claim_load());
-                assert!(hub.contacts_state.begin_request(request_id));
+                assert!(hub.contacts_state.begin_request(request));
                 let before = std::time::Instant::now();
                 let error = if transient && requests {
                     TaskError::MasternodeListNotReady {
@@ -1570,8 +1588,8 @@ mod tests {
                 hub.contacts_state
                     .retry_load_if_due(before + std::time::Duration::from_secs(6));
                 assert_eq!(hub.contacts_state.load_is_due(), retries);
-                assert!(hub.contacts_state.is_in_flight(&request_id));
-                assert!(!hub.contacts_state.begin_request(request_id));
+                assert!(hub.contacts_state.is_in_flight(&request));
+                assert!(!hub.contacts_state.begin_request(request));
             }
         }
     }
@@ -2309,13 +2327,13 @@ mod tests {
     #[test]
     fn a_bare_storage_not_ready_releases_no_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1)));
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(1)));
+        assert!(state.begin_request(req(2)));
 
         release_request_guard_for_error(&mut state, &TaskError::WalletStorageNotReady);
 
         assert!(
-            state.is_in_flight(&id(1)) && state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(1)) && state.is_in_flight(&req(2)),
             "a bare storage-not-ready names no request and must leave every guard intact",
         );
     }
@@ -2327,23 +2345,23 @@ mod tests {
     #[test]
     fn a_gate_rejected_contact_action_releases_only_its_own_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1))); // genuinely executing
-        assert!(state.begin_request(id(2))); // about to be gate-rejected
+        assert!(state.begin_request(req(1))); // genuinely executing
+        assert!(state.begin_request(req(2))); // about to be gate-rejected
 
         release_request_guard_for_error(
             &mut state,
             &TaskError::DashPayContactRequestActionFailed {
-                request_id: id(2),
+                request: req(2),
                 source: Box::new(TaskError::WalletStorageNotReady),
             },
         );
 
         assert!(
-            !state.is_in_flight(&id(2)),
+            !state.is_in_flight(&req(2)),
             "the gate-rejected request's guard is released so its row un-sticks",
         );
         assert!(
-            state.is_in_flight(&id(1)),
+            state.is_in_flight(&req(1)),
             "a different action still in flight must keep its guard through the gate rejection",
         );
     }
@@ -2353,12 +2371,12 @@ mod tests {
     #[test]
     fn an_unrelated_error_preserves_the_request_guards() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(1)));
+        assert!(state.begin_request(req(1)));
 
         release_request_guard_for_error(&mut state, &TaskError::WalletLocked);
 
         assert!(
-            state.is_in_flight(&id(1)),
+            state.is_in_flight(&req(1)),
             "only the request's own typed failure with its request ID releases a guard",
         );
     }
@@ -2366,12 +2384,12 @@ mod tests {
     #[test]
     fn unrelated_task_error_does_not_release_in_flight_paid_accept_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(2)));
 
         release_request_guard_for_error(&mut state, &TaskError::DocumentNotFound);
 
         assert!(
-            state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(2)),
             "a concurrent load error must not enable a second paid Accept"
         );
     }
@@ -2379,17 +2397,17 @@ mod tests {
     #[test]
     fn matching_request_error_releases_only_its_guard() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
-        assert!(state.begin_request(id(3)));
+        assert!(state.begin_request(req(2)));
+        assert!(state.begin_request(req(3)));
         let error = TaskError::DashPayContactRequestActionFailed {
-            request_id: id(2),
+            request: req(2),
             source: Box::new(TaskError::DocumentNotFound),
         };
 
         release_request_guard_for_error(&mut state, &error);
 
-        assert!(!state.is_in_flight(&id(2)));
-        assert!(state.is_in_flight(&id(3)));
+        assert!(!state.is_in_flight(&req(2)));
+        assert!(state.is_in_flight(&req(3)));
     }
 
     fn contact_info_task(update: crate::model::dashpay::ContactInfoUpdate) -> DashPayTask {

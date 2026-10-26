@@ -8,7 +8,7 @@
 
 use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
-use crate::model::dashpay::{ContactsLoadKind, contact_request_recipient};
+use crate::model::dashpay::{ContactRequestKey, ContactsLoadKind, contact_request_recipient};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Network;
@@ -30,12 +30,9 @@ const MAX_AUTOMATIC_READ_RETRIES: u8 = 3;
 /// `DashPayContactRequests` result document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactRequestEntry {
-    /// Identity of the counterpart: the sender for incoming requests, the
-    /// recipient for outgoing ones.
-    pub counterpart_id: Identifier,
-    /// The request document's own ID — routed straight into the Accept /
-    /// Decline / Cancel backend tasks, so no Base58 round-trip is needed.
-    pub request_id: Identifier,
+    /// The owner and the counterpart: the sender for incoming requests, the
+    /// recipient for outgoing ones. Accept, Decline and Cancel act on it.
+    pub request: ContactRequestKey,
     /// Human-relative timestamp (e.g. `"2 minutes ago"`), pre-formatted from
     /// the document's `created_at`. `None` when the document has no timestamp.
     pub relative_time: Option<String>,
@@ -77,12 +74,12 @@ pub struct ContactsState {
     /// Live search query bound to the Contacts search box.
     search: String,
     /// Requests whose Accept / Decline / Cancel is already running, keyed by
-    /// request ID and stamped with the dispatch time. Each of those actions is a
+    /// request and stamped with the dispatch time. Each of those actions is a
     /// signed, paid-for state transition, so a row keeps its buttons disabled
     /// until its result lands — a second click would buy a second transition.
     /// A matching task outcome, abandoned confirmation, or reset after
     /// [`REQUEST_IN_FLIGHT_TIMEOUT`] releases the guard.
-    in_flight: HashMap<Identifier, Instant>,
+    in_flight: HashMap<ContactRequestKey, Instant>,
     /// The identity the lists belong to, once a renderer has bound them.
     owner: Option<(Network, Identifier)>,
     /// The selected contact and its private-note editor.
@@ -116,6 +113,13 @@ struct ConfirmedNote {
     note: Option<String>,
     lagging: Option<Option<String>>,
     after_load: u64,
+}
+
+impl ContactRequestEntry {
+    /// The other identity of the request.
+    pub fn counterpart_id(&self) -> Identifier {
+        self.request.counterparty
+    }
 }
 
 impl ContactsState {
@@ -250,9 +254,9 @@ impl ContactsState {
     /// Bind the lists to the identity on screen. The selection can change
     /// without the hub hearing of it, so every renderer calls this before it
     /// reads or loads them: lists of another identity are dropped and the load
-    /// re-armed, the same identity keeps its own. Paid-action guards are keyed
-    /// by request, not by identity, and outlive the change — a request both
-    /// identities can see stays guarded while its action runs.
+    /// re-armed, the same identity keeps its own. Paid-action guards name
+    /// their owner and outlive the change, so an action still running for
+    /// the identity switched away from stays guarded.
     pub fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
         let owner = Some((identity.network, identity.identity.id()));
         if self.owner != owner {
@@ -299,19 +303,25 @@ impl ContactsState {
     ) {
         self.incoming = incoming
             .into_iter()
-            .map(|(request_id, doc)| ContactRequestEntry {
-                counterpart_id: doc.owner_id(),
-                request_id,
-                relative_time: relative_time(&doc),
+            .filter_map(|(_, doc)| {
+                Some(ContactRequestEntry {
+                    request: ContactRequestKey {
+                        owner: contact_request_recipient(&doc)?,
+                        counterparty: doc.owner_id(),
+                    },
+                    relative_time: relative_time(&doc),
+                })
             })
             .collect();
 
         self.outgoing = outgoing
             .into_iter()
-            .filter_map(|(request_id, doc)| {
+            .filter_map(|(_, doc)| {
                 Some(ContactRequestEntry {
-                    counterpart_id: contact_request_recipient(&doc)?,
-                    request_id,
+                    request: ContactRequestKey {
+                        owner: doc.owner_id(),
+                        counterparty: contact_request_recipient(&doc)?,
+                    },
                     relative_time: relative_time(&doc),
                 })
             })
@@ -422,40 +432,40 @@ impl ContactsState {
     /// lists so the row leaves the UI immediately, without waiting for the
     /// authoritative reload to land. Also releases the request's in-flight
     /// guard, since its action is now resolved.
-    pub fn remove_request(&mut self, request_id: &Identifier) {
-        self.incoming.retain(|e| e.request_id != *request_id);
-        self.outgoing.retain(|e| e.request_id != *request_id);
-        self.in_flight.remove(request_id);
+    pub fn remove_request(&mut self, request: &ContactRequestKey) {
+        self.incoming.retain(|e| e.request != *request);
+        self.outgoing.retain(|e| e.request != *request);
+        self.in_flight.remove(request);
     }
 
     /// Claim the in-flight slot for a request. `true` means the caller owns the
     /// dispatch; `false` means an action for that request is already running and
     /// the caller must not dispatch a second one.
     #[must_use]
-    pub fn begin_request(&mut self, request_id: Identifier) -> bool {
-        if self.is_in_flight(&request_id) {
+    pub fn begin_request(&mut self, request: ContactRequestKey) -> bool {
+        if self.is_in_flight(&request) {
             return false;
         }
-        self.in_flight.insert(request_id, Instant::now());
+        self.in_flight.insert(request, Instant::now());
         true
     }
 
     /// Whether an action for this request is already running. Drives the row's
     /// disabled state, so the user sees why the buttons do not respond.
-    pub fn is_in_flight(&self, request_id: &Identifier) -> bool {
-        self.in_flight.contains_key(request_id)
+    pub fn is_in_flight(&self, request: &ContactRequestKey) -> bool {
+        self.in_flight.contains_key(request)
     }
 
     /// Whether an authoritative result has taken unusually long to arrive.
-    pub fn is_taking_long(&self, request_id: &Identifier) -> bool {
-        self.in_flight.get(request_id).is_some_and(|started| {
+    pub fn is_taking_long(&self, request: &ContactRequestKey) -> bool {
+        self.in_flight.get(request).is_some_and(|started| {
             Instant::now().saturating_duration_since(*started) >= REQUEST_IN_FLIGHT_TIMEOUT
         })
     }
 
     /// Release one request's guard after its matching task reports a failure.
-    pub fn release_request(&mut self, request_id: &Identifier) {
-        self.in_flight.remove(request_id);
+    pub fn release_request(&mut self, request: &ContactRequestKey) {
+        self.in_flight.remove(request);
     }
 
     /// The identity the lists belong to, once bound.
@@ -656,6 +666,14 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    /// The request between the owner `id(100)` and `id(byte)`.
+    fn req(byte: u8) -> ContactRequestKey {
+        ContactRequestKey {
+            owner: id(100),
+            counterparty: id(byte),
+        }
     }
 
     fn contact(
@@ -867,13 +885,11 @@ mod tests {
         let mut state = ContactsState::default();
         state.claim_load();
         state.incoming.push(ContactRequestEntry {
-            counterpart_id: id(1),
-            request_id: id(2),
+            request: req(2),
             relative_time: None,
         });
         state.outgoing.push(ContactRequestEntry {
-            counterpart_id: id(3),
-            request_id: id(4),
+            request: req(4),
             relative_time: None,
         });
         state.record_contacts(vec![contact(Some("Bao"), None, None)]);
@@ -1094,24 +1110,22 @@ mod tests {
     fn remove_request_drops_the_row_from_both_lists() {
         let mut state = ContactsState::default();
         state.incoming.push(ContactRequestEntry {
-            counterpart_id: id(1),
-            request_id: id(2),
+            request: req(2),
             relative_time: None,
         });
         state.outgoing.push(ContactRequestEntry {
-            counterpart_id: id(3),
-            request_id: id(4),
+            request: req(4),
             relative_time: None,
         });
 
-        state.remove_request(&id(2));
+        state.remove_request(&req(2));
         assert!(
             state.incoming().is_empty(),
             "accepted/declined row must leave"
         );
         assert_eq!(state.outgoing().len(), 1, "unrelated row must stay");
 
-        state.remove_request(&id(4));
+        state.remove_request(&req(4));
         assert!(state.outgoing().is_empty(), "cancelled row must leave");
     }
 
@@ -1120,16 +1134,16 @@ mod tests {
         let mut state = ContactsState::default();
 
         assert!(
-            state.begin_request(id(2)),
+            state.begin_request(req(2)),
             "the first click owns the action"
         );
-        assert!(state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&req(2)));
         assert!(
-            !state.begin_request(id(2)),
+            !state.begin_request(req(2)),
             "a second click must not claim an action that is already running"
         );
         assert!(
-            state.begin_request(id(3)),
+            state.begin_request(req(3)),
             "the guard is per request, not global"
         );
     }
@@ -1137,14 +1151,14 @@ mod tests {
     #[test]
     fn resolving_a_request_releases_its_guard_and_leaves_the_others() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
-        assert!(state.begin_request(id(3)));
+        assert!(state.begin_request(req(2)));
+        assert!(state.begin_request(req(3)));
 
-        state.remove_request(&id(2));
+        state.remove_request(&req(2));
 
-        assert!(!state.is_in_flight(&id(2)));
+        assert!(!state.is_in_flight(&req(2)));
         assert!(
-            state.is_in_flight(&id(3)),
+            state.is_in_flight(&req(3)),
             "an unrelated request must keep its guard"
         );
     }
@@ -1152,26 +1166,26 @@ mod tests {
     #[test]
     fn releasing_one_guard_leaves_other_requests_protected() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
-        assert!(state.begin_request(id(3)));
+        assert!(state.begin_request(req(2)));
+        assert!(state.begin_request(req(3)));
 
-        state.release_request(&id(2));
+        state.release_request(&req(2));
 
-        assert!(!state.is_in_flight(&id(2)));
-        assert!(state.is_in_flight(&id(3)));
+        assert!(!state.is_in_flight(&req(2)));
+        assert!(state.is_in_flight(&req(3)));
     }
 
     #[test]
     fn a_guard_survives_long_enough_to_outlast_any_real_state_transition() {
         let mut state = ContactsState::default();
         state.in_flight.insert(
-            id(2),
+            req(2),
             Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT + Duration::from_secs(1),
         );
 
-        assert!(state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&req(2)));
         assert!(
-            !state.begin_request(id(2)),
+            !state.begin_request(req(2)),
             "a still-running paid action must not be dispatched a second time"
         );
     }
@@ -1180,14 +1194,14 @@ mod tests {
     fn a_guard_older_than_five_minutes_still_blocks_dispatch() {
         let mut state = ContactsState::default();
         state.in_flight.insert(
-            id(2),
+            req(2),
             Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
         );
 
-        assert!(state.is_in_flight(&id(2)));
-        assert!(state.is_taking_long(&id(2)));
+        assert!(state.is_in_flight(&req(2)));
+        assert!(state.is_taking_long(&req(2)));
         assert!(
-            !state.begin_request(id(2)),
+            !state.begin_request(req(2)),
             "elapsed time must not permit a second paid action"
         );
     }
@@ -1195,16 +1209,16 @@ mod tests {
     #[test]
     fn routine_reset_preserves_the_in_flight_guards() {
         let mut state = ContactsState::default();
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(2)));
 
         state.reset();
 
         assert!(
-            state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(2)),
             "leaving the tab must not enable a second paid action while the first is still running"
         );
         assert!(
-            !state.begin_request(id(2)),
+            !state.begin_request(req(2)),
             "the same request must not be dispatched again after returning to the tab"
         );
     }
@@ -1213,21 +1227,19 @@ mod tests {
     fn identity_change_reset_preserves_in_flight_guards_and_clears_view_state() {
         let mut state = ContactsState::default();
         state.incoming.push(ContactRequestEntry {
-            counterpart_id: id(1),
-            request_id: id(2),
+            request: req(2),
             relative_time: None,
         });
         state.outgoing.push(ContactRequestEntry {
-            counterpart_id: id(3),
-            request_id: id(4),
+            request: req(4),
             relative_time: None,
         });
         state.record_contacts(vec![contact(Some("Bao"), None, None)]);
         *state.search_mut() = "bao".to_string();
         assert!(state.claim_load());
-        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(req(2)));
         state.in_flight.insert(
-            id(5),
+            req(5),
             Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
         );
 
@@ -1242,15 +1254,15 @@ mod tests {
             "the new identity must trigger a fresh load"
         );
         assert!(
-            state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(2)),
             "an identity switch does not cancel the paid backend action"
         );
         assert!(
-            !state.begin_request(id(2)),
+            !state.begin_request(req(2)),
             "returning to the request must not dispatch it a second time"
         );
         assert!(
-            !state.in_flight.contains_key(&id(5)),
+            !state.in_flight.contains_key(&req(5)),
             "a timed-out guard must be physically pruned from the long-lived state"
         );
     }

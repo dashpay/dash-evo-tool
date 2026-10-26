@@ -21,6 +21,7 @@ use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::dashpay::{ContactInfoUpdate, ProfileSnapshot};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -384,10 +385,10 @@ async fn step_send_contact_request(
         BackendTaskSuccessResult::DashPayContactRequestSent(username) => {
             tracing::info!("Step 1: contact request sent to '{}'", username);
         }
-        BackendTaskSuccessResult::DashPayContactAlreadyEstablished { contact_id: id, .. } => {
+        BackendTaskSuccessResult::DashPayContactAlreadyEstablished(request) => {
             tracing::info!(
                 "Step 1: contact already established with {:?} (previous test run)",
-                id
+                request.counterparty
             );
         }
         other => panic!(
@@ -432,12 +433,12 @@ async fn step_load_contact_requests(
 
             // Filter by sender identity to avoid picking up requests from
             // other tests running concurrently against the same identity.
-            if let Some((request_id, _doc)) = incoming
+            if incoming
                 .iter()
-                .find(|(req_id, _doc)| *req_id == identity_a_id)
+                .any(|(_, doc)| doc.owner_id() == identity_a_id)
             {
-                tracing::info!("Step 2: found request from A, request_id={:?}", request_id);
-                Some(*request_id)
+                tracing::info!("Step 2: found request from A");
+                Some(identity_a_id)
             } else if incoming.is_empty() {
                 // No incoming requests — contact may already be established
                 // from a previous test run. Return None so the caller can
@@ -452,7 +453,10 @@ async fn step_load_contact_requests(
                      Incoming IDs: {:?}",
                     incoming.len(),
                     identity_a_id,
-                    incoming.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                    incoming
+                        .iter()
+                        .map(|(_, doc)| doc.owner_id())
+                        .collect::<Vec<_>>()
                 );
             }
         }
@@ -463,13 +467,13 @@ async fn step_load_contact_requests(
 async fn step_accept_contact_request(
     ctx: &crate::framework::harness::BackendTestContext,
     pair: &fixtures::SharedDashPayPair,
-    request_id: Identifier,
+    sender_id: Identifier,
 ) {
     tracing::info!("=== Step 3: AcceptContactRequest ===");
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
         identity: pair.identity_b.clone(),
-        request_id,
+        counterparty_id: sender_id,
     }));
 
     let result = run_task_with_nonce_retry(&ctx.app_context, task)
@@ -915,7 +919,7 @@ async fn tc_043_reject_contact_request() {
         .await
         .expect("TC-043: SendContactRequest from A to C failed");
 
-    // Load C's incoming requests to get the request_id
+    // Confirm C received A's request
     tracing::info!("TC-043: loading C's incoming contact requests...");
     let load_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
         identity: qi_c.clone(),
@@ -924,7 +928,7 @@ async fn tc_043_reject_contact_request() {
         .await
         .expect("TC-043: LoadContactRequests for C should succeed");
 
-    let request_id = match load_result {
+    let sender_id = match load_result {
         BackendTaskSuccessResult::DashPayContactRequests { incoming, .. } => {
             assert!(
                 !incoming.is_empty(),
@@ -933,29 +937,28 @@ async fn tc_043_reject_contact_request() {
             // Filter by sender (identity A) to avoid picking up requests from
             // other concurrent tests targeting the same identity.
             let identity_a_id = pair.identity_a.identity.id();
-            let (req_id, _doc) = incoming
-                .iter()
-                .find(|(req_id, _doc)| *req_id == identity_a_id)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "TC-043: no request from A ({:?}) in C's incoming. \
-                         Got {} request(s): {:?}",
-                        identity_a_id,
-                        incoming.len(),
-                        incoming.iter().map(|(id, _)| id).collect::<Vec<_>>()
-                    )
-                });
-            tracing::info!("TC-043: C has incoming request_id={:?}", req_id);
-            *req_id
+            assert!(
+                incoming
+                    .iter()
+                    .any(|(_, doc)| doc.owner_id() == identity_a_id),
+                "TC-043: no request from A ({:?}) in C's incoming. Got {} request(s) from: {:?}",
+                identity_a_id,
+                incoming.len(),
+                incoming
+                    .iter()
+                    .map(|(_, doc)| doc.owner_id())
+                    .collect::<Vec<_>>()
+            );
+            identity_a_id
         }
         other => panic!("TC-043: expected DashPayContactRequests, got: {:?}", other),
     };
 
     // Reject the contact request
-    tracing::info!("TC-043: rejecting contact request {:?}...", request_id);
+    tracing::info!("TC-043: rejecting the contact request from {:?}...", sender_id);
     let reject_task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
         identity: qi_c,
-        request_id,
+        counterparty_id: sender_id,
     }));
     let reject_result = run_task(&ctx.app_context, reject_task)
         .await

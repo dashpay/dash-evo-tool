@@ -24,7 +24,9 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
+use crate::model::dashpay::{
+    ContactInfoUpdate, ContactRequestKey, MAX_CONTACT_NOTE_BYTES, validate_contact_note,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -164,11 +166,11 @@ fn request_row(
     ui: &mut Ui,
     card: RequestCard,
     entry: &ContactRequestEntry,
-) -> Option<(Identifier, RequestAction)> {
+) -> Option<(ContactRequestKey, RequestAction)> {
     let response = card.show(ui);
     ui.add_space(4.0);
 
-    response.action().map(|action| (entry.request_id, action))
+    response.action().map(|action| (entry.request, action))
 }
 
 /// Pair each request with whether its action is already running, so the row loop
@@ -183,8 +185,8 @@ fn request_rows<'a>(
         .map(|entry| {
             (
                 entry,
-                state.is_in_flight(&entry.request_id)
-                    || app_context.contact_request_action_is_in_flight(&entry.request_id),
+                state.is_in_flight(&entry.request)
+                    || app_context.contact_request_action_is_in_flight(&entry.request),
             )
         })
         .collect()
@@ -199,18 +201,19 @@ fn request_rows<'a>(
 fn dispatch_request(
     state: &mut ContactsState,
     identity: &QualifiedIdentity,
-    clicked: Option<(Identifier, RequestAction)>,
+    clicked: Option<(ContactRequestKey, RequestAction)>,
 ) -> AppAction {
-    let Some((request_id, action)) = clicked else {
+    let Some((request, action)) = clicked else {
         return AppAction::None;
     };
-    if !state.begin_request(request_id) {
+    // A row of another identity, left on screen for a frame after a switch.
+    if request.owner != identity.identity.id() || !state.begin_request(request) {
         return AppAction::None;
     }
     AppAction::BackendTask(BackendTask::DashPayTask(Box::new(request_task(
         action,
         identity.clone(),
-        request_id,
+        request.counterparty,
     ))))
 }
 
@@ -218,10 +221,9 @@ fn dispatch_request_shared(
     app_context: &Arc<AppContext>,
     state: &mut ContactsState,
     identity: &QualifiedIdentity,
-    clicked: Option<(Identifier, RequestAction)>,
+    clicked: Option<(ContactRequestKey, RequestAction)>,
 ) -> AppAction {
-    if clicked
-        .is_some_and(|(request_id, _)| app_context.contact_request_action_is_in_flight(&request_id))
+    if clicked.is_some_and(|(request, _)| app_context.contact_request_action_is_in_flight(&request))
     {
         return AppAction::None;
     }
@@ -271,25 +273,25 @@ pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsStat
     AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Concurrent)
 }
 
-/// Backend task for a request-card action. Accept and Decline act on a received
-/// request; Cancel withdraws a sent one.
+/// Backend task for a request-card action. Accept and Decline act on the
+/// request `counterparty_id` sent; Cancel withdraws the one sent to them.
 pub fn request_task(
     action: RequestAction,
     identity: QualifiedIdentity,
-    request_id: Identifier,
+    counterparty_id: Identifier,
 ) -> DashPayTask {
     match action {
         RequestAction::Accepted => DashPayTask::AcceptContactRequest {
             identity,
-            request_id,
+            counterparty_id,
         },
         RequestAction::Declined => DashPayTask::RejectContactRequest {
             identity,
-            request_id,
+            counterparty_id,
         },
         RequestAction::Cancelled => DashPayTask::CancelContactRequest {
             identity,
-            request_id,
+            counterparty_id,
         },
     }
 }
@@ -811,7 +813,7 @@ fn received_section(
             return;
         }
         for (entry, busy) in rows {
-            let handle = entry.counterpart_id.to_string(Encoding::Base58);
+            let handle = entry.counterpart_id().to_string(Encoding::Base58);
             let card = RequestCard::received(
                 shorten_id(&handle),
                 &handle,
@@ -1036,7 +1038,7 @@ fn sent_section(
         ui.add_space(8.0);
 
         for (entry, busy) in rows {
-            let handle = entry.counterpart_id.to_string(Encoding::Base58);
+            let handle = entry.counterpart_id().to_string(Encoding::Base58);
             let card = RequestCard::sent(shorten_id(&handle), &handle).with_busy(busy);
             clicked = request_row(ui, card, entry).or(clicked);
         }
@@ -1183,10 +1185,10 @@ pub(super) fn render_preview(
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!(
                     "{} wants to connect.",
-                    shorten_id(&entry.counterpart_id.to_string(Encoding::Base58))
+                    shorten_id(&entry.counterpart_id().to_string(Encoding::Base58))
                 ));
-                let busy = state.is_in_flight(&entry.request_id)
-                    || app_context.contact_request_action_is_in_flight(&entry.request_id);
+                let busy = state.is_in_flight(&entry.request)
+                    || app_context.contact_request_action_is_in_flight(&entry.request);
                 if ui
                     .add_enabled(
                         !busy,
@@ -1194,7 +1196,7 @@ pub(super) fn render_preview(
                     )
                     .clicked()
                 {
-                    clicked = Some((entry.request_id, RequestAction::Accepted));
+                    clicked = Some((entry.request, RequestAction::Accepted));
                 }
             });
         }
@@ -1332,19 +1334,33 @@ mod tests {
         assert_eq!(contact_handle(&contact, "Bao"), None);
     }
 
+    /// A request `sender` sent `recipient`, as the request list loads it.
     fn request_from(
-        request_id: Identifier,
         sender: Identifier,
+        recipient: Identifier,
     ) -> (Identifier, dash_sdk::platform::Document) {
         use dash_sdk::dpp::document::DocumentV0;
+        use dash_sdk::dpp::platform_value::Value;
         (
-            request_id,
+            id(99),
             dash_sdk::platform::Document::V0(DocumentV0 {
-                id: request_id,
+                id: id(99),
                 owner_id: sender,
+                properties: std::collections::BTreeMap::from([(
+                    "toUserId".to_string(),
+                    Value::Identifier(recipient.to_buffer()),
+                )]),
                 ..Default::default()
             }),
         )
+    }
+
+    /// The request between the owner `id(1)` and `id(counterparty)`.
+    fn req(counterparty: u8) -> ContactRequestKey {
+        ContactRequestKey {
+            owner: id(1),
+            counterparty: id(counterparty),
+        }
     }
 
     fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
@@ -1371,7 +1387,7 @@ mod tests {
     fn lists_follow_the_identity_and_running_request_guards_survive_the_change() {
         let first = qualified_identity(id(1));
         let second = qualified_identity(id(2));
-        let request = id(9);
+        let request = req(3);
         let mut state = ContactsState::default();
 
         state.reconcile_owner(&first);
@@ -1380,7 +1396,7 @@ mod tests {
             [id(1), id(1)]
         );
         state.record_contacts(vec![contact_named("Bao")]);
-        state.record_requests(vec![request_from(request, id(3))], vec![]);
+        state.record_requests(vec![request_from(id(3), id(1))], vec![]);
         assert!(state.begin_request(request));
 
         state.reconcile_owner(&first);
@@ -1676,11 +1692,11 @@ mod tests {
         match task {
             DashPayTask::AcceptContactRequest {
                 identity,
-                request_id,
+                counterparty_id,
             } => {
                 assert_eq!(identity.identity.id(), id(1));
                 assert_eq!(
-                    request_id,
+                    counterparty_id,
                     id(2),
                     "the clicked row's request must be acted on"
                 );
@@ -1693,7 +1709,7 @@ mod tests {
     fn decline_maps_to_the_reject_task() {
         let task = request_task(RequestAction::Declined, qualified_identity(id(1)), id(2));
         assert!(
-            matches!(task, DashPayTask::RejectContactRequest { request_id, .. } if request_id == id(2)),
+            matches!(task, DashPayTask::RejectContactRequest { counterparty_id, .. } if counterparty_id == id(2)),
             "Decline must dispatch RejectContactRequest for the clicked request"
         );
     }
@@ -1702,7 +1718,7 @@ mod tests {
     fn cancel_maps_to_the_cancel_task() {
         let task = request_task(RequestAction::Cancelled, qualified_identity(id(1)), id(2));
         assert!(
-            matches!(task, DashPayTask::CancelContactRequest { request_id, .. } if request_id == id(2)),
+            matches!(task, DashPayTask::CancelContactRequest { counterparty_id, .. } if counterparty_id == id(2)),
             "Cancel must dispatch CancelContactRequest for the clicked request"
         );
     }
@@ -1825,7 +1841,7 @@ mod tests {
     fn a_second_click_while_the_request_is_in_flight_dispatches_nothing() {
         let identity = qualified_identity(id(1));
         let mut state = ContactsState::default();
-        let clicked = Some((id(2), RequestAction::Accepted));
+        let clicked = Some((req(2), RequestAction::Accepted));
 
         assert_ne!(
             dispatch_request(&mut state, &identity, clicked),
@@ -1833,7 +1849,7 @@ mod tests {
             "the first click must dispatch"
         );
         assert!(
-            state.is_in_flight(&id(2)),
+            state.is_in_flight(&req(2)),
             "the row must be marked in flight"
         );
         assert_eq!(
@@ -1851,14 +1867,14 @@ mod tests {
         dispatch_request(
             &mut state,
             &identity,
-            Some((id(2), RequestAction::Accepted)),
+            Some((req(2), RequestAction::Accepted)),
         );
 
         assert_ne!(
             dispatch_request(
                 &mut state,
                 &identity,
-                Some((id(3), RequestAction::Declined))
+                Some((req(3), RequestAction::Declined))
             ),
             AppAction::None,
             "the guard is per request — an unrelated row must still act"
@@ -1869,10 +1885,10 @@ mod tests {
     fn a_failed_request_becomes_clickable_again() {
         let identity = qualified_identity(id(1));
         let mut state = ContactsState::default();
-        let clicked = Some((id(2), RequestAction::Cancelled));
+        let clicked = Some((req(2), RequestAction::Cancelled));
 
         dispatch_request(&mut state, &identity, clicked);
-        state.release_request(&id(2));
+        state.release_request(&req(2));
 
         assert_ne!(
             dispatch_request(&mut state, &identity, clicked),
@@ -1889,14 +1905,27 @@ mod tests {
         dispatch_request(
             &mut state,
             &identity,
-            Some((id(2), RequestAction::Accepted)),
+            Some((req(2), RequestAction::Accepted)),
         );
-        state.remove_request(&id(2));
+        state.remove_request(&req(2));
 
         assert!(
-            !state.is_in_flight(&id(2)),
+            !state.is_in_flight(&req(2)),
             "a resolved request must not hold its guard"
         );
+    }
+
+    #[test]
+    fn a_row_of_another_identity_dispatches_nothing() {
+        let mut state = ContactsState::default();
+        let clicked = Some((req(2), RequestAction::Accepted));
+
+        assert_eq!(
+            dispatch_request(&mut state, &qualified_identity(id(5)), clicked),
+            AppAction::None,
+            "a row left from the previous identity must not act for the new one"
+        );
+        assert!(!state.is_in_flight(&req(2)));
     }
 
     #[test]

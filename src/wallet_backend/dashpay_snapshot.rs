@@ -358,12 +358,12 @@ impl WalletBackend {
                 (*owner, Arc::new(snapshot))
             })
             .collect();
-        let wallet_less = snapshots
+        let unsynced = snapshots
             .unsynced_profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        for (owner, profile) in wallet_less {
+        for (owner, profile) in unsynced {
             rebuilt.entry(owner).or_insert_with(|| {
                 Arc::new(DashPaySnapshot {
                     profile,
@@ -380,6 +380,32 @@ impl WalletBackend {
             snapshots.by_owner.store(Arc::new(rebuilt));
         }
         changed
+    }
+
+    /// Publish `owner`'s DashPay profile as a read of an unsynced identity
+    /// would: `display_name` and `avatar_url`, or no profile when
+    /// `display_name` is `None`.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn publish_profile_for_test(
+        &self,
+        owner: Identifier,
+        display_name: Option<&str>,
+        avatar_url: Option<&str>,
+    ) {
+        let profile = display_name.map(|name| StoredProfile {
+            identity_id: owner.to_vec(),
+            display_name: Some(name.to_owned()),
+            bio: None,
+            avatar_url: avatar_url.map(str::to_owned),
+            avatar_hash: None,
+            avatar_fingerprint: None,
+            avatar_bytes: None,
+            public_message: None,
+            created_at: 0,
+            updated_at: 0,
+        });
+        self.record_unsynced_profile(owner, profile);
+        self.refresh_dashpay_snapshots().await;
     }
 
     /// Record the profile of an identity platform-wallet does not sync, or

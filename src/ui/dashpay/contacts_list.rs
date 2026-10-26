@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::dashpay::{ContactData, DashPaySnapshot};
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
@@ -46,6 +47,28 @@ impl<'a> From<&'a Contact> for ContactSearchFields<'a> {
     }
 }
 
+impl From<&ContactData> for Contact {
+    fn from(contact: &ContactData) -> Self {
+        Self {
+            identity_id: contact.identity_id,
+            username: contact.username.clone(),
+            display_name: contact.display_name.clone().or_else(|| {
+                Some(format!(
+                    "Contact ({})",
+                    &contact.identity_id.to_string(Encoding::Base58)[0..8]
+                ))
+            }),
+            avatar_url: contact.avatar_url.clone(),
+            bio: contact.bio.clone(),
+            nickname: contact.nickname.clone(),
+            is_hidden: contact.is_hidden,
+            account_reference: contact.account_reference,
+            // Fallback to the current time for filter/sort.
+            created_at: Some(chrono::Utc::now().timestamp()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchFilter {
     All,
@@ -79,8 +102,10 @@ pub struct ContactsList {
     selected_identity_string: String,
     search_query: String,
     message: Option<(String, MessageType)>,
-    loading: bool,
-    has_loaded: bool, // Track if we've ever loaded contacts
+    /// A sync asked for with Refresh is running.
+    syncing: bool,
+    /// The snapshot `contacts` were built from.
+    applied: Option<Arc<DashPaySnapshot>>,
     show_hidden: bool,
     search_filter: SearchFilter,
     sort_order: SortOrder,
@@ -100,8 +125,8 @@ impl ContactsList {
             selected_identity_string: String::new(),
             search_query: String::new(),
             message: None,
-            loading: false,
-            has_loaded: false,
+            syncing: false,
+            applied: None,
             show_hidden: false,
             search_filter: SearchFilter::All,
             sort_order: SortOrder::Name,
@@ -125,35 +150,33 @@ impl ContactsList {
         new_self
     }
 
-    /// Auto-fetch on view: reads contacts from offline rehydrated state plus
-    /// the DET contact-profile cache, so the list paints without a network
-    /// round-trip. An explicit refresh uses
-    /// [`Self::trigger_refresh_contacts`] to re-fetch from the network.
-    pub fn trigger_fetch_contacts(&mut self) -> AppAction {
-        // Only fetch if we have a selected identity
-        if let Some(identity) = &self.selected_identity {
-            self.loading = true;
-            self.message = None; // Clear any existing message
-            // Mark the attempt at dispatch time, not on success. The error
-            // handlers reset `loading` but leave this flag set, so a failed
-            // load fires the auto-fetch gate exactly once instead of
-            // re-dispatching every frame. `refresh()` / an identity change
-            // opts back into a fresh attempt.
-            self.has_loaded = true;
-
-            let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactsOffline {
-                identity: identity.clone(),
-            }));
-
-            return AppAction::BackendTask(task);
+    /// Rebuild the contacts from the selected identity's DashPay snapshot
+    /// when it is not the one they were built from.
+    fn apply_snapshot(&mut self) {
+        let Some(owner) = self.selected_identity.as_ref().map(|i| i.identity.id()) else {
+            return;
+        };
+        let Some(snapshot) = self.app_context.dashpay_snapshot(&owner) else {
+            return;
+        };
+        if self
+            .applied
+            .as_ref()
+            .is_some_and(|applied| Arc::ptr_eq(applied, &snapshot))
+        {
+            return;
         }
-
-        AppAction::None
+        self.contacts = snapshot
+            .contacts
+            .iter()
+            .filter(|contact| contact.identity_id != owner)
+            .map(|contact| (contact.identity_id, Contact::from(contact)))
+            .collect();
+        self.applied = Some(snapshot);
     }
 
-    /// Re-fetch contacts and their profiles from the network, refreshing the
-    /// DET caches. Triggered by an explicit user refresh, not by entering the
-    /// view — the view itself serves the offline cache.
+    /// Sync the selected identity's DashPay state now. Triggered by an
+    /// explicit user refresh; the view itself shows the last synced state.
     ///
     /// Clears the in-memory rendered-texture cache so a contact whose avatar
     /// changed at the same URL repaints in-session: the textures are keyed by
@@ -165,9 +188,8 @@ impl ContactsList {
             return AppAction::None;
         };
 
-        self.loading = true;
+        self.syncing = true;
         self.message = None;
-        self.has_loaded = true;
         self.clear_avatar_render_state();
 
         // An explicit refresh means "give me the latest", so drop the DET
@@ -180,9 +202,9 @@ impl ContactsList {
             tracing::debug!(error = ?e, "Failed to clear avatar cache on refresh");
         }
 
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadContacts { identity },
-        )))
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+            identity: Some(identity),
+        })))
     }
 
     /// Drop the in-memory avatar render state so the next render re-derives each
@@ -192,24 +214,16 @@ impl ContactsList {
         self.avatar_cache.invalidate();
     }
 
-    pub fn fetch_contacts(&mut self) -> AppAction {
-        self.trigger_fetch_contacts()
-    }
-
-    pub fn trigger_fetch_requests(&mut self) -> AppAction {
-        self.contact_requests.trigger_fetch_requests()
-    }
-
     /// Set the active tab
     pub fn set_active_tab(&mut self, tab: ContactsTab) {
         self.active_tab = tab;
     }
 
     pub fn refresh(&mut self) -> AppAction {
-        // Don't clear contacts - preserve loaded state
-        // Only clear temporary states
+        // Keep the contacts shown; the next render rebuilds them from the
+        // snapshot.
         self.message = None;
-        self.loading = false;
+        self.applied = None;
 
         // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
@@ -224,28 +238,14 @@ impl ContactsList {
             self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
-        // Trigger backend fetch if we have an identity selected and no contacts loaded.
-        // The result populates `self.contacts` via `display_task_result`.
-        let action = if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.trigger_fetch_contacts()
-        } else {
-            AppAction::None
-        };
-
-        // Also refresh contact requests
-        let _ = self.contact_requests.refresh();
-
-        action
+        self.contact_requests.refresh()
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
 
-        // Auto-fetch contacts on first render or after identity change.
-        if !self.has_loaded && !self.loading && self.selected_identity.is_some() {
-            action = self.trigger_fetch_contacts();
-        }
+        self.apply_snapshot();
 
         // Identity selector
         let identities = self
@@ -276,24 +276,24 @@ impl ContactsList {
                     );
 
                     if response.changed() {
-                        // Clear contacts and avatar caches when identity changes.
-                        // The next render dispatches the offline read via
-                        // `has_loaded == false`.
+                        // Clear contacts and avatar caches when identity
+                        // changes; the next render rebuilds them from the new
+                        // identity's snapshot.
                         self.contacts.clear();
+                        self.applied = None;
                         self.clear_avatar_render_state();
                         self.message = None;
-                        self.loading = false;
-                        self.has_loaded = false;
+                        self.syncing = false;
 
                         // Sync selected identity to contact_requests
                         self.contact_requests
                             .set_selected_identity(self.selected_identity.clone());
                     }
 
-                    // Explicit refresh: re-fetch contacts and profiles from the
-                    // network (the view itself serves the offline cache).
+                    // Explicit refresh: sync now (the view itself shows the
+                    // last synced state).
                     if ui
-                        .add_enabled(!self.loading, egui::Button::new("Refresh"))
+                        .add_enabled(!self.syncing, egui::Button::new("Refresh"))
                         .on_hover_text("Fetch the latest contacts and profiles from the network.")
                         .clicked()
                     {
@@ -495,8 +495,8 @@ impl ContactsList {
             ui.separator();
         }
 
-        // Loading indicator
-        if self.loading {
+        // Loading indicator, until a first sync has something to show.
+        if self.syncing && self.applied.is_none() {
             ui.horizontal(|ui| {
                 ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 ui.label("Loading contacts...");
@@ -834,16 +834,14 @@ impl ContactsList {
     }
 
     pub fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.syncing = false;
         self.message = Some((message.to_string(), message_type));
     }
 }
 
 impl ScreenLike for ContactsList {
     fn refresh_on_arrival(&mut self) {
-        // Trigger a fresh `LoadContacts` dispatch via the auto-fetch in `render()`.
-        if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.has_loaded = false;
-        }
+        self.applied = None;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -855,101 +853,17 @@ impl ScreenLike for ContactsList {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.loading = false;
+        self.syncing = false;
         self.message = Some((message.to_string(), message_type));
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // Avatar results arrive independently of the contact-list load; route
-        // them without disturbing the list's loading state.
-        if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
-            self.avatar_cache.store(url, bytes);
-            return;
-        }
-
-        self.loading = false;
-
         match result {
-            BackendTaskSuccessResult::DashPayContacts(contact_ids) => {
-                // Clear existing contacts
-                self.contacts.clear();
-
-                // Convert contact IDs to Contact structs
-                for contact_id in contact_ids {
-                    let contact = Contact {
-                        identity_id: contact_id,
-                        username: None,
-                        display_name: Some(format!(
-                            "Contact ({})",
-                            &contact_id.to_string(Encoding::Base58)[0..8]
-                        )),
-                        avatar_url: None,
-                        bio: None,
-                        nickname: None,
-                        is_hidden: false,
-                        account_reference: 0,
-                        created_at: None,
-                    };
-                    self.contacts.insert(contact_id, contact);
-                }
-
-                // Mark as loaded and clear message
-                self.has_loaded = true;
-                self.message = None;
+            BackendTaskSuccessResult::DashPayAvatar { url, bytes } => {
+                self.avatar_cache.store(url, bytes);
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo {
-                identity,
-                contacts: contacts_data,
-            } => {
-                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
-
-                // A load that outlived an identity switch belongs to the
-                // identity we left — it must not repopulate this list.
-                if owner_id_opt != Some(identity) {
-                    tracing::debug!("Discarding contacts for a no-longer-selected identity");
-                    return;
-                }
-
-                // Clear existing contacts and repopulate the in-memory map
-                // from the adapter result. Upstream `ManagedIdentity` is
-                // now the authoritative source for contact rows (D4d), so
-                // the DET-local cache writes are gone.
-                self.contacts.clear();
-                for contact_data in contacts_data {
-                    // Skip self-contacts (where contact is the same as the owner)
-                    if owner_id_opt
-                        .as_ref()
-                        .is_some_and(|owner| *owner == contact_data.identity_id)
-                    {
-                        continue;
-                    }
-                    let contact = Contact {
-                        identity_id: contact_data.identity_id,
-                        username: contact_data.username,
-                        display_name: contact_data.display_name.or_else(|| {
-                            Some(format!(
-                                "Contact ({})",
-                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                            ))
-                        }),
-                        avatar_url: contact_data.avatar_url,
-                        bio: contact_data.bio,
-                        nickname: contact_data.nickname,
-                        is_hidden: contact_data.is_hidden,
-                        account_reference: contact_data.account_reference,
-                        created_at: Some(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64,
-                        ), // Fallback to current time for filter/sort
-                    };
-                    self.contacts.insert(contact_data.identity_id, contact);
-                }
-
-                // Mark as loaded and clear message
-                self.has_loaded = true;
-                self.message = None;
+            BackendTaskSuccessResult::DashPaySynced => {
+                self.syncing = false;
             }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Extract profile information from the document

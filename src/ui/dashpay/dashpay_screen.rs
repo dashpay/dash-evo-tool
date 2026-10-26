@@ -1,4 +1,4 @@
-use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
+use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -129,33 +129,13 @@ impl ScreenLike for DashPayScreen {
         if let AppAction::Custom(command) = &action {
             match command.as_str() {
                 "fetch_contacts_and_requests" => {
-                    // Fetch both contacts and requests - run both tasks concurrently
-                    let mut tasks = Vec::new();
-
-                    // Get contacts task
-                    if let AppAction::BackendTask(task) =
-                        self.contacts_list.trigger_fetch_contacts()
-                    {
-                        tasks.push(task);
-                    }
-
-                    // Get requests task
-                    if let AppAction::BackendTask(task) =
-                        self.contacts_list.trigger_fetch_requests()
-                    {
-                        tasks.push(task);
-                    }
-
-                    if !tasks.is_empty() {
-                        action =
-                            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent);
-                    }
+                    action = self.contacts_list.trigger_refresh_contacts();
                 }
                 "load_profile" => {
-                    action = self.profile_screen.trigger_load_profile();
+                    action = self.profile_screen.trigger_sync();
                 }
                 "fetch_payment_history" => {
-                    action = self.payment_history.trigger_fetch_payment_history();
+                    action = self.payment_history.trigger_sync();
                 }
                 _ => {}
             }

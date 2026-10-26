@@ -3,7 +3,9 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::dashpay::{MAX_PAYMENT_MEMO_CHARS, validate_payment_memo};
+use crate::model::dashpay::{
+    DashPaySnapshot, MAX_PAYMENT_MEMO_CHARS, PaymentDirection, validate_payment_memo,
+};
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -487,16 +489,17 @@ pub struct PaymentHistory {
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     payments: Vec<PaymentRecord>,
-    loading: bool,
-    has_searched: bool,
+    /// A sync asked for with Refresh is running.
+    syncing: bool,
+    /// The snapshot `payments` were built from.
+    applied: Option<Arc<DashPaySnapshot>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PaymentRecord {
     pub tx_id: String,
     pub contact_name: String,
-    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs), as provided by
-    /// `DashPayPaymentHistory`. Despite the `Credits` alias this is a duff value,
+    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs). Despite the `Credits` alias this is a duff value,
     /// so render it with `format_duffs_as_dash`.
     pub amount: Credits,
     pub is_incoming: bool,
@@ -511,8 +514,8 @@ impl PaymentHistory {
             selected_identity: None,
             selected_identity_string: String::new(),
             payments: Vec::new(),
-            loading: false,
-            has_searched: false,
+            syncing: false,
+            applied: None,
         };
 
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
@@ -531,29 +534,42 @@ impl PaymentHistory {
         new_self
     }
 
-    pub fn trigger_fetch_payment_history(&mut self) -> AppAction {
-        if let Some(identity) = &self.selected_identity {
-            self.loading = true;
-            // Mark the attempt at dispatch time, not on success. A failed load
-            // resets `loading` in `display_message` but leaves this flag set, so
-            // the auto-fetch gate fires exactly once and a transient error can't
-            // drive a re-dispatch storm. A fresh attempt is opted into via
-            // `refresh()` or an identity change.
-            self.has_searched = true;
+    /// Sync the selected identity's DashPay state now.
+    pub fn trigger_sync(&mut self) -> AppAction {
+        let Some(identity) = self.selected_identity.clone() else {
+            return AppAction::None;
+        };
+        self.syncing = true;
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+            identity: Some(identity),
+        })))
+    }
 
-            let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
-                identity: identity.clone(),
-            }));
-
-            return AppAction::BackendTask(task);
+    /// Rebuild the payments from the selected identity's DashPay snapshot
+    /// when it is not the one they were built from.
+    fn apply_snapshot(&mut self) {
+        let Some(owner) = self.selected_identity.as_ref().map(|i| i.identity.id()) else {
+            return;
+        };
+        let Some(snapshot) = self.app_context.dashpay_snapshot(&owner) else {
+            return;
+        };
+        if self
+            .applied
+            .as_ref()
+            .is_some_and(|applied| Arc::ptr_eq(applied, &snapshot))
+        {
+            return;
         }
-
-        AppAction::None
+        self.payments = payment_records(&snapshot);
+        self.applied = Some(snapshot);
     }
 
     pub fn refresh(&mut self) {
-        // Don't clear if we have data, just clear temporary states
-        self.loading = false;
+        // Keep the payments shown; the next render rebuilds them from the
+        // snapshot.
+        self.syncing = false;
+        self.applied = None;
 
         // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
@@ -568,21 +584,12 @@ impl PaymentHistory {
             self.selected_identity = Some(preferred.clone());
             self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
-
-        // Reset the fetched flag if we have no payments; next render dispatches
-        // `LoadPaymentHistory` via `has_searched == false`.
-        if self.selected_identity.is_some() && self.payments.is_empty() {
-            self.has_searched = false;
-        }
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Auto-dispatch `LoadPaymentHistory` on first render or after identity change.
-        if !self.has_searched && !self.loading && self.selected_identity.is_some() {
-            action = self.trigger_fetch_payment_history();
-        }
+        self.apply_snapshot();
 
         // Identity selector or no identities message
         let identities = self
@@ -612,10 +619,8 @@ impl PaymentHistory {
                     );
 
                     if response.changed() {
+                        self.payments.clear();
                         self.refresh();
-                        // The next render dispatches `LoadPaymentHistory`
-                        // via `has_searched == false`.
-                        self.has_searched = false;
                     }
                 });
             }
@@ -636,8 +641,8 @@ impl PaymentHistory {
             return action;
         }
 
-        // Loading indicator
-        if self.loading {
+        // Loading indicator, until a first sync has something to show.
+        if self.syncing && self.applied.is_none() {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Loading payment history...");
@@ -764,83 +769,108 @@ impl PaymentHistory {
     }
 
     pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for
-        // side-effects. Settle the spinner so a failed `LoadPaymentHistory`
-        // doesn't strand the widget on the loading state (`has_searched` was
-        // already set at dispatch, so this won't re-trigger the auto-fetch).
-        self.loading = false;
+        // Banner display is handled globally by AppState; this only settles
+        // the spinner of a failed sync.
+        self.syncing = false;
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        self.loading = false;
-
-        match result {
-            BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
-                self.payments.clear();
-                self.has_searched = true;
-
-                // Get current identity for saving to database
-                if let Some(identity) = &self.selected_identity {
-                    let identity_id = identity.identity.id();
-
-                    // Convert backend data to PaymentRecord structs and save to database
-                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
-                        // Parse contact identity from contact_name if it contains ID
-                        let contact_id = if contact_name.contains("(") && contact_name.contains(")")
-                        {
-                            // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name
-                                .find('(')
-                                .expect("invariant: '(' present per the contains check above")
-                                + 1;
-                            let end = contact_name
-                                .find(')')
-                                .expect("invariant: ')' present per the contains check above");
-                            let _id_str = &contact_name[start..end];
-                            // This is likely a partial base58 ID, we'd need the full ID
-                            // For now, we'll use a placeholder
-                            Identifier::new([0; 32])
-                        } else {
-                            Identifier::new([0; 32])
-                        };
-
-                        let payment = PaymentRecord {
-                            tx_id: tx_id.clone(),
-                            contact_name,
-                            amount: Credits::from(amount),
-                            is_incoming,
-                            timestamp: 0, // TODO: Include timestamp in backend data
-                            memo: if memo.is_empty() {
-                                None
-                            } else {
-                                Some(memo.clone())
-                            },
-                        };
-                        self.payments.push(payment);
-                        // `payments::send_payment_to_contact` records outgoing payments
-                        // through `WalletBackend::dashpay_record_payment` + the
-                        // payment-timestamp sidecar, so the upstream wallet is the
-                        // single source of truth; no mirror is needed here.
-                        let _ = (contact_id, identity_id, tx_id, amount, memo, is_incoming);
-                    }
-                } else {
-                    // No selected identity, just populate in-memory
-                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
-                        let payment = PaymentRecord {
-                            tx_id,
-                            contact_name,
-                            amount: Credits::from(amount),
-                            is_incoming,
-                            timestamp: 0, // TODO: Include timestamp in backend data
-                            memo: if memo.is_empty() { None } else { Some(memo) },
-                        };
-                        self.payments.push(payment);
-                    }
-                }
-            }
-            _ => {
-                // Ignore other results
-            }
+        if matches!(result, BackendTaskSuccessResult::DashPaySynced) {
+            self.syncing = false;
         }
+    }
+}
+
+/// The payments of `snapshot`, newest first, each labelled with the contact
+/// paid or paying.
+fn payment_records(snapshot: &DashPaySnapshot) -> Vec<PaymentRecord> {
+    snapshot
+        .payments
+        .iter()
+        .map(|payment| {
+            let is_incoming = payment.payment_type == PaymentDirection::Received;
+            let counterparty = if is_incoming {
+                &payment.from_identity_id
+            } else {
+                &payment.to_identity_id
+            };
+            let counterparty = Identifier::from_bytes(counterparty).ok();
+            // TODO(NEW-004): resolve non-contact counterparties to their DPNS
+            // username.
+            let contact_name = snapshot
+                .contacts
+                .iter()
+                .find(|contact| Some(contact.identity_id) == counterparty)
+                .and_then(|contact| contact.username.clone().or(contact.display_name.clone()))
+                .unwrap_or_else(|| {
+                    let id = counterparty
+                        .map(|id| id.to_string(Encoding::Base58))
+                        .unwrap_or_default();
+                    format!("Unknown ({})", &id[..id.len().min(8)])
+                });
+            PaymentRecord {
+                tx_id: payment.tx_id.clone(),
+                contact_name,
+                amount: Credits::try_from(payment.amount).unwrap_or_default(),
+                is_incoming,
+                timestamp: u64::try_from(payment.created_at).unwrap_or_default(),
+                memo: payment.memo.clone().filter(|memo| !memo.is_empty()),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::dashpay::{ContactData, PaymentStatus, StoredPayment};
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from([byte; 32])
+    }
+
+    #[test]
+    fn payments_are_labelled_with_the_contact_and_keep_their_details() {
+        let payment = |from: u8, to: u8, direction| StoredPayment {
+            id: 0,
+            tx_id: format!("tx{from}"),
+            from_identity_id: id(from).to_vec(),
+            to_identity_id: id(to).to_vec(),
+            amount: 1_500,
+            memo: Some("Lunch".into()),
+            payment_type: direction,
+            status: PaymentStatus::Confirmed,
+            created_at: 1_700_000_000_000,
+            confirmed_at: None,
+        };
+        let snapshot = DashPaySnapshot {
+            contacts: vec![ContactData {
+                identity_id: id(2),
+                nickname: None,
+                note: None,
+                is_hidden: false,
+                account_reference: 0,
+                username: Some("bao".into()),
+                display_name: Some("Bao".into()),
+                avatar_url: None,
+                bio: None,
+            }],
+            payments: vec![
+                payment(2, 1, PaymentDirection::Received),
+                payment(1, 3, PaymentDirection::Sent),
+            ],
+            ..Default::default()
+        };
+
+        let records = payment_records(&snapshot);
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].contact_name, "bao");
+        assert!(records[0].is_incoming);
+        assert_eq!(records[0].amount, 1_500);
+        assert_eq!(records[0].timestamp, 1_700_000_000_000);
+        assert_eq!(records[0].memo.as_deref(), Some("Lunch"));
+        assert!(records[1].contact_name.starts_with("Unknown ("));
+        assert!(!records[1].is_incoming);
     }
 }

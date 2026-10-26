@@ -4,7 +4,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactDetails, ContactInfoField, ContactInfoUpdate};
+use crate::model::dashpay::{
+    ContactDetails, ContactInfoField, ContactInfoUpdate, DashPaySnapshot, PaymentDirection,
+};
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
@@ -31,8 +33,7 @@ const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
 #[derive(Debug, Clone)]
 pub struct Payment {
     pub tx_id: String,
-    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs), as provided by
-    /// `DashPayPaymentHistory`. Despite the `Credits` alias this is a duff value,
+    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs). Despite the `Credits` alias this is a duff value,
     /// so render it with `format_duffs_as_dash`.
     pub amount: Credits,
     pub timestamp: u64,
@@ -66,13 +67,17 @@ pub struct ContactDetailsScreen {
     /// The details the editor opened with, so a save replaces only the
     /// fields the user changed.
     edit_opened: ContactDetails,
+    /// A save is running.
     loading: bool,
-    /// The details read is running; editing waits for it so the editor opens
-    /// from the published details rather than this device's copy.
+    /// The sync reading the published details is running; editing waits for
+    /// it so the editor opens from the published details rather than this
+    /// device's copy.
     details_loading: bool,
-    /// `contact_info`'s nickname, note and hidden flag came from the details
-    /// read, so a reread of this device's copy keeps them.
+    /// `contact_info`'s nickname, note and hidden flag came from the DashPay
+    /// snapshot, so a reread of this device's copy keeps them.
     details_read: bool,
+    /// The snapshot `contact_info` was last read from.
+    applied: Option<Arc<DashPaySnapshot>>,
     show_info_popup: bool,
     needs_backend_fetch: bool,
     pending_update: Option<ContactInfoUpdate>,
@@ -98,6 +103,7 @@ impl ContactDetailsScreen {
             loading: false,
             details_loading: false,
             details_read: false,
+            applied: None,
             show_info_popup: false,
             needs_backend_fetch: true,
             pending_update: None,
@@ -107,10 +113,10 @@ impl ContactDetailsScreen {
     }
 
     /// Initialise `contact_info` from this device's copy of the nickname, note
-    /// and hidden flag, until `LoadContactDetails` returns the details shown
-    /// everywhere else. Public profile fields (username, display_name, avatar,
-    /// bio) are populated asynchronously by `FetchContactProfile` — see
-    /// `display_task_result`.
+    /// and hidden flag, until the DashPay snapshot holds the contact. Public
+    /// profile fields (username, display_name, avatar, bio) come from the
+    /// snapshot too, or from `FetchContactProfile` for someone who is not an
+    /// established contact — see `display_task_result`.
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
 
@@ -173,26 +179,82 @@ impl ContactDetailsScreen {
         });
     }
 
-    /// Trigger backend reads of the contact's public profile and of the
-    /// details shown for it (published first; see `LoadContactDetails`).
-    fn trigger_backend_fetch(&mut self) -> AppAction {
-        self.loading = true;
-        self.details_loading = true;
+    /// Show the contact as the owner's DashPay snapshot holds it, when the
+    /// snapshot is not the one it was last read from.
+    fn apply_snapshot(&mut self) {
+        let Some(snapshot) = self
+            .app_context
+            .dashpay_snapshot(&self.identity.identity.id())
+        else {
+            return;
+        };
+        if self
+            .applied
+            .as_ref()
+            .is_some_and(|applied| Arc::ptr_eq(applied, &snapshot))
+        {
+            return;
+        }
+        self.show_snapshot(&snapshot);
+        self.applied = Some(snapshot);
+    }
 
+    /// Show the contact and the payments exchanged with them as `snapshot`
+    /// holds them. Leaves `contact_info` alone when the snapshot does not hold
+    /// the contact.
+    fn show_snapshot(&mut self, snapshot: &DashPaySnapshot) {
+        let contact_bytes = self.contact_id.to_vec();
+        self.payment_history = snapshot
+            .payments
+            .iter()
+            .filter(|payment| {
+                payment.from_identity_id == contact_bytes || payment.to_identity_id == contact_bytes
+            })
+            .map(|payment| Payment {
+                tx_id: payment.tx_id.clone(),
+                amount: Credits::try_from(payment.amount).unwrap_or_default(),
+                timestamp: u64::try_from(payment.created_at).unwrap_or_default(),
+                is_incoming: payment.payment_type == PaymentDirection::Received,
+                memo: payment.memo.clone().filter(|memo| !memo.is_empty()),
+            })
+            .collect();
+        let Some(contact) = snapshot
+            .contacts
+            .iter()
+            .find(|contact| contact.identity_id == self.contact_id)
+        else {
+            return;
+        };
+        self.contact_info = Some(ContactInfo {
+            identity_id: self.contact_id,
+            username: contact.username.clone(),
+            display_name: contact.display_name.clone(),
+            bio: contact.bio.clone(),
+            avatar_url: contact.avatar_url.clone(),
+            nickname: contact.nickname.clone(),
+            note: contact.note.clone(),
+            is_hidden: contact.is_hidden,
+            account_reference: contact.account_reference,
+        });
+        self.details_read = true;
+    }
+
+    /// Sync the owner's DashPay state, which reads the published details, and
+    /// read the public profile of someone the snapshot does not hold as a
+    /// contact.
+    fn trigger_backend_fetch(&mut self) -> AppAction {
+        self.details_loading = true;
         let task = |task| BackendTask::DashPayTask(Box::new(task));
-        AppAction::BackendTasks(
-            vec![
-                task(DashPayTask::FetchContactProfile {
-                    identity: self.identity.clone(),
-                    contact_id: self.contact_id,
-                }),
-                task(DashPayTask::LoadContactDetails {
-                    identity: self.identity.clone(),
-                    contact_id: self.contact_id,
-                }),
-            ],
-            BackendTasksExecutionMode::Concurrent,
-        )
+        let mut tasks = vec![task(DashPayTask::SyncNow {
+            identity: Some(self.identity.clone()),
+        })];
+        if !self.details_read {
+            tasks.push(task(DashPayTask::FetchContactProfile {
+                identity: self.identity.clone(),
+                contact_id: self.contact_id,
+            }));
+        }
+        AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
     }
 
     fn start_editing(&mut self) {
@@ -295,6 +357,8 @@ impl ContactDetailsScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        self.apply_snapshot();
 
         // Dispatch deferred backend fetch if flagged
         if self.needs_backend_fetch {
@@ -575,6 +639,7 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.load_from_database();
+        self.applied = None;
         // Flag that we need a backend fetch; it will be dispatched from render()
         self.needs_backend_fetch = true;
     }
@@ -639,23 +704,9 @@ impl ScreenLike for ContactDetailsScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        self.loading = false;
-
         match result {
-            BackendTaskSuccessResult::DashPayContactDetails {
-                identity,
-                contact_id,
-                details,
-            } => {
-                if identity == self.identity.identity.id() && contact_id == self.contact_id {
-                    self.details_loading = false;
-                    self.details_read = true;
-                    if let Some(info) = &mut self.contact_info {
-                        info.nickname = details.nickname;
-                        info.note = details.note;
-                        info.is_hidden = details.hidden;
-                    }
-                }
+            BackendTaskSuccessResult::DashPaySynced => {
+                self.details_loading = false;
             }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Update contact info with fresh profile data from Platform
@@ -714,6 +765,7 @@ impl ScreenLike for ContactDetailsScreen {
                 published,
             } => {
                 if identity == self.identity.identity.id() && contact_id == self.contact_id {
+                    self.loading = false;
                     self.commit_pending_update();
                     let (message, kind) = if published {
                         ("Contact information saved.", MessageType::Success)
@@ -724,42 +776,6 @@ impl ScreenLike for ContactDetailsScreen {
                         )
                     };
                     MessageBanner::set_global(self.app_context.egui_ctx(), message, kind);
-                }
-            }
-            BackendTaskSuccessResult::DashPayContactsWithInfo {
-                identity,
-                contacts: contacts_data,
-            } => {
-                // Contacts loaded for another identity say nothing about this
-                // screen's contact — a reload that outlived an identity switch
-                // must not overwrite what is on screen.
-                if identity != self.identity.identity.id() {
-                    return;
-                }
-
-                // If a full contacts reload happened, update our contact if present
-                for contact_data in contacts_data {
-                    if contact_data.identity_id == self.contact_id {
-                        if let Some(info) = &mut self.contact_info {
-                            if contact_data.username.is_some() {
-                                info.username = contact_data.username;
-                            }
-                            if contact_data.display_name.is_some() {
-                                info.display_name = contact_data.display_name;
-                            }
-                            if contact_data.avatar_url.is_some() {
-                                info.avatar_url = contact_data.avatar_url;
-                            }
-                            if contact_data.bio.is_some() {
-                                info.bio = contact_data.bio;
-                            }
-                            info.nickname = contact_data.nickname;
-                            info.note = contact_data.note;
-                            info.is_hidden = contact_data.is_hidden;
-                            info.account_reference = contact_data.account_reference;
-                        }
-                        break;
-                    }
                 }
             }
             _ => {}
@@ -824,11 +840,11 @@ mod tests {
     }
 
     /// The editor opens from the details shown for the contact everywhere
-    /// else (published first), read by the backend when the screen opens,
-    /// not from this device's older copy. It stays closed until that read
-    /// returns.
+    /// else (published first), held in the DashPay snapshot, not from this
+    /// device's older copy. While the sync reading them runs, it stays closed.
     #[test]
     fn the_editor_opens_from_the_published_details() {
+        use crate::model::dashpay::ContactData;
         let dir = tempfile::tempdir().expect("temp dir");
         let context = test_app_context(dir.path());
         let owner = Identifier::from([1; 32]);
@@ -837,30 +853,31 @@ mod tests {
         let mut screen = ContactDetailsScreen::new(context, identity, contact);
 
         let AppAction::BackendTasks(tasks, _) = screen.trigger_backend_fetch() else {
-            panic!("expected the profile and details reads");
+            panic!("expected the sync and the profile read");
         };
         assert!(tasks.iter().any(|task| matches!(
             task,
-            BackendTask::DashPayTask(task) if matches!(
-                task.as_ref(),
-                DashPayTask::LoadContactDetails { contact_id, .. } if *contact_id == contact
-            )
+            BackendTask::DashPayTask(task)
+                if matches!(task.as_ref(), DashPayTask::SyncNow { identity: Some(_) })
         )));
         screen.start_editing();
-        assert!(
-            !screen.editing_info,
-            "the editor waits for the details read"
-        );
+        assert!(!screen.editing_info, "the editor waits for the sync");
 
-        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
-            identity: owner,
-            contact_id: contact,
-            details: ContactDetails {
+        screen.show_snapshot(&DashPaySnapshot {
+            contacts: vec![ContactData {
+                identity_id: contact,
                 nickname: Some("Bao".into()),
                 note: Some("published".into()),
-                hidden: true,
-            },
+                is_hidden: true,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }],
+            ..Default::default()
         });
+        screen.display_task_result(BackendTaskSuccessResult::DashPaySynced);
         // A refresh rereads this device's copy, which must not replace them.
         screen.refresh();
         screen.start_editing();

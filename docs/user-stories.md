@@ -1073,7 +1073,8 @@ As a user, I want to view past payments sent and received through DashPay so tha
 
 As an everyday user, I want to generate a DashPay QR code so that someone nearby can scan it to add me as a contact or send a payment.
 
-- QR code encodes DashPay profile or payment info.
+- The QR code is a DashPay contact code in the standard DashPay format (DIP-15), so other DashPay wallets can scan it. It shows the identity's username and works for one hour.
+- Scanning another wallet's contact QR code sends that contact a request it can accept automatically. An expired or unreadable code is refused before anything is sent.
 
 ### DPY-009: Edit contact info [Implemented]
 **Persona:** Alex, Priya

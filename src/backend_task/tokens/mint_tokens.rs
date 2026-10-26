@@ -3,11 +3,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::MintRecipient;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::tokens::transitions::MintResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
@@ -27,6 +28,14 @@ impl AppContext {
         group_info: Option<GroupStateTransitionInfoStatus>,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // The identity the tokens go to: the chosen one when the token allows
+        // choosing, otherwise its configured destination.
+        let mint_recipient = data_contract
+            .expected_token_configuration(token_position)
+            .ok()
+            .and_then(|config| {
+                MintRecipient::resolve(config.distribution_rules(), optional_recipient).identity()
+            });
         let actor = self.token_actor(sending_identity).await?;
         let common = self.token_action_common(data_contract.clone(), token_position, &signing_key);
 
@@ -87,10 +96,9 @@ impl AppContext {
 
                         // Group action with balance - only update if action is closed
                         MintResult::GroupActionWithBalance(_, status, Some(amount)) => {
-                            if matches!(status, GroupActionStatus::ActionClosed) {
-                                // Get the recipient identity (either optional_recipient or sending_identity)
-                                let recipient_id = optional_recipient
-                                    .unwrap_or_else(|| sending_identity.identity.id());
+                            if matches!(status, GroupActionStatus::ActionClosed)
+                                && let Some(recipient_id) = mint_recipient
+                            {
                                 if let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,

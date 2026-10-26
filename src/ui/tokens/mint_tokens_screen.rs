@@ -6,7 +6,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::user_role::UserRole;
+use crate::model::token::MintRecipient;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -34,6 +34,24 @@ pub struct MintAction {
 }
 
 impl MintAction {
+    /// The recipient the minter entered: `Ok(None)` when the field is empty or
+    /// the token does not let the minter choose, `Err` when it does not parse.
+    fn chosen_recipient(&self, ctx: &TokenActionCtx) -> Result<Option<Identifier>, ()> {
+        let entered = self.recipient_identity_id.trim();
+        if entered.is_empty()
+            || !ctx
+                .info
+                .token_config
+                .distribution_rules()
+                .minting_allow_choosing_destination()
+        {
+            return Ok(None);
+        }
+        Identifier::from_string_try_encodings(entered, &[Encoding::Base58, Encoding::Hex])
+            .map(Some)
+            .map_err(|_| ())
+    }
+
     fn render_amount_input(&mut self, ui: &mut Ui, ctx: &TokenActionCtx) {
         let amount_input = self.amount_input.get_or_insert_with(|| {
             let token_amount = Amount::from_token(ctx.info, 0);
@@ -79,12 +97,29 @@ impl TokenAction for MintAction {
             .authorized_to_make_change_action_takers()
     }
 
-    fn confirm_message(&self, _ctx: &TokenActionCtx) -> String {
-        format!(
-            "Are you sure you want to mint {} tokens to {}?",
-            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-            self.recipient_identity_id
-        )
+    fn confirm_message(&self, ctx: &TokenActionCtx) -> String {
+        let amount = self.amount.clone().unwrap_or(Amount::new(0, 0));
+        match self.chosen_recipient(ctx) {
+            Ok(chosen) => {
+                match MintRecipient::resolve(ctx.info.token_config.distribution_rules(), chosen) {
+                    MintRecipient::Chosen(recipient) => format!(
+                        "Are you sure you want to mint {amount} tokens to {recipient}?",
+                        recipient = recipient.to_string(Encoding::Base58)
+                    ),
+                    MintRecipient::ContractDestination(recipient) => format!(
+                        "Are you sure you want to mint {amount} tokens to this token's destination identity {recipient}?",
+                        recipient = recipient.to_string(Encoding::Base58)
+                    ),
+                    MintRecipient::Missing => format!(
+                        "Are you sure you want to mint {amount} tokens? This token has no destination identity for new tokens."
+                    ),
+                }
+            }
+            Err(()) => format!(
+                "Are you sure you want to mint {amount} tokens to {recipient}?",
+                recipient = self.recipient_identity_id
+            ),
+        }
     }
 
     fn render_form(&mut self, ui: &mut Ui, ctx: &TokenActionCtx, step: &mut StepCounter) {
@@ -108,9 +143,18 @@ impl TokenAction for MintAction {
         }
 
         let distribution_rules = ctx.info.token_config.distribution_rules();
-        if distribution_rules.minting_allow_choosing_destination()
-            || ctx.app_context.user_role().at_least(UserRole::Power)
-        {
+        if !distribution_rules.minting_allow_choosing_destination() {
+            ui.add_space(10.0);
+            match distribution_rules.new_tokens_destination_identity() {
+                Some(destination) => ui.label(format!(
+                    "New tokens go to this token's destination identity {destination}.",
+                    destination = destination.to_string(Encoding::Base58)
+                )),
+                None => ui.label(
+                    "This token has no destination identity for new tokens, so it cannot be minted.",
+                ),
+            };
+        } else {
             let destination_optional = distribution_rules
                 .new_tokens_destination_identity()
                 .is_some();
@@ -146,10 +190,7 @@ impl TokenAction for MintAction {
             return None;
         }
 
-        let Ok(recipient_id) = Identifier::from_string_try_encodings(
-            &self.recipient_identity_id,
-            &[Encoding::Base58, Encoding::Hex],
-        ) else {
+        let Ok(chosen) = self.chosen_recipient(ctx) else {
             MessageBanner::set_global(
                 ctx.app_context.egui_ctx(),
                 "Invalid receiver",
@@ -157,6 +198,17 @@ impl TokenAction for MintAction {
             );
             return None;
         };
+        let rules = ctx.info.token_config.distribution_rules();
+        let recipient = MintRecipient::resolve(rules, chosen);
+        if recipient == MintRecipient::Missing {
+            let message = if rules.minting_allow_choosing_destination() {
+                "Choose the identity that receives the new tokens, then try again."
+            } else {
+                "This token has no destination identity for new tokens, so it cannot be minted."
+            };
+            MessageBanner::set_global(ctx.app_context.egui_ctx(), message, MessageType::Error);
+            return None;
+        }
 
         Some(AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::MintTokens {
@@ -165,7 +217,7 @@ impl TokenAction for MintAction {
                 token_position: ctx.info.token_position,
                 signing_key,
                 public_note,
-                recipient_id: Some(recipient_id),
+                recipient_id: recipient.transition_recipient(),
                 amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
                 group_info,
             },

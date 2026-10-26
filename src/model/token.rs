@@ -3,6 +3,7 @@ use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v1::TokenDistributionRulesV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v1::TokenDistributionRulesV1;
@@ -10,6 +11,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_dist
     TokenOncePerIdentityDistribution, accessors::v0::TokenOncePerIdentityDistributionV0Methods,
     v0::TokenOncePerIdentityDistributionV0,
 };
+use dash_sdk::platform::Identifier;
 
 /// Minimum number of characters in a searchable contract keyword.
 pub const MIN_CONTRACT_KEYWORD_CHARS: usize = 3;
@@ -156,8 +158,109 @@ impl TokenActionAvailability {
     }
 }
 
+/// Who receives newly minted tokens under a token's distribution rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MintRecipient {
+    /// The identity the minter chose; the rules allow choosing.
+    Chosen(Identifier),
+    /// The token's configured destination for new tokens.
+    ContractDestination(Identifier),
+    /// No identity was chosen (or choosing is not allowed) and the token
+    /// configures no destination, so Platform refuses the mint.
+    Missing,
+}
+
+impl MintRecipient {
+    /// The recipient of a mint under `rules` when the minter chose `chosen`.
+    /// A choice the rules do not allow is ignored, as Platform ignores it.
+    pub fn resolve(rules: &TokenDistributionRules, chosen: Option<Identifier>) -> Self {
+        let chosen = chosen.filter(|_| rules.minting_allow_choosing_destination());
+        match (chosen, rules.new_tokens_destination_identity()) {
+            (Some(id), _) => Self::Chosen(id),
+            (None, Some(destination)) => Self::ContractDestination(*destination),
+            (None, None) => Self::Missing,
+        }
+    }
+
+    /// The recipient a mint transition carries: only a chosen one, since
+    /// Platform applies the token's destination itself.
+    pub fn transition_recipient(self) -> Option<Identifier> {
+        match self {
+            Self::Chosen(id) => Some(id),
+            Self::ContractDestination(_) | Self::Missing => None,
+        }
+    }
+
+    /// The identity that receives the tokens, when there is one.
+    pub fn identity(self) -> Option<Identifier> {
+        match self {
+            Self::Chosen(id) | Self::ContractDestination(id) => Some(id),
+            Self::Missing => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mint_recipient_follows_the_tokens_destination_rules() {
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+        let chosen = Identifier::new([1; 32]);
+        let destination = Identifier::new([2; 32]);
+        let rules = |allow_choosing: bool, destination: Option<Identifier>| {
+            let mut rules = dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0::default_most_restrictive()
+                .distribution_rules;
+            rules.set_minting_allow_choosing_destination(allow_choosing);
+            rules.set_new_tokens_destination_identity(destination);
+            rules
+        };
+
+        for (allow, dest, pick, expected) in [
+            (true, None, Some(chosen), MintRecipient::Chosen(chosen)),
+            (
+                true,
+                Some(destination),
+                Some(chosen),
+                MintRecipient::Chosen(chosen),
+            ),
+            (
+                true,
+                Some(destination),
+                None,
+                MintRecipient::ContractDestination(destination),
+            ),
+            (true, None, None, MintRecipient::Missing),
+            (
+                false,
+                Some(destination),
+                Some(chosen),
+                MintRecipient::ContractDestination(destination),
+            ),
+            (false, None, Some(chosen), MintRecipient::Missing),
+        ] {
+            assert_eq!(
+                MintRecipient::resolve(&rules(allow, dest), pick),
+                expected,
+                "allow={allow} destination={dest:?} chosen={pick:?}"
+            );
+        }
+
+        assert_eq!(
+            MintRecipient::Chosen(chosen).transition_recipient(),
+            Some(chosen)
+        );
+        assert_eq!(
+            MintRecipient::ContractDestination(destination).transition_recipient(),
+            None,
+            "the transition leaves the destination to Platform"
+        );
+        assert_eq!(
+            MintRecipient::ContractDestination(destination).identity(),
+            Some(destination)
+        );
+        assert_eq!(MintRecipient::Missing.identity(), None);
+    }
 
     #[test]
     fn token_actions_need_the_identitys_open_wallet() {

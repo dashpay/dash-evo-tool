@@ -201,7 +201,12 @@ where
             Err(TaskError::ContactKeyDerivationFailed { .. }) => continue,
             Err(error) => return Err(error),
         };
-        let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") else {
+        // Platform returns the fixed 32-byte field as `Value::Bytes32`; a
+        // document built locally carries `Value::Bytes`.
+        let Some(enc_user_id) = props
+            .get("encToUserId")
+            .and_then(|value| value.as_bytes_slice().ok())
+        else {
             continue;
         };
         let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key) else {

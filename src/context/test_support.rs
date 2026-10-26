@@ -363,11 +363,28 @@ pub(crate) fn identity_across_two_wallets() -> (
     Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
     Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
 ) {
-    use dash_sdk::dpp::identity::SecurityLevel;
-    let mut identity = identity_holding(&[
-        auth_key(1, SecurityLevel::HIGH),
-        auth_key(2, SecurityLevel::HIGH),
-    ]);
+    identity_across_two_wallets_of(
+        dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+        dash_sdk::dpp::identity::SecurityLevel::HIGH,
+    )
+}
+
+/// [`identity_across_two_wallets`] with keys 1 and 2 of `purpose` at `level`.
+pub(crate) fn identity_across_two_wallets_of(
+    purpose: dash_sdk::dpp::identity::Purpose,
+    level: dash_sdk::dpp::identity::SecurityLevel,
+) -> (
+    QualifiedIdentity,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+) {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    let key = |id| {
+        let mut key = auth_key(id, level);
+        key.set_purpose(purpose);
+        key
+    };
+    let mut identity = identity_holding(&[key(1), key(2)]);
     let (seed_a, seed_b) = ([0xA1; 32], [0xB2; 32]);
     hold_as_wallet_reference(&mut identity, 1, seed_a);
     hold_as_wallet_reference(&mut identity, 2, seed_b);
@@ -384,4 +401,12 @@ pub(crate) fn identity_across_two_wallets() -> (
         .associated_wallets
         .insert(seed_b, Arc::clone(&wallet_b));
     (identity, wallet_a, wallet_b)
+}
+
+/// Locks `wallet` as a password wallet whose seed is closed, the state the
+/// screens' unlock prompt is for.
+pub(crate) fn lock_with_password(wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>) {
+    let mut wallet = wallet.write().expect("wallet lock");
+    wallet.uses_password = true;
+    wallet.wallet_seed.close();
 }

@@ -20,9 +20,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
-};
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, show_wallet_lock_gate};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
@@ -42,7 +40,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Frame, Margin, RichText, Ui};
+use eframe::egui::{self, Frame, Margin, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -490,30 +488,6 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
             let mut inner_action = AppAction::None;
 
-            // Handle a locked wallet before showing the form.
-            if let Some(wallet) = &self.common.selected_wallet {
-                if !self.common.wallet_open_attempted {
-                    if let Err(e) = try_open_wallet_no_password(&self.common.app_context, wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                            .disable_auto_dismiss();
-                    }
-                    self.common.wallet_open_attempted = true;
-                }
-                if wallet_needs_unlock(wallet) {
-                    ui.heading(A::PAGE_HEADING);
-                    ui.add_space(10.0);
-                    ui.colored_label(
-                        Color32::from_rgb(200, 150, 50),
-                        "Wallet is locked. Please unlock to continue.",
-                    );
-                    ui.add_space(8.0);
-                    if ui.button("Unlock Wallet").clicked() {
-                        self.common.wallet_unlock_popup.open();
-                    }
-                    return AppAction::None;
-                }
-            }
-
             let mut step = StepCounter::new();
 
             // The checkbox shares the heading's row. A bare right-to-left layout
@@ -554,6 +528,15 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(10.0);
+            }
+            if show_wallet_lock_gate(
+                ui,
+                &self.common.app_context,
+                self.common.selected_wallet.as_ref(),
+                &mut self.common.wallet_open_attempted,
+                &mut self.common.wallet_unlock_popup,
+            ) {
+                return AppAction::None;
             }
 
             {
@@ -623,5 +606,69 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::test_support::{
+        identity_across_two_wallets_of, lock_with_password, test_app_context,
+    };
+    use crate::model::qualified_contract::QualifiedContract;
+    use crate::ui::ScreenLike;
+    use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
+    use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// Regression: the lock notice returned before the key chooser, so with
+    /// the default key's wallet locked the user could not pick a key held in
+    /// another wallet without first unlocking the unrelated one.
+    #[test]
+    fn a_locked_default_wallet_leaves_the_key_choice_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let (identity, wallet_a, _wallet_b) =
+            identity_across_two_wallets_of(Purpose::AUTHENTICATION, SecurityLevel::CRITICAL);
+        lock_with_password(&wallet_a);
+        let contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("a contract");
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0xD4; 32]),
+            token_alias: "locked-wallet-token".to_string(),
+            identity,
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = BurnTokensScreen::new(info, &ctx);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("Wallet is locked")
+                .is_some()
+        );
+        harness.get_by_label("Advanced Options").click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("Select the key to sign")
+                .is_some()
+        );
     }
 }

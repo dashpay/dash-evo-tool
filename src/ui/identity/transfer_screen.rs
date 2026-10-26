@@ -36,7 +36,7 @@ use std::sync::{Arc, RwLock};
 use super::keys::add_key_screen::AddKeyScreen;
 use super::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+    WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -664,30 +664,6 @@ impl ScreenLike for TransferScreen {
                     ui.add_space(5.0);
                 }
 
-                if self.selected_wallet.is_some()
-                    && let Some(wallet) = &self.selected_wallet
-                {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                .disable_auto_dismiss();
-                        }
-                        self.wallet_open_attempted = true;
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                        return inner_action;
-                    }
-                }
-
                 // Heading with checkbox on the same line
                 ui.horizontal(|ui| {
                     ui.heading("Transfer Funds");
@@ -746,6 +722,15 @@ impl ScreenLike for TransferScreen {
                     ui.heading("4. Select the key to sign the transaction with");
                     ui.add_space(10.0);
                     inner_action |= self.render_key_selection(ui);
+                }
+                if show_wallet_lock_gate(
+                    ui,
+                    &self.app_context,
+                    self.selected_wallet.as_ref(),
+                    &mut self.wallet_open_attempted,
+                    &mut self.wallet_unlock_popup,
+                ) {
+                    return inner_action;
                 }
 
                 ui.add_space(10.0);
@@ -861,6 +846,46 @@ impl ScreenLike for TransferScreen {
 #[cfg(test)]
 mod tests {
     use super::key_info_when_available;
+
+    /// Regression: the lock notice returned before the key chooser, so with
+    /// the default key's wallet locked the user could not pick a key held in
+    /// another wallet without first unlocking the unrelated one.
+    #[test]
+    fn a_locked_default_wallet_leaves_the_key_choice_open() {
+        use crate::context::test_support::{
+            identity_across_two_wallets_of, lock_with_password, test_app_context,
+        };
+        use crate::ui::ScreenLike;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let (identity, wallet_a, _wallet_b) =
+            identity_across_two_wallets_of(Purpose::TRANSFER, SecurityLevel::CRITICAL);
+        lock_with_password(&wallet_a);
+        let mut screen = super::TransferScreen::new(identity, &ctx);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 1400.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("Wallet is locked")
+                .is_some()
+        );
+        harness.get_by_label("Show Advanced Options").click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("Select the key to sign")
+                .is_some()
+        );
+    }
 
     #[test]
     fn key_info_is_offered_only_when_a_key_exists() {

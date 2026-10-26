@@ -2728,6 +2728,10 @@ impl ScreenLike for TokensScreen {
         let right_buttons = match self.tokens_subscreen {
             TokensSubscreen::MyTokens => vec![
                 (
+                    "Create Token",
+                    DesiredAppAction::SetMainScreen(RootScreenType::RootScreenTokenCreator),
+                ),
+                (
                     "Import Token",
                     DesiredAppAction::AddScreenType(Box::new(ScreenType::AddTokenById)),
                 ),

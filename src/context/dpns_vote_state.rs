@@ -46,7 +46,7 @@ struct DpnsVoteStatePublication {
 impl DpnsVoteStatePublications {
     fn next_generation(&self) -> Result<u64, TaskError> {
         self.sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| TaskError::DpnsVoteStateChanged)

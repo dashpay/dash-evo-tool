@@ -1,6 +1,5 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
-use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
@@ -38,20 +37,16 @@ pub enum Capability {
     NonTransferableTokens,
 }
 
-/// The connected network's protocol version, when this build defines it.
+/// Whether the protocol version the connected network has proven is one this
+/// build defines and is at least `activation`.
 ///
-/// `None` before the version is fetched (0) and for a version newer than any
-/// this build knows, which a proved epoch can report after a network upgrade.
-/// Every capability reads the version through this, so both fail closed: this
-/// build cannot tell what an unknown version's rules allow.
-fn known_protocol_version(ctx: &AppContext) -> Option<&'static PlatformVersion> {
-    PlatformVersion::get_optional(ctx.platform_protocol_version())
-}
-
-/// Whether the connected protocol version is one this build defines and is
-/// at least `activation`.
+/// Every capability reads the version through this, so it fails closed both
+/// before the network proves a version and for a version newer than any this
+/// build knows ([`AppContext::proven_platform_version`]): this build cannot
+/// tell what an unknown version's rules allow.
 fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
-    known_protocol_version(ctx).is_some_and(|version| version.protocol_version >= activation)
+    ctx.proven_platform_version()
+        .is_some_and(|version| version.protocol_version >= activation)
 }
 
 impl Capability {
@@ -207,7 +202,7 @@ impl FeatureGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::test_support::test_app_context;
+    use crate::context::test_support::{prove_protocol_version, test_app_context};
     use dash_sdk::dpp::version::PlatformVersion;
     use std::sync::Arc;
 
@@ -306,7 +301,7 @@ mod tests {
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
 
-        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
+        assert_eq!(ctx.proven_protocol_version(), None, "boot value");
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
             !FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -332,7 +327,7 @@ mod tests {
             // Every protocol version upstream defines — none of which the tab
             // gate depends on.
             for version in known_protocol_versions() {
-                ctx.set_platform_protocol_version(version);
+                prove_protocol_version(&ctx, version);
                 assert!(
                     FeatureGate::Shielded.is_available(&ctx),
                     "Shielded tab must be available on protocol v{version} for {role:?}"
@@ -348,7 +343,7 @@ mod tests {
         assert!(!versions.is_empty(), "the probe must find some versions");
 
         for version in versions {
-            ctx.set_platform_protocol_version(version);
+            prove_protocol_version(&ctx, version);
             assert_eq!(
                 Capability::ShieldedProtocol.is_met(&ctx),
                 version >= SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
@@ -361,7 +356,7 @@ mod tests {
     fn shielded_operations_are_available_at_activation_for_unlocked_roles() {
         for role in [UserRole::Power, UserRole::Developer] {
             let (_tmp, ctx) = ctx_with_role(role);
-            ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+            prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
             assert!(
                 FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -376,7 +371,7 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -384,7 +379,7 @@ mod tests {
     #[test]
     fn shielded_operations_are_unavailable_at_activation_for_everyday_user() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -395,21 +390,21 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Capability(Capability::ShieldedProtocol))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Experimental(ExperimentalFeature::Shielded))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             None
@@ -485,7 +480,7 @@ mod tests {
             Capability::NonTransferableTokens,
         ];
 
-        ctx.set_platform_protocol_version(LATEST_VERSION);
+        prove_protocol_version(&ctx, LATEST_VERSION);
         for capability in capabilities {
             assert!(
                 capability.is_met(&ctx),
@@ -493,7 +488,7 @@ mod tests {
             );
         }
 
-        ctx.set_platform_protocol_version(LATEST_VERSION + 1);
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
         for capability in capabilities {
             assert!(
                 !capability.is_met(&ctx),

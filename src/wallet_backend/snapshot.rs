@@ -2287,7 +2287,6 @@ mod tests {
     fn addr(n: u8) -> Address {
         let mut sk_bytes = [1u8; 32];
         sk_bytes[31] = n.max(1);
-
         let sk = SecretKey::from_secret_bytes(sk_bytes).unwrap();
         let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)

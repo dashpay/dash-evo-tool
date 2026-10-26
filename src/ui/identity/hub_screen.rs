@@ -1230,9 +1230,6 @@ mod tests {
                         AppAction::BackendTask(task)
                         | AppAction::BackendTaskWithContext { task, .. } => vec![task],
                         AppAction::BackendTasks(tasks, _) => tasks,
-                        AppAction::BackendTasksWithContexts(tasks, _) => {
-                            tasks.into_iter().map(|(task, _)| task).collect()
-                        }
                         _ => Vec::new(),
                     };
                     for task in tasks {

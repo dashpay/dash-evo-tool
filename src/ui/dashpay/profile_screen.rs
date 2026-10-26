@@ -73,7 +73,6 @@ pub struct ProfileScreen {
     original_bio: String,
     original_avatar_url: String,
     avatar_cache: AvatarCache,
-    pending_action: Option<Box<AppAction>>, // Action to execute on next frame
     show_info_popup: bool,
     show_avatar_info_popup: bool,
     show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
@@ -108,7 +107,6 @@ impl ProfileScreen {
             original_bio: String::new(),
             original_avatar_url: String::new(),
             avatar_cache: AvatarCache::new(),
-            pending_action: None,
             show_info_popup: false,
             show_avatar_info_popup: false,
             show_avatar_url_popup: false,
@@ -382,11 +380,6 @@ impl ProfileScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-
-        // Check for pending action from previous frame
-        if let Some(pending) = self.pending_action.take() {
-            action = *pending;
-        }
 
         self.apply_snapshot();
 

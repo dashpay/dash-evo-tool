@@ -19,38 +19,49 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::{ContactInfoUpdate, ProfileSnapshot};
+use dash_evo_tool::model::dashpay::{
+    ContactInfoUpdate, DashPaySnapshot, ProfileSnapshot, ProfileState,
+};
+use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
-/// TC-031: LoadProfile — identity with no profile
+/// Sync `identity`'s DashPay state now and return its snapshot.
+async fn sync_and_snapshot(
+    ctx: &crate::framework::harness::BackendTestContext,
+    identity: &QualifiedIdentity,
+) -> std::sync::Arc<DashPaySnapshot> {
+    let task = BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+        identity: Some(identity.clone()),
+    }));
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("SyncNow should not fail");
+    assert!(
+        matches!(result, BackendTaskSuccessResult::DashPaySynced),
+        "expected DashPaySynced, got: {result:?}"
+    );
+    ctx.app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .dashpay_snapshot(&identity.identity.id())
+        .expect("a sync publishes the identity's snapshot")
+}
+
+/// TC-031: the synced profile of an identity with no profile
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_031_load_profile_no_profile() {
+async fn tc_031_synced_profile_no_profile() {
     let ctx = harness::ctx().await;
     let si = fixtures::shared_identity().await;
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
-        identity: si.qualified_identity.clone(),
-    }));
-
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("LoadProfile should not fail");
-
-    match result {
-        BackendTaskSuccessResult::DashPayProfile(profile) => {
-            tracing::info!("TC-031: LoadProfile returned profile={:?}", profile);
-            // SHARED_IDENTITY has no DashPay profile, so we expect None.
-            // However, if some prior test run created one, Some is also valid.
-        }
-        other => panic!("TC-031: expected DashPayProfile, got: {:?}", other),
-    }
+    let snapshot = sync_and_snapshot(ctx, &si.qualified_identity).await;
+    // SHARED_IDENTITY has no DashPay profile, so we expect none. However, if
+    // some prior test run created one, a profile is also valid.
+    tracing::info!("TC-031: synced profile={:?}", snapshot.profile);
 }
 
 /// TC-032: UpdateProfile
@@ -85,38 +96,17 @@ async fn tc_032_update_profile() {
         other => panic!("TC-032: expected DashPayProfileUpdated, got: {:?}", other),
     }
 
-    // TODO: DAPI propagation delay on profile updates
-    // Expected: LoadProfile returns updated profile immediately after UpdateProfile
-    // Actual: Platform may take several seconds to propagate the update across
-    //         nodes, so LoadProfile may return None or stale data
-    let verify_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
-        identity: identity_a.clone(),
-    }));
-    let verify_result = run_task(&ctx.app_context, verify_task)
-        .await
-        .expect("LoadProfile verification should succeed");
-
-    match verify_result {
-        BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot {
-            profile: Some((display_name, _bio, _url)),
-            ..
-        }) => {
+    let snapshot = sync_and_snapshot(ctx, &identity_a).await;
+    match &snapshot.profile {
+        ProfileState::Present(profile) => {
             assert_eq!(
-                display_name, "E2E Test User",
+                profile.display_name.as_deref(),
+                Some("E2E Test User"),
                 "Display name should match what was set"
             );
-            tracing::info!("TC-032: verified display_name = '{}'", display_name);
+            tracing::info!("TC-032: verified display_name = {:?}", profile.display_name);
         }
-        BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot { profile: None, .. }) => {
-            panic!(
-                "TC-032: profile not visible after update — DAPI propagation delay. \
-                 The profile should be queryable shortly after UpdateProfile succeeds."
-            );
-        }
-        other => panic!(
-            "TC-032: expected DashPayProfile for verification, got: {:?}",
-            other
-        ),
+        other => panic!("TC-032: expected the saved profile, got: {other:?}"),
     }
 }
 
@@ -178,154 +168,20 @@ async fn tc_033_search_profiles() {
     }
 }
 
-/// TC-034: LoadContacts — empty
+/// TC-034: synced contacts and contact requests
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_034_load_contacts_empty() {
+async fn tc_034_synced_contacts_and_requests() {
     let ctx = harness::ctx().await;
     let si = fixtures::shared_identity().await;
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-        identity: si.qualified_identity.clone(),
-    }));
-
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("LoadContacts should not fail");
-
-    match result {
-        BackendTaskSuccessResult::DashPayContacts(contacts) => {
-            tracing::info!("TC-034: LoadContacts returned {} contacts", contacts.len());
-        }
-        BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => {
-            tracing::info!(
-                "TC-034: LoadContactsWithInfo returned {} contacts",
-                contacts.len()
-            );
-        }
-        other => panic!("TC-034: expected DashPayContacts*, got: {:?}", other),
-    }
-}
-
-/// TC-046: offline contacts read serves the DET contact-profile cache.
-///
-/// `LoadContactsOffline` must resolve without a network round-trip, reading
-/// relationships from rehydrated state and display profiles from the DET
-/// contact-profile cache. Here a profile is seeded directly into the cache and
-/// the offline read is expected to surface a non-empty contact list (the
-/// fixture pair has an established contact) without erroring.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_046_load_contacts_offline_serves_cache() {
-    use dash_evo_tool::wallet_backend::CachedContactProfile;
-
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
-
-    let contact_id = pair.identity_b.identity.id();
-
-    // Seed a cached profile for the contact so the offline read can paint it.
-    let backend = ctx
-        .app_context
-        .wallet_backend()
-        .expect("wallet backend wired");
-    backend
-        .contact_profile_cache()
-        .put(
-            &contact_id,
-            &CachedContactProfile {
-                username: Some("cached-name.dash".to_string()),
-                display_name: Some("Cached Name".to_string()),
-                avatar_url: Some("https://example.com/cached.png".to_string()),
-                bio: None,
-                account_reference: Some(3),
-            },
-        )
-        .expect("seed cached profile");
-
-    // Ensure A has a contact relationship with B so the offline read has a row
-    // to serve — without this the assertions below could pass vacuously on an
-    // empty list. A sent contact request surfaces as a `pending` contact, which
-    // is enough for the cache-merge path under test; the step is idempotent
-    // (it tolerates an already-established relationship from a prior run).
-    step_send_contact_request(ctx, pair).await;
-
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactsOffline {
-        identity: pair.identity_a.clone(),
-    }));
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("TC-046: offline read should not fail");
-
-    let contacts = match result {
-        BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => contacts,
-        other => panic!("TC-046: expected DashPayContactsWithInfo, got: {:?}", other),
-    };
+    let snapshot = sync_and_snapshot(ctx, &si.qualified_identity).await;
     tracing::info!(
-        "TC-046: offline read returned {} contacts without network",
-        contacts.len()
+        "TC-034: synced {} contacts, {} incoming and {} outgoing requests",
+        snapshot.contacts.len(),
+        snapshot.incoming.len(),
+        snapshot.outgoing.len()
     );
-
-    // The offline read MUST serve a non-empty list — an empty result means the
-    // cache was not consulted (or the relationship was not rehydrated), which
-    // is the bug this test guards against.
-    assert!(
-        !contacts.is_empty(),
-        "TC-046: offline read must return the established contact, got an empty list"
-    );
-
-    // The seeded contact must be present and carry the cached display fields —
-    // proof the offline read served the DET contact-profile cache, not the
-    // network (no SDK round-trip happens in `LoadContactsOffline`).
-    let c = contacts
-        .iter()
-        .find(|c| c.identity_id == contact_id)
-        .unwrap_or_else(|| {
-            panic!("TC-046: the established contact B must appear in the offline read")
-        });
-    assert_eq!(
-        c.username.as_deref(),
-        Some("cached-name.dash"),
-        "TC-046: cached username must surface in the offline read (served from cache, not network)"
-    );
-    assert_eq!(
-        c.avatar_url.as_deref(),
-        Some("https://example.com/cached.png"),
-        "TC-046: cached avatar URL must surface in the offline read"
-    );
-    assert_eq!(
-        c.account_reference, 3,
-        "TC-046: cached account reference must surface in the offline read (the \"Account #N\" badge)"
-    );
-}
-
-/// TC-035: LoadContactRequests — empty
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_035_load_contact_requests_empty() {
-    let ctx = harness::ctx().await;
-    let si = fixtures::shared_identity().await;
-
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-        identity: si.qualified_identity.clone(),
-    }));
-
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("LoadContactRequests should not fail");
-
-    match result {
-        BackendTaskSuccessResult::DashPayContactRequests {
-            incoming, outgoing, ..
-        } => {
-            tracing::info!(
-                "TC-035: LoadContactRequests returned {} incoming, {} outgoing",
-                incoming.len(),
-                outgoing.len()
-            );
-        }
-        other => panic!("TC-035: expected DashPayContactRequests, got: {:?}", other),
-    }
 }
 
 /// TC-036: FetchContactProfile
@@ -398,69 +254,47 @@ async fn step_send_contact_request(
     }
 }
 
-/// Returns the incoming request ID from B's contact requests, or `None` if the
+/// Returns A's identity if B has a pending request from A, or `None` if the
 /// contact is already established from a previous run.
 async fn step_load_contact_requests(
     ctx: &crate::framework::harness::BackendTestContext,
     pair: &fixtures::SharedDashPayPair,
 ) -> Option<Identifier> {
-    tracing::info!("=== Step 2: LoadContactRequests (check B's incoming) ===");
+    tracing::info!("=== Step 2: sync B and check its incoming requests ===");
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-        identity: pair.identity_b.clone(),
-    }));
+    let snapshot = sync_and_snapshot(ctx, &pair.identity_b).await;
+    let incoming = &snapshot.incoming;
+    tracing::info!(
+        "Step 2: B has {} incoming, {} outgoing requests",
+        incoming.len(),
+        snapshot.outgoing.len()
+    );
 
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("LoadContactRequests should not fail");
-
-    match result {
-        BackendTaskSuccessResult::DashPayContactRequests {
-            incoming, outgoing, ..
-        } => {
-            tracing::info!(
-                "Step 2: B has {} incoming, {} outgoing requests",
-                incoming.len(),
-                outgoing.len()
-            );
-
-            let identity_a_id = pair.identity_a.identity.id();
-            tracing::info!(
-                "Step 2: identity_a_id={:?}, incoming_count={}",
-                identity_a_id,
-                incoming.len()
-            );
-
-            // Filter by sender identity to avoid picking up requests from
-            // other tests running concurrently against the same identity.
-            if incoming
+    let identity_a_id = pair.identity_a.identity.id();
+    // Filter by sender identity to avoid picking up requests from other tests
+    // running concurrently against the same identity.
+    if incoming
+        .iter()
+        .any(|request| request.counterparty_id == identity_a_id)
+    {
+        tracing::info!("Step 2: found request from A");
+        Some(identity_a_id)
+    } else if incoming.is_empty() {
+        // No incoming requests — contact may already be established from a
+        // previous test run. Return None so the caller can verify the contact
+        // exists instead of accepting.
+        tracing::info!("Step 2: no incoming requests for B — contact likely already established");
+        None
+    } else {
+        panic!(
+            "Step 2: B has {} incoming request(s) but none from A ({:?}). Senders: {:?}",
+            incoming.len(),
+            identity_a_id,
+            incoming
                 .iter()
-                .any(|(_, doc)| doc.owner_id() == identity_a_id)
-            {
-                tracing::info!("Step 2: found request from A");
-                Some(identity_a_id)
-            } else if incoming.is_empty() {
-                // No incoming requests — contact may already be established
-                // from a previous test run. Return None so the caller can
-                // verify the contact exists instead of accepting.
-                tracing::info!(
-                    "Step 2: no incoming requests for B — contact likely already established"
-                );
-                None
-            } else {
-                panic!(
-                    "Step 2: B has {} incoming request(s) but none from A ({:?}). \
-                     Incoming IDs: {:?}",
-                    incoming.len(),
-                    identity_a_id,
-                    incoming
-                        .iter()
-                        .map(|(_, doc)| doc.owner_id())
-                        .collect::<Vec<_>>()
-                );
-            }
-        }
-        other => panic!("Step 2: expected DashPayContactRequests, got: {:?}", other),
+                .map(|request| request.counterparty_id)
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -540,7 +374,6 @@ async fn step_register_contact_receiving_accounts(
 ) {
     tracing::info!("=== Step: register contact receiving accounts (watch faucet) ===");
 
-    let owner_id = pair.identity_b.identity.id();
     let seed_hash = pair
         .identity_b
         .dashpay_wallet_seed_hash()
@@ -553,10 +386,7 @@ async fn step_register_contact_receiving_accounts(
     // Populate upstream established_contacts via dashpay_sync so
     // established_contact_pairs returns the mutual contact with identity_a.
     // Without this, the view reads an empty in-memory map and the step no-ops.
-    backend
-        .dashpay_sync(&owner_id)
-        .await
-        .expect("dashpay_sync must succeed before registration");
+    backend.dashpay_sync_now().await;
 
     // First pass: bootstrap should register at least one DashpayReceivingFunds
     // account (the mutual contact with identity_a).
@@ -747,35 +577,15 @@ async fn tc_037_dashpay_contact_lifecycle() {
         // Contact already established from a previous run — verify it
         // exists by loading contacts for B.
         tracing::info!("TC-037: no pending request — contact already established, verifying...");
-        let verify_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-            identity: pair.identity_b.clone(),
-        }));
-        let verify_result = run_task(&ctx.app_context, verify_task)
-            .await
-            .expect("TC-037: LoadContacts verification failed");
-        match verify_result {
-            BackendTaskSuccessResult::DashPayContacts(contacts) => {
-                assert!(
-                    !contacts.is_empty(),
-                    "TC-037: no contacts found but no pending request either — test state inconsistent"
-                );
-                tracing::info!(
-                    "TC-037: contact already established (B has {} contacts)",
-                    contacts.len()
-                );
-            }
-            BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => {
-                assert!(
-                    !contacts.is_empty(),
-                    "TC-037: no contacts found but no pending request either — test state inconsistent"
-                );
-                tracing::info!(
-                    "TC-037: contact already established (B has {} contacts)",
-                    contacts.len()
-                );
-            }
-            other => panic!("TC-037: expected DashPayContacts*, got: {:?}", other),
-        }
+        let contacts = sync_and_snapshot(ctx, &pair.identity_b).await.contacts.clone();
+        assert!(
+            !contacts.is_empty(),
+            "TC-037: no contacts found but no pending request either — test state inconsistent"
+        );
+        tracing::info!(
+            "TC-037: contact already established (B has {} contacts)",
+            contacts.len()
+        );
     }
 
     step_register_dashpay_addresses(ctx, pair).await;
@@ -785,37 +595,19 @@ async fn tc_037_dashpay_contact_lifecycle() {
     step_update_contact_info(ctx, pair).await;
 }
 
-/// TC-041: LoadPaymentHistory smoke check.
+/// TC-041: synced payment history smoke check.
 ///
-/// Post-D4d the DET-side `dashpay_payments` table is gone — payments are
-/// read from the upstream `ManagedIdentity` via
-/// [`WalletBackend::dashpay_view`]. This test confirms the
-/// `LoadPaymentHistory` backend-task wiring still resolves end-to-end
-/// through the adapter; populated-state coverage lives in
+/// Payments are read from the upstream `ManagedIdentity` into the DashPay
+/// snapshot; populated-state coverage lives in
 /// `tc_037_dashpay_contact_lifecycle` and `tc_044_pay_contact`.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_041_load_payment_history_empty() {
+async fn tc_041_synced_payment_history() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
-        identity: pair.identity_a.clone(),
-    }));
-
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("LoadPaymentHistory should not fail");
-
-    match result {
-        BackendTaskSuccessResult::DashPayPaymentHistory(history) => {
-            tracing::info!(
-                "TC-041: LoadPaymentHistory returned {} entries via adapter",
-                history.len()
-            );
-        }
-        other => panic!("TC-041: expected DashPayPaymentHistory, got: {:?}", other),
-    }
+    let snapshot = sync_and_snapshot(ctx, &pair.identity_a).await;
+    tracing::info!("TC-041: synced {} payments", snapshot.payments.len());
 }
 
 /// TC-043: RejectContactRequest (requires third DashPay identity)
@@ -920,39 +712,28 @@ async fn tc_043_reject_contact_request() {
         .expect("TC-043: SendContactRequest from A to C failed");
 
     // Confirm C received A's request
-    tracing::info!("TC-043: loading C's incoming contact requests...");
-    let load_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
-        identity: qi_c.clone(),
-    }));
-    let load_result = run_task(&ctx.app_context, load_task)
-        .await
-        .expect("TC-043: LoadContactRequests for C should succeed");
-
-    let sender_id = match load_result {
-        BackendTaskSuccessResult::DashPayContactRequests { incoming, .. } => {
-            assert!(
-                !incoming.is_empty(),
-                "TC-043: C should have at least one incoming request from A"
-            );
-            // Filter by sender (identity A) to avoid picking up requests from
-            // other concurrent tests targeting the same identity.
-            let identity_a_id = pair.identity_a.identity.id();
-            assert!(
-                incoming
-                    .iter()
-                    .any(|(_, doc)| doc.owner_id() == identity_a_id),
-                "TC-043: no request from A ({:?}) in C's incoming. Got {} request(s) from: {:?}",
-                identity_a_id,
-                incoming.len(),
-                incoming
-                    .iter()
-                    .map(|(_, doc)| doc.owner_id())
-                    .collect::<Vec<_>>()
-            );
-            identity_a_id
-        }
-        other => panic!("TC-043: expected DashPayContactRequests, got: {:?}", other),
-    };
+    tracing::info!("TC-043: syncing C's incoming contact requests...");
+    let incoming = sync_and_snapshot(ctx, &qi_c).await.incoming.clone();
+    assert!(
+        !incoming.is_empty(),
+        "TC-043: C should have at least one incoming request from A"
+    );
+    // Filter by sender (identity A) to avoid picking up requests from other
+    // concurrent tests targeting the same identity.
+    let identity_a_id = pair.identity_a.identity.id();
+    assert!(
+        incoming
+            .iter()
+            .any(|request| request.counterparty_id == identity_a_id),
+        "TC-043: no request from A ({:?}) in C's incoming. Got {} request(s) from: {:?}",
+        identity_a_id,
+        incoming.len(),
+        incoming
+            .iter()
+            .map(|request| request.counterparty_id)
+            .collect::<Vec<_>>()
+    );
+    let sender_id = identity_a_id;
 
     // Reject the contact request
     tracing::info!("TC-043: rejecting the contact request from {:?}...", sender_id);

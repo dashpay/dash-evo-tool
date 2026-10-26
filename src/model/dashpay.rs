@@ -7,13 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use super::validation::{TextLengthError, validate_char_count};
 
-/// Independent reads used to populate an identity's contact lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ContactsLoadKind {
-    Contacts,
-    Requests,
-}
-
 /// Maximum number of characters stored in a DashPay payment memo.
 pub const MAX_PAYMENT_MEMO_CHARS: usize = 100;
 /// Maximum number of characters stored in a contact-request account label.
@@ -579,6 +572,112 @@ pub fn validate_profile_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn details(note: &str) -> ContactDetails {
+        ContactDetails {
+            nickname: None,
+            note: Some(note.to_string()),
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn synced_contact_details_win_over_legacy_ones() {
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(details("synced")),
+                false,
+                Some(details("legacy"))
+            ),
+            details("synced")
+        );
+    }
+
+    #[test]
+    fn legacy_contact_details_show_when_none_were_ever_synced() {
+        assert_eq!(
+            shown_contact_details(None, None, false, Some(details("legacy"))),
+            details("legacy")
+        );
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(ContactDetails::default()),
+                false,
+                Some(details("legacy"))
+            ),
+            details("legacy"),
+            "a contact platform-wallet never held details for shows the legacy ones"
+        );
+        assert_eq!(
+            shown_contact_details(None, None, false, None),
+            ContactDetails::default()
+        );
+    }
+
+    /// A note the user cleared, or a contact they unhid, must not
+    /// come back from an old legacy document — nor be saved again by the
+    /// next edit, which keeps these details for every field it leaves alone.
+    #[test]
+    fn cleared_details_do_not_come_back_from_a_legacy_document() {
+        let legacy = ContactDetails {
+            nickname: None,
+            note: Some("old".into()),
+            hidden: true,
+        };
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(ContactDetails::default()),
+                true,
+                Some(legacy.clone())
+            ),
+            ContactDetails::default()
+        );
+        assert_eq!(
+            shown_contact_details(None, None, true, Some(legacy)),
+            ContactDetails::default()
+        );
+    }
+
+    #[test]
+    fn only_non_empty_synced_details_are_recorded_as_synced() {
+        assert!(holds_details(None, Some(&details("note"))));
+        assert!(!holds_details(None, Some(&ContactDetails::default())));
+        assert!(!holds_details(None, None));
+    }
+
+    /// Platform's DIP-0015 document is the latest saved state from
+    /// any device, so it wins over this device's details and legacy ones —
+    /// and a save keeps it for the fields it does not replace.
+    #[test]
+    fn a_published_document_wins_over_local_and_legacy_details() {
+        assert_eq!(
+            shown_contact_details(
+                Some(details("published")),
+                Some(details("local")),
+                true,
+                Some(details("legacy"))
+            ),
+            details("published")
+        );
+        assert_eq!(
+            shown_contact_details(
+                Some(ContactDetails::default()),
+                None,
+                false,
+                Some(details("legacy"))
+            ),
+            ContactDetails::default(),
+            "details cleared on another device stay cleared"
+        );
+    }
+
+    #[test]
+    fn an_empty_published_document_counts_as_held_details() {
+        assert!(holds_details(Some(&ContactDetails::default()), None));
+    }
     use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0};
     use dash_sdk::dpp::platform_value::Value;
     use std::collections::BTreeMap;

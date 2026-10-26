@@ -4,7 +4,7 @@ use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
+use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
@@ -367,12 +367,6 @@ pub enum BackendTaskContext {
         identity_id: Identifier,
         contact_id: Identifier,
     },
-    /// A read of an identity's contacts or contact requests.
-    DashPayContactsLoad {
-        network: Network,
-        identity_id: Identifier,
-        kind: crate::model::dashpay::ContactsLoadKind,
-    },
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -542,19 +536,6 @@ impl BackendTaskContext {
         }
     }
 
-    pub(crate) fn contacts_load(
-        &self,
-    ) -> Option<(Network, Identifier, crate::model::dashpay::ContactsLoadKind)> {
-        match self.operation() {
-            Self::DashPayContactsLoad {
-                network,
-                identity_id,
-                kind,
-            } => Some((*network, *identity_id, *kind)),
-            _ => None,
-        }
-    }
-
     pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
         matches!(self.operation(), Self::DpnsContestRefresh)
     }
@@ -700,16 +681,6 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::DashPayTask(task) => match task.as_ref() {
-                DashPayTask::LoadContacts { identity } => Self::DashPayContactsLoad {
-                    network: identity.network,
-                    identity_id: identity.identity.id(),
-                    kind: crate::model::dashpay::ContactsLoadKind::Contacts,
-                },
-                DashPayTask::LoadContactRequests { identity } => Self::DashPayContactsLoad {
-                    network: identity.network,
-                    identity_id: identity.identity.id(),
-                    kind: crate::model::dashpay::ContactsLoadKind::Requests,
-                },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
                 }
@@ -888,25 +859,8 @@ pub enum BackendTaskSuccessResult {
     PlatformInfo(PlatformInfoTaskResult),
 
     // DashPay related results
-    DashPayProfile(crate::model::dashpay::ProfileSnapshot),
     DashPayContactProfile(Option<Document>), // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
-    DashPayContactRequests {
-        /// The identity the requests were loaded for. An identity switch cannot
-        /// cancel an in-flight load, so the consumer must drop a result whose
-        /// identity is no longer the selected one.
-        identity: Identifier,
-        incoming: Vec<(Identifier, Document)>, // (request_id, document)
-        outgoing: Vec<(Identifier, Document)>, // (request_id, document)
-    },
-    DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo {
-        /// The identity the contacts were loaded for — see
-        /// [`BackendTaskSuccessResult::DashPayContactRequests`].
-        identity: Identifier,
-        contacts: Vec<ContactData>,
-    },
-    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
     DashPayContactRequestSent(String), // Username or ID of recipient
     DashPayContactRequestAccepted(ContactRequestKey),
@@ -915,12 +869,6 @@ pub enum BackendTaskSuccessResult {
     DashPayContactRequestCancelled(ContactRequestKey),
     /// The request was answered before the action ran: the two are contacts.
     DashPayContactAlreadyEstablished(ContactRequestKey),
-    /// The details shown for one contact; see `DashPayTask::LoadContactDetails`.
-    DashPayContactDetails {
-        identity: Identifier,
-        contact_id: Identifier,
-        details: crate::model::dashpay::ContactDetails,
-    },
     DashPayContactInfoUpdated {
         /// Identity that owns the encrypted `contactInfo` document.
         identity: Identifier,

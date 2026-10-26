@@ -25,7 +25,7 @@ const USERNAME_LOOKUP_CHUNK: usize = 10;
 /// Republish the DashPay snapshots. After a new sync pass, first look up what
 /// platform-wallet does not hold: counterparties' usernames, the profiles of
 /// identities it does not sync, and the time this device first saw each
-/// payment.
+/// payment and profile.
 pub(super) async fn refresh(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -38,7 +38,9 @@ pub(super) async fn refresh(
         changed |= backend.refresh_dashpay_snapshots().await;
         look_up_usernames(&backend, sdk).await;
         read_unsynced_profiles(app_context, &backend, sdk).await;
-        backend.stamp_unseen_dashpay_payments(chrono::Utc::now().timestamp_millis().max(0));
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+        backend.stamp_unseen_dashpay_payments(now_ms);
+        backend.stamp_unseen_dashpay_profiles(now_ms);
     }
     changed |= backend.refresh_dashpay_snapshots().await;
     Ok(if changed {

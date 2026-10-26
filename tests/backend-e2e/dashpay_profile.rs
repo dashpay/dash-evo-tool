@@ -5,7 +5,7 @@ use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::{IdentityKeyEntry, IdentityKeySpecs, IdentityTask};
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::ProfileSnapshot;
+use dash_evo_tool::model::dashpay::ProfileState;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
@@ -138,20 +138,23 @@ async fn profile_create_and_replace(key_type: KeyType, unavailable_hash160: bool
         loop {
             let result = run_task(
                 &ctx.app_context,
-                BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
-                    identity: identity.clone(),
+                BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+                    identity: Some(identity.clone()),
                 })),
             )
             .await;
-            if matches!(&result,
-                Ok(BackendTaskSuccessResult::DashPayProfile(ProfileSnapshot { profile: Some((actual_name, actual_bio, _)), .. }))
-                    if actual_name == name && actual_bio == bio
-            ) {
+            let synced = backend
+                .dashpay_snapshot(&owner)
+                .map(|snapshot| snapshot.profile.clone());
+            if let Some(ProfileState::Present(profile)) = &synced
+                && profile.display_name.as_deref() == Some(name)
+                && profile.bio.as_deref() == Some(bio)
+            {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "published profile did not propagate: {result:?}"
+                "published profile did not propagate: {result:?}, {synced:?}"
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }

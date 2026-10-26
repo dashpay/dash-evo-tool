@@ -2,10 +2,7 @@ use super::encryption::decrypt_extended_public_key;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{
-    PaymentDirection as StoredPaymentDirection, PaymentStatus as StoredPaymentStatus,
-    validate_payment_memo,
-};
+use crate::model::dashpay::{PaymentDirection as StoredPaymentDirection, validate_payment_memo};
 use crate::model::dashpay_derivation::derive_payment_address;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -340,84 +337,6 @@ pub async fn send_payment_to_contact(
     ))
 }
 
-/// Load payment history via the `WalletBackend` DashPay adapter — the
-/// upstream-backed source of truth post-D4c. The local DET cache is no
-/// longer consulted.
-pub async fn load_payment_history(
-    app_context: &Arc<AppContext>,
-    identity_id: &Identifier,
-    contact_id: Option<&Identifier>,
-) -> Result<Vec<PaymentRecord>, TaskError> {
-    let backend = app_context.wallet_backend()?;
-    let stored_payments = backend.dashpay_view().payments(identity_id).await;
-
-    let mut records = Vec::new();
-    for sp in stored_payments {
-        let from_id = Identifier::from_bytes(&sp.from_identity_id).map_err(|_| {
-            TaskError::IdentifierParsingError {
-                input: hex::encode(&sp.from_identity_id),
-            }
-        })?;
-        let to_id = Identifier::from_bytes(&sp.to_identity_id).map_err(|_| {
-            TaskError::IdentifierParsingError {
-                input: hex::encode(&sp.to_identity_id),
-            }
-        })?;
-
-        // If a contact filter is specified, skip non-matching records
-        if let Some(filter_id) = contact_id
-            && from_id != *filter_id
-            && to_id != *filter_id
-        {
-            continue;
-        }
-
-        let status = match sp.status {
-            StoredPaymentStatus::Confirmed => PaymentStatus::Confirmed(1),
-            StoredPaymentStatus::Failed => PaymentStatus::Failed("Transaction failed".to_string()),
-            StoredPaymentStatus::Pending => PaymentStatus::Pending,
-        };
-
-        let amount = if sp.amount < 0 {
-            tracing::warn!(
-                "Payment {} has negative amount {}, clamping to 0",
-                sp.id,
-                sp.amount
-            );
-            0u64
-        } else {
-            sp.amount as u64
-        };
-
-        let timestamp = if sp.created_at < 0 {
-            tracing::warn!(
-                "Payment {} has negative timestamp {}, using 0",
-                sp.id,
-                sp.created_at
-            );
-            0u64
-        } else {
-            sp.created_at as u64
-        };
-
-        records.push(PaymentRecord {
-            id: sp.id.to_string(),
-            from_identity: from_id,
-            to_identity: to_id,
-            from_address: None,
-            to_address: None,
-            amount,
-            tx_id: Some(sp.tx_id),
-            memo: sp.memo,
-            timestamp,
-            status,
-            address_index: 0,
-        });
-    }
-
-    Ok(records)
-}
-
 /// Map a DET-local [`PaymentStatus`] onto the upstream
 /// `platform_wallet` payment status the `PaymentEntry` carries.
 ///
@@ -440,7 +359,7 @@ fn det_status_to_upstream(
 /// and the k/v timestamp sidecar for `owner`.
 ///
 /// The authoritative on-chain state lives with Core/SPV; this is a local
-/// mirror so [`load_payment_history`] reflects the new status without a
+/// mirror so the DashPay snapshots reflect the new status without a
 /// refetch. Upstream stores payments keyed by `tx_id` with last-write-wins
 /// semantics, so the existing entry is read, its status field updated, and
 /// the whole entry written back — preserving counterparty, amount, and memo.

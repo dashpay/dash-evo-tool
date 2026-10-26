@@ -487,6 +487,20 @@ impl WalletBackend {
         }
     }
 
+    /// Stamp the synced own profiles this device has no time for with
+    /// `now_ms`, the first time it sees them.
+    pub(crate) fn stamp_unseen_dashpay_profiles(&self, now_ms: i64) {
+        let snapshots = self.inner.dashpay_snapshots.by_owner.load();
+        for (owner, snapshot) in snapshots.iter() {
+            if let ProfileState::Present(profile) = &snapshot.profile
+                && profile.created_at == 0
+                && let Err(error) = self.dashpay_initialize_profile_timestamps(owner, now_ms)
+            {
+                tracing::debug!(?error, "DashPay profile time not recorded");
+            }
+        }
+    }
+
     /// Forget every snapshot and session lookup, as when this network's
     /// wallets are cleared.
     pub(super) fn clear_dashpay_snapshots(&self) {

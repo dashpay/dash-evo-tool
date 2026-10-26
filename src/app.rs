@@ -769,17 +769,14 @@ mod backend_task_join_tests {
     /// unattributed report.
     #[tokio::test]
     async fn panicking_batch_settles_each_dispatched_read() {
-        use crate::model::dashpay::ContactsLoadKind;
-        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
+        let read = |dispatch_id| BackendTaskContext::Dispatched {
             dispatch_id,
-            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
-                network: Network::Testnet,
-                identity_id: Identifier::from([0x45; 32]),
-                kind,
-            }),
+            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
+                [0x45; 32],
+            ))),
         };
-        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
-        let requests = read(u64::MAX, ContactsLoadKind::Requests);
+        let contacts = read(u64::MAX - 1);
+        let requests = read(u64::MAX);
         for (contexts, expected) in [
             (
                 vec![contacts.clone(), requests.clone()],
@@ -1647,12 +1644,6 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
-    /// [`Self::BackendTasks`] with the context each task's result comes back
-    /// under, so a screen can tell one dispatch of a task from another.
-    BackendTasksWithContexts(
-        Vec<(BackendTask, BackendTaskContext)>,
-        BackendTasksExecutionMode,
-    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2553,55 +2544,15 @@ impl AppState {
     }
 
     /// Handle the backend tasks and send the results through the channel.
-    ///
-    /// Contact-list reads in a batch report to the screen that sent them, as a
-    /// task dispatched with its own context does: the hub asks for its lists
-    /// once per arrival, so a failure delivered to a screen covering it would
-    /// leave it waiting for good.
-    fn handle_backend_tasks(
-        &mut self,
-        tasks: Vec<BackendTask>,
-        mode: BackendTasksExecutionMode,
-        owner: Option<ScreenOwner>,
-    ) {
-        let network = self.current_app_context().network;
-        let tasks = tasks
-            .into_iter()
-            .map(|task| {
-                let context = BackendTaskContext::for_task_on(&task, network);
-                (task, context)
-            })
-            .collect();
-        self.run_backend_tasks(tasks, mode, owner);
-    }
-
-    /// Run `tasks` under their contexts; see [`Self::handle_backend_tasks`]. A
-    /// contact-list read that carries no dispatch of its own is given one.
-    fn run_backend_tasks(
-        &mut self,
-        tasks: Vec<(BackendTask, BackendTaskContext)>,
-        mode: BackendTasksExecutionMode,
-        owner: Option<ScreenOwner>,
-    ) {
+    fn handle_backend_tasks(&mut self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let network = app_context.network;
-        let (tasks, contexts): (Vec<_>, Vec<_>) = tasks
-            .into_iter()
-            .map(|(task, context)| match owner {
-                Some(owner) if context.contacts_load().is_some() => {
-                    let context = if context.dispatch_id().is_some() {
-                        context
-                    } else {
-                        BackendTaskContext::for_dispatch_on(&task, network)
-                    };
-                    self.request_owners.record(&context, owner);
-                    (task, context)
-                }
-                _ => (task, context),
-            })
-            .unzip();
+        let contexts: Vec<_> = tasks
+            .iter()
+            .map(|task| BackendTaskContext::for_task_on(task, network))
+            .collect();
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.extend(tasks.into_iter().zip(contexts));
@@ -3141,8 +3092,8 @@ impl AppState {
         )
     }
 
-    /// Tell the hub about results it would otherwise miss: those of loads it
-    /// starts without a dispatch context, and other screens' profile saves.
+    /// Tell the hub about results it would otherwise miss: the outcomes of
+    /// its own writes and avatar reads, and other screens' profile saves.
     fn route_identity_result_to_hidden_hub(
         &mut self,
         owner: Option<ScreenOwner>,
@@ -3157,13 +3108,8 @@ impl AppState {
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
             let needs_completion = match result {
-                // Another screen's save changes the profile the hub caches.
+                // A profile save the Profile tab may be waiting on.
                 BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
-                // The hub asks for its contact lists once per arrival, so an
-                // answer that misses it is never asked for again. It drops
-                // answers that are not for what it shows.
-                BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
-                | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
                 // A contact details write the hub dispatched holds a guard and
                 // a pending task there until its outcome arrives.
                 BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
@@ -4526,10 +4472,7 @@ impl App for AppState {
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode, owner);
-                }
-                AppAction::BackendTasksWithContexts(tasks, mode) => {
-                    self.run_backend_tasks(tasks, mode, owner);
+                    self.handle_backend_tasks(tasks, mode);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

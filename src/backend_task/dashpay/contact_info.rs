@@ -94,31 +94,6 @@ pub async fn create_or_update_contact_info(
     })
 }
 
-/// Read the details shown for `contact_id`, the ones a contact details
-/// editor starts from.
-///
-/// # Errors
-///
-/// As for [`refresh_contact_details`].
-pub async fn load_contact_details(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    identity: QualifiedIdentity,
-    contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    let _write_guard = app_context
-        .contact_info_writes
-        .acquire(identity.identity.id())
-        .await;
-    let backend = app_context.wallet_backend()?;
-    let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
-    Ok(BackendTaskSuccessResult::DashPayContactDetails {
-        identity: identity.identity.id(),
-        contact_id,
-        details,
-    })
-}
-
 /// Bring the contact details platform-wallet holds for `identity` up to date
 /// with the identity's stored `contactInfo` documents, read with the wallet
 /// seed: platform-wallet does not read them back for a wallet loaded without

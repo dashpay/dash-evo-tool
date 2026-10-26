@@ -5364,8 +5364,9 @@ async fn dashpay_task_registers_identity_stored_after_wallet_bootstrap() {
     // The task's own result is irrelevant here; only the registration matters.
     let _ = ctx
         .run_dashpay_task(
-            DashPayTask::LoadContactsOffline {
-                identity: owned.clone(),
+            // Rejected before any network request: avatars need HTTPS.
+            DashPayTask::FetchAvatar {
+                url: "http://example.invalid/avatar.png".into(),
             },
             &ctx.sdk(),
         )

@@ -1075,40 +1075,6 @@ impl WalletBackend {
             .set(&self.kv(), owner, (created_at, updated_at))
     }
 
-    /// Trigger an upstream DashPay refresh (contact requests + profiles)
-    /// for the wallet that owns `owner`. Callers invoke this BEFORE a
-    /// read on user-initiated refresh actions so the [`DashpayView`]
-    /// observes fresh state.
-    ///
-    /// Returns `Ok(())` if the owner is not known to any registered
-    /// wallet — passive screen loads that pre-empt sync would otherwise
-    /// fail noisily on cold start before any wallet is wired.
-    pub async fn dashpay_sync(
-        &self,
-        owner: &Identifier,
-    ) -> Result<(), crate::backend_task::error::TaskError> {
-        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
-            tracing::debug!(
-                owner = %owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-                "WalletBackend::dashpay_sync: no managing wallet found; skipping"
-            );
-            return Ok(());
-        };
-        let identity = wallet.identity();
-        let dashpay = identity.dashpay();
-        dashpay.sync_contact_requests().await.map_err(|e| {
-            crate::backend_task::error::TaskError::WalletBackend {
-                source: Arc::new(e),
-            }
-        })?;
-        dashpay.sync_profiles().await.map_err(|e| {
-            crate::backend_task::error::TaskError::WalletBackend {
-                source: Arc::new(e),
-            }
-        })?;
-        Ok(())
-    }
-
     /// Persist a DashPay profile against the upstream `ManagedIdentity` for
     /// `owner`, persisting the resulting changeset immediately. Pass `None`
     /// to clear the profile.

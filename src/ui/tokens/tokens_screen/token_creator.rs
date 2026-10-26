@@ -1327,6 +1327,7 @@ impl TokensScreen {
         self.new_tokens_destination_identity_rules = rules.new_tokens_destination_identity.into();
         self.minting_allow_choosing_destination_rules =
             rules.minting_allow_choosing_destination.into();
+        self.minting_allow_choosing_destination = rules.minting_may_choose_destination;
         self.marketplace_rules = rules.marketplace.into();
         self.change_direct_purchase_pricing_rules = rules.direct_purchase_pricing.into();
         self.authorized_main_control_group_change = rules.main_control_group_change;
@@ -1352,6 +1353,7 @@ impl TokensScreen {
             perpetual_distribution,
             new_tokens_destination_identity,
             minting_allow_choosing_destination,
+            minting_may_choose_destination,
             marketplace,
             direct_purchase_pricing,
             main_control_group_change,
@@ -1369,6 +1371,7 @@ impl TokensScreen {
             && self.new_tokens_destination_identity_rules.rules == new_tokens_destination_identity
             && self.minting_allow_choosing_destination_rules.rules
                 == minting_allow_choosing_destination
+            && self.minting_allow_choosing_destination == minting_may_choose_destination
             && self.marketplace_rules.rules == marketplace
             && self.change_direct_purchase_pricing_rules.rules == direct_purchase_pricing
             && self.authorized_main_control_group_change == main_control_group_change
@@ -1741,6 +1744,8 @@ struct PresetRules {
     perpetual_distribution: ChangeControlRulesV0,
     new_tokens_destination_identity: ChangeControlRulesV0,
     minting_allow_choosing_destination: ChangeControlRulesV0,
+    /// Whether a mint may send the new tokens to an identity other than the default.
+    minting_may_choose_destination: bool,
     marketplace: ChangeControlRulesV0,
     direct_purchase_pricing: ChangeControlRulesV0,
     main_control_group_change: AuthorizedActionTakers,
@@ -1761,33 +1766,60 @@ impl PresetRules {
             perpetual_distribution: ChangeControlRulesV0::default(),
             new_tokens_destination_identity: ChangeControlRulesV0::default(),
             minting_allow_choosing_destination: ChangeControlRulesV0::default(),
+            minting_may_choose_destination: false,
             marketplace: ChangeControlRulesV0::default(),
             direct_purchase_pricing: ChangeControlRulesV0::default(),
             main_control_group_change: AuthorizedActionTakers::NoOne,
         }
     }
 
+    /// Takes every value straight from Platform's own configuration for the preset,
+    /// built "with direct pricing" so whoever may manage the token may also set its
+    /// direct purchase price.
     fn from_preset(preset: &TokenConfigurationPreset) -> Self {
-        let basic = preset.default_basic_change_control_rules_v0();
-        let advanced = preset.default_advanced_change_control_rules_v0();
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_marketplace_rules::TokenMarketplaceRules;
+
+        fn v0(rules: &ChangeControlRules) -> ChangeControlRulesV0 {
+            let ChangeControlRules::V0(rules) = rules;
+            rules.clone()
+        }
+
+        let config = preset.token_configuration_v0(
+            TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
+                localizations: Default::default(),
+                decimals: 8,
+            }),
+            0,
+            None,
+            true,
+            true,
+        );
+        let distribution = &config.distribution_rules;
+        let TokenMarketplaceRules::V0(marketplace) = &config.marketplace_rules;
 
         Self {
-            manual_minting: basic.clone(),
-            manual_burning: basic.clone(),
-            freeze: advanced.clone(),
-            unfreeze: advanced.clone(),
-            destroy_frozen_funds: advanced.clone(),
-            emergency_action: preset.default_emergency_action_change_control_rules_v0(),
-            max_supply_change: advanced.clone(),
-            conventions_change: basic.clone(),
-            perpetual_distribution: advanced.clone(),
-            new_tokens_destination_identity: basic.clone(),
-            minting_allow_choosing_destination: basic,
-            // Marketplace and direct-purchase pricing follow the advanced rules; for
-            // "Most Restrictive" those are already "no one, never changeable".
-            marketplace: advanced.clone(),
-            direct_purchase_pricing: advanced,
-            main_control_group_change: preset.default_main_control_group_can_be_modified(),
+            manual_minting: v0(&config.manual_minting_rules),
+            manual_burning: v0(&config.manual_burning_rules),
+            freeze: v0(&config.freeze_rules),
+            unfreeze: v0(&config.unfreeze_rules),
+            destroy_frozen_funds: v0(&config.destroy_frozen_funds_rules),
+            emergency_action: v0(&config.emergency_action_rules),
+            max_supply_change: v0(&config.max_supply_change_rules),
+            conventions_change: v0(&config.conventions_change_rules),
+            perpetual_distribution: v0(distribution.perpetual_distribution_rules()),
+            new_tokens_destination_identity: v0(
+                distribution.new_tokens_destination_identity_rules()
+            ),
+            minting_allow_choosing_destination: v0(
+                distribution.minting_allow_choosing_destination_rules()
+            ),
+            minting_may_choose_destination: distribution.minting_allow_choosing_destination(),
+            marketplace: v0(&marketplace.trade_mode_change_rules),
+            direct_purchase_pricing: v0(distribution.change_direct_purchase_pricing_rules()),
+            main_control_group_change: config.main_control_group_can_be_modified,
         }
     }
 }

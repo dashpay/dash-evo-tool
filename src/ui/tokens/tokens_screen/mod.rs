@@ -3979,11 +3979,11 @@ mod tests {
                 &advanced,
             ),
             ("conventions change", &args.conventions_change_rules, &basic),
-            ("marketplace", &args.marketplace_rules, &advanced),
+            ("marketplace", &args.marketplace_rules, &basic),
             (
                 "direct purchase pricing",
                 &args.change_direct_purchase_pricing_rules,
-                &advanced,
+                &basic,
             ),
             (
                 "perpetual distribution",
@@ -4006,7 +4006,7 @@ mod tests {
                 "distribution direct purchase pricing",
                 args.distribution_rules
                     .change_direct_purchase_pricing_rules(),
-                &advanced,
+                &basic,
             ),
         ];
         for (name, actual, expected) in cases {
@@ -4215,6 +4215,15 @@ mod tests {
         screen.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         screen.reconcile_selected_preset();
         assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+
+        // So does letting a mint choose where the new tokens go, which "All Allowed" turns on.
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert!(screen.minting_allow_choosing_destination);
+        screen.minting_allow_choosing_destination = false;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
     }
 
     /// Editing a rule before choosing any preset is a "Custom" choice, not "Select a preset...".
@@ -4240,5 +4249,50 @@ mod tests {
             screen.preset_chosen(),
             "Custom rules may be registered in Advanced mode"
         );
+    }
+
+    /// Every preset builds exactly Platform's own token configuration for it
+    /// (`TokenConfigurationPreset::token_configuration_v0` with direct pricing), apart
+    /// from the inputs the user types and one deliberate difference: new tokens go
+    /// to the contract owner by default instead of requiring a destination per mint.
+    #[test]
+    fn token_creator_presets_build_platforms_full_preset_configuration() {
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+
+        for features in ALL_PRESETS {
+            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+            fill_minimal_creator_inputs(&mut screen, &app_context);
+            screen.change_to_preset(owner_preset(features));
+
+            let args = screen.parse_token_build_args().expect("token build args");
+            let owner_id = args.identity_id;
+            let contract = app_context
+                .build_data_contract_v1_with_one_token(owner_id, args.into_contract_params())
+                .expect("contract build");
+            let TokenConfiguration::V0(built) =
+                contract.as_v1().expect("DataContract::V1").tokens[&0u16].clone()
+            else {
+                panic!("a transferable token keeps the version 0 configuration");
+            };
+
+            let mut expected = owner_preset(features).token_configuration_v0(
+                built.conventions.clone(),
+                built.base_supply,
+                built.max_supply,
+                true,
+                true,
+            );
+            expected
+                .distribution_rules
+                .set_new_tokens_destination_identity(Some(owner_id));
+
+            assert_eq!(
+                built, expected,
+                "the {features:?} preset must build Platform's full preset configuration"
+            );
+        }
     }
 }

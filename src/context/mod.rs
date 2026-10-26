@@ -1269,27 +1269,7 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        match e {
-            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                tracing::error!(
-                    target: "proof_log",
-                    request_type = ?request_type,
-                    height = block_info.height,
-                    time_ms = block_info.time_ms,
-                    proof_bytes_len = proof_bytes.len(),
-                    %proof_error,
-                    "drive proof verification failed",
-                );
-                TaskError::ProofError {
-                    source_error: Box::new(dash_sdk::Error::DriveProofError(
-                        proof_error,
-                        proof_bytes,
-                        block_info,
-                    )),
-                }
-            }
-            e => TaskError::from(e),
-        }
+        TaskError::from_broadcast_sdk_error(e, request_type)
     }
 
     /// Recovers from a Drive proof error on a contract put/update.

@@ -2288,6 +2288,14 @@ pub enum TaskError {
         source: Box<ProtocolError>,
     },
 
+    /// A new document could not be built for the active protocol version,
+    /// typically one this build does not know yet.
+    #[error("Could not prepare the document. Update Dash Evo Tool and try again.")]
+    DocumentPreparationFailed {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,

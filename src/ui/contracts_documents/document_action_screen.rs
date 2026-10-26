@@ -3,6 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::model::document::new_document_for_creation;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -33,10 +34,9 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::data_contract::document_type::accessors::{
     DocumentTypeV0Getters, DocumentTypeV1Getters,
 };
-use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
 use dash_sdk::dpp::data_contract::document_type::{DocumentPropertyType, DocumentType};
 use dash_sdk::dpp::document::property_names::PRICE;
-use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters};
+use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
@@ -1252,8 +1252,7 @@ impl DocumentActionScreen {
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
-        let contract = self
-            .selected_contract
+        self.selected_contract
             .as_ref()
             .ok_or("No contract selected")?;
         let doc_type = self
@@ -1411,46 +1410,16 @@ impl DocumentActionScreen {
         let mut rng = StdRng::from_entropy();
         let entropy: [u8; 32] = rng.r#gen();
 
-        let owner_id = qi.identity.id();
-        // Before protocol version 14 this entropy-only id is the document's id,
-        // which Platform recomputes from the entropy. From protocol version 14
-        // (`Document::document_id_depends_on_nonce`) the id also commits to the
-        // identity contract nonce, so this one is only a placeholder that building
-        // the create transition replaces. Read the id from the confirmed document.
-        let id = Document::generate_document_id_v0(
-            &contract.contract.id(),
-            &owner_id,
-            doc_type.name(),
-            entropy.as_slice(),
-        );
-
-        let revision = if doc_type.requires_revision() {
-            Some(1)
-        } else {
-            None
-        };
-
-        let raw_doc = DocumentV0 {
-            id,
+        let document = new_document_for_creation(
+            doc_type.as_ref(),
+            qi.identity.id(),
             properties,
-            owner_id,
-            creator_id: None,
-            moderated_at: None,
-            moderated_by: None,
-            revision,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        };
+            &entropy,
+            self.app_context.platform_version(),
+        )
+        .map_err(|e| e.to_string())?;
 
-        Ok((raw_doc.into(), entropy))
+        Ok((document, entropy))
     }
 
     fn try_build_document_from_original(&self) -> Result<(Document, [u8; 32]), String> {
@@ -1612,27 +1581,23 @@ impl DocumentActionScreen {
             Some(1)
         };
 
-        let updated_doc = DocumentV0 {
-            id: original_doc.id(),
-            properties,
-            owner_id: original_doc.owner_id(),
-            creator_id: original_doc.creator_id(),
-            moderated_at: original_doc.moderated_at(),
-            moderated_by: original_doc.moderated_by(),
-            revision: new_revision,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        };
+        // The replacement keeps the original's id, owner, creator and
+        // moderation, and drops the timestamps and heights Platform sets.
+        let mut updated_doc = original_doc.clone();
+        updated_doc.set_properties(properties);
+        updated_doc.set_revision(new_revision);
+        updated_doc.set_created_at(None);
+        updated_doc.set_updated_at(None);
+        updated_doc.set_transferred_at(None);
+        updated_doc.set_created_at_block_height(None);
+        updated_doc.set_updated_at_block_height(None);
+        updated_doc.set_transferred_at_block_height(None);
+        updated_doc.set_created_at_core_block_height(None);
+        updated_doc.set_updated_at_core_block_height(None);
+        updated_doc.set_transferred_at_core_block_height(None);
+        updated_doc.set_contract_version(None);
 
-        Ok((updated_doc.into(), entropy))
+        Ok((updated_doc, entropy))
     }
 
     fn supports_field_editor(
@@ -1955,6 +1920,7 @@ impl DocumentActionScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn editor_document_type(array: bool) -> DocumentType {
         use dash_sdk::dpp::data_contract::config::DataContractConfig;
         use dash_sdk::dpp::platform_value::platform_value;
@@ -1994,6 +1960,53 @@ mod tests {
         assert!(!screen.can_broadcast());
         assert!(screen.try_build_document_from_original().is_err());
         assert!(matches!(screen.create_replace_task(), BackendTask::None));
+    }
+
+    /// DOC-REPLACE-001: the replacement keeps the original's id, owner,
+    /// creator and moderation, takes the edited fields and the next revision,
+    /// and drops every timestamp, height and the contract version.
+    #[test]
+    fn replacing_document_keeps_identity_and_drops_platform_set_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        screen.selected_document_type = Some(editor_document_type(false));
+        let original = DocumentV0 {
+            id: Identifier::new([1; 32]),
+            owner_id: Identifier::new([2; 32]),
+            creator_id: Some(Identifier::new([3; 32])),
+            properties: BTreeMap::from([("value".to_string(), Value::Text("old".into()))]),
+            revision: Some(4),
+            created_at: Some(10),
+            updated_at: Some(11),
+            transferred_at: Some(12),
+            created_at_block_height: Some(13),
+            updated_at_block_height: Some(14),
+            transferred_at_block_height: Some(15),
+            created_at_core_block_height: Some(16),
+            updated_at_core_block_height: Some(17),
+            transferred_at_core_block_height: Some(18),
+            contract_version: Some(2),
+            moderated_at: Some(19),
+            moderated_by: Some(Identifier::new([5; 32])),
+        };
+        screen.original_doc = Some(original.clone().into());
+        screen.field_inputs.insert("value".into(), "changed".into());
+
+        let (document, _) = screen.try_build_document_from_original().unwrap();
+
+        let expected: Document = DocumentV0 {
+            id: original.id,
+            owner_id: original.owner_id,
+            creator_id: original.creator_id,
+            properties: BTreeMap::from([("value".to_string(), Value::Text("changed".into()))]),
+            revision: Some(5),
+            moderated_at: original.moderated_at,
+            moderated_by: original.moderated_by,
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(document, expected);
     }
 
     #[test]

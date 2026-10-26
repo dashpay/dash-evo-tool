@@ -13,6 +13,7 @@ use crate::context::AppContext;
 use crate::model::dashpay::{
     ContactInfoUpdate, UnreadableContactInfoPolicy, contact_request_recipient,
 };
+use crate::model::document::new_document_for_creation;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase};
 // Upstream contact-request type: used to record the sent request in the
@@ -20,7 +21,7 @@ use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase}
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0, DocumentV0Getters};
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Identity, KeyType, Purpose, SecurityLevel};
@@ -518,40 +519,20 @@ pub async fn send_contact_request_with_proof(
 
     // Generate random entropy for the document transition
     let mut rng = StdRng::from_entropy();
-    let entropy = Bytes32::random_with_rng(&mut rng);
-
-    // Before protocol version 14 this entropy-only id is the document's id,
-    // which Platform recomputes from the entropy. From protocol version 14
-    // (`Document::document_id_depends_on_nonce`) the id also commits to the
-    // identity contract nonce, so this one is only a placeholder that building
-    // the create transition replaces. Read the id from the confirmed document.
-    let document_id = Document::generate_document_id_v0(
-        &dashpay_contract.id(),
-        &identity.identity.id(),
-        "contactRequest",
-        entropy.as_slice(),
-    );
-
-    // Create the document
-    let document = DppDocument::V0(DocumentV0 {
-        moderated_at: None,
-        moderated_by: None,
-        id: document_id,
-        owner_id: identity.identity.id(),
-        creator_id: None,
+    let entropy = Bytes32::random_with_rng(&mut rng).to_buffer();
+    let document_type = dashpay_contract
+        .document_type_for_name("contactRequest")
+        .map_err(|e| TaskError::DocumentPreparationFailed {
+            source: Box::new(e.into()),
+        })?;
+    let document = new_document_for_creation(
+        document_type,
+        identity.identity.id(),
         properties,
-        revision: Some(1),
-        created_at: None,
-        updated_at: None,
-        transferred_at: None,
-        created_at_block_height: None,
-        updated_at_block_height: None,
-        transferred_at_block_height: None,
-        created_at_core_block_height: None,
-        updated_at_core_block_height: None,
-        transferred_at_core_block_height: None,
-        contract_version: None,
-    });
+        &entropy,
+        sdk.version(),
+    )
+    .map_err(|source| TaskError::DocumentPreparationFailed { source })?;
 
     // Step 7: Submit the contact request
     // Use the selected signing key
@@ -561,10 +542,7 @@ pub async fn send_contact_request_with_proof(
         dashpay_contract,
         "contactRequest".to_string(),
         document,
-        entropy
-            .as_slice()
-            .try_into()
-            .expect("entropy should be 32 bytes"),
+        entropy,
     );
 
     // Add state transition options if available
@@ -1281,7 +1259,7 @@ pub async fn cancel_contact_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0};
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")

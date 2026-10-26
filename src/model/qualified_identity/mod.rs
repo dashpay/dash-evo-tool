@@ -1237,14 +1237,16 @@ impl QualifiedIdentity {
     }
 
     /// The key to sign with for `requirements` now: the automatic choice of
-    /// [`select_identity_signing_key`] among the keys this device holds the
-    /// private half of. Upstream platform-wallet's order: every qualifying
-    /// unlimited key at any accepted level before any limited one, then key
-    /// id order, so a budgeted application key is spent only when no
+    /// [`select_identity_signing_key`] among the keys whose private half this
+    /// device can obtain ([`Self::holds_obtainable_key`]), so a key filed
+    /// under a missing wallet or in the legacy encrypted form is passed over
+    /// for the next usable one. Upstream platform-wallet's order: every
+    /// qualifying unlimited key at any accepted level before any limited one,
+    /// then key id order, so a budgeted application key is spent only when no
     /// unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
         select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
-            self.can_sign_with(key)
+            self.holds_obtainable_key(key)
         })
     }
 
@@ -3421,6 +3423,40 @@ mod protocol_v14_compat_tests {
             Some(1),
             "key id order among unlimited keys, whatever their level"
         );
+    }
+
+    /// Review fix: the automatic choice took any key with a private half
+    /// filed, so an unlimited key filed under a wallet this device does not
+    /// hold, or in the legacy encrypted form, won over a usable limited key,
+    /// and signing then failed instead of falling back to the usable key.
+    #[test]
+    fn automatic_choice_skips_a_key_whose_private_half_cannot_be_obtained() {
+        use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
+        use crate::model::qualified_identity::encrypted_key_storage::{
+            PrivateKeyData, WalletDerivationPath,
+        };
+        let unlimited = auth_key(1, SecurityLevel::HIGH);
+        let limited = auth_key(2, SecurityLevel::HIGH).with_limits(Some(5_000), None);
+        for unobtainable in [
+            PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                wallet_seed_hash: [0x7D; 32],
+                derivation_path: Default::default(),
+            }),
+            PrivateKeyData::Encrypted(vec![0; 48]),
+        ] {
+            let mut identity = identity_holding(&[unlimited.clone(), limited.clone()]);
+            identity.private_keys.insert_at(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+                (unlimited.clone().into(), unobtainable.clone()),
+            );
+            assert_eq!(
+                identity
+                    .dashpay_signing_key(&dashpay_contract(), "contactRequest")
+                    .map(|key| key.id()),
+                Some(2),
+                "{unobtainable:?}"
+            );
+        }
     }
 
     /// Regression: the contactRequest and contactInfo key choices admitted

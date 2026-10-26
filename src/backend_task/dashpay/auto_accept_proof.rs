@@ -266,7 +266,6 @@ pub async fn verify_auto_accept_proof(
     let mut hasher = Sha256::new();
     hasher.update(&message_data);
     let message_hash = hasher.finalize();
-
     let message = Message::from_digest(message_hash.into());
 
     // Derive expected pubkey from our seed and key index (timestamp)

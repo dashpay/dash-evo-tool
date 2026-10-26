@@ -36,11 +36,16 @@ use std::sync::Arc;
 /// (`27 + recId`, `+4` when `compressed`) followed by the 64-byte signature, so
 /// a verifier can recover the signer's public key from the signature alone.
 /// Shared by the wallet-key and identity-key message-signing tasks.
+///
+/// # Errors
+///
+/// [`TaskError::WalletMessageSigningFailed`] if the signature cannot be put
+/// in the envelope; the detail is logged.
 pub(crate) fn dash_signed_message(
     message: &str,
     secret_key: &SecretKey,
     compressed: bool,
-) -> String {
+) -> Result<String, TaskError> {
     let message_hash = signed_msg_hash(message);
     let digest = Message::from_digest(*message_hash.as_byte_array());
     let recoverable = dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
@@ -52,8 +57,11 @@ pub(crate) fn dash_signed_message(
         recovery_id.to_u8(),
         compressed,
     )
-    .expect("a recovery id from signing is in range");
-    sign_message::to_base64(envelope)
+    .map_err(|detail| {
+        tracing::warn!(error = %detail, "Sign-message envelope construction failed");
+        TaskError::WalletMessageSigningFailed
+    })?;
+    Ok(sign_message::to_base64(envelope))
 }
 
 impl AppContext {
@@ -519,7 +527,7 @@ mod tests {
         let expected_pubkey = PublicKey::from_secret_key(&secret_key);
         let message = "Bilby was here";
 
-        let base64 = dash_signed_message(message, &secret_key, compressed);
+        let base64 = dash_signed_message(message, &secret_key, compressed).expect("signs");
         let parsed = sign_message::from_base64(&base64).expect("valid envelope");
         assert_eq!(parsed.is_compressed().expect("valid header"), compressed);
 
@@ -545,9 +553,10 @@ mod tests {
             let mut expected = [0u8; 65];
             expected[0] = 27 + recovery_id.to_u8() + if compressed { 4 } else { 0 };
             expected[1..].copy_from_slice(&compact);
-            let encoded =
-                sign_message::from_base64(&dash_signed_message(message, &secret_key, compressed))
-                    .expect("valid envelope");
+            let encoded = sign_message::from_base64(
+                &dash_signed_message(message, &secret_key, compressed).expect("signs"),
+            )
+            .expect("valid envelope");
             assert_eq!(encoded.as_bytes(), &expected);
         }
     }

@@ -3955,7 +3955,6 @@ mod tests {
         use crate::wallet_backend::single_key::{
             SingleKeyView, label_for_address, single_key_namespace_id,
         };
-
         use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 
         let dir = tempfile::tempdir().expect("tempdir");

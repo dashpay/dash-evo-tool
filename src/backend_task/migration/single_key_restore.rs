@@ -332,7 +332,6 @@ pub(super) fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String
     let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
         source: Box::new(source),
     })?;
-
     let pub_key = PublicKey {
         compressed: priv_key.compressed,
         inner: priv_key.inner.public_key(),
@@ -388,7 +387,6 @@ mod tests {
             nonce,
         } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
         let priv_key = PrivateKey::from_byte_array(raw_key, network).expect("priv");
-
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
             inner: priv_key.inner.public_key(),

@@ -294,7 +294,6 @@ mod tests {
         let master_seed = [2u8; 64];
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
-
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
 
         // Test version 0

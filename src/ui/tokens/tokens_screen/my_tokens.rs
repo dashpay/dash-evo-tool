@@ -1098,6 +1098,9 @@ impl TokensScreen {
     }
 }
 
+/// Confirmation shown after a table cell copies an ID.
+const ID_COPIED: &str = "Copied to clipboard";
+
 /// A table cell with a shortened ID that copies the full ID when clicked, so
 /// long IDs do not push the row's actions off-screen.
 fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
@@ -1115,6 +1118,7 @@ fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
         .clicked()
     {
         ui.ctx().copy_text(full);
+        MessageBanner::set_global(ui.ctx(), ID_COPIED, MessageType::Success);
     }
 }
 
@@ -1127,6 +1131,39 @@ mod tests {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::platform::Identifier;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    /// A shortened ID is copied from the keyboard (Tab, then Enter) as well as
+    /// by mouse, and the copy is confirmed, since the cell itself shows no change.
+    #[test]
+    fn short_id_cell_copies_the_full_id_from_the_keyboard_and_confirms_it() {
+        let id = Identifier::from([7; 32]);
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            short_id_cell(ui, id, false);
+        });
+        harness.run();
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        // Key down only: `key_press` queues down and up as two events, and
+        // `step` runs a frame per event, so the copy frame's output would be
+        // replaced by the key-up frame's.
+        harness.key_down(egui::Key::Enter);
+        harness.step();
+        let copied: Vec<String> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied, vec![id.to_string(Encoding::Base58)]);
+        assert_eq!(
+            crate::ui::components::message_banner::global_banner_texts(&harness.ctx),
+            vec![ID_COPIED.to_string()]
+        );
+    }
 
     #[test]
     fn token_detail_headers_sort_displayed_names_ids_and_numeric_balances() {

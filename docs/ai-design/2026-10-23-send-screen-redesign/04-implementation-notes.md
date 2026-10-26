@@ -68,7 +68,6 @@ and the cached shielded receive address.
 | A8 | §3.1: Shielded only in Expert view | Shown whenever shielded operations are available (unchanged gate) | Nothing may be lost. Advanced and several recipients are Expert only (Q5) |
 | A9 | §7, #1106: "Moves your whole Core balance" note, "Finish now" | Not shown. Max is an intent, so #1106 can add them | #1106 is not part of this branch |
 | A10 | §10: a two-column grid in the confirmation | One line per field (From, To, Amount, Fee, Total) | The shared `ConfirmationDialog` takes text; each line stays one translation unit |
-| A16 | §10: the recipient shortened (`yX12…ab`) in the confirmation | The whole address (a DPNS name keeps the whole identity ID in brackets); a Shield names "your private balance in {wallet}" | Address poisoning: the short form leaves only a few free characters to match, so a lookalike pasted from history would pass the last check before an irreversible payment. Coordinator decision, reversible |
 | A11 | §4.2: unused addresses | Platform: the first watched Platform address with no balance and no history, otherwise a new one, which needs the To wallet unlocked ("Unlock Savings to get a receiving address."). Core: the next unused receive address (public keys only) | Matches the Receive dialog |
 | A12 | §3.2: a single-key wallet as a destination | Deferred | Out of scope |
 | A13 | §3.1: Identity enabled when it has a usable transfer key | A transfer key for Platform and identity recipients, a withdrawal key for Core addresses | Withdrawals sign with a different key |

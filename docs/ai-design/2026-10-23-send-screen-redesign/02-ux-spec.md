@@ -202,14 +202,14 @@ Rule: validate on blur or on a completed paste, never on every keystroke. Errors
 
 ```
 From     Main · Core
-To       yX12…ab            (or "bob (yX12…ab)" / "Savings · new Platform address")
+To       yX12…full address…9fab   (or "bob (full identity ID)" / "your private balance in Main")
 Amount   0.5000 DASH
 Fee      ≈ 0.0001 DASH
 Total    ≈ 0.5001 DASH
 <route note, if any>
 ```
 
-Implemented deviation (A16 in `04-implementation-notes.md`): the confirmation shows the recipient address whole, not shortened, because of the address-poisoning risk.
+The confirmation always shows the recipient address in full, never middle-ellipsised. With a shortened address, an attacker only has to match a few characters at each end. A lookalike address pasted from history (address poisoning) would then pass this last check before an irreversible payment. A username shows with its full identity ID, and the own private balance shows by name.
 
 Buttons: [Cancel] [Send] (Confirm on the right; Escape = Cancel). The action is built at the moment Send is pressed, so the dialog shows exactly what will be sent even if Auto would re-resolve later. Danger mode stays as it is today (irreversible send).
 

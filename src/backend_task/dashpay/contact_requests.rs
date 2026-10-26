@@ -943,10 +943,23 @@ trait RejectOps {
     fn sender_id(&self) -> Identifier;
 }
 
+/// A decline or withdrawal changes only this device, so a failed local
+/// record must not be reported as one whose change reached the network.
+fn recorded_on_this_device(error: TaskError) -> TaskError {
+    match error {
+        TaskError::DashpaySidecarStorage { source } => {
+            TaskError::DashPayRequestDecisionNotRecorded { source }
+        }
+        error => error,
+    }
+}
+
 async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
     let result = if ops.ignore_sender().await? {
-        complete_rejection(ops.request_id(), || ops.mark_declined())?
+        complete_rejection(ops.request_id(), || {
+            ops.mark_declined().map_err(recorded_on_this_device)
+        })?
     } else {
         // The contact was established before the ignore took effect.
         BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
@@ -954,7 +967,7 @@ async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, 
             contact_id: ops.sender_id(),
         }
     };
-    ops.clear_phase()?;
+    ops.clear_phase().map_err(recorded_on_this_device)?;
     Ok(result)
 }
 
@@ -1070,13 +1083,13 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
     let outcome = if ops.reciprocal_request_exists().await? {
         CancelOutcome::AlreadyEstablished
     } else if ops.ignore_recipient().await? {
-        ops.mark_withdrawn()?;
+        ops.mark_withdrawn().map_err(recorded_on_this_device)?;
         CancelOutcome::Withdrawn
     } else {
         // The reply was taken in after the query, before the ignore.
         CancelOutcome::AlreadyEstablished
     };
-    ops.clear_phase()?;
+    ops.clear_phase().map_err(recorded_on_this_device)?;
     Ok(outcome)
 }
 
@@ -1719,6 +1732,7 @@ mod tests {
     struct ScriptedRejectOps {
         action_lock: Arc<tokio::sync::Mutex<()>>,
         ignore_fails: bool,
+        decline_fails: bool,
         established_meanwhile: bool,
         ignored: Mutex<usize>,
         declined: Mutex<bool>,
@@ -1745,6 +1759,11 @@ mod tests {
         }
 
         fn mark_declined(&self) -> Result<(), TaskError> {
+            if self.decline_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
             *self.declined.lock().unwrap() = true;
             Ok(())
         }
@@ -1786,6 +1805,34 @@ mod tests {
         ));
         assert_eq!(*ops.ignored.lock().unwrap(), 1);
         assert!(*ops.declined.lock().unwrap());
+    }
+
+    /// Declining and withdrawing publish nothing, so a failed local record
+    /// must not tell the user that the change reached the network.
+    #[tokio::test]
+    async fn a_failed_local_decision_record_does_not_claim_the_network() {
+        let decline = ScriptedRejectOps {
+            decline_fails: true,
+            ..Default::default()
+        };
+        let withdraw = ScriptedOps {
+            withdraw_fails: true,
+            ..Default::default()
+        };
+
+        for error in [
+            reject_flow(&decline)
+                .await
+                .expect_err("decline record fails"),
+            cancel_flow(&withdraw)
+                .await
+                .expect_err("withdrawal record fails"),
+        ] {
+            assert!(
+                matches!(error, TaskError::DashPayRequestDecisionNotRecorded { .. }),
+                "{error:?}"
+            );
+        }
     }
 
     #[tokio::test]

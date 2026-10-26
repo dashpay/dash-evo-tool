@@ -1459,6 +1459,14 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A decline or a withdrawal, which only change this device, could not be
+    /// recorded here; the request would be listed again on reload.
+    #[error("Could not save this change on this device. Nothing was sent to the network. Try again.")]
+    DashPayRequestDecisionNotRecorded {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// A contact-details save that stayed on this device, because publishing
     /// waits for a second contact, could not record which details this device
     /// holds; on reload the older details would show again.

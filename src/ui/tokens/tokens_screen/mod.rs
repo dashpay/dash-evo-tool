@@ -2311,6 +2311,14 @@ impl TokensScreen {
         }
     }
 
+    /// Whether this creator sent a registration it has not heard back about. A
+    /// network switch resets the creator, so a late result of a registration
+    /// sent on the previous network finds it not waiting and is ignored rather
+    /// than showing success (or failure) on the new network.
+    fn awaits_token_registration(&self) -> bool {
+        self.token_creator_status == TokenCreatorStatus::WaitingForResult
+    }
+
     /// Drops the Token Creator form after a network switch: its identity, key and
     /// wallet belong to the previous network.
     pub(crate) fn reset_for_network_switch(&mut self) {
@@ -3008,8 +3016,9 @@ impl ScreenLike for TokensScreen {
 
         match self.tokens_subscreen {
             TokensSubscreen::TokenCreator => {
-                if msg.contains("Failed to register token contract")
-                    | msg.contains("Error building contract V1")
+                if (msg.contains("Failed to register token contract")
+                    | msg.contains("Error building contract V1"))
+                    && self.awaits_token_registration()
                 {
                     self.token_creator_status = TokenCreatorStatus::Error;
                 }
@@ -3133,7 +3142,9 @@ impl ScreenLike for TokensScreen {
                 );
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
-                self.token_creator_status = TokenCreatorStatus::Complete;
+                if self.awaits_token_registration() {
+                    self.token_creator_status = TokenCreatorStatus::Complete;
+                }
                 self.operation_banner.take_and_clear();
             }
             _ => {}
@@ -3264,6 +3275,8 @@ mod tests {
             MessageType::Info,
         );
         screen.operation_banner = Some(handle.clone());
+        // As set when the registration was sent.
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
 
         screen.display_backend_task_result(
             &BackendTaskContext::Other,
@@ -4098,6 +4111,7 @@ mod tests {
                 "stale summary",
             ),
         );
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
         screen.display_backend_task_result(
             &BackendTaskContext::Other,
             BackendTaskSuccessResult::RegisteredTokenContract,
@@ -4397,5 +4411,36 @@ mod tests {
         screen.reset_for_network_switch();
 
         assert!(!screen.wallet_unlock_popup.is_open());
+    }
+
+    /// A registration sent before a network switch must not complete the
+    /// creator on the new network: neither its success nor its failure.
+    #[test]
+    fn registration_result_from_before_a_network_switch_is_ignored() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+
+        screen.reset_for_network_switch();
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::NotStarted,
+            "a late success must not show the success screen on the new network"
+        );
+
+        screen.display_message(
+            "Failed to register token contract: the old network refused it",
+            MessageType::Error,
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::NotStarted,
+            "a late failure must not mark the new network's creator as failed"
+        );
     }
 }

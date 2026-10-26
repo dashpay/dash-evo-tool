@@ -907,6 +907,11 @@ impl AppContext {
     /// writer's read-modify-write. A caller that must keep its own read and
     /// this write atomic holds that guard itself and calls
     /// [`Self::write_local_qualified_identity_locked`] instead.
+    ///
+    /// The write carries no block height, so a balance other than the newest
+    /// one observed is replaced by that one (see `balance_watermark`). A
+    /// write that changes the balance uses
+    /// `update_local_qualified_identity_observed`.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,

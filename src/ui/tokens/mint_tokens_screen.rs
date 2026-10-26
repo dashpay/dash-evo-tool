@@ -14,6 +14,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
@@ -35,6 +36,9 @@ pub struct MintAction {
     known_identities: Vec<QualifiedIdentity>,
     /// The token sends new tokens to a configured identity unless told otherwise.
     has_default_destination: bool,
+    /// New tokens have somewhere to go: a configured destination, or the
+    /// token lets the minter choose one.
+    can_mint: bool,
 }
 
 impl MintAction {
@@ -78,16 +82,15 @@ impl TokenAction for MintAction {
     const CONFIRM_TITLE: &'static str = "Confirm Mint";
 
     fn new(info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+        let rules = info.token_config.distribution_rules();
+        let has_default_destination = rules.new_tokens_destination_identity().is_some();
         MintAction {
             amount: None,
             amount_input: None,
             recipient_identity_id: String::new(),
             known_identities: super::load_identities_with_banner(app_context),
-            has_default_destination: info
-                .token_config
-                .distribution_rules()
-                .new_tokens_destination_identity()
-                .is_some(),
+            has_default_destination,
+            can_mint: has_default_destination || rules.minting_allow_choosing_destination(),
         }
     }
 
@@ -118,6 +121,13 @@ impl TokenAction for MintAction {
     }
 
     fn render_form(&mut self, ui: &mut Ui, ctx: &TokenActionCtx, step: &mut StepCounter) {
+        if !self.can_mint {
+            ui.colored_label(
+                DashColors::error_color(ui.style().visuals.dark_mode),
+                "This token cannot be minted yet because it has no default recipient for new tokens and does not let you choose one. Set a default recipient in the token's configuration, then try again.",
+            );
+            return;
+        }
         let n = step.advance();
         ui.heading(format!("{}. Amount to mint", n));
         ui.add_space(5.0);
@@ -161,7 +171,7 @@ impl TokenAction for MintAction {
     }
 
     fn inputs_ready(&self) -> bool {
-        positive_amount(&self.amount).is_some() && self.recipient().is_some()
+        self.can_mint && positive_amount(&self.amount).is_some() && self.recipient().is_some()
     }
 
     fn build_action(
@@ -222,7 +232,11 @@ mod tests {
     use dash_sdk::dpp::platform_value::BinaryData;
 
     /// Token info whose token sends new tokens to `destination` by default.
-    fn token_info(context: &Arc<AppContext>, destination: Option<Identifier>) -> IdentityTokenInfo {
+    fn token_info(
+        context: &Arc<AppContext>,
+        destination: Option<Identifier>,
+        allow_choosing: bool,
+    ) -> IdentityTokenInfo {
         let identity = QualifiedIdentity::from_bytes(
             &crate::database::test_helpers::basic_legacy_identity_blob(
                 [3; 32],
@@ -235,6 +249,9 @@ mod tests {
         config
             .distribution_rules
             .set_new_tokens_destination_identity(destination);
+        config
+            .distribution_rules
+            .set_minting_allow_choosing_destination(allow_choosing);
         IdentityTokenInfo {
             token_id: Identifier::from([4; 32]),
             token_alias: "Test token".into(),
@@ -269,7 +286,7 @@ mod tests {
     fn empty_recipient_mints_to_the_configured_destination() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        let info = token_info(&context, Some(Identifier::from([5; 32])));
+        let info = token_info(&context, Some(Identifier::from([5; 32])), false);
         let ctx = TokenActionCtx {
             info: &info,
             app_context: &context,
@@ -305,9 +322,23 @@ mod tests {
     fn empty_recipient_is_rejected_without_a_destination() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        let info = token_info(&context, None);
+        let info = token_info(&context, None, true);
         let mut action = MintAction::new(&info, &context);
         action.amount = Some(Amount::from_token(&info, 5));
+
+        assert!(!action.inputs_ready());
+    }
+
+    /// A token with no destination that does not let the minter choose one
+    /// cannot be minted at all, so the form must not offer to.
+    #[test]
+    fn a_token_without_any_destination_cannot_be_minted() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None, false);
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+        action.recipient_identity_id = Identifier::from([6; 32]).to_string(Encoding::Base58);
 
         assert!(!action.inputs_ready());
     }

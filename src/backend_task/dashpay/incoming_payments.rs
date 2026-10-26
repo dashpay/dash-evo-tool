@@ -145,18 +145,15 @@ pub async fn register_dashpay_addresses_for_identity(
                         }
                     };
 
-                    let highest_receive_index = indices_map
-                        .get(&contact.contact_identity_id)
-                        .map(|idx| idx.highest_receive_index)
-                        .unwrap_or(0);
                     let bloom_registered = indices_map
                         .get(&contact.contact_identity_id)
                         .map(|idx| idx.bloom_registered_count)
                         .unwrap_or(0);
 
-                    // Derive 0..(highest_receive_index + GAP_LIMIT), skipping
-                    // what the bloom filter already covers.
-                    let target_count = highest_receive_index.saturating_add(DASHPAY_GAP_LIMIT);
+                    // Derive 0..GAP_LIMIT, skipping what is already registered.
+                    // platform-wallet's receiving account extends its own pool
+                    // as payments use addresses.
+                    let target_count = DASHPAY_GAP_LIMIT;
                     if target_count <= bloom_registered {
                         result.contacts_processed += 1;
                         continue;

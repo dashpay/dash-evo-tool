@@ -419,7 +419,9 @@ pub struct ContactAddressIndex {
     pub contact_identity_id: Vec<u8>,
     /// Next address index to use when sending TO this contact.
     pub next_send_index: u32,
-    /// Highest address index seen when receiving FROM this contact (for bloom filter).
+    /// Not written: platform-wallet's `DashpayReceivingFunds` account marks
+    /// receiving addresses used and extends its pool itself. Kept because the
+    /// stored encoding is positional.
     pub highest_receive_index: u32,
     /// Number of addresses registered in the bloom filter for this contact.
     pub bloom_registered_count: u32,

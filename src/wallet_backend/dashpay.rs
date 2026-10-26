@@ -1476,8 +1476,7 @@ impl WalletBackend {
 
     /// Upsert the address-index state for `(owner, contact)`. This is the
     /// non-incrementing setter — used by the receive-side path that knows
-    /// the new `highest_receive_index` or `bloom_registered_count`
-    /// outright. Concurrent writers race; callers that need atomic
+    /// the new `bloom_registered_count` outright. Concurrent writers race; callers that need atomic
     /// read-modify-write (the send-side increment) must use
     /// [`Self::dashpay_increment_send_index`] instead.
     pub fn dashpay_set_address_index(

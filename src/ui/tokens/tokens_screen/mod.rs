@@ -1007,6 +1007,7 @@ pub struct TokenBuildArgs {
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
     pub marketplace_rules: ChangeControlRules,
     pub change_direct_purchase_pricing_rules: ChangeControlRules,
+    pub transferable: bool,
 }
 
 impl TokenBuildArgs {
@@ -1038,6 +1039,7 @@ impl TokenBuildArgs {
             groups: self.groups,
             document_schemas: self.document_schemas,
             marketplace_rules: self.marketplace_rules,
+            transferable: self.transferable,
         }
     }
 }
@@ -1148,6 +1150,9 @@ pub struct TokensScreen {
     max_supply_amount: Option<Amount>,
     max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
+    /// Whether holders may send the token to other identities. Turning it off
+    /// needs a network that accepts version 1 token configurations.
+    transferable_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
     token_creator_confirmation_dialog: Option<ConfirmationDialog>,
@@ -1513,6 +1518,7 @@ impl TokensScreen {
             max_supply_amount: None,
             max_supply_input: None,
             start_as_paused_input: false,
+            transferable_input: true,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
                 true,
@@ -2304,6 +2310,7 @@ impl TokensScreen {
         self.max_supply_input = None;
         self.max_supply_amount = None;
         self.start_as_paused_input = false;
+        self.transferable_input = true;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
@@ -3680,6 +3687,124 @@ mod tests {
             }
             _ => panic!("Expected TimeBasedDistribution"),
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
+    fn non_transferable_token_builds_a_version_1_configuration_only_on_protocol_14() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
+        let db_file_path = "test_db_non_transferable_token";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
+        let db = Arc::new(Database::new(db_file_path).unwrap());
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
+
+        ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
+        let app_context = AppContext::new(
+            data_dir,
+            Network::Regtest,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Mainnet,
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
+        token_creator_ui.selected_key = Some(mock_key);
+
+        token_creator_ui.token_names_input = vec![(
+            "TestToken".to_owned(),
+            "TestToken".to_owned(),
+            TokenNameLanguage::English,
+            true,
+        )];
+
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
+        // A transferable token keeps the version 0 configuration older
+        // networks accept.
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("a transferable token parses on any network");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.into_contract_params(),
+            )
+            .expect("Should build successfully");
+        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
+        assert!(matches!(token, TokenConfiguration::V0(_)));
+        assert!(token.is_transferable());
+
+        token_creator_ui.transferable_input = false;
+
+        // The connected network's version is not known yet: refused locally.
+        let err = token_creator_ui
+            .parse_token_build_args()
+            .expect_err("a network below protocol 14 refuses a non-transferable token");
+        assert!(err.contains("does not accept"), "got: {err}");
+
+        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(
+                build_args.identity_id,
+                build_args.into_contract_params(),
+            )
+            .expect("Should build successfully");
+        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
+        assert!(matches!(token, TokenConfiguration::V1(_)));
+        assert!(!token.is_transferable());
     }
 
     #[test]

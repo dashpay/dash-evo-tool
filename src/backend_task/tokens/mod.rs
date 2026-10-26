@@ -828,13 +828,13 @@ mod tests {
             crate::model::token::distribution_rules_with_once_per_identity(v0.clone(), Some(5));
         let v0 = TokenDistributionRules::V0(v0);
 
-        ctx.set_platform_protocol_version(13);
+        crate::context::test_support::prove_protocol_version(&ctx, 13);
         assert!(ctx.ensure_distribution_rules_supported(&v0).is_ok());
         assert!(matches!(
             ctx.ensure_distribution_rules_supported(&v1),
             Err(TaskError::TokenOncePerIdentityNotSupported)
         ));
-        ctx.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&ctx, 14);
         assert!(ctx.ensure_distribution_rules_supported(&v1).is_ok());
     }
 

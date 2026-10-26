@@ -1900,13 +1900,10 @@ impl TokensScreen {
             .iter()
             .filter(|(_, _, _, searchable)| *searchable)
             .count();
-        // The fee table of the version the network confirmed, not the SDK's
-        // starting seed (they differ while a network moves to a new protocol
-        // version).
         estimate_token_contract_registration(
             &self
                 .app_context
-                .connected_platform_version()
+                .platform_version()
                 .fee_version
                 .data_contract_registration,
             TokenRegistrationFeatures {
@@ -3770,7 +3767,7 @@ mod tests {
             "the local refusal reads like the backend's"
         );
 
-        app_context.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&app_context, 14);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");

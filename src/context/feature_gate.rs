@@ -454,17 +454,17 @@ mod tests {
     /// the network's version is known, whatever the role.
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
+        // One entry per protocol version 14 gate this build offers.
+        let gates = [FeatureGate::TokenOncePerIdentityDistribution];
         for role in ROLES {
-            let (_tmp, ctx) = ctx_with_role(role);
-            // One entry per protocol version 14 gate this build offers.
-            let gates = [FeatureGate::TokenOncePerIdentityDistribution];
             for gate in gates {
+                // A proven version only rises, so each gate gets a fresh context.
+                let (_tmp, ctx) = ctx_with_role(role);
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-                ctx.set_platform_protocol_version(13);
+                prove_protocol_version(&ctx, 13);
                 assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-                ctx.set_platform_protocol_version(14);
+                prove_protocol_version(&ctx, 14);
                 assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
-                ctx.set_platform_protocol_version(0);
             }
         }
     }

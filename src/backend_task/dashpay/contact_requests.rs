@@ -5,9 +5,6 @@ use super::encryption::{
 use super::errors::DashPayError;
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::dashpay::auto_accept_proof::{
-    AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
-};
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::{
@@ -238,7 +235,7 @@ pub async fn send_contact_request_with_proof(
     signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
-    qr_auto_accept: Option<AutoAcceptProofData>,
+    qr_auto_accept: Option<crate::model::dashpay::ContactQr>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     if let Some(label) = account_label.as_deref()
         && let Err(error) = crate::model::dashpay::validate_account_label(label)
@@ -491,23 +488,21 @@ pub async fn send_contact_request_with_proof(
         );
     }
 
-    // If QR auto-accept data is provided, create the proof bytes now to match the final accountReference
+    // A scanned contact QR code signs the auto-accept proof over this
+    // request's final accountReference. The recipient was resolved from the
+    // code's own username, and the proof binds it, the sender and the account
+    // reference, so it is useless for any other request.
     if let Some(qr) = qr_auto_accept {
-        // Ensure the QR target matches the resolved recipient
-        if qr.identity_id != to_identity_id {
-            return Err(DashPayError::InvalidQrCode {
-                reason: "QR code target identity does not match recipient".to_string(),
-            }
-            .into());
-        }
-        let proof = create_auto_accept_proof_bytes_with_key(
-            qr.expires_at,
-            &qr.proof_key,
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| DashPayError::SystemClockInvalid)?
+            .as_secs();
+        let proof = qr.sign_proof(
             &identity.identity.id(),
             &to_identity_id,
             account_reference,
-        )
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+            now_secs,
+        )?;
         tracing::debug!(
             "Including autoAcceptProof in contact request ({} bytes)",
             proof.len()

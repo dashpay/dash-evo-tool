@@ -1224,19 +1224,6 @@ impl QualifiedIdentity {
         )
     }
 
-    /// The ENCRYPTION key whose wallet seeds DashPay auto-accept proofs
-    /// (DIP-15): the first enabled ECDSA_SECP256K1 one, at any security level
-    /// (lowest key id first).
-    // TODO(upstream): call platform-wallet's `select_own_encryption_key` once
-    // it is public; this mirrors its policy until then.
-    pub fn auto_accept_proof_key(&self) -> Option<&IdentityPublicKey> {
-        self.identity.public_keys().values().find(|key| {
-            key.purpose() == Purpose::ENCRYPTION
-                && key.key_type() == KeyType::ECDSA_SECP256K1
-                && !key.is_disabled()
-        })
-    }
-
     /// The key as the identity holds it now for `snapshot`, a copy taken
     /// earlier (e.g. stored next to its private half): budget and expiry move
     /// with key limits updates, so the snapshot may be stale. Falls back to
@@ -3499,44 +3486,6 @@ mod protocol_v14_compat_tests {
                 .map(|key| key.id()),
             Some(1),
             "an ECDSA_HASH160 key signs like an ECDSA_SECP256K1 key"
-        );
-    }
-
-    /// The auto-accept proof key follows upstream platform-wallet's
-    /// `select_own_encryption_key`: the first enabled ECDSA_SECP256K1
-    /// ENCRYPTION key, at any security level.
-    #[test]
-    fn the_auto_accept_proof_key_is_the_first_enabled_ecdsa_encryption_key() {
-        use crate::context::test_support::identity_holding;
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-
-        let encryption = |id: KeyID, level: SecurityLevel, disabled: bool| -> IdentityPublicKey {
-            IdentityPublicKeyV0 {
-                id,
-                purpose: Purpose::ENCRYPTION,
-                security_level: level,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: vec![2; 33].into(),
-                disabled_at: disabled.then_some(1),
-            }
-            .into()
-        };
-        let identity = identity_holding(&[encryption(3, SecurityLevel::HIGH, false)]);
-        assert_eq!(
-            identity.auto_accept_proof_key().map(|key| key.id()),
-            Some(3)
-        );
-
-        let identity = identity_holding(&[
-            encryption(1, SecurityLevel::MEDIUM, true),
-            encryption(2, SecurityLevel::HIGH, false),
-        ]);
-        assert_eq!(
-            identity.auto_accept_proof_key().map(|key| key.id()),
-            Some(2),
-            "a disabled key is skipped"
         );
     }
 

@@ -2316,6 +2316,9 @@ impl TokensScreen {
     pub(crate) fn reset_for_network_switch(&mut self) {
         self.selected_wallet = None;
         self.wallet_open_attempted = false;
+        // Its wallet belongs to the previous network; left open, it would come
+        // back for the next wallet the user selects.
+        self.wallet_unlock_popup.close();
         self.reset_token_creator();
     }
 
@@ -4037,7 +4040,7 @@ mod tests {
     fn owner_preset(
         features: TokenConfigurationPresetFeatures,
     ) -> dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset
-    {
+{
         dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset {
             features,
             action_taker: AuthorizedActionTakers::ContractOwner,
@@ -4379,5 +4382,20 @@ mod tests {
         screen.transferable_input = true;
         assert_eq!(screen.simple_mode_blocked_reason(), None);
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
+    }
+
+    /// A network switch closes the wallet unlock popup: its wallet belongs to the
+    /// previous network, and leaving it open would show it again for the next
+    /// wallet the user selects.
+    #[test]
+    fn network_switch_closes_the_wallet_unlock_popup() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.wallet_unlock_popup.open();
+
+        screen.reset_for_network_switch();
+
+        assert!(!screen.wallet_unlock_popup.is_open());
     }
 }

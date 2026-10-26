@@ -33,11 +33,14 @@ pub enum Capability {
 ///
 /// Every capability reads the version through this, so it fails closed both
 /// before the network proves a version and for a version newer than any this
-/// build knows ([`AppContext::proven_platform_version`]): this build cannot
-/// tell what an unknown version's rules allow.
+/// build knows ([`dash_sdk::ProtocolVersionInfo::newer_protocol_available`]):
+/// this build cannot tell what an unknown version's rules allow.
 fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
-    ctx.proven_platform_version()
-        .is_some_and(|version| version.protocol_version >= activation)
+    let info = ctx.protocol_version_info();
+    !info.newer_protocol_available
+        && info
+            .verified_version
+            .is_some_and(|version| version >= activation)
 }
 
 impl Capability {
@@ -282,7 +285,11 @@ mod tests {
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
 
-        assert_eq!(ctx.proven_protocol_version(), None, "boot value");
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
+            "boot value"
+        );
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
             !FeatureGate::ShieldedOperations.is_available(&ctx),

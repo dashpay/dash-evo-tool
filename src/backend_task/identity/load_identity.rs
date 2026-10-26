@@ -221,7 +221,9 @@ impl AppContext {
 
         // A node key left blank may be held by one of this device's wallets:
         // reference it at its derivation path instead of asking for it. A
-        // merge never swaps a key the node already stores for a reference.
+        // merge never swaps a key the node already stores for a reference, but
+        // a stored node key the network has since disabled or replaced does not
+        // count: after a rotation the new key is looked up.
         let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
             load_mode == IdentityLoadMode::MergeIntoExisting
                 && existing_stored.as_ref().is_some_and(|existing| {
@@ -230,7 +232,15 @@ impl AppContext {
                         .identity_public_keys()
                         .iter()
                         .any(|(t, key)| {
-                            **t == target && key.identity_public_key.purpose() == purpose
+                            let stored = &key.identity_public_key;
+                            **t == target
+                                && stored.purpose() == purpose
+                                && (target != PrivateKeyOnMainIdentity
+                                    || identity.get_public_key_by_id(stored.id()).is_some_and(
+                                        |current| {
+                                            current.purpose() == purpose && !current.is_disabled()
+                                        },
+                                    ))
                         })
                 })
         };
@@ -3506,6 +3516,93 @@ mod tests {
         assert!(
             matches!(payout, PrivateKeyData::AtWalletDerivationPath(found)
             if *found == wallet_reference(seed_hash, WALLET_NODE_PAYOUT_PATH))
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A mock SDK serving `node_id` with `keys` and no DPNS names.
+    async fn node_sdk(ctx: &AppContext, node_id: Identifier, keys: Vec<IdentityPublicKey>) -> Sdk {
+        let mut identity =
+            Identity::create_basic_identity(node_id, PlatformVersion::latest()).unwrap();
+        identity.add_public_keys(keys);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(node_id, Some(identity))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, dash_sdk::platform::Document, _, dash_sdk::query_types::Documents>(
+                ctx.owned_dpns_names_query(node_id),
+                Some(dash_sdk::query_types::Documents::default()),
+            )
+            .await
+            .unwrap();
+        sdk
+    }
+
+    /// After an owner key rotation, the old key still stored for the node must
+    /// not stop a merge from finding the new key in a wallet: Platform refuses
+    /// a disabled key, so keeping only the old one leaves nothing to sign with.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rotated_node_key_is_found_in_a_wallet_despite_the_stale_stored_one() {
+        use dash_sdk::dpp::identity::Purpose;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        const OLD_SEED: [u8; 64] = [0x11; 64];
+        let (ctx, _dir, seed_hash, node_id, _) = wallet_held_node().await;
+        let old_owner = hash160_key(
+            0,
+            Purpose::OWNER,
+            wallet_key_hash(&OLD_SEED, WALLET_NODE_OWNER_PATH),
+        );
+        let payout = hash160_key(
+            1,
+            Purpose::TRANSFER,
+            wallet_key_hash(&WALLET_NODE_SEED, WALLET_NODE_PAYOUT_PATH),
+        );
+        let old_owner_wif = WALLET_NODE_OWNER_PATH
+            .parse::<DerivationPath>()
+            .unwrap()
+            .derive_priv_ecdsa_for_master_seed(&OLD_SEED, Network::Testnet)
+            .unwrap()
+            .to_priv()
+            .to_wif();
+        let before = node_sdk(&ctx, node_id, vec![old_owner.clone(), payout.clone()]).await;
+        ctx.load_identity(
+            &before,
+            node_load_input(
+                node_id,
+                Secret::new(old_owner_wif),
+                IdentityLoadMode::RejectIfExists,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let mut disabled_owner = old_owner;
+        disabled_owner.set_disabled_at(1);
+        let new_owner = hash160_key(
+            2,
+            Purpose::OWNER,
+            wallet_key_hash(&WALLET_NODE_SEED, WALLET_NODE_OWNER_PATH),
+        );
+        let after = node_sdk(&ctx, node_id, vec![disabled_owner, payout, new_owner]).await;
+        ctx.load_identity(
+            &after,
+            node_load_input(
+                node_id,
+                Secret::default(),
+                IdentityLoadMode::MergeIntoExisting,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let new_entry = stored.private_keys.entry_at(&(M, 2));
+        assert!(
+            matches!(new_entry, Some((_, PrivateKeyData::AtWalletDerivationPath(found)))
+                if *found == wallet_reference(seed_hash, WALLET_NODE_OWNER_PATH)),
+            "the rotated owner key must be referenced in the wallet, got {new_entry:?}"
         );
         ctx.wallet_backend().unwrap().shutdown().await;
     }

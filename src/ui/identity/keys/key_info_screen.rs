@@ -1261,7 +1261,16 @@ impl KeyInfoScreen {
             // Keys that carry their own plaintext sign locally — no wallet seed
             // is involved, so there is nothing to fetch through the chokepoint.
             PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => {
-                self.signed_message = Some(Self::sign_ecdsa_local(bytes, &self.message_input));
+                match Self::sign_ecdsa_local(bytes, &self.message_input) {
+                    Ok(signature) => self.signed_message = Some(signature),
+                    Err(error) => {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            error.to_string(),
+                            MessageType::Error,
+                        );
+                    }
+                }
             }
             // Wallet-derived keys sign in the backend: the seed is fetched
             // just-in-time through the JIT chokepoint and only the public
@@ -1292,7 +1301,7 @@ impl KeyInfoScreen {
     /// `+4` for a compressed key) followed by the 64-byte signature. These keys
     /// are compressed by convention, so a verifier can recover the signer's
     /// public key and address from the signature alone.
-    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
+    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> Result<String, TaskError> {
         let secret_key = SecretKey::from_secret_bytes(*private_key_bytes)
             .expect("clear private key is a valid 32-byte secret");
         crate::backend_task::wallet::dash_signed_message(message, &secret_key, true)
@@ -2273,7 +2282,6 @@ mod tests {
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
         let secret_bytes = [0x2A; 32];
-
         let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")

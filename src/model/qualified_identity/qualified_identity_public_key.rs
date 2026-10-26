@@ -145,7 +145,6 @@ mod tests {
     fn pubkey(n: u8) -> PublicKey {
         let mut sk_bytes = [3u8; 32];
         sk_bytes[31] = n.max(1);
-
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         PublicKey::new(sk.public_key())
     }

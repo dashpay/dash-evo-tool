@@ -3595,7 +3595,6 @@ fn seed_legacy_protected_single_key(
     alias: Option<&str>,
 ) -> String {
     use crate::model::wallet::single_key::ClosedSingleKey;
-
     use dash_sdk::dpp::dashcore::{Address, PrivateKey};
 
     let path = ctx.db.db_file_path().expect("data.db path");
@@ -3607,7 +3606,6 @@ fn seed_legacy_protected_single_key(
         nonce,
     } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
     let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
-
     let pub_key = priv_key.public_key();
     let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
     let key_hash = ClosedSingleKey::compute_key_hash(raw_key);

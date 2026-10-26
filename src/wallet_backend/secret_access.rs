@@ -1748,7 +1748,6 @@ mod tests {
 
         let priv_key = PrivateKey::from_wif(&known_testnet_wif()).expect("wif");
         let raw: Zeroizing<[u8; 32]> = priv_key.inner.to_bytes();
-
         let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
         let pub_bytes = pub_key.inner.to_compressed().to_vec();

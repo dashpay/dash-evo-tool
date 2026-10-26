@@ -13,10 +13,9 @@
 
 use std::sync::Arc;
 
+use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 #[cfg(test)]
 use dash_sdk::dpp::secp256k1::Message;
-
-use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 #[cfg(test)]
 use dash_sdk::dpp::secp256k1::ecdsa::Signature;
 use platform_wallet_storage::secrets::{
@@ -256,7 +255,6 @@ impl<'a> SingleKeyView<'a> {
         if !priv_key.compressed {
             return Err(TaskError::UncompressedWifUnsupported);
         }
-
         let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
@@ -707,7 +705,6 @@ impl<'a> SingleKeyView<'a> {
                 return Ok(None);
             }
         };
-
         let public_key = priv_key.public_key();
         let address = Address::p2pkh(&public_key, meta.network);
 
@@ -1259,7 +1256,6 @@ mod tests {
         // the signer hit the imported-key path (not some other key the
         // backend might fall back to) without referencing BIP-32 at all.
         let priv_key = PrivateKey::from_wif(known_wif()).expect("wif");
-
         let pk = dash_sdk::dpp::secp256k1::PublicKey::from(priv_key.inner.public_key());
         dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
             .expect("signature verifies against WIF-derived pubkey");
@@ -1913,7 +1909,6 @@ mod tests {
             .expect("chokepoint signs after the right passphrase");
 
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-
         let pk = dash_sdk::dpp::secp256k1::PublicKey::from(priv_key.inner.public_key());
         dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
             .expect("chokepoint signature verifies");

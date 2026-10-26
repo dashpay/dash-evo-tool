@@ -710,11 +710,23 @@ impl ScreenLike for ContactDetailsScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        // Only the sync reading the details opens the editor, not a snapshot
+        // refresh that lands while it runs.
+        if matches!(result, BackendTaskSuccessResult::DashPaySynced)
+            && context.dashpay_sync_identity() == Some(self.identity.identity.id())
+        {
+            self.details_loading = false;
+        }
+        self.display_task_result(result);
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::DashPaySynced => {
-                self.details_loading = false;
-            }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Update contact info with fresh profile data from Platform
                 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -882,7 +894,17 @@ mod tests {
             }],
             ..Default::default()
         });
-        screen.display_task_result(BackendTaskSuccessResult::DashPaySynced);
+        let sync = tasks
+            .iter()
+            .find(|task| {
+                matches!(task, BackendTask::DashPayTask(task)
+                    if matches!(task.as_ref(), DashPayTask::SyncNow { .. }))
+            })
+            .expect("the sync");
+        screen.display_backend_task_result(
+            &BackendTaskContext::for_dispatch(sync),
+            BackendTaskSuccessResult::DashPaySynced,
+        );
         // A refresh rereads this device's copy, which must not replace them.
         screen.refresh();
         screen.start_editing();
@@ -938,6 +960,37 @@ mod tests {
         fail(&mut screen, details);
         screen.start_editing();
         assert!(screen.editing_info, "a failed sync opens the editor");
+    }
+
+    /// A snapshot refresh the frame loop ran is not this screen's sync: the
+    /// editor stays closed until the sync reading the details ends.
+    #[test]
+    fn a_snapshot_refresh_keeps_the_editor_closed_until_the_sync_ends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let owner = Identifier::from([1; 32]);
+        let contact = Identifier::from([2; 32]);
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity.clone(), contact);
+        let _ = screen.trigger_backend_fetch();
+
+        let refresh = BackendTask::DashPayTask(Box::new(DashPayTask::RefreshSnapshots));
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&refresh),
+            BackendTaskSuccessResult::DashPaySynced,
+        );
+        screen.start_editing();
+        assert!(!screen.editing_info, "the editor still waits for the sync");
+
+        let sync = BackendTask::DashPayTask(Box::new(DashPayTask::SyncNow {
+            identity: Some(identity),
+        }));
+        screen.display_backend_task_result(
+            &BackendTaskContext::from(&sync),
+            BackendTaskSuccessResult::DashPaySynced,
+        );
+        screen.start_editing();
+        assert!(screen.editing_info, "the finished sync opens the editor");
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no

@@ -1981,7 +1981,7 @@ fn auto_selected_document_key(
     contract: Option<&QualifiedContract>,
     document_type: Option<&DocumentType>,
 ) -> Option<IdentityPublicKey> {
-    // The levels the document type accepts (never MASTER), so the preference
+    // The levels the document type accepts, so the preference
     // for unlimited keys only ever chooses among keys Platform accepts.
     let levels = crate::ui::helpers::compute_allowed_security_levels(
         TransactionType::DocumentAction,

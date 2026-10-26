@@ -75,7 +75,7 @@ impl Capability {
             // Upstream names no feature constant; the validation version that
             // admits bound authentication keys is the source of truth.
             Capability::ContractBoundAuthenticationKeys => {
-                known_protocol_version(ctx).is_some_and(|version| {
+                ctx.proven_platform_version().is_some_and(|version| {
                     version
                         .drive_abci
                         .validation_and_processing

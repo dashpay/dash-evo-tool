@@ -1989,7 +1989,7 @@ mod tests {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.set_platform_protocol_version(protocol_version);
+        crate::context::test_support::prove_protocol_version(&ctx, protocol_version);
         let sdk = dash_sdk::Sdk::new_mock();
         ctx.add_key_to_identity(
             &sdk,

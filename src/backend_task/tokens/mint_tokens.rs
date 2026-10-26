@@ -98,17 +98,16 @@ impl AppContext {
                         MintResult::GroupActionWithBalance(_, status, Some(amount)) => {
                             if matches!(status, GroupActionStatus::ActionClosed)
                                 && let Some(recipient_id) = mint_recipient
-                            {
-                                if let Err(e) = self.insert_token_identity_balance(
+                                && let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     amount,
-                                ) {
-                                    tracing::error!(
-                                        "Failed to update token balance from group action: {}",
-                                        e
-                                    );
-                                }
+                                )
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from group action: {}",
+                                    e
+                                );
                             }
                         }
 

@@ -903,6 +903,7 @@ impl WalletBackend {
         let _spend = self.begin_core_spend(seed_hash);
         self.ensure_core_payment_builds(seed_hash, &recipients)
             .await?;
+        let requested = requested_duffs(&recipients);
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -921,7 +922,7 @@ impl WalletBackend {
                         &signer,
                     )
                     .await
-                    .map_err(map_core_finalize_error)?;
+                    .map_err(|source| map_core_finalize_error(source, requested))?;
                 let txid = transaction.transaction().txid();
                 // A definitive rejection releases the reservation on every
                 // funding account; an ambiguous outcome keeps it.
@@ -956,9 +957,7 @@ impl WalletBackend {
         let (key_wallet, info) = wallet_manager
             .get_wallet_and_info(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
-        let requested = recipients
-            .iter()
-            .fold(0_u64, |total, (_, amount)| total.saturating_add(*amount));
+        let requested = requested_duffs(recipients);
         dry_run_core_payment(key_wallet, &info.core_wallet, recipients).map_err(|source| {
             match source {
                 BuilderError::InsufficientFunds {
@@ -1278,18 +1277,30 @@ fn fee_saved_against_p2pkh(
     FeeRate::normal().calculate_fee(saved_bytes)
 }
 
-/// Classify a failed pooled payment build. A shortfall the dry run did not
-/// see (the wallet changed in between) keeps its balance advice when upstream
-/// names both figures.
-fn map_core_finalize_error(source: platform_wallet::error::PlatformWalletError) -> TaskError {
+/// The total a payment to `recipients` asks for, in duffs.
+fn requested_duffs(recipients: &[(dash_sdk::dpp::dashcore::Address, u64)]) -> u64 {
+    recipients
+        .iter()
+        .fold(0_u64, |total, (_, amount)| total.saturating_add(*amount))
+}
+
+/// Classify a failed pooled payment build of `requested` duffs. A shortfall
+/// the dry run did not see (the wallet changed in between) keeps its balance
+/// advice whenever upstream names the available figure. Upstream leaves the
+/// required figure out when no unreserved UTXO is left; the requested amount
+/// stands in for it, as in the dry run's mapping of the same case.
+fn map_core_finalize_error(
+    source: platform_wallet::error::PlatformWalletError,
+    requested: u64,
+) -> TaskError {
     match source {
         platform_wallet::error::PlatformWalletError::CorePooledInsufficientFunds {
             available: Some(available),
-            required: Some(required),
+            required,
             ..
         } => TaskError::InsufficientFunds {
             available,
-            required,
+            required: required.unwrap_or(requested),
         },
         other => TaskError::WalletBackend {
             source: Arc::new(other),
@@ -1330,7 +1341,8 @@ pub(super) fn map_core_broadcast_error(
 mod tests {
     use super::{
         ASSET_LOCK_FEE_PER_KB, AssetLockFundingPool, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_pool, map_core_broadcast_error, unbound_topup_lock_eligible,
+        asset_lock_max_amount_from_pool, map_core_broadcast_error, map_core_finalize_error,
+        unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::estimate_core_l1_send_fee_duffs;
@@ -2049,6 +2061,32 @@ mod tests {
             "expected WalletBackend, got: {err:?}"
         );
     }
+
+    /// Upstream reports a pooled build that found no unreserved UTXO as a
+    /// shortfall with no required figure. It keeps its balance advice, with
+    /// the requested amount as the figure needed, as the dry run gives it.
+    #[test]
+    fn a_finalize_with_no_utxos_left_keeps_the_balance_advice() {
+        let err = map_core_finalize_error(
+            platform_wallet::error::PlatformWalletError::CorePooledInsufficientFunds {
+                sources: platform_wallet::SEND_FUNDING_SOURCES.to_vec(),
+                available: Some(0),
+                required: None,
+            },
+            250_000,
+        );
+        assert!(
+            matches!(
+                err,
+                TaskError::InsufficientFunds {
+                    available: 0,
+                    required: 250_000,
+                }
+            ),
+            "expected InsufficientFunds for the requested amount, got: {err:?}"
+        );
+    }
+
     /// A test backend with no wallet registered yet.
     async fn backend_without_wallets() -> (
         tempfile::TempDir,

@@ -17,16 +17,20 @@
 //! Add screen-level write-back assertions (ComboBox click → `resolve_selected_identity()`
 //! moves) once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
 
-use crate::support::with_isolated_data_dir;
+use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::qualified_contract::QualifiedContract;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
+use dash_evo_tool::model::user_role::UserRole;
+use dash_evo_tool::ui::tokens::tokens_screen::{IdentityTokenInfo, TokensScreen, TokensSubscreen};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -94,6 +98,176 @@ fn token_creator_defaults_to_app_scoped_identity() {
             screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
             Some(second),
             "TokensScreen (TokenCreator) must default to the app-scoped selected identity"
+        );
+    });
+}
+
+/// A user identity with one CRITICAL authentication key — enough for the token
+/// action scaffold to render its form instead of the "no keys" notice.
+fn identity_with_critical_key(app_context: &Arc<AppContext>) -> QualifiedIdentity {
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::BinaryData;
+
+    let mut identity =
+        Identity::create_basic_identity(Identifier::from([0xC3; 32]), PlatformVersion::latest())
+            .expect("basic identity");
+    identity.add_public_key(
+        IdentityPublicKeyV0 {
+            id: 0,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: false,
+            data: BinaryData::new(vec![1; 20]),
+            disabled_at: None,
+            contract_bounds: None,
+        }
+        .into(),
+    );
+    QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: Some("token-action-layout".to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: app_context.network(),
+    }
+}
+
+/// Token info for a placeholder token; the layout under test does not depend
+/// on which contract carries it.
+fn layout_token_info(app_context: &Arc<AppContext>) -> IdentityTokenInfo {
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    let contract = load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+        .expect("dpns contract");
+    IdentityTokenInfo {
+        token_id: Identifier::from([0xD4; 32]),
+        token_alias: "layout-token".to_string(),
+        identity: identity_with_critical_key(app_context),
+        data_contract: QualifiedContract {
+            contract,
+            alias: None,
+        },
+        token_config: TokenConfigurationV0::default_most_restrictive().into(),
+        token_position: 0,
+    }
+}
+
+/// Mint, burn, freeze, unfreeze, destroy-frozen-funds, pause and resume share
+/// one screen scaffold. Its "Advanced Options" checkbox must sit on the page
+/// heading's row and the first form step must follow right below — not be
+/// pushed to the bottom of the window by a checkbox centred in the remaining
+/// height.
+#[test]
+fn token_action_forms_start_right_under_the_heading() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let app_context = harness.state().current_app_context().clone();
+        // Developer role renders the form for any identity with public keys,
+        // so no private key material is needed.
+        app_context.set_user_role(UserRole::Developer);
+        let info = layout_token_info(&app_context);
+
+        let screens = [
+            ("Mint Tokens", ScreenType::MintTokensScreen(info.clone())),
+            ("Burn Tokens", ScreenType::BurnTokensScreen(info.clone())),
+            (
+                "Freeze Identity’s Tokens",
+                ScreenType::FreezeTokensScreen(info.clone()),
+            ),
+            (
+                "Unfreeze Identity’s Tokens",
+                ScreenType::UnfreezeTokensScreen(info.clone()),
+            ),
+            (
+                "Destroy Frozen Funds",
+                ScreenType::DestroyFrozenFundsScreen(info.clone()),
+            ),
+            (
+                "Pause Token Contract",
+                ScreenType::PauseTokensScreen(info.clone()),
+            ),
+            (
+                "Resume Token Contract",
+                ScreenType::ResumeTokensScreen(info.clone()),
+            ),
+        ];
+
+        for (heading, screen_type) in screens {
+            let screen = screen_type.create_screen(&app_context);
+            {
+                let state = harness.state_mut();
+                state.screen_stack.clear();
+                state.screen_stack.push(screen);
+            }
+            harness.run_steps(5);
+
+            let heading_rect = harness.get_by_label(heading).rect();
+            let checkbox_rect = harness.get_by_label("Advanced Options").rect();
+            let first_step_rect = harness.get_by_label_contains("1. ").rect();
+
+            assert!(
+                checkbox_rect.center().y >= heading_rect.top()
+                    && checkbox_rect.center().y <= heading_rect.bottom(),
+                "{heading}: the Advanced Options checkbox must sit on the heading row \
+                 (heading {heading_rect:?}, checkbox {checkbox_rect:?})"
+            );
+            let gap = first_step_rect.top() - heading_rect.bottom();
+            assert!(
+                (0.0..=60.0).contains(&gap),
+                "{heading}: the first form step must start right under the heading, \
+                 found a {gap}px gap (heading {heading_rect:?}, step {first_step_rect:?})"
+            );
+        }
+    });
+}
+
+/// The "My Tokens" top bar offers "Create Token", which opens the Token Creator.
+#[test]
+fn my_tokens_create_token_button_opens_token_creator() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+
+        harness.get_by_label("Create Token").click();
+        harness.run_steps(5);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenTokenCreator,
+            "Create Token must switch to the Token Creator"
+        );
+        assert_eq!(
+            harness
+                .state()
+                .current_app_context()
+                .get_app_settings()
+                .root_screen_type,
+            RootScreenType::RootScreenTokenCreator,
+            "the tokens subscreen chooser must highlight Token Creator"
+        );
+        let Screen::TokensScreen(screen) = harness.state_mut().visible_screen_mut() else {
+            panic!("the visible screen must be the tokens screen");
+        };
+        assert!(
+            screen.tokens_subscreen == TokensSubscreen::TokenCreator,
+            "the visible tokens screen must show the Token Creator"
         );
     });
 }

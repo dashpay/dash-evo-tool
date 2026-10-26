@@ -389,6 +389,37 @@ impl Display for QualifiedIdentity {
     }
 }
 
+/// `QualifiedIdentity` as the signer upstream's key selector sees: it admits
+/// only keys whose private half this device can obtain
+/// ([`QualifiedIdentity::holds_obtainable_key`]). The identity's own
+/// [`Signer::can_sign_with`] is a cheaper per-frame check that also accepts a
+/// key filed under a wallet that is not on this device, or in the legacy
+/// encrypted form; selecting such a key would fail at signing time.
+struct ObtainableKeys<'a>(&'a QualifiedIdentity);
+
+#[async_trait]
+impl Signer<IdentityPublicKey> for ObtainableKeys<'_> {
+    async fn sign(
+        &self,
+        key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        self.0.sign(key, data).await
+    }
+
+    async fn sign_create_witness(
+        &self,
+        key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<dash_sdk::dpp::address_funds::AddressWitness, ProtocolError> {
+        self.0.sign_create_witness(key, data).await
+    }
+
+    fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
+        self.0.holds_obtainable_key(key)
+    }
+}
+
 #[async_trait]
 impl Signer<IdentityPublicKey> for QualifiedIdentity {
     async fn sign(
@@ -1239,12 +1270,14 @@ impl QualifiedIdentity {
     }
 
     /// The key to sign with for `requirements` now: upstream platform-wallet's
-    /// choice ([`KeyRequirements::select`]) among the keys this device holds
-    /// the private half of. Every qualifying unlimited key at any accepted
-    /// level comes before any limited one, then key id order, so a budgeted
+    /// choice ([`KeyRequirements::select`]) among the keys whose private half
+    /// this device can obtain ([`ObtainableKeys`]), so a key filed under a
+    /// missing wallet or in the legacy encrypted form is passed over for the
+    /// next usable one. Every qualifying unlimited key at any accepted level
+    /// comes before any limited one, then key id order, so a budgeted
     /// application key is spent only when no unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
-        requirements.select(&self.identity, self)
+        requirements.select(&self.identity, &ObtainableKeys(self))
     }
 
     /// The key upstream platform-wallet would pick for `requirements` now,
@@ -3419,6 +3452,89 @@ mod protocol_v14_compat_tests {
                 .map(|key| key.id()),
             Some(1),
             "key id order among unlimited keys, whatever their level"
+        );
+    }
+
+    /// Review fix: the automatic choice took any key with a private half
+    /// filed, so an unlimited key filed under a wallet this device does not
+    /// hold, or in the legacy encrypted form, won over a usable limited key,
+    /// and signing then failed instead of falling back to the usable key.
+    #[test]
+    fn automatic_choice_skips_a_key_whose_private_half_cannot_be_obtained() {
+        use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
+        use crate::model::qualified_identity::encrypted_key_storage::{
+            PrivateKeyData, WalletDerivationPath,
+        };
+        let unlimited = auth_key(1, SecurityLevel::HIGH);
+        let limited = auth_key(2, SecurityLevel::HIGH).with_limits(Some(5_000), None);
+        for unobtainable in [
+            PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                wallet_seed_hash: [0x7D; 32],
+                derivation_path: Default::default(),
+            }),
+            PrivateKeyData::Encrypted(vec![0; 48]),
+        ] {
+            let mut identity = identity_holding(&[unlimited.clone(), limited.clone()]);
+            identity.private_keys.insert_at(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+                (unlimited.clone().into(), unobtainable.clone()),
+            );
+            assert_eq!(
+                identity
+                    .dashpay_signing_key(&dashpay_contract(), "contactRequest")
+                    .map(|key| key.id()),
+                Some(2),
+                "{unobtainable:?}"
+            );
+        }
+    }
+
+    /// Review fix: a document type requiring MASTER accepted no level, as
+    /// MASTER sorts below CRITICAL. Platform accepts exactly MASTER for it,
+    /// as dpp's `SecurityLevel::accepted_for_requirement` does.
+    #[test]
+    fn a_master_document_type_is_signed_with_a_master_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let version = PlatformVersion::get(14).expect("protocol 14");
+        let config = DataContractConfig::default_for_version(version).expect("config");
+        let document_type = DocumentType::try_from_schema(
+            Identifier::new([1; 32]),
+            1,
+            config.version(),
+            "vault",
+            platform_value!({
+                "type": "object",
+                "signatureSecurityLevelRequirement": 0_u32,
+                "properties": {"value": {"type": "string", "maxLength": 20_u32, "position": 0_u32}},
+                "additionalProperties": false,
+            }),
+            None,
+            &BTreeMap::new(),
+            &config,
+            false,
+            &mut Vec::new(),
+            version,
+        )
+        .expect("a document type requiring MASTER");
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::MASTER),
+        ]);
+        assert_eq!(
+            identity
+                .document_signing_key(
+                    SigningScope::DocumentType {
+                        contract_id: Identifier::new([1; 32]),
+                        document_type_name: "vault",
+                    },
+                    &document_type.as_ref(),
+                )
+                .map(|key| key.id()),
+            Some(2)
         );
     }
 

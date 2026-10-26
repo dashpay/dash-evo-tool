@@ -2471,6 +2471,37 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// The scanned text is not a DashPay contact QR code (DIP-15
+    /// `dash:?du=…&dapk=…`), as upstream platform-wallet's codecs read it.
+    #[error(
+        "This is not a DashPay contact QR code. Scan your contact's QR code again, or ask them for a new one."
+    )]
+    ContactQrInvalid {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The scanned contact QR code's auto-accept key has expired.
+    #[error("This contact QR code has expired. Ask your contact for a new one.")]
+    ContactQrExpired,
+
+    /// The identity has no wallet on this device whose recovery phrase can
+    /// derive its contact QR code's auto-accept key.
+    #[error(
+        "This identity's wallet is not on this device, so it cannot create a contact QR code. Import the wallet that created the identity and try again."
+    )]
+    ContactQrWalletMissing,
+
+    /// Upstream platform-wallet could not build the contact QR code, for
+    /// example because the identity has no username to put in it.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Deriving the per-contact encryption keys from the wallet's recovery
     /// phrase failed. The seam already proved the seed is present, so this is a
     /// derivation-math failure rather than a missing wallet.
@@ -2725,6 +2756,16 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A token that cannot be transferred cannot be tradeable either.
+    #[error(
+        "The token at position {token_position} cannot be traded because it cannot be transferred. Allow transfers or turn trading off, then try again."
+    )]
+    NonTransferableTokenTradeable {
+        token_position: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract authoring (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
@@ -2785,6 +2826,13 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// The token creator asked for a token that cannot be transferred, on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
+    )]
+    NonTransferableTokenNotSupported,
 
     /// A token operation run by the wallet runtime failed for a reason the
     /// SDK error classification has no specific variant for. Built by
@@ -4712,6 +4760,17 @@ impl From<SdkError> for TaskError {
                             TaskError::ReferencedDocumentPreceded {
                                 document_id,
                                 preceding_document_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::BasicError(BasicError::NonTransferableTokenTradeableError(
+                        e,
+                    )) => {
+                        let token_position = e.token_contract_position();
+                        Some(Box::new(move |source_error| {
+                            TaskError::NonTransferableTokenTradeable {
+                                token_position,
                                 source_error,
                             }
                         }))
@@ -7433,6 +7492,7 @@ mod tests {
     /// source and tell the user what to do instead.
     #[test]
     fn contest_vote_and_token_transfer_refusals_map_to_their_variants() {
+        use dash_sdk::dpp::consensus::basic::data_contract::NonTransferableTokenTradeableError;
         use dash_sdk::dpp::consensus::state::document::document_contest_maximum_contenders_reached_error::DocumentContestMaximumContendersReachedError;
         use dash_sdk::dpp::consensus::state::document::referenced_document_preceded_error::ReferencedDocumentPrecededError;
         use dash_sdk::dpp::consensus::state::token::TokenNotTransferableError;
@@ -7490,6 +7550,19 @@ mod tests {
                 .into(),
                 |e| matches!(e, TaskError::ReferencedDocumentPreceded { .. }),
                 "Someone else asked for this username first.",
+            ),
+            (
+                NonTransferableTokenTradeableError::new(3).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::NonTransferableTokenTradeable {
+                            token_position: 3,
+                            ..
+                        }
+                    )
+                },
+                "Allow transfers or turn trading off, then try again.",
             ),
         ];
 

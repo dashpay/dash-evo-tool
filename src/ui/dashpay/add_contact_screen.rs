@@ -310,10 +310,9 @@ impl ScreenLike for AddContactScreen {
                 if should_auto_select {
                     if let Some(identity) = &self.selected_identity {
                         self.selected_key = identity
-                            .document_action_signing_key(
+                            .dashpay_signing_key(
                                 &self.app_context.dashpay_contract(),
                                 "contactRequest",
-                                None,
                             )
                             .cloned();
 

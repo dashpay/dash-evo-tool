@@ -61,8 +61,6 @@ pub mod grovestark;
 pub mod identity;
 pub mod migration;
 pub mod platform_info;
-#[cfg(test)]
-mod protocol_13_transitions;
 pub mod register_contract;
 pub mod shielded;
 pub mod system_task;
@@ -2407,7 +2405,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());

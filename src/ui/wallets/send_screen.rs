@@ -1966,7 +1966,6 @@ impl WalletSendScreen {
         let recipient_bytes = crate::model::address::parse_shielded_recipient(&recipient)
             .ok_or_else(|| "Invalid shielded address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
@@ -1995,7 +1994,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_platform().copied())
             .ok_or_else(|| "Invalid platform address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::UnshieldCredits {

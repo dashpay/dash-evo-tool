@@ -366,3 +366,81 @@ fn rejects_shielded_to_identity_route() {
          Transfer to a Platform address first, then top up the identity.",
     );
 }
+
+/// Pressing Send only opens the confirmation; nothing is in flight until it
+/// is confirmed. A private-balance send must not show "Sending..." while the
+/// dialog is open, or cancelling it leaves the form stuck on that state.
+fn assert_send_waits_for_confirmation(destination: ValidatedAddress, button_label: &str) {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        screen.set_simple_send_input_for_test(
+            Some(SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS)),
+            Some(destination),
+            Some(Amount::new_dash(1.0)),
+        );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_simple_send_button_for_test(ui);
+            },
+            screen,
+        );
+        harness.run();
+
+        harness.get_by_label(button_label).click();
+        harness.run();
+
+        assert!(
+            harness.query_by_label("Sending...").is_none(),
+            "nothing is sent before the confirmation"
+        );
+        assert!(harness.query_by_label(button_label).is_some());
+    });
+}
+
+#[test]
+fn private_send_is_not_in_flight_before_its_confirmation() {
+    assert_send_waits_for_confirmation(
+        ValidatedAddress::Shielded(shielded_address()),
+        "Private Send",
+    );
+}
+
+#[test]
+fn unshield_is_not_in_flight_before_its_confirmation() {
+    let address = platform_address();
+    assert_send_waits_for_confirmation(
+        ValidatedAddress::Platform {
+            address,
+            bech32m: address.to_bech32m_string(Network::Testnet),
+        },
+        "Unshield Credits",
+    );
+}
+
+/// A send that fails to build reports its error and leaves Send usable.
+#[test]
+fn a_private_send_that_fails_to_build_leaves_send_usable() {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        screen.set_simple_send_input_for_test(
+            Some(SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS)),
+            Some(ValidatedAddress::Shielded(
+                "not a private address".to_string(),
+            )),
+            Some(Amount::new_dash(1.0)),
+        );
+        assert!(screen.validate_and_send_for_test().is_err());
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_simple_send_button_for_test(ui);
+            },
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Private Send").click();
+        harness.run();
+
+        assert!(harness.query_by_label("Sending...").is_none());
+        assert!(harness.query_by_label("Private Send").is_some());
+    });
+}

@@ -52,11 +52,6 @@ proof is never checked against the wrong schema.
   one; the rebuild reads the epoch right away for that, and the read refreshes
   the fee multiplier.
 
-## Protocol 13 guards
-
-- `context/platform_version_guard.rs` compares the protocol 13 client tables
-  with a recorded snapshot, so an upstream change to them is reviewed.
-
 ## Mainnet compatibility
 
 dashpay/platform#5515 versions the non-unique identity lookup: protocol 13

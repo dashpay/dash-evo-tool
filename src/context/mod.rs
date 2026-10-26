@@ -17,8 +17,6 @@ pub(crate) mod lock_probe;
 pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
-#[cfg(test)]
-mod platform_version_guard;
 mod settings_db;
 mod system_contracts;
 #[cfg(test)]

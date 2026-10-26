@@ -587,6 +587,14 @@ impl WalletBackend {
         self.inner.pwm.sdk()
     }
 
+    /// Whether upstream refused to save wallet sync data during this run.
+    /// Once set it stays set until the backend is rebuilt: the saved sync
+    /// height is held back and the missing range is scanned again on the next
+    /// start.
+    pub(crate) fn sync_fault_detected(&self) -> bool {
+        self.inner.pwm.sync_fault_detected()
+    }
+
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
     /// persisted wallet via [`Self::load_from_persistor_seedless`] (per
@@ -1480,7 +1488,7 @@ impl WalletBackend {
             &self.inner.wallet_database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
-        .map_err(&storage_error)?;
+        .map_err(storage_error)?;
         let mut skipped_rows = 0;
         let mut skipped_contexts = Vec::new();
         let txid_bytes = {
@@ -1493,10 +1501,10 @@ impl WalletBackend {
                     "SELECT CASE WHEN length(txid) = 32 THEN txid ELSE X'' END \
                      FROM core_transactions WHERE wallet_id = ?1 ORDER BY txid",
                 )
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let rows = statement
                 .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let mut txid_bytes = Vec::new();
             for (row_index, row) in rows.enumerate() {
                 match row {
@@ -2326,7 +2334,7 @@ impl WalletBackend {
         &self,
         address: &str,
         msg: &[u8; 32],
-    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+    ) -> Result<dash_sdk::dpp::secp256k1::ecdsa::Signature, TaskError> {
         let scope = SecretScope::SingleKey {
             address: address.to_string(),
         };
@@ -3378,6 +3386,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A token operation keeps its SDK cause, so it is classified like any
+        // SDK error; an unclassified one still names the operation.
+        P::TokenOperationFailed { operation, source } => {
+            TaskError::from_token_operation_failure(operation, source)
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3427,8 +3441,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::NoWalletsConfigured
         | P::SpvError(_)
         | P::TokenError(_)
-        // Upstream's typed successor of `TokenError`; same message.
-        | P::TokenOperationFailed { .. }
         | P::ShieldedNoUnspentNotes
         | P::ShieldedInsufficientBalance { .. }
         | P::ShieldedBuildError(_)
@@ -3453,6 +3465,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MessageSigningMessageInvalid { .. }
         | P::MessageSigningKeyUnavailable { .. }
         | P::MessageSigningFailed { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3783,6 +3801,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,

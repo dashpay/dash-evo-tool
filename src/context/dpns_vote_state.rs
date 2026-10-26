@@ -46,7 +46,7 @@ struct DpnsVoteStatePublication {
 impl DpnsVoteStatePublications {
     fn next_generation(&self) -> Result<u64, TaskError> {
         self.sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| TaskError::DpnsVoteStateChanged)
@@ -333,7 +333,7 @@ impl AppContext {
 
     /// Build the exact Platform vote-poll ID for one DPNS label.
     pub fn dpns_vote_poll_id(&self, name: &str) -> Result<Identifier, TaskError> {
-        dpns_vote_poll(&self.dpns_contract, name)?
+        dpns_vote_poll(&self.dpns_contract(), name)?
             .unique_id()
             .map_err(|source| TaskError::SdkError {
                 source_error: Box::new(dash_sdk::Error::Protocol(source)),

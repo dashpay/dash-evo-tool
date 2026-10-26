@@ -1,11 +1,12 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
-use crate::context::{AppContext, DET_PLATFORM_VERSION};
+use crate::context::AppContext;
 use crate::model::datetime;
-use crate::model::fee_estimation::PlatformFeeEstimator;
+use chrono::{LocalResult, prelude::*};
+use chrono_humanize::{Accuracy, HumanTime, Tense};
 use dash_sdk::Error as SdkError;
-use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::block::extended_epoch_info::{
     ExtendedEpochInfo, v0::ExtendedEpochInfoV0Getters,
 };
@@ -13,22 +14,19 @@ use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contracts::SystemDataContract;
-use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
-use dash_sdk::dpp::data_contracts::withdrawals_contract::v1::document_types::withdrawal::properties::{
-    AMOUNT, STATUS, TRANSACTION_INDEX,
+use dash_sdk::dpp::data_contracts::withdrawals_contract::{
+    WithdrawalStatus,
+    v1::document_types::withdrawal::properties::{AMOUNT, STATUS, TRANSACTION_INDEX},
 };
 use dash_sdk::dpp::document::{Document, DocumentV0Getters};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::state_transition::identity_credit_withdrawal_transition::fields::OUTPUT_SCRIPT;
-use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::daily_withdrawal_limit::daily_withdrawal_limit;
 use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
-use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOperator};
-use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{
@@ -37,9 +35,8 @@ use dash_sdk::platform::{
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
+use dash_sdk::{ProtocolVersionInfo, Sdk};
 use std::sync::Arc;
-use chrono::{LocalResult, prelude::*};
-use chrono_humanize::{Accuracy, HumanTime, Tense};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlatformInfoTaskRequestType {
@@ -79,7 +76,9 @@ pub struct WithdrawalRecord {
     /// Amount in credits (atomic units).
     pub amount_credits: u64,
     /// Withdrawal status: `"queued"`, `"pooled"`, `"broadcasted"`,
-    /// `"complete"`, `"expired"`, or `"failed"`.
+    /// `"complete"`, `"expired"`, or `"failed"`. `"failed"` is terminal: the
+    /// payout was too small to ever be mined, and its credits are not returned
+    /// (they stay locked in the Core credit pool).
     pub status: String,
     /// Destination Dash address decoded from the output script, or `None` when
     /// the script does not map to a standard address on this network.
@@ -252,15 +251,11 @@ fn format_extended_epoch_info(
     )
 }
 
-/// The degraded rendering used when the live epoch fetch fails.
-///
+/// The epoch summary shown when the current epoch cannot be read.
 /// `protocol_version` is `None` while the connected network has not confirmed
-/// one. The fee multiplier here is the app's own default, and the copy says so
-/// rather than claiming anything about what networks charge: with the fetch
-/// failed, this build cannot know that. A user comparing the figure against a
-/// network that raised its fees has to be able to tell which of the two the app
-/// is charging by.
-fn format_hardcoded_current_epoch_info(
+/// one; `fee_multiplier_permille` is the last known multiplier, not a fresh
+/// network reading.
+fn format_unavailable_current_epoch_info(
     protocol_version: Option<u32>,
     fee_multiplier_permille: u64,
 ) -> String {
@@ -269,18 +264,33 @@ fn format_hardcoded_current_epoch_info(
         Some(protocol_version) => format!(
             "Current Epoch Information:\n\
              • Protocol Version: {protocol_version}\n\
-             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
-             Epoch details could not be read from the network just now. The multiplier shown \
-             is this app's default, not a value read from the network. Try again in a moment."
+             • Fee Multiplier: {fee_multiplier}x (the last known value, not a fresh reading)\n\n\
+             The current epoch could not be read from the network. Fee estimates use the last \
+             known fee multiplier. Refresh again in a moment to read the current one."
         ),
         None => format!(
             "Current Epoch Information:\n\
              • Protocol Version: the connected network has not confirmed one yet.\n\
-             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
-             Epoch details could not be read from the network just now. The multiplier shown \
-             is this app's default, not a value read from the network. Try again in a moment."
+             • Fee Multiplier: {fee_multiplier}x (the last known value, not a fresh reading)\n\n\
+             The current epoch could not be read from the network. Fee estimates use the last \
+             known fee multiplier. Refresh again in a moment to read the current one."
         ),
     }
+}
+
+/// Appends the update advice when the connected network has proven a protocol
+/// version newer than any this build defines. Capabilities fail closed on such
+/// a version (`context::feature_gate`), so the advice names that outcome.
+fn append_newer_protocol_advisory(text: &mut String, info: &ProtocolVersionInfo) {
+    let (true, Some(verified)) = (info.newer_protocol_available, info.verified_version) else {
+        return;
+    };
+    let maximum = info.maximum_supported_version;
+    text.push_str(&format!(
+        "\n\nThe network runs protocol version {verified}, which is newer than this version \
+         of Dash Evo Tool supports (up to {maximum}). Some features stay unavailable until \
+         you update Dash Evo Tool."
+    ));
 }
 
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
@@ -321,51 +331,26 @@ fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> Str
     result
 }
 
-/// The daily withdrawal limit at [`DET_PLATFORM_VERSION`], never at the
-/// newest version the upstream crates know.
+/// The daily withdrawal limit the network enforces, at `platform_version` —
+/// never at whatever version the upstream crates happen to know best.
 ///
 /// Protocol 13 uses `daily_withdrawal_limit` v1, a flat 2000 Dash that ignores
 /// the total. Protocol 14 (v2) derives it from the total credits Platform held a
 /// day ago, which the SDK cannot query; passing today's total is an accepted
-/// gap for this display-only figure once DET moves to protocol 14.
-fn local_daily_withdrawal_limit(
+/// gap for this display-only figure.
+fn network_daily_withdrawal_limit(
     total_credits_on_platform: Credits,
+    platform_version: &PlatformVersion,
 ) -> Result<Credits, WithdrawalParseError> {
-    daily_withdrawal_limit(Some(total_credits_on_platform), DET_PLATFORM_VERSION)
+    daily_withdrawal_limit(Some(total_credits_on_platform), platform_version)
         .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))
-}
-
-/// The Withdrawals system contract at [`DET_PLATFORM_VERSION`].
-/// The `status` values a finished withdrawal can carry, as the
-/// `RecentlyCompletedWithdrawals` filter sends them.
-///
-/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
-/// schema this build loads stops at `EXPIRED` (4). Sending it at protocol 13 is
-/// still correct and deliberate: a JSON-schema `enum` constrains documents being
-/// created, not query values. Nothing in the query path checks membership — the
-/// `status` property is typed as a plain integer, and
-/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
-/// converts to it. So the out-of-enum member encodes, matches nothing on a
-/// protocol-13 network (which cannot produce a failed withdrawal), and leaves
-/// `COMPLETE` and `EXPIRED` matching as usual — while keeping the query complete
-/// once the network, and DET's version pin, reach protocol 14.
-fn completed_withdrawal_statuses() -> Vec<Value> {
-    vec![
-        Value::U8(WithdrawalStatus::COMPLETE as u8),
-        Value::U8(WithdrawalStatus::EXPIRED as u8),
-        Value::U8(WithdrawalStatus::FAILED as u8),
-    ]
-}
-
-fn withdrawals_contract() -> Result<DataContract, TaskError> {
-    load_system_data_contract(SystemDataContract::Withdrawals, DET_PLATFORM_VERSION)
-        .map_err(|e| TaskError::from(SdkError::Protocol(e)))
 }
 
 fn format_withdrawal_documents_with_daily_limit(
     withdrawal_documents: &[Document],
     total_credits_on_platform: Credits,
     network: Network,
+    platform_version: &PlatformVersion,
 ) -> Result<String, WithdrawalParseError> {
     let total_amount: Credits = withdrawal_documents
         .iter()
@@ -384,7 +369,8 @@ fn format_withdrawal_documents_with_daily_limit(
         .map(|document| format_withdrawal_line(document, network))
         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
-    let daily_withdrawal_limit = local_daily_withdrawal_limit(total_credits_on_platform)?;
+    let daily_withdrawal_limit =
+        network_daily_withdrawal_limit(total_credits_on_platform, platform_version)?;
 
     Ok(format!(
         "Withdrawal Information:\n\n\
@@ -468,6 +454,17 @@ fn format_withdrawal_line(
         address,
         status,
     ))
+}
+
+/// Shown under a withdrawal history holding a failed withdrawal: that status
+/// is terminal and, unlike an expired one, never gives the credits back.
+const FAILED_WITHDRAWAL_NOTE: &str = "A failed withdrawal was too small to ever be paid out on the Dash network. Its amount is not returned to the identity. Withdraw larger amounts to avoid this.";
+
+/// Whether any of `documents` is a withdrawal in the terminal failed status.
+fn any_withdrawal_failed(documents: &[Document]) -> bool {
+    documents.iter().any(|document| {
+        document.properties().get_integer::<u8>(STATUS).ok() == Some(WithdrawalStatus::FAILED as u8)
+    })
 }
 
 /// Format one completed/expired/failed withdrawal document as a single line keyed by
@@ -594,6 +591,31 @@ fn build_withdrawals_result(
 }
 
 impl AppContext {
+    /// Fetches the current epoch — authenticated by proof — and sets its
+    /// fee multiplier. The only path by which the fee multiplier cache takes
+    /// a network value, and fee estimates follow it, so it must never come
+    /// from an unproven source. The verified response also ratchets the SDK's
+    /// protocol version.
+    pub(crate) async fn refresh_current_epoch(
+        &self,
+        sdk: &Sdk,
+    ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
+        let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
+            .await
+            .map_err(Box::new)?;
+        // No epoch ordering here: an older epoch can only come from a node
+        // behind the chain, and the SDK refuses a proved response more than
+        // `metadata_height_tolerance` blocks (1 by default) below the highest
+        // it has seen (`StaleNodeError::Height`), then bans that DAPI address.
+        self.set_fee_multiplier_from(&epoch_info);
+        Ok(epoch_info)
+    }
+
+    /// Sets the fee multiplier cache from a proved epoch.
+    fn set_fee_multiplier_from(&self, epoch_info: &ExtendedEpochInfo) {
+        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
+    }
+
     pub async fn run_platform_info_task(
         self: &Arc<Self>,
         request: PlatformInfoTaskRequestType,
@@ -624,15 +646,9 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                // The live fetch is proved: `ExtendedEpochInfo::fetch_current` resolves the
-                // current epoch with two explicit-start queries the proof verifier accepts
-                // (dashpay/platform#4231, in this repo's pin). Its protocol version is a
-                // network observation, so it feeds the ratchet directly.
-                match ExtendedEpochInfo::fetch_current(sdk).await {
+                match self.refresh_current_epoch(sdk).await {
                     Ok(epoch_info) => {
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
-                        self.set_fee_multiplier_permille(fee_multiplier);
-                        self.set_platform_protocol_version(epoch_info.protocol_version());
 
                         let mut formatted =
                             format_extended_epoch_info(epoch_info, self.network, true);
@@ -640,6 +656,10 @@ impl AppContext {
                             "\n\n(Fee multiplier cache updated: {}x)",
                             fee_multiplier as f64 / 1000.0
                         ));
+                        append_newer_protocol_advisory(
+                            &mut formatted,
+                            &sdk.protocol_version_info(),
+                        );
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))
@@ -647,39 +667,28 @@ impl AppContext {
                     Err(error) => {
                         tracing::warn!(
                             %error,
-                            "Current-epoch fetch failed; falling back to the cached fee \
-                             multiplier and the protocol-version ratchet"
+                            "Current epoch fetch failed; keeping the last known fee multiplier"
                         );
-
-                        // Without the epoch, the network's version is learned from the
-                        // ratchet a proved DPNS fetch drives. Only a successful fetch proves
-                        // it came from the network, not the local seed.
-                        match DataContract::fetch(sdk, self.dpns_contract.id()).await {
-                            Ok(_) => {
-                                self.set_platform_protocol_version(sdk.protocol_version_number())
-                            }
-                            Err(error) => tracing::warn!(
+                        // Without the epoch, a proved DPNS fetch lets the SDK learn
+                        // the network's version from the response it verifies.
+                        if let Err(error) =
+                            DataContract::fetch(sdk, self.dpns_contract().id()).await
+                        {
+                            tracing::warn!(
                                 %error,
                                 "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
                                  the network's protocol version stays unconfirmed"
-                            ),
+                            );
                         }
-
-                        // 1000 permille (1.0x) is what the network actually stores, not a
-                        // placeholder: an epoch's multiplier is written from
-                        // `platform_version.fee_version.uses_version_fee_multiplier_permille`,
-                        // and both fee schedules in the pinned crate declare `Some(1000)`.
-                        let fee_multiplier = PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE;
-                        self.set_fee_multiplier_permille(fee_multiplier);
-
-                        let confirmed = match self.platform_protocol_version() {
-                            0 => None,
-                            version => Some(version),
-                        };
+                        // The SDK that made the requests holds what they proved.
+                        let info = sdk.protocol_version_info();
+                        let mut formatted = format_unavailable_current_epoch_info(
+                            info.verified_version,
+                            self.fee_multiplier_permille(),
+                        );
+                        append_newer_protocol_advisory(&mut formatted, &info);
                         Ok(BackendTaskSuccessResult::PlatformInfo(
-                            PlatformInfoTaskResult::TextResult(
-                                format_hardcoded_current_epoch_info(confirmed, fee_multiplier),
-                            ),
+                            PlatformInfoTaskResult::TextResult(formatted),
                         ))
                     }
                 }
@@ -741,12 +750,11 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue => {
-                let withdrawal_contract = withdrawals_contract()?;
-
                 let queued_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
                     time_range_clauses: Vec::new(),
@@ -771,6 +779,7 @@ impl AppContext {
                             &withdrawal_docs,
                             total_credits.0,
                             self.network,
+                            self.platform_version(),
                         )?;
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
@@ -788,12 +797,11 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals => {
-                let withdrawal_contract = withdrawals_contract()?;
-
                 let completed_document_query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {
                         field: "status".to_string(),
@@ -857,7 +865,7 @@ impl AppContext {
                         .map(|document| format_completed_withdrawal_line(document, self.network))
                         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
-                    let formatted = format!(
+                    let mut formatted = format!(
                         "Recent Withdrawal History:\n\n\
                          Total Amount: {:.8} Dash\n\
                          Count: {} withdrawals\n\n\
@@ -866,6 +874,10 @@ impl AppContext {
                         withdrawal_docs.len(),
                         amounts.join("\n    ")
                     );
+                    if any_withdrawal_failed(&withdrawal_docs) {
+                        formatted.push_str("\n\n");
+                        formatted.push_str(FAILED_WITHDRAWAL_NOTE);
+                    }
 
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(formatted),
@@ -877,8 +889,6 @@ impl AppContext {
                 limit,
                 start_after,
             } => {
-                let withdrawal_contract = withdrawals_contract()?;
-
                 // `0` is the upstream sentinel for "default limit"; clamp the
                 // requested page so the cursor heuristic has a known bound.
                 let page_limit = limit.unwrap_or(50).clamp(1, 100);
@@ -910,9 +920,10 @@ impl AppContext {
                 ];
 
                 let query = DocumentQuery {
+                    integer_range_clauses: vec![],
                     sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
-                    data_contract: Arc::new(withdrawal_contract),
+                    data_contract: self.withdraws_contract(),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses,
                     time_range_clauses: Vec::new(),
@@ -991,69 +1002,53 @@ impl AppContext {
     }
 }
 
+/// The `status` values a finished withdrawal can carry, as the completed
+/// withdrawal queries send them.
+///
+/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
+/// schema of a protocol 13 network stops at `EXPIRED` (4). Sending it at
+/// protocol 13 is still correct and deliberate: a JSON-schema `enum` constrains
+/// documents being created, not query values. Nothing in the query path checks
+/// membership — the `status` property is typed as a plain integer, and
+/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
+/// converts to it. So the out-of-enum member encodes, matches nothing on a
+/// protocol 13 network (which cannot produce a failed withdrawal), and leaves
+/// `COMPLETE` and `EXPIRED` matching as usual, while the same query stays
+/// complete on protocol 14.
+fn completed_withdrawal_statuses() -> Vec<Value> {
+    vec![
+        Value::U8(WithdrawalStatus::COMPLETE as u8),
+        Value::U8(WithdrawalStatus::EXPIRED as u8),
+        Value::U8(WithdrawalStatus::FAILED as u8),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The withdrawal limit follows DET's protocol version, not the newest one
-    /// upstream knows: protocol 13 keeps the flat 2000 Dash, where protocol 14
-    /// reports 15% of the total, capped at 4000 Dash.
-    ///
-    /// `dash_to_credits!` stringifies its argument and parses the text, so a
-    /// Rust numeric separator is not a digit to it: `dash_to_credits!(1_000_000)`
-    /// silently evaluates to 0 credits. Never write a separator inside this
-    /// macro. The total is asserted below, and the protocol-14 expectation is
-    /// pinned to the 4000 Dash cap — a value only a genuinely large total
-    /// produces, so a zeroed total fails the test instead of passing it for the
-    /// wrong reason (at 0 credits, protocol 14 returns its 500 Dash floor).
-    #[test]
-    fn daily_withdrawal_limit_uses_det_platform_version_not_latest() {
-        let total = dash_to_credits!(1000000);
-        assert_eq!(
-            total,
-            1_000_000 * dash_to_credits!(1),
-            "the total must really be a million Dash"
-        );
-
-        let det_limit = local_daily_withdrawal_limit(total).expect("limit");
-        assert_eq!(det_limit, dash_to_credits!(2000));
-        assert_eq!(
-            det_limit,
-            daily_withdrawal_limit(Some(total), DET_PLATFORM_VERSION).expect("limit")
-        );
-
-        let latest_limit =
-            daily_withdrawal_limit(Some(total), PlatformVersion::latest()).expect("limit");
-        assert_eq!(
-            latest_limit,
-            dash_to_credits!(4000),
-            "protocol 14 caps a million-Dash total at 4000 Dash"
-        );
-        assert_ne!(
-            det_limit, latest_limit,
-            "the limit must not follow PlatformVersion::latest()"
-        );
+    fn withdrawal_with_status(status: WithdrawalStatus) -> Document {
+        use dash_sdk::dpp::document::DocumentV0;
+        let mut properties = std::collections::BTreeMap::new();
+        properties.insert(STATUS.to_string(), Value::U8(status as u8));
+        Document::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
+            properties,
+            ..Default::default()
+        })
     }
 
-    /// The Withdrawals contract used for queries is loaded at DET's protocol
-    /// version.
-    #[test]
-    fn withdrawals_contract_uses_det_platform_version() {
-        let expected =
-            load_system_data_contract(SystemDataContract::Withdrawals, DET_PLATFORM_VERSION)
-                .expect("contract");
-        assert_eq!(withdrawals_contract().expect("contract"), expected);
-        assert_eq!(DET_PLATFORM_VERSION.protocol_version, 13);
-    }
-
-    /// The completed-withdrawal filter keeps `FAILED` even though the schema
-    /// this build loads stops at `EXPIRED`: a schema `enum` constrains
-    /// documents, not query values, and every status encodes into the `status`
-    /// property's key representation at both schema versions.
+    /// The completed-withdrawal filter keeps `FAILED` even though the protocol
+    /// 13 schema stops at `EXPIRED`: a schema `enum` constrains documents, not
+    /// query values, and every status encodes into the `status` property's key
+    /// representation at both schema versions.
     #[test]
     fn completed_withdrawal_filter_encodes_at_both_schema_versions() {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::v13::PLATFORM_V13;
 
         assert_eq!(
             completed_withdrawal_statuses(),
@@ -1073,12 +1068,12 @@ mod tests {
                 .clone()
         };
 
-        // v1 (protocol 13, what DET loads) and v2 (protocol 14) differ only in
-        // the enum's last member, so the property type is identical.
-        let det = status_property(DET_PLATFORM_VERSION);
+        // v1 (protocol 13) and v2 (protocol 14) differ only in the enum's last
+        // member, so the property type is identical.
+        let v13 = status_property(&PLATFORM_V13);
         let latest = status_property(PlatformVersion::latest());
         assert_eq!(
-            det.property_type, latest.property_type,
+            v13.property_type, latest.property_type,
             "the status property type must not differ across schema versions"
         );
 
@@ -1086,54 +1081,202 @@ mod tests {
         // the statuses that are inside it.
         for status in completed_withdrawal_statuses() {
             assert!(
-                det.property_type
+                v13.property_type
                     .encode_value_for_tree_keys(&status)
                     .is_ok(),
-                "status {status:?} must encode against the protocol-13 schema"
+                "status {status:?} must encode against the protocol 13 schema"
             );
         }
     }
 
+    /// Regression: the DPNS fallback confirmed the SDK's version, which starts
+    /// at the local seed (14 on devnet), as the network's proved version. A
+    /// fresh SDK has verified nothing, so nothing is proved.
     #[test]
-    fn epoch_fallback_reports_protocol_version_and_the_default_fee_multiplier() {
+    fn a_fresh_sdk_proves_no_protocol_version() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(Sdk::new_mock()));
+        assert_ne!(
+            ctx.sdk.load().protocol_version_number(),
+            0,
+            "precondition: a seeded SDK"
+        );
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
+    }
+
+    /// The limit is whatever the network's own protocol version says it is,
+    /// never a version fixed in this build: protocol 13 reports a flat 2000
+    /// Dash whatever the total, protocol 14 derives it from that total (15% of
+    /// it, `SYSTEM_LIMITS_V4.daily_withdrawal_limit_percent`, never below the
+    /// 500 Dash maximum withdrawal).
+    #[test]
+    fn daily_withdrawal_limit_follows_the_given_platform_version() {
+        // `dash_to_credits!` stringifies its argument and parses the digits, so
+        // a `1_000_000` written with separators silently reads as no credits.
+        let total = dash_to_credits!(1000000);
+        let v13 = PlatformVersion::get(13).expect("protocol 13");
+        let v14 = PlatformVersion::get(14).expect("protocol 14");
+
         assert_eq!(
-            format_hardcoded_current_epoch_info(Some(12), 1000),
-            "Current Epoch Information:\n\
-             • Protocol Version: 12\n\
-             • Fee Multiplier: 1x (a fixed value, not read from the network)\n\n\
-             Epoch details could not be read from the network just now. The multiplier shown \
-             is this app's default, not a value read from the network. Try again in a moment."
+            network_daily_withdrawal_limit(total, v13).expect("limit"),
+            dash_to_credits!(2000)
+        );
+        assert_eq!(
+            network_daily_withdrawal_limit(total, v14).expect("limit"),
+            dash_to_credits!(150000)
+        );
+        // A small total falls back to the maximum single withdrawal.
+        assert_eq!(
+            network_daily_withdrawal_limit(dash_to_credits!(1000), v14).expect("limit"),
+            dash_to_credits!(500)
         );
     }
 
-    /// The multiplier is presented as this app's default, never as a live
-    /// reading and never as a claim about what networks charge — with the fetch
-    /// failed, the app cannot know that. A user comparing the figure against a
-    /// network that raised its fees must be able to see which of the two the app
-    /// is charging by.
+    /// A proved epoch sets the fee multiplier cache.
     #[test]
-    fn epoch_fallback_never_presents_the_fee_multiplier_as_a_network_reading() {
+    fn a_proved_epoch_updates_the_fee_multiplier() {
+        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.set_fee_multiplier_permille(1000);
+
+        ctx.set_fee_multiplier_from(&ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 7,
+            first_block_time: 0,
+            first_block_height: 0,
+            first_core_block_height: 0,
+            fee_multiplier_permille: 1_500,
+            protocol_version: 14,
+        }));
+
+        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
+    }
+
+    /// A failed withdrawal keeps its credits locked, so the history says so
+    /// exactly when one is listed; an expired one is refunded and needs no note.
+    #[test]
+    fn only_a_failed_withdrawal_triggers_the_not_refunded_note() {
+        assert!(any_withdrawal_failed(&[
+            withdrawal_with_status(WithdrawalStatus::COMPLETE),
+            withdrawal_with_status(WithdrawalStatus::FAILED),
+        ]));
+        assert!(!any_withdrawal_failed(&[
+            withdrawal_with_status(WithdrawalStatus::COMPLETE),
+            withdrawal_with_status(WithdrawalStatus::EXPIRED),
+        ]));
+        assert!(FAILED_WITHDRAWAL_NOTE.contains("not returned"));
+    }
+
+    const NEWER_PROTOCOL_ADVISORY: &str = "The network runs protocol version {verified}, \
+        which is newer than this version of Dash Evo Tool supports (up to {maximum}). \
+        Some features stay unavailable until you update Dash Evo Tool.";
+
+    fn expected_newer_protocol_advisory(verified: u32, maximum: u32) -> String {
+        NEWER_PROTOCOL_ADVISORY
+            .replace("{verified}", &verified.to_string())
+            .replace("{maximum}", &maximum.to_string())
+    }
+
+    /// A network that proved a version newer than this build gets the update
+    /// advice, naming both versions, after the epoch summary.
+    #[test]
+    fn a_newer_proven_protocol_appends_the_update_advisory() {
+        use crate::context::test_support::{prove_protocol_version, test_app_context};
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+
+        let mut text = String::from("Current Epoch Information:");
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+
+        assert_eq!(
+            text,
+            format!(
+                "Current Epoch Information:\n\n{}",
+                expected_newer_protocol_advisory(LATEST_VERSION + 1, LATEST_VERSION)
+            )
+        );
+    }
+
+    /// No advice while nothing is proven, nor for a version this build defines.
+    #[test]
+    fn no_update_advisory_without_a_newer_proven_protocol() {
+        use crate::context::test_support::{prove_protocol_version, test_app_context};
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+
+        let mut text = String::from("summary");
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+        assert_eq!(text, "summary", "nothing proven");
+
+        prove_protocol_version(&ctx, LATEST_VERSION);
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+        assert_eq!(text, "summary", "a version this build defines");
+    }
+
+    /// The advice reaches the user even when the epoch itself cannot be read.
+    #[tokio::test]
+    async fn a_failed_epoch_fetch_still_advises_updating_for_a_newer_network() {
+        use crate::context::test_support::prove_protocol_version;
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+        let sdk = ctx.sdk.load_full();
+
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("a failed epoch fetch degrades to a text result");
+
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("a failed epoch fetch returns a text result");
+        };
+        assert!(
+            text.ends_with(&expected_newer_protocol_advisory(
+                LATEST_VERSION + 1,
+                LATEST_VERSION
+            )),
+            "the update advice must close the report, got: {text}"
+        );
+    }
+
+    #[test]
+    fn unavailable_epoch_reports_protocol_version_and_the_last_known_fee_multiplier() {
+        assert_eq!(
+            format_unavailable_current_epoch_info(Some(14), 1000),
+            "Current Epoch Information:\n\
+             • Protocol Version: 14\n\
+             • Fee Multiplier: 1x (the last known value, not a fresh reading)\n\n\
+             The current epoch could not be read from the network. Fee estimates use the last \
+             known fee multiplier. Refresh again in a moment to read the current one."
+        );
+    }
+
+    /// The multiplier is presented as stale, never as a live reading: a user
+    /// comparing it against a network that raised its fees must be able to see
+    /// which of the two the app is charging by.
+    #[test]
+    fn unavailable_epoch_never_presents_the_fee_multiplier_as_a_network_reading() {
         for protocol_version in [None, Some(12)] {
-            let formatted = format_hardcoded_current_epoch_info(protocol_version, 1500);
+            let formatted = format_unavailable_current_epoch_info(protocol_version, 1500);
             assert!(
                 formatted
-                    .contains("• Fee Multiplier: 1.5x (a fixed value, not read from the network)"),
-                "the multiplier must be shown as fixed, got: {formatted}"
-            );
-            assert!(
-                formatted.contains("is this app's default, not a value read from the network"),
-                "the degraded copy must name the default as the app's own, got: {formatted}"
-            );
-            assert!(
-                !formatted.contains("every network charges"),
-                "a failed fetch cannot support a claim about what networks charge: {formatted}"
+                    .contains("• Fee Multiplier: 1.5x (the last known value, not a fresh reading)"),
+                "the multiplier must be shown as stale, got: {formatted}"
             );
         }
     }
 
     #[test]
-    fn epoch_fallback_never_reports_an_unconfirmed_protocol_version_as_a_number() {
-        let formatted = format_hardcoded_current_epoch_info(None, 1000);
+    fn unavailable_epoch_never_reports_an_unconfirmed_protocol_version_as_a_number() {
+        let formatted = format_unavailable_current_epoch_info(None, 1000);
         assert!(
             formatted
                 .contains("• Protocol Version: the connected network has not confirmed one yet."),
@@ -1141,55 +1284,63 @@ mod tests {
         );
     }
 
-    /// Fee estimates must not keep running on whatever multiplier a previous
-    /// refresh happened to leave behind: when the live epoch fetch fails (here,
-    /// against a mock SDK that answers nothing), the task republishes the
-    /// default one.
+    /// A failed epoch fetch must not reset a multiplier a previous live read
+    /// published: the last known value is closer to the network's than any
+    /// fixed default, and the report names the value it keeps.
     #[tokio::test]
-    async fn epoch_fallback_republishes_the_default_fee_multiplier() {
+    async fn failed_epoch_fetch_keeps_the_last_known_fee_multiplier() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = dash_sdk::Sdk::new_mock();
-        ctx.set_fee_multiplier_permille(7_777);
+        ctx.set_fee_multiplier_permille(1_500);
 
         let result = ctx
             .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
             .await
             .expect("a failed epoch fetch degrades to a text result");
 
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
+        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
         let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
             result
         else {
-            panic!("the degraded epoch path returns a text result");
+            panic!("a failed epoch fetch returns a text result");
         };
         assert!(
-            text.contains("• Fee Multiplier: 1x"),
+            text.contains("• Fee Multiplier: 1.5x (the last known value"),
             "the reported multiplier must match the cached one, got: {text}"
         );
     }
 
     /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
-    /// not a network observation: caching it would open the shielded capability
-    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    /// not a network observation: treating it as proven would open the shielded
+    /// capability gate and stop the retry `mcp::resolve` makes while nothing is
+    /// proven. The report names the version as unconfirmed.
     #[tokio::test]
     async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let sdk = ctx.sdk.load_full();
         assert_ne!(
             sdk.protocol_version_number(),
             0,
             "precondition: the mock SDK seeds a local version of its own"
         );
 
-        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
             .await
             .expect("a failed epoch fetch degrades to a text result");
 
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("a failed epoch fetch returns a text result");
+        };
+        assert!(
+            text.contains("has not confirmed one yet"),
+            "an unconfirmed version must be named as such, got: {text}"
+        );
     }
 }

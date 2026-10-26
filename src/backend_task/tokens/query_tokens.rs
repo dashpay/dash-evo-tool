@@ -26,12 +26,10 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // -- 1. fetch keyword -> contractId docs
-        let mut kw_query =
-            DocumentQuery::new(self.keyword_search_contract.clone(), "contractKeywords").map_err(
-                |e| TaskError::TokenQueryError {
-                    detail: format!("Failed to create document query: {}", e),
-                },
-            )?;
+        let mut kw_query = DocumentQuery::new(self.keyword_search_contract(), "contractKeywords")
+            .map_err(|e| TaskError::TokenQueryError {
+            detail: format!("Failed to create document query: {}", e),
+        })?;
         kw_query.limit = 100;
         kw_query.start = cursor.clone();
         kw_query = kw_query.with_where(WhereClause {
@@ -71,10 +69,11 @@ impl AppContext {
 
         for cid in &contract_ids {
             let mut desc_query =
-                DocumentQuery::new(self.keyword_search_contract.clone(), "shortDescription")
-                    .map_err(|e| TaskError::TokenQueryError {
+                DocumentQuery::new(self.keyword_search_contract(), "shortDescription").map_err(
+                    |e| TaskError::TokenQueryError {
                         detail: format!("Failed to create document query: {}", e),
-                    })?;
+                    },
+                )?;
             desc_query.limit = 1;
             desc_query = desc_query.with_where(WhereClause {
                 field: "contractId".into(),

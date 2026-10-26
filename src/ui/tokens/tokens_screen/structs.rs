@@ -8,6 +8,7 @@ use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
@@ -392,6 +393,16 @@ impl IdentityTokenAvailableActions {
     }
 }
 
+/// Whether the identity can transfer the token: it holds some, and the token
+/// lets holders move it to another identity (Platform refuses every transfer
+/// of a non-transferable token).
+fn transfer_available(
+    token_configuration: &TokenConfiguration,
+    known_balance: Option<TokenAmount>,
+) -> bool {
+    token_configuration.is_transferable() && known_balance.is_some_and(|b| b > 0)
+}
+
 pub fn get_available_token_actions_for_identity(
     known_balance: Option<TokenAmount>,
     identity: &QualifiedIdentity,
@@ -406,7 +417,7 @@ pub fn get_available_token_actions_for_identity(
     let identity_id = identity.identity.id();
     let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
 
-    let can_transfer = known_balance.is_some_and(|b| b > 0);
+    let can_transfer = transfer_available(token_configuration, known_balance);
 
     let is_authorized = |takers: &AuthorizedActionTakers| {
         takers.allowed_for_action_taker(
@@ -560,5 +571,30 @@ impl From<&IdentityTokenBalanceWithActions> for Amount {
 impl From<IdentityTokenBalanceWithActions> for Amount {
     fn from(token_balance: IdentityTokenBalanceWithActions) -> Self {
         Self::from(&token_balance)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Setters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+
+    fn transferable() -> TokenConfiguration {
+        TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive())
+    }
+
+    #[test]
+    fn transfer_needs_a_transferable_token_and_a_balance() {
+        let mut non_transferable = transferable();
+        non_transferable.set_transferable(false);
+
+        assert!(transfer_available(&transferable(), Some(5)));
+        assert!(!transfer_available(&transferable(), Some(0)));
+        assert!(!transfer_available(&transferable(), None));
+        assert!(
+            !transfer_available(&non_transferable, Some(5)),
+            "Platform refuses every transfer of a non-transferable token"
+        );
     }
 }

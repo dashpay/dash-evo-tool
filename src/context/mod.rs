@@ -53,7 +53,6 @@ use connection_status::ConnectionStatus;
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::block::epoch::EpochIndex;
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -162,15 +161,6 @@ impl DpnsVoteDispatchCoordinator {
             _permit: permit,
         })
     }
-}
-
-/// What epoch adoption is keyed on. See [`AppContext::adopt_epoch`].
-#[derive(Debug, Default)]
-struct EpochAdoption {
-    /// The connection generation, bumped by every rebuild.
-    generation: u64,
-    /// The index of the last adopted proved epoch on this generation.
-    epoch_index: Option<EpochIndex>,
 }
 
 #[derive(Debug)]
@@ -323,9 +313,6 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
-    /// The connection generation and the last adopted proved epoch. See
-    /// [`Self::adopt_epoch`] and [`Self::replace_connection`].
-    epoch_adoption: Mutex<EpochAdoption>,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -650,7 +637,6 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
-            epoch_adoption: Mutex::new(EpochAdoption::default()),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1171,95 +1157,12 @@ impl AppContext {
         }
     }
 
-    /// The generation of the connection to the network: bumped each time the
-    /// connection is rebuilt. Production reads take it together with the SDK
-    /// check, via [`Self::connection_snapshot_for`].
-    #[cfg(test)]
-    pub(crate) fn connection_generation(&self) -> u64 {
-        self.epoch_adoption
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .generation
-    }
-
-    /// Adopt the fee multiplier of the proved epoch `epoch_index`, read on
-    /// connection `generation`. Returns whether it was adopted.
-    ///
-    /// Dropped when the connection was rebuilt since the read was sent, or
-    /// when an epoch newer than it was adopted already: epoch reads run
-    /// concurrently (platform info, fee refusals) and can finish out of
-    /// order. The lock covers the checks and the store, so an adoption and a
-    /// rebuild cannot interleave; nothing is awaited under it. The protocol
-    /// version is the SDK's own ([`Self::proven_protocol_version`]).
-    pub(crate) fn adopt_epoch(
-        &self,
-        generation: u64,
-        epoch_index: EpochIndex,
-        fee_multiplier_permille: u64,
-    ) -> bool {
-        let mut adoption = self
-            .epoch_adoption
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if generation != adoption.generation
-            || adoption
-                .epoch_index
-                .is_some_and(|adopted| epoch_index < adopted)
-        {
-            return false;
-        }
-        adoption.epoch_index = Some(epoch_index);
-        self.set_fee_multiplier_permille(fee_multiplier_permille);
-        true
-    }
-
-    /// Replace the connection's SDK with `new_sdk` and forget everything
-    /// learned from the old connection: bump the generation, so reads still in
-    /// flight on it are dropped, forget the adopted epoch, and put the fee
-    /// multiplier back to the default. The new SDK has verified nothing, so
-    /// the proven protocol version is unknown again and capabilities stay
-    /// closed until the new connection proves one: the new endpoints may serve
-    /// another protocol version or a reset devnet.
-    ///
-    /// The reset is written before the new SDK is published, under the
-    /// adoption lock: whoever loads the new SDK sees the reset state, and a
-    /// [`Self::connection_snapshot_for`] sees either the old generation and
-    /// SDK or the new ones. A task still holding the old SDK may see the
-    /// default fees: fail closed.
-    pub(crate) fn replace_connection(&self, new_sdk: Arc<Sdk>) {
-        self.replace_connection_observed(new_sdk, |_| {});
-    }
-
-    /// [`Self::replace_connection`]; `observe` runs where the two halves meet (test seam).
-    fn replace_connection_observed(&self, new_sdk: Arc<Sdk>, observe: impl Fn(&Self)) {
-        let mut adoption = self
-            .epoch_adoption
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adoption.generation += 1;
-        adoption.epoch_index = None;
-        self.set_fee_multiplier_permille(PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE);
-        observe(self);
-        self.sdk.store(new_sdk);
-    }
-
-    /// The connection generation and whether `sdk` is the current SDK (not
-    /// one a rebuild replaced, nor a copy), read together under the adoption
-    /// lock. An epoch read takes this before it is sent and passes the
-    /// generation to [`Self::adopt_epoch`].
-    pub(crate) fn connection_snapshot_for(&self, sdk: &Sdk) -> (u64, bool) {
-        let adoption = self
-            .epoch_adoption
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current = std::ptr::eq(sdk, Arc::as_ptr(&self.sdk.load_full()));
-        (adoption.generation, current)
-    }
-
     /// Rebuild the connection ([`Self::reinit_core_client_and_sdk`]) and read
-    /// the new connection's epoch, so its protocol version and fee multiplier
-    /// are known again. A failed epoch read only leaves them unknown until
-    /// the next one; it does not fail the rebuild.
+    /// the new connection's epoch. The new SDK has proven no protocol version,
+    /// so protocol capabilities stay closed until a proved response carries
+    /// one; the epoch read is that response, and it refreshes the fee
+    /// multiplier too. A failed read only leaves the version unproven until
+    /// the next proved response; it does not fail the rebuild.
     pub(crate) async fn rebuild_connection(self: &Arc<Self>) -> Result<(), TaskError> {
         Arc::clone(self).reinit_core_client_and_sdk()?;
         let sdk = self.sdk.load_full();
@@ -1274,8 +1177,8 @@ impl AppContext {
     }
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
-    /// updated `NetworkConfig` from `self.config`, and forget the state
-    /// learned from the old connection ([`Self::replace_connection`]).
+    /// updated `NetworkConfig` from `self.config`. The new SDK starts from
+    /// nothing learned from the old endpoints.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
@@ -1319,7 +1222,7 @@ impl AppContext {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
         }
-        self.replace_connection(Arc::new(new_sdk));
+        self.sdk.store(Arc::new(new_sdk));
 
         // Rebind the provider to hold the new AppContext reference.
         // bind_app_context also registers the provider with the SDK.
@@ -2043,7 +1946,7 @@ mod tests {
             Some(13)
         );
 
-        ctx.replace_connection(Arc::new(dash_sdk::Sdk::new_mock()));
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
         assert_eq!(ctx.proven_protocol_version(), None, "rebuilt connection");
         assert!(
             ctx.proven_platform_version().is_none(),
@@ -2064,32 +1967,6 @@ mod tests {
 
         assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION + 1));
         assert!(ctx.proven_platform_version().is_none());
-    }
-
-    /// A task that loads the new SDK always sees the reset connection state:
-    /// the new SDK never pairs with the old connection's fee multiplier, and
-    /// it has proven no protocol version.
-    #[test]
-    fn the_new_sdk_is_published_only_after_the_connection_state_is_reset() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500);
-        let new_sdk = Arc::new(dash_sdk::Sdk::new_mock());
-        let new_sdk_ptr = Arc::as_ptr(&new_sdk);
-
-        ctx.replace_connection_observed(new_sdk, |ctx| {
-            if Arc::as_ptr(&ctx.sdk.load_full()) == new_sdk_ptr {
-                assert_eq!(ctx.proven_protocol_version(), None, "new SDK, old protocol");
-                assert_eq!(
-                    ctx.fee_multiplier_permille(),
-                    crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
-                    "new SDK, old fee multiplier"
-                );
-            }
-        });
-
-        assert_eq!(Arc::as_ptr(&ctx.sdk.load_full()), new_sdk_ptr);
-        assert_eq!(ctx.proven_protocol_version(), None);
     }
 
     /// Contest windows stay consistent as the SDK ratchets upward from each

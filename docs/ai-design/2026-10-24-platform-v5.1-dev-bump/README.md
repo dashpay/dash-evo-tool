@@ -42,16 +42,15 @@ proof is never checked against the wrong schema.
 
 ## Connection state
 
-- **Epoch adoption.** A proved epoch sets the fee multiplier
-  (`AppContext::adopt_epoch`). Reads can finish out of order, so an epoch older
-  than the adopted one is ignored. When the epoch cannot be read, a proved
-  DPNS fetch still lets the SDK learn the network's version.
-- **Rebuilding the connection** (`replace_connection`, `rebuild_connection`)
-  bumps a generation counter, forgets the adopted epoch and puts the fee
-  multiplier back to the default, under one lock, before the new SDK is
-  published. A read begun on the old connection is dropped. The new SDK has
-  proven no version, so capabilities stay closed until the new connection
-  proves one.
+- **Fee multiplier.** A proved epoch read sets the fee multiplier, which feeds
+  fee estimates only. When the epoch cannot be read, the last known value is
+  kept and shown as such, never as a fresh network reading, and a proved DPNS
+  fetch still lets the SDK learn the network's version.
+- **Rebuilding the connection** (`rebuild_connection`) builds a new SDK over
+  the same network, so nothing about the chain changes. The new SDK has proven
+  no version, so capabilities stay closed until a proved response carries
+  one; the rebuild reads the epoch right away for that, and the read refreshes
+  the fee multiplier.
 
 ## Protocol 13 guards
 

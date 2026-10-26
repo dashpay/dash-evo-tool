@@ -563,7 +563,7 @@ fn build_withdrawals_result(
 }
 
 impl AppContext {
-    /// Fetches the current epoch — authenticated by proof — and adopts its
+    /// Fetches the current epoch — authenticated by proof — and sets its
     /// fee multiplier. The only path by which the fee multiplier cache takes
     /// a network value, and fee estimates follow it, so it must never come
     /// from an unproven source. The verified response also ratchets the SDK's
@@ -572,26 +572,16 @@ impl AppContext {
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
-        // Captured together before the read: a read on an SDK a rebuild has
-        // replaced, or begun before it, is never adopted.
-        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
-        if on_current_sdk {
-            self.adopt_epoch_info(generation, &epoch_info);
-        }
+        self.set_fee_multiplier_from(&epoch_info);
         Ok(epoch_info)
     }
 
-    /// Adopts the fee multiplier of a proved epoch read on connection
-    /// `generation` (see `AppContext::adopt_epoch`).
-    fn adopt_epoch_info(&self, generation: u64, epoch_info: &ExtendedEpochInfo) {
-        self.adopt_epoch(
-            generation,
-            epoch_info.index(),
-            epoch_info.fee_multiplier_permille(),
-        );
+    /// Sets the fee multiplier cache from a proved epoch.
+    fn set_fee_multiplier_from(&self, epoch_info: &ExtendedEpochInfo) {
+        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
     }
 
     pub async fn run_platform_info_task(
@@ -1098,88 +1088,16 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.set_fee_multiplier_permille(1000);
 
-        ctx.adopt_epoch_info(
-            ctx.connection_generation(),
-            &ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-                index: 7,
-                first_block_time: 0,
-                first_block_height: 0,
-                first_core_block_height: 0,
-                fee_multiplier_permille: 1_500,
-                protocol_version: 14,
-            }),
-        );
+        ctx.set_fee_multiplier_from(&ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 7,
+            first_block_time: 0,
+            first_block_height: 0,
+            first_core_block_height: 0,
+            fee_multiplier_permille: 1_500,
+            protocol_version: 14,
+        }));
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-    }
-
-    /// Epoch reads can finish out of order: an older epoch arriving after a
-    /// newer one must not put back its fee multiplier.
-    #[test]
-    fn an_older_epoch_does_not_overwrite_a_newer_one() {
-        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
-        let epoch = |index, fee_multiplier_permille, protocol_version| {
-            ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-                index,
-                first_block_time: 0,
-                first_block_height: 0,
-                first_core_block_height: 0,
-                fee_multiplier_permille,
-                protocol_version,
-            })
-        };
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_500, 14));
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(7, 1_000, 13));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-
-        // The same or a newer epoch is adopted.
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_600, 14));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_600);
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(9, 1_700, 13));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_700);
-    }
-
-    /// Rebuilding the connection resets everything learned from the old one:
-    /// the new SDK has proven no protocol version, the fee multiplier goes
-    /// back to the default, and the next proved epoch is adopted whatever its
-    /// index.
-    #[test]
-    fn a_rebuilt_connection_starts_from_unknown_protocol_and_default_fees() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        crate::context::test_support::prove_protocol_version(&ctx, 14);
-        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500);
-
-        ctx.replace_connection(Arc::new(Sdk::new_mock()));
-
-        assert_eq!(ctx.proven_protocol_version(), None);
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
-        assert!(ctx.adopt_epoch(ctx.connection_generation(), 2, 1_100));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_100);
-    }
-
-    /// An epoch read that started on the old connection and finishes after
-    /// the rebuild is dropped, so it cannot be the new connection's first
-    /// adoption.
-    #[test]
-    fn an_epoch_read_from_before_a_rebuild_is_dropped() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let before_rebuild = ctx.connection_generation();
-
-        ctx.replace_connection(Arc::new(Sdk::new_mock()));
-
-        assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500));
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
     }
 
     #[test]

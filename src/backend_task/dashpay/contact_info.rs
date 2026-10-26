@@ -295,6 +295,8 @@ mod tests {
             ),
         ]);
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(document_id),
             owner_id: id(254),
             creator_id: None,

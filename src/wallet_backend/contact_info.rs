@@ -11,13 +11,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::wallet::Wallet;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 use dash_sdk::platform::{Document, Identifier};
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::wallet::identity::crypto::contact_info::{

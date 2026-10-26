@@ -32,7 +32,10 @@ pub(crate) fn sidecar_key(network: Network, infix: &str, id: &SidecarId) -> Stri
     format!(
         "{}{infix}{}",
         network_prefix(network),
-        base58::encode_slice(id)
+        dash_sdk::dpp::platform_value::string_encoding::encode(
+            id,
+            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
+        )
     )
 }
 

@@ -491,6 +491,8 @@ mod tests {
             properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
         }
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(99),
             owner_id: id(1),
             creator_id: None,

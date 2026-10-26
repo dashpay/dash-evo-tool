@@ -25,7 +25,6 @@ use dash_evo_tool::ui::wallets::send_screen::{
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -502,9 +501,9 @@ fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTas
 fn prepare_top_up(harness: &mut App, identity: &QualifiedIdentity) -> Result<AppAction, String> {
     let core = Address::p2pkh(
         &PublicKey::new(
-            SecretKey::from_slice(&[0x31; 32])
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([0x31; 32])
                 .expect("secret key")
-                .public_key(&Secp256k1::new()),
+                .public_key(),
         ),
         identity.network,
     );

@@ -265,7 +265,7 @@ pub(super) async fn stored_contact_details(
     sdk: &Sdk,
     identity: &QualifiedIdentity,
 ) -> Result<StoredContactDetails, TaskError> {
-    let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactInfo")
+    let query = DocumentQuery::new(app_context.dashpay_contract(), "contactInfo")
         .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
             source: Box::new(e.into()),
@@ -388,7 +388,7 @@ pub async fn load_contacts(
     identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     // Query for contact requests where we are the sender (ownerId)
     let mut outgoing_query = contact_request_query(app_context)?;

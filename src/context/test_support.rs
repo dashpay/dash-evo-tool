@@ -174,6 +174,40 @@ fn test_app_context_with_kv_and_network(
     .expect("AppContext")
 }
 
+/// Put `ctx` at `protocol_version`, as its SDK stands once a proven response
+/// ratcheted it there. The replacement SDK is a mock: nothing reaches a network.
+pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let version = dash_sdk::dpp::version::PlatformVersion::get(protocol_version)
+        .expect("a protocol version this build knows");
+    let sdk = dash_sdk::SdkBuilder::new_mock()
+        .with_initial_version(version)
+        .build()
+        .expect("mock sdk");
+    ctx.sdk.store(Arc::new(sdk));
+}
+
+/// Have `ctx`'s SDK learn `protocol_version` as it does from a response whose
+/// proof and quorum signature were verified. Only raises it, as the network
+/// does; an unknown version is recorded as proven, as upstream records it.
+pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    ctx.sdk
+        .load()
+        .verify_response_metadata(
+            "test",
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 1,
+                time_ms: now_ms,
+                protocol_version,
+                ..Default::default()
+            },
+        )
+        .expect("fresh proved metadata");
+}
+
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     let sdk = Sdk::new_mock();
@@ -191,6 +225,8 @@ pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
 pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value) -> Document {
     let text = |value: &str| Value::Text(value.to_string());
     Document::V0(DocumentV0 {
+        moderated_at: None,
+        moderated_by: None,
         id: Identifier::from([0x5D; 32]),
         owner_id: owner,
         creator_id: None,

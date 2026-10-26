@@ -117,7 +117,7 @@ impl AuthPubkeyCache {
         public_key: &PublicKey,
     ) -> bool {
         let coord = AuthKeyCoord::new(network, identity_index, key_index);
-        let bytes = public_key.inner.serialize().to_vec();
+        let bytes = public_key.inner.to_compressed().to_vec();
         match self.entries.entry(coord) {
             Entry::Occupied(e) if *e.get() == bytes => false,
             Entry::Occupied(mut e) => {
@@ -156,15 +156,12 @@ impl std::fmt::Debug for AuthPubkeyCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::secp256k1::{
-        PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey,
-    };
+    use dash_sdk::dpp::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
     /// Deterministic test public key from a one-byte seed.
     fn pubkey(seed: u8) -> PublicKey {
-        let secp = Secp256k1::new();
-        let sk = SecretKey::from_slice(&[seed.max(1); 32]).expect("valid secret key");
-        let inner = Secp256k1PublicKey::from_secret_key(&secp, &sk);
+        let sk = SecretKey::from_secret_bytes([seed.max(1); 32]).expect("valid secret key");
+        let inner = Secp256k1PublicKey::from_secret_key(&sk);
         PublicKey::new(inner)
     }
 
@@ -187,7 +184,7 @@ mod tests {
         assert!(cache.insert(Network::Mainnet, 1, 2, &pk));
         let got = cache.get(Network::Mainnet, 1, 2).expect("hit");
         assert_eq!(got, pk);
-        assert_eq!(got.inner.serialize(), pk.inner.serialize());
+        assert_eq!(got.inner.to_compressed(), pk.inner.to_compressed());
     }
 
     /// AUTH-CACHE-003 — coordinates are network-keyed: the same indices

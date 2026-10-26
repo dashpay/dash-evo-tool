@@ -97,3 +97,98 @@ fn token_creator_defaults_to_app_scoped_identity() {
         );
     });
 }
+
+/// A contract holding one most-restrictive token at position 0, owned by
+/// `owner_id`.
+fn token_contract(owner_id: Identifier) -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+    let mut contract = DataContractV1 {
+        id: Identifier::from([0x7C; 32]),
+        version: 1,
+        owner_id,
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(PlatformVersion::latest())
+            .expect("contract config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::new(),
+        keywords: Vec::new(),
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    };
+    contract.tokens.insert(
+        0,
+        TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+    );
+    dash_sdk::platform::DataContract::V1(contract)
+}
+
+/// Token transactions go through the wallet that holds the identity, so for
+/// an identity no wallet holds the action screen explains why and offers no
+/// form to sign.
+#[test]
+fn token_action_screen_of_a_wallet_less_identity_offers_no_form() {
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_NEED_WALLET;
+    use dash_evo_tool::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_evo_tool::ui::{RootScreenType, Screen};
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use egui_kittest::kittest::Queryable;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let ctx = harness.state().current_app_context().clone();
+
+        let identity_id = seed_token_identity(&ctx, 0xC3, "Token Gamma");
+        let identity = ctx
+            .load_local_qualified_identities()
+            .expect("load identities")
+            .into_iter()
+            .find(|qi| qi.identity.id() == identity_id)
+            .expect("the seeded identity");
+        let contract = token_contract(identity_id);
+        let token_config = contract.tokens()[&0].clone();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x7D; 32]),
+            token_alias: "Gamma".to_string(),
+            identity,
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config,
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::MintTokensScreen(MintTokensScreen::new(info, &ctx)));
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_NEED_WALLET)
+                .count(),
+            1,
+            "the screen says why the identity cannot mint"
+        );
+        assert_eq!(
+            harness
+                .query_all_by_label_contains("Amount to mint")
+                .count(),
+            0,
+            "no mint form is offered"
+        );
+    });
+}

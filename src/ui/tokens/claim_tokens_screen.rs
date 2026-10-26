@@ -65,6 +65,7 @@ pub struct ClaimTokensScreen {
     status: ClaimTokensStatus,
     refresh_banner: Option<BannerHandle>,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     /// The open claim confirmation and the claim it was opened for.
     confirmation_dialog: Option<PendingClaim>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -153,6 +154,10 @@ impl ClaimTokensScreen {
         let once_per_identity_claimed_at =
             load_once_per_identity_claim(app_context, &identity_token_basic_info);
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_basic_info.identity_id,
+        );
         Self {
             identity,
             identity_token_basic_info,
@@ -164,6 +169,7 @@ impl ClaimTokensScreen {
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
             refresh_banner: None,
+            token_action_availability,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -437,6 +443,10 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_basic_info.identity_id,
+        );
         if let Some(current) = &self.identity
             && let Ok(all) = self.app_context.load_local_qualified_identities()
             && let Some(updated) = all
@@ -492,6 +502,10 @@ impl ScreenLike for ClaimTokensScreen {
 
             ui.heading("Claim Tokens");
             ui.add_space(10.0);
+
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {

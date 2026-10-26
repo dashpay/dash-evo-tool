@@ -38,6 +38,34 @@ pub fn set_error_banner(app_context: &AppContext, msg: &str) {
     MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
 }
 
+/// Whether `identity_id` can send token transactions, for a token screen to
+/// show. A failed read leaves the actions enabled; the backend enforces the
+/// rule either way.
+pub fn load_token_action_availability(
+    app_context: &AppContext,
+    identity_id: &dash_sdk::platform::Identifier,
+) -> crate::model::token::TokenActionAvailability {
+    app_context
+        .token_action_availability(identity_id)
+        .unwrap_or_else(|error| {
+            tracing::debug!(%error, "Token action availability unreadable; leaving the actions enabled");
+            crate::model::token::TokenActionAvailability::Available
+        })
+}
+
+/// Shows why token actions are unavailable, in place of an action form.
+/// Returns whether they are unavailable.
+pub fn show_token_actions_unavailable(
+    ui: &mut egui::Ui,
+    availability: crate::model::token::TokenActionAvailability,
+) -> bool {
+    let Some(reason) = availability.unavailable_reason() else {
+        return false;
+    };
+    ui.label(reason);
+    true
+}
+
 /// Validates that a signing key is selected before dispatching a backend task.
 ///
 /// Returns the signing key on success, or sets a global error banner and returns

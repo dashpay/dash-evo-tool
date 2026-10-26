@@ -457,6 +457,17 @@ impl TokensScreen {
                                     body.row(30.0, |mut row| {
                                         row.col(|ui| {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
+                                            if let Some(reason) = self
+                                                .token_action_availability
+                                                .get(&itb.identity_id)
+                                                .and_then(|availability| availability.unavailable_reason())
+                                            {
+                                                ui.label(
+                                                    RichText::new("View only")
+                                                        .color(DashColors::muted_color(ui.style().visuals.dark_mode)),
+                                                )
+                                                .info_tooltip(reason);
+                                            }
                                         });
                                         row.col(|ui| {
                                             if itb.identity_id == token_info.data_contract.owner_id() {
@@ -690,12 +701,16 @@ impl TokensScreen {
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
         let dark_mode = ui.style().visuals.dark_mode;
+        let blocked = self
+            .token_action_availability
+            .get(&itb.identity_id)
+            .and_then(|availability| availability.unavailable_reason());
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {
                 if let Some(balance) = itb.balance {
                     // Transfer
-                    if ui.button("Transfer").clicked() {
+                    if token_action_button(ui, "Transfer", blocked).clicked() {
                         action = AppAction::AddScreen(Screen::TransferTokensScreen(
                             TransferTokensScreen::new(
                                 itb.to_token_balance(balance),
@@ -720,7 +735,7 @@ impl TokensScreen {
 
         // Claim
         if itb.available_actions.can_claim {
-            if range.contains(&pos) && ui.button("Claim").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Claim", blocked).clicked() {
                 match self.app_context.get_contract_by_token_id(&itb.token_id) {
                     Ok(Some(contract)) => {
                         action = AppAction::AddScreen(Screen::ClaimTokensScreen(
@@ -754,7 +769,7 @@ impl TokensScreen {
         }
 
         if itb.available_actions.can_mint {
-            if range.contains(&pos) && ui.button("Mint").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Mint", blocked).clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -771,7 +786,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_burn {
-            if range.contains(&pos) && ui.button("Burn").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Burn", blocked).clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -792,7 +807,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_freeze {
-            if range.contains(&pos) && ui.button("Freeze").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Freeze", blocked).clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -808,7 +823,9 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_destroy {
-            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
+            if range.contains(&pos)
+                && token_action_button(ui, "Destroy Frozen Identity Tokens", blocked).clicked()
+            {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -824,7 +841,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_unfreeze {
-            if range.contains(&pos) && ui.button("Unfreeze").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Unfreeze", blocked).clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -841,7 +858,7 @@ impl TokensScreen {
         }
         if itb.available_actions.can_do_emergency_action {
             if range.contains(&pos) {
-                if ui.button("Pause").clicked() {
+                if token_action_button(ui, "Pause", blocked).clicked() {
                     match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
@@ -863,7 +880,7 @@ impl TokensScreen {
             }
 
             if range.contains(&pos) {
-                if ui.button("Resume").clicked() {
+                if token_action_button(ui, "Resume", blocked).clicked() {
                     match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                             Ok(info) => {
                                 action = AppAction::AddScreen(
@@ -894,7 +911,7 @@ impl TokensScreen {
             pos += 1;
         }
         if itb.available_actions.can_update_config {
-            if range.contains(&pos) && ui.button("Update Config").clicked() {
+            if range.contains(&pos) && token_action_button(ui, "Update Config", blocked).clicked() {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
@@ -952,7 +969,7 @@ impl TokensScreen {
 
                     if has_credits {
                         // Purchase button enabled
-                        if ui.button("Purchase").clicked() {
+                        if token_action_button(ui, "Purchase", blocked).clicked() {
                             match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                                     Ok(info) => {
                                         action = AppAction::AddScreen(
@@ -1106,6 +1123,17 @@ impl TokensScreen {
         });
         Ok(action)
     }
+}
+
+/// A token-action button, disabled with `blocked_reason` as its tooltip when
+/// the identity cannot send token transactions.
+fn token_action_button(
+    ui: &mut Ui,
+    label: &str,
+    blocked_reason: Option<&'static str>,
+) -> egui::Response {
+    ui.add_enabled(blocked_reason.is_none(), egui::Button::new(label))
+        .disabled_tooltip(blocked_reason.unwrap_or_default())
 }
 
 #[cfg(test)]

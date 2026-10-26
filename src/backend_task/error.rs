@@ -1712,7 +1712,7 @@ pub enum TaskError {
     /// A masternode credit withdrawal signed with a wallet-held key was
     /// refused before or by the network. Nothing was withdrawn.
     #[error(
-        "Your masternode withdrawal did not go through and nothing was withdrawn. Check the amount and the destination address, then try again."
+        "Your masternode withdrawal did not go through and nothing was withdrawn. Wait a moment and try again. If it keeps failing, check the amount."
     )]
     MasternodeWithdrawalFailed {
         #[source]

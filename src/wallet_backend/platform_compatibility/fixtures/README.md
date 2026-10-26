@@ -32,8 +32,9 @@ A different migration occupying version 19 is not an accepted source history.
 Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
-Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8) and
-`063589bf0adbe1a8823a943cee95385b423b0e3f` leave the migrations untouched.
+Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
+`063589bf0adbe1a8823a943cee95385b423b0e3f` and
+`3d0db533da606a4dc87eb51347819b6ed2d7fe57` leave the migrations untouched.
 
 
 `public-rows.sql` contains only public synthetic rows from that old revision's

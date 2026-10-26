@@ -741,11 +741,11 @@ mod sdk_adapter_tests {
 
     /// Co-signing a group token action is a token transaction, so an identity
     /// no wallet in the app holds is told why it cannot take the action.
-    #[test]
-    fn a_wallet_less_identity_cannot_take_group_token_actions() {
-        use crate::context::test_support::{bare_user_identity, test_app_context};
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wallet_less_identity_cannot_take_group_token_actions() {
+        use crate::context::test_support::{bare_user_identity, wired_test_app_context};
         let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = test_app_context(dir.path());
+        let ctx = wired_test_app_context(dir.path()).await;
         let identity = bare_user_identity(Identifier::from([8; 32]), ctx.network());
         ctx.insert_local_qualified_identity(&identity, &None)
             .expect("store the wallet-less identity");

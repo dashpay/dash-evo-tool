@@ -36,15 +36,27 @@ pub struct MintAction {
     known_identities: Vec<QualifiedIdentity>,
     /// The token sends new tokens to a configured identity unless told otherwise.
     has_default_destination: bool,
+    /// The token lets the minter name a recipient. When it does not, Platform
+    /// refuses any mint that names one, even the configured destination.
+    allow_choosing_destination: bool,
     /// New tokens have somewhere to go: a configured destination, or the
     /// token lets the minter choose one.
     can_mint: bool,
 }
 
 impl MintAction {
-    /// The recipient to mint to: `Some(None)` leaves an empty field to the
-    /// token's configured destination; `None` when no valid recipient is known.
+    /// The recipient to mint to: `Some(None)` leaves it to the token's
+    /// configured destination; `None` when no valid recipient is known.
+    ///
+    /// A token that forbids choosing always mints to its configured
+    /// destination, so any typed or pre-filled recipient is ignored: Platform
+    /// refuses a mint that names one. Co-signing a group mint still matches
+    /// the proposal, because Platform compares the resolved recipient (the
+    /// configured destination) and leaves the recipient out of the action id.
     fn recipient(&self) -> Option<Option<Identifier>> {
+        if !self.allow_choosing_destination {
+            return self.has_default_destination.then_some(None);
+        }
         if self.recipient_identity_id.trim().is_empty() && self.has_default_destination {
             return Some(None);
         }
@@ -84,13 +96,15 @@ impl TokenAction for MintAction {
     fn new(info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let rules = info.token_config.distribution_rules();
         let has_default_destination = rules.new_tokens_destination_identity().is_some();
+        let allow_choosing_destination = rules.minting_allow_choosing_destination();
         MintAction {
             amount: None,
             amount_input: None,
             recipient_identity_id: String::new(),
             known_identities: super::load_identities_with_banner(app_context),
             has_default_destination,
-            can_mint: has_default_destination || rules.minting_allow_choosing_destination(),
+            allow_choosing_destination,
+            can_mint: has_default_destination || allow_choosing_destination,
         }
     }
 
@@ -315,6 +329,66 @@ mod tests {
             },
             other => panic!("expected a mint task, got {other:?}"),
         }
+    }
+
+    /// The recipient a built mint task carries; panics when no task is built.
+    fn built_recipient(action: &mut MintAction, ctx: &TokenActionCtx) -> Option<Identifier> {
+        match action.build_action(ctx, signing_key(), None, None) {
+            Some(AppAction::BackendTask(BackendTask::TokenTask(task))) => match *task {
+                TokenTask::MintTokens { recipient_id, .. } => recipient_id,
+                other => panic!("unexpected task {other:?}"),
+            },
+            other => panic!("expected a mint task, got {other:?}"),
+        }
+    }
+
+    /// Platform refuses a mint that names a recipient when the token forbids
+    /// choosing one, so a typed or pre-filled recipient must not be sent: the
+    /// configured destination applies instead.
+    #[test]
+    fn a_recipient_is_not_sent_when_the_token_forbids_choosing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let destination = Identifier::from([5; 32]);
+        let info = token_info(&context, Some(destination), false);
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: false,
+        };
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+        action.recipient_identity_id = Identifier::from([6; 32]).to_string(Encoding::Base58);
+
+        assert!(action.inputs_ready());
+        assert!(
+            action
+                .confirm_message(&ctx)
+                .ends_with(&format!("{destination}?")),
+            "the confirmation names where the tokens really go"
+        );
+        assert_eq!(built_recipient(&mut action, &ctx), None);
+    }
+
+    /// When the token lets the minter choose, a typed recipient is sent even
+    /// though a default destination exists.
+    #[test]
+    fn a_chosen_recipient_is_sent_when_the_token_allows_choosing() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])), true);
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: false,
+        };
+        let chosen = Identifier::from([6; 32]);
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+        action.recipient_identity_id = chosen.to_string(Encoding::Base58);
+
+        assert!(action.inputs_ready());
+        assert_eq!(built_recipient(&mut action, &ctx), Some(chosen));
     }
 
     /// Without a configured destination the recipient stays required.

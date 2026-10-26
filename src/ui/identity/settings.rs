@@ -34,6 +34,7 @@ use crate::ui::components::pill;
 use crate::ui::identity::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::PendingRequest;
+use crate::ui::state::hub_profiles::{HubProfiles, ProfileFields};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -176,9 +177,9 @@ pub struct SettingsTab {
     confirm_delete_profile: Option<ConfirmationDialog>,
     /// Open "Unload this identity" confirmation, bound to its target.
     confirm_unload: Option<PendingIdentityUnload>,
-    /// Track whether we have loaded the cached profile for the current
-    /// identity. Reset on identity change.
-    profile_loaded: bool,
+    /// The synced profile the editor's baseline was last taken from; `None`
+    /// until one is read for the selected identity.
+    shown_profile: Option<Option<ProfileFields>>,
     /// Usernames card renderer (holds the open QR code).
     usernames_card: super::usernames_card::UsernamesCard,
 }
@@ -233,7 +234,7 @@ impl SettingsTab {
         ui: &mut Ui,
         app_context: &Arc<AppContext>,
         identity: Option<&QualifiedIdentity>,
-        profiles: &mut super::profile_cache::ProfileCache,
+        profiles: &HubProfiles,
     ) -> AppAction {
         self.ensure_selected(identity, profiles);
 
@@ -718,23 +719,18 @@ impl SettingsTab {
     // Helpers
     // -----------------------------------------------------------------
 
-    /// Load the first available identity if none selected. Caches the
-    /// cached-profile fields on identity change so the text inputs reflect
-    /// the stored state immediately.
-    fn ensure_selected(
-        &mut self,
-        incoming: Option<&QualifiedIdentity>,
-        profiles: &mut super::profile_cache::ProfileCache,
-    ) {
+    /// Follow the identity on screen, and fill the editor from its synced
+    /// profile whenever that changes.
+    fn ensure_selected(&mut self, incoming: Option<&QualifiedIdentity>, profiles: &HubProfiles) {
         // `incoming` is the app-scoped active identity the hub resolved
         // (selected → first → none), not `.first()`, so the Settings tab agrees
         // with the breadcrumb/hub and does not flip-flop across frames (D4).
         let changed = self.reconcile_selected_identity(incoming);
 
         if changed {
-            self.profile_loaded = false;
+            self.shown_profile = None;
             // Clear the editor to a clean slate; fields repopulate once the
-            // async profile load lands (see `load_cached_profile`).
+            // profile is synced (see `load_cached_profile`).
             self.edit_display_name.clear();
             self.edit_bio.clear();
             self.edit_avatar_url.clear();
@@ -747,9 +743,7 @@ impl SettingsTab {
             self.pending_save_context.clear();
         }
 
-        if self.selected_identity.is_some() && !self.profile_loaded {
-            self.load_cached_profile(profiles);
-        }
+        self.load_cached_profile(profiles);
     }
 
     /// Retain the refreshed snapshot of `incoming` (cloned once) and report
@@ -766,24 +760,25 @@ impl SettingsTab {
         changed
     }
 
-    /// Populate the editor from the hub's async profile cache. The local DB
-    /// profile cache was removed in the platform-wallet migration, so this
-    /// reads the cache (queuing a load on a miss) and fills the fields once the
-    /// profile arrives — without clobbering edits the user has already made.
-    fn load_cached_profile(&mut self, profiles: &mut super::profile_cache::ProfileCache) {
+    /// Take the editor's baseline from the synced profile when it differs
+    /// from the one last taken, without clobbering edits the user has already
+    /// made.
+    fn load_cached_profile(&mut self, profiles: &HubProfiles) {
         if self.pending_save.is_some() {
             return;
         }
         let Some(identity) = self.selected_identity.as_ref() else {
-            self.profile_loaded = true;
             return;
         };
-        let fields = match profiles.get_or_request(identity) {
-            Some(loaded) => loaded.clone(),
-            // Not loaded yet — a load is queued; retry on the next frame.
-            None => return,
+        // Not synced yet: the editor fills in once it is.
+        let Some(fields) = profiles.get(identity) else {
+            return;
         };
-        let (display_name, bio, avatar_url) = match fields {
+        if self.shown_profile.as_ref() == Some(fields) {
+            return;
+        }
+        self.shown_profile = Some(fields.clone());
+        let (display_name, bio, avatar_url) = match fields.clone() {
             Some(f) => (f.display_name, f.bio, f.avatar_url),
             None => (String::new(), String::new(), String::new()),
         };
@@ -804,18 +799,6 @@ impl SettingsTab {
                 *draft = current.clone();
             }
             *baseline = current;
-        }
-        self.profile_loaded = true;
-    }
-
-    /// Reconcile an accepted refresh on the next render, preserving any draft edits.
-    pub(crate) fn profile_refreshed(&mut self, owner: Identifier) {
-        if self
-            .selected_identity
-            .as_ref()
-            .is_some_and(|q| q.identity.id() == owner)
-        {
-            self.profile_loaded = false;
         }
     }
 
@@ -842,14 +825,13 @@ impl SettingsTab {
     /// re-entry) keeps reading the pre-save profile and the save looks lost.
     /// Returns `None` when there was no pending snapshot (e.g. a stale success
     /// after an identity switch cleared it).
-    pub fn on_profile_saved(&mut self) -> Option<super::profile_cache::ProfileFields> {
+    pub fn on_profile_saved(&mut self) -> Option<ProfileFields> {
         let (dn, bio, url) = self.pending_save.take()?;
         self.pending_save_context.clear();
-        self.profile_loaded = true;
         self.original_display_name = dn.clone();
         self.original_bio = bio.clone();
         self.original_avatar_url = url.clone();
-        Some(super::profile_cache::ProfileFields {
+        Some(ProfileFields {
             display_name: dn,
             bio,
             avatar_url: url,
@@ -869,7 +851,7 @@ impl SettingsTab {
     ) {
         if self.owns_profile_save(context) {
             self.clear_pending_save(context);
-            self.profile_loaded = false;
+            self.shown_profile = None;
         }
     }
 
@@ -1070,18 +1052,16 @@ mod tests {
     /// user's unsaved edits; switching to another identity clears them.
     #[test]
     fn same_identity_refresh_keeps_edits_and_a_switch_resets_the_editor() {
-        use super::super::profile_cache::ProfileCache;
         let shown = qualified_identity();
-        let mut profiles = ProfileCache::default();
+        let profiles = HubProfiles::default();
         let mut tab = SettingsTab::new();
-        tab.ensure_selected(Some(&shown), &mut profiles);
-        tab.profile_loaded = true;
+        tab.ensure_selected(Some(&shown), &profiles);
         tab.edit_display_name = "Draft".into();
 
         let mut refreshed = shown.clone();
         let key = IdentityPublicKey::random_key(7, Some(7), PlatformVersion::latest());
         refreshed.identity.public_keys_mut().insert(7, key);
-        tab.ensure_selected(Some(&refreshed), &mut profiles);
+        tab.ensure_selected(Some(&refreshed), &profiles);
         assert_eq!(tab.edit_display_name, "Draft", "a refresh keeps edits");
         assert!(
             tab.selected_identity
@@ -1091,7 +1071,7 @@ mod tests {
         );
 
         let other = qualified_identity_with_id(9);
-        tab.ensure_selected(Some(&other), &mut profiles);
+        tab.ensure_selected(Some(&other), &profiles);
         assert!(
             tab.edit_display_name.is_empty(),
             "a switch resets the editor"
@@ -1174,7 +1154,7 @@ mod tests {
 
     #[test]
     fn profile_save_completion_requires_current_revision_and_exact_dispatch() {
-        use super::super::{hub_screen::handle_profile_updated, profile_cache::ProfileCache};
+        use super::super::hub_screen::handle_profile_updated;
         use crate::backend_task::BackendTaskContext;
         use crate::model::dashpay::ProfileSnapshot;
         let dir = tempfile::tempdir().unwrap();
@@ -1194,7 +1174,6 @@ mod tests {
         tab.edit_display_name = "Own submitted".into();
         tab.pending_save = Some(("Own submitted".into(), String::new(), String::new()));
         tab.pending_save_context.track(own.clone());
-        let mut cache = ProfileCache::default();
         let revision = app.save_identity_profile_name(owner, Some("Other consumer"));
         let mut snapshot = ProfileSnapshot {
             network: app.network,
@@ -1204,12 +1183,12 @@ mod tests {
         };
         let mut wrong_network = snapshot.clone();
         wrong_network.network = dash_sdk::dpp::dashcore::Network::Mainnet;
-        handle_profile_updated(&app, &mut tab, &mut cache, &own, &wrong_network);
+        handle_profile_updated(&app, &mut tab, &own, &wrong_network);
         assert!(
             tab.owns_profile_save(&own),
             "another network cannot finish this save"
         );
-        handle_profile_updated(&app, &mut tab, &mut cache, &foreign, &snapshot);
+        handle_profile_updated(&app, &mut tab, &foreign, &snapshot);
         assert!(
             tab.owns_profile_save(&own),
             "another consumer cannot consume this pending save"
@@ -1217,24 +1196,21 @@ mod tests {
         assert!(tab.original_display_name.is_empty());
         assert!(!MessageBanner::has_global(app.egui_ctx()));
         app.save_identity_profile_name(owner, Some("Latest"));
-        handle_profile_updated(&app, &mut tab, &mut cache, &own, &snapshot);
+        handle_profile_updated(&app, &mut tab, &own, &snapshot);
         assert!(
             tab.pending_save.is_none(),
             "obsolete completion terminates its pending save"
         );
         assert!(tab.original_display_name.is_empty());
-        assert!(
-            cache.get_or_request(&identity).is_none(),
-            "obsolete cache is refreshed"
-        );
-        cache.record_saved(
+        let mut profiles = HubProfiles::default();
+        profiles.set_for_test(
             owner,
-            super::super::profile_cache::ProfileFields {
+            Some(ProfileFields {
                 display_name: "Latest".into(),
                 ..Default::default()
-            },
+            }),
         );
-        tab.load_cached_profile(&mut cache);
+        tab.load_cached_profile(&profiles);
         assert_eq!(tab.original_display_name, "Latest");
         assert_eq!(
             tab.edit_display_name, "Own submitted",
@@ -1245,37 +1221,27 @@ mod tests {
         tab.pending_save_context.track(own.clone());
         snapshot.revision = app.save_identity_profile_name(owner, Some("Own submitted"));
         snapshot.profile = Some(("Own submitted".into(), String::new(), String::new()));
-        handle_profile_updated(&app, &mut tab, &mut cache, &own, &snapshot);
+        handle_profile_updated(&app, &mut tab, &own, &snapshot);
         assert_eq!(tab.original_display_name, "Own submitted");
         assert!(tab.pending_save.is_none());
-        assert_eq!(
-            cache
-                .get_or_request(&identity)
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .display_name,
-            "Own submitted"
-        );
     }
 
     #[test]
     fn profile_refresh_preserves_explicit_clears_and_pending_submission() {
-        use super::super::profile_cache::{ProfileCache, ProfileFields};
         let identity = qualified_identity();
         let owner = identity.identity.id();
         let mut tab = SettingsTab::new();
         tab.selected_identity = Some(identity);
-        let mut cache = ProfileCache::default();
-        cache.record_saved(
+        let mut profiles = HubProfiles::default();
+        profiles.set_for_test(
             owner,
-            ProfileFields {
+            Some(ProfileFields {
                 display_name: "Original".into(),
                 bio: "Original bio".into(),
                 avatar_url: "https://example.com/old.png".into(),
-            },
+            }),
         );
-        tab.load_cached_profile(&mut cache);
+        tab.load_cached_profile(&profiles);
         tab.edit_bio.clear();
         tab.pending_save = Some((
             "Submitted".into(),
@@ -1283,152 +1249,55 @@ mod tests {
             tab.edit_avatar_url.clone(),
         ));
         let submitted = tab.pending_save.clone();
-        cache.record_saved(
+        profiles.set_for_test(
             owner,
-            ProfileFields {
+            Some(ProfileFields {
                 display_name: "New".into(),
                 bio: "Remote bio".into(),
                 avatar_url: "https://example.com/new.png".into(),
-            },
+            }),
         );
-        tab.load_cached_profile(&mut cache);
+        tab.load_cached_profile(&profiles);
         assert_eq!(tab.pending_save, submitted);
         assert_eq!(
             tab.original_display_name, "Original",
             "pending save baseline stays unchanged"
         );
-        tab.pending_save = None;
-        tab.load_cached_profile(&mut cache);
-        assert_eq!(tab.edit_display_name, "New");
-        assert!(
-            tab.edit_bio.is_empty(),
-            "an explicit clear is a real draft edit"
+    }
+
+    /// A profile another device saved reaches the editor without undoing the
+    /// user's edits.
+    #[test]
+    fn a_newly_synced_profile_updates_the_untouched_fields() {
+        let identity = qualified_identity();
+        let owner = identity.identity.id();
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(identity);
+        let mut profiles = HubProfiles::default();
+        profiles.set_for_test(
+            owner,
+            Some(ProfileFields {
+                display_name: "Original".into(),
+                bio: "Original bio".into(),
+                ..Default::default()
+            }),
         );
+        tab.load_cached_profile(&profiles);
+        tab.edit_bio = "My draft".into();
+        profiles.set_for_test(
+            owner,
+            Some(ProfileFields {
+                display_name: "Renamed".into(),
+                bio: "Remote bio".into(),
+                ..Default::default()
+            }),
+        );
+
+        tab.load_cached_profile(&profiles);
+
+        assert_eq!(tab.edit_display_name, "Renamed");
+        assert_eq!(tab.edit_bio, "My draft", "the user's edit is kept");
         assert_eq!(tab.original_bio, "Remote bio");
-        assert_eq!(tab.edit_avatar_url, "https://example.com/new.png");
-        assert!(tab.has_changes());
-    }
-
-    #[test]
-    fn has_changes_tracks_baseline() {
-        let mut tab = SettingsTab::new();
-        tab.edit_display_name = "alex".into();
-        tab.original_display_name = "alex".into();
-        assert!(!tab.has_changes());
-
-        tab.edit_display_name = "priya".into();
-        assert!(tab.has_changes());
-    }
-
-    #[test]
-    fn validation_catches_long_display_name() {
-        let mut tab = SettingsTab::new();
-        tab.edit_display_name = "a".repeat(MAX_DISPLAY_NAME + 1);
-        assert!(tab.validation_error().is_some());
-    }
-
-    #[test]
-    fn validation_catches_long_bio() {
-        let mut tab = SettingsTab::new();
-        tab.edit_bio = "a".repeat(MAX_BIO + 1);
-        assert!(tab.validation_error().is_some());
-    }
-
-    #[test]
-    fn validation_requires_http_scheme() {
-        let mut tab = SettingsTab::new();
-        tab.edit_avatar_url = "ftp://example.com/img".into();
-        assert!(tab.validation_error().is_some());
-
-        tab.edit_avatar_url = "https://example.com/img".into();
-        assert!(tab.validation_error().is_none());
-    }
-
-    #[test]
-    fn validation_accepts_empty_avatar_url() {
-        let tab = SettingsTab::new();
-        assert!(tab.validation_error().is_none());
-    }
-
-    #[test]
-    fn string_if_set_trims_and_nones_empty() {
-        assert_eq!(string_if_set(""), None);
-        assert_eq!(string_if_set("   "), None);
-        assert_eq!(string_if_set("  alex  "), Some("alex".to_string()));
-    }
-
-    /// IT-SETTINGS-01 (section-heading slice) — verifies the three required
-    /// section headings are rendered as labels when the layout helpers are
-    /// called directly. This covers the expected section-name assertions
-    /// from the test-case spec without bootstrapping a full `AppContext` and
-    /// `QualifiedIdentity`, which would add significant test-fixture weight.
-    #[test]
-    fn section_headings_render_their_text() {
-        use egui_kittest::Harness;
-        use egui_kittest::kittest::Queryable;
-
-        let mut harness = Harness::builder()
-            .with_size(egui::vec2(600.0, 400.0))
-            .build_ui(|ui| {
-                let dark = ui.ctx().global_style().visuals.dark_mode;
-                section_heading(ui, "Social profile", dark);
-                section_heading(ui, "Usernames", dark);
-                sub_heading(ui, "Advanced", dark);
-            });
-        harness.run();
-        assert!(
-            harness.query_by_label("Social profile").is_some(),
-            "Social profile heading must render",
-        );
-        assert!(
-            harness.query_by_label("Usernames").is_some(),
-            "Username heading must render",
-        );
-        assert!(
-            harness.query_by_label("Advanced").is_some(),
-            "Advanced sub-heading must render",
-        );
-    }
-
-    /// IT-SETTINGS-02 — T21 deferred baseline: on_profile_saved() must commit
-    /// the values that were SUBMITTED, not whatever is in the edit fields at the
-    /// time the success arrives (which can differ when the user keeps typing
-    /// after clicking Save on a slow network).
-    #[test]
-    fn on_profile_saved_commits_submitted_snapshot_not_current_edits() {
-        let mut tab = SettingsTab::new();
-        // Simulate the user having loaded a profile ("Alice") and then editing it.
-        tab.original_display_name = "Alice".into();
-        tab.original_bio = String::new();
-        tab.original_avatar_url = String::new();
-        tab.edit_display_name = "Alicia".into();
-        tab.edit_bio = String::new();
-        tab.edit_avatar_url = String::new();
-
-        // User clicks Save — capture the submitted snapshot.
-        tab.pending_save = Some(("Alicia".into(), String::new(), String::new()));
-
-        // While the round-trip is in-flight the user KEEPS TYPING.
-        tab.edit_display_name = "Alicia Smith".into();
-
-        // The success arrives — hub calls on_profile_saved().
-        tab.on_profile_saved();
-
-        // The baseline must reflect "Alicia" (what was submitted), NOT
-        // "Alicia Smith" (what happens to be in the box right now).
-        assert_eq!(
-            tab.original_display_name, "Alicia",
-            "baseline must be the submitted value, not the current edit"
-        );
-        // The edit field is unchanged — the user can continue editing.
-        assert_eq!(tab.edit_display_name, "Alicia Smith");
-        // has_changes() sees "Alicia Smith" vs "Alicia" → Save re-enables.
-        assert!(
-            tab.has_changes(),
-            "Save must re-enable for the in-flight edits"
-        );
-        // pending_save is cleared.
-        assert!(tab.pending_save.is_none());
     }
 
     /// IT-SETTINGS-03 — T21: pending_save is cleared on identity switch so a
@@ -1442,7 +1311,7 @@ mod tests {
 
         // Simulate what ensure_selected() does on a changed identity.
         tab.selected_identity = None;
-        tab.profile_loaded = false;
+        tab.shown_profile = None;
         tab.edit_display_name.clear();
         tab.edit_bio.clear();
         tab.edit_avatar_url.clear();

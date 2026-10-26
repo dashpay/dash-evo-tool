@@ -16,6 +16,7 @@ pub mod dpns_vote_cards;
 pub mod dpns_vote_operations;
 pub mod dpns_vote_state;
 pub mod global_nav;
+pub mod hub_profiles;
 pub mod hub_selection;
 pub mod identity_home;
 pub mod legacy_recovery;

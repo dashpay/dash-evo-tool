@@ -38,11 +38,11 @@ pub(super) struct DashPaySnapshots {
     /// The sync pass the snapshots were last refreshed after, in Unix seconds;
     /// `0` before the first.
     refreshed_after_pass: AtomicU64,
-    /// Profiles of identities no wallet manages, which platform-wallet does
-    /// not sync.
+    /// Profiles of identities platform-wallet does not sync: those no wallet
+    /// manages, and those whose wallet is not loaded (a locked one).
     // TODO(upstream): wallet-less identities are not synced; drop this once
     // platform-wallet syncs the profiles of its unowned identities.
-    wallet_less_profiles: std::sync::Mutex<BTreeMap<Identifier, ProfileState>>,
+    unsynced_profiles: std::sync::Mutex<BTreeMap<Identifier, ProfileState>>,
     /// Counterparties whose username was looked up this session.
     usernames_looked_up: std::sync::Mutex<BTreeSet<Identifier>>,
 }
@@ -359,7 +359,7 @@ impl WalletBackend {
             })
             .collect();
         let wallet_less = snapshots
-            .wallet_less_profiles
+            .unsynced_profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -382,9 +382,9 @@ impl WalletBackend {
         changed
     }
 
-    /// Record the profile of an identity no wallet manages, or that it has
-    /// none (`None`).
-    pub(crate) fn record_wallet_less_profile(
+    /// Record the profile of an identity platform-wallet does not sync, or
+    /// that it has none (`None`). A synced snapshot of the identity wins.
+    pub(crate) fn record_unsynced_profile(
         &self,
         owner: Identifier,
         profile: Option<StoredProfile>,
@@ -395,17 +395,17 @@ impl WalletBackend {
         };
         self.inner
             .dashpay_snapshots
-            .wallet_less_profiles
+            .unsynced_profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(owner, state);
     }
 
-    /// Whether the profile of the wallet-less identity `owner` was read.
-    pub(crate) fn wallet_less_profile_known(&self, owner: &Identifier) -> bool {
+    /// Whether the profile of the unsynced identity `owner` was read.
+    pub(crate) fn unsynced_profile_known(&self, owner: &Identifier) -> bool {
         self.inner
             .dashpay_snapshots
-            .wallet_less_profiles
+            .unsynced_profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(owner)
@@ -467,7 +467,7 @@ impl WalletBackend {
         let snapshots = &self.inner.dashpay_snapshots;
         snapshots.by_owner.store(Arc::default());
         snapshots
-            .wallet_less_profiles
+            .unsynced_profiles
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();

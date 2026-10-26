@@ -1,70 +1,74 @@
 //! Contacts-tab view state for the Identities hub.
 //!
-//! Owns the one-shot load guard, the cached contact-request lists, the active
-//! contact list, and the search query that filters it. Renders nothing — the
+//! Holds the contact-request lists, the active and hidden contacts and the
+//! search query that filters them, built from the identity's DashPay snapshot,
+//! plus the guards of the paid actions still running. Renders nothing — the
 //! renderer lives in [`crate::ui::identity::contacts`], which reads this state
 //! and paints it. Placement follows the DET module policy: non-widget UI state
 //! belongs in `ui/state/`.
 
 use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
-use crate::model::dashpay::{ContactRequestKey, ContactsLoadKind, contact_request_recipient};
+use crate::model::dashpay::{ContactRequestKey, DashPaySnapshot, PendingContactRequest};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Document, Identifier};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use dash_sdk::platform::Identifier;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Threshold for surfacing an unusually long-running request and pruning its
 /// paid-action guard on the next view reset.
 const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// Automatic retries allowed per read between two refreshes.
-const MAX_AUTOMATIC_READ_RETRIES: u8 = 3;
-
-/// A single cached contact-request entry, derived from a raw
-/// `DashPayContactRequests` result document.
+/// One pending contact request in the Received or Sent list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactRequestEntry {
     /// The owner and the counterpart: the sender for incoming requests, the
     /// recipient for outgoing ones. Accept, Decline and Cancel act on it.
     pub request: ContactRequestKey,
-    /// Human-relative timestamp (e.g. `"2 minutes ago"`), pre-formatted from
-    /// the document's `created_at`. `None` when the document has no timestamp.
+    /// Human-relative time the request was sent (e.g. `"2 minutes ago"`).
+    /// `None` when the request carries no time.
     pub relative_time: Option<String>,
+}
+
+impl ContactRequestEntry {
+    fn new(owner: Identifier, request: &PendingContactRequest) -> Self {
+        Self {
+            request: ContactRequestKey {
+                owner,
+                counterparty: request.counterparty_id,
+            },
+            relative_time: crate::ui::dashpay::format_relative_time(request.created_at_ms),
+        }
+    }
+
+    /// The other identity of the request.
+    pub fn counterpart_id(&self) -> Identifier {
+        self.request.counterparty
+    }
 }
 
 /// Contacts-tab state owned by the hub screen.
 ///
-/// The load guard debounces the backend fetch to one dispatch per tab entry.
-/// View resets retain live paid-action guards and prune stale ones.
+/// The lists follow the DashPay snapshot of the identity on screen; view
+/// resets retain live paid-action guards and prune stale ones.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
-    /// Prevents repeated frame dispatch until a refresh or retry is due.
-    load_requested: bool,
-    load_failed: bool,
-    /// Failed reads waiting out their own retry delay. Kept per read so one
-    /// read's failure never shortens the other's delay.
-    retry_at: BTreeMap<ContactsLoadKind, Instant>,
-    /// Failed reads whose delay has passed, sent by the next claim.
-    due_reads: BTreeSet<ContactsLoadKind>,
-    /// Automatic retries already sent per read since the last refresh.
-    retries_sent: BTreeMap<ContactsLoadKind, u8>,
+    /// The snapshot the lists were built from; a newer one rebuilds them.
+    applied: Option<Arc<DashPaySnapshot>>,
     /// Incoming requests awaiting this identity's response.
     incoming: Vec<ContactRequestEntry>,
     /// Requests this identity has sent and that are still pending.
     outgoing: Vec<ContactRequestEntry>,
     /// Established contacts the user has not hidden.
     contacts: Vec<ContactData>,
-    /// Whether `contacts` holds a loaded list, not the empty one before the
-    /// first load lands.
+    /// Whether the lists come from a snapshot, not the empty ones before the
+    /// first sync.
     contacts_known: bool,
-    /// Notes the hub saved, shown over lists that may not hold them yet.
-    confirmed_notes: HashMap<(Network, Identifier, Identifier), ConfirmedNote>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
     /// offer a way back; without this list a hidden contact could only be
     /// recovered from the legacy DashPay screen.
@@ -84,75 +88,12 @@ pub struct ContactsState {
     owner: Option<(Network, Identifier)>,
     /// The selected contact and its private-note editor.
     detail: ContactDetailState,
-    /// The dispatch of the newest contact-list load. A reload re-arms without
-    /// cancelling, so an older load can answer after a newer one; its list is
-    /// stale and would undo a confirmed note.
-    latest_contacts_load: Option<u64>,
-}
-
-/// A note the hub saved, shown over contact lists that may not hold it yet.
-///
-/// Invariant:
-/// - Created only by a successful note write the hub itself dispatched, keyed
-///   by the network the write ran on, the owner, and the contact. It applies
-///   only to lists of that owner on that network.
-/// - `after_load` is the newest contact-list load dispatched before the save
-///   was confirmed. A list from that load or an earlier one, or from no load,
-///   predates the save: it shows `note` whatever it holds.
-/// - A list from a later load shows `note` only while it still holds
-///   `lagging`, the note a read behind the save can return. A save kept on
-///   this device has none: a later list already reflects it, so a different
-///   note there is a published one, which wins.
-/// - Retired by: a list holding `note`; a later list holding anything other
-///   than `lagging`; another screen's successful write to the contact; the
-///   hub's next confirmed save of it (replaced).
-/// - Untouched by: the hub's failed writes, identity switches, and network
-///   switches (another network's lists never match the key).
-#[derive(Debug, Clone)]
-struct ConfirmedNote {
-    note: Option<String>,
-    lagging: Option<Option<String>>,
-    after_load: u64,
-}
-
-impl ContactRequestEntry {
-    /// The other identity of the request.
-    pub fn counterpart_id(&self) -> Identifier {
-        self.request.counterparty
-    }
 }
 
 impl ContactsState {
-    /// Claim the one-shot load slot. Returns `true` exactly once per tab entry
-    /// — the caller dispatches the backend loads on `true` and skips otherwise.
-    pub fn claim_load(&mut self) -> bool {
-        if self.load_requested {
-            return false;
-        }
-        self.load_requested = true;
-        true
-    }
-
-    /// Record `dispatch_id` as the newest contact-list load.
-    pub fn record_contacts_load(&mut self, dispatch_id: u64) {
-        self.latest_contacts_load = Some(dispatch_id);
-    }
-
-    /// Whether a contact list from load `dispatch_id` may be shown: not when a
-    /// newer load was dispatched since. A list no load of this state asked for
-    /// carries no dispatch and is judged as before.
-    pub fn accepts_contacts_from(&self, dispatch_id: Option<u64>) -> bool {
-        match (self.latest_contacts_load, dispatch_id) {
-            (Some(latest), Some(dispatch_id)) => dispatch_id >= latest,
-            _ => true,
-        }
-    }
-
     /// Clear cached view data while retaining guards for backend work still running.
     pub fn reset(&mut self) {
-        self.load_requested = false;
-        self.load_failed = false;
-        self.clear_retries();
+        self.applied = None;
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
@@ -167,85 +108,6 @@ impl ContactsState {
         });
     }
 
-    /// Whether the lists have not been asked for since the load was last armed.
-    pub fn load_is_due(&self) -> bool {
-        !self.load_requested
-    }
-
-    /// Whether a load outcome belongs to the identity whose lists are shown.
-    pub(crate) fn owns_load(&self, owner: (Network, Identifier)) -> bool {
-        self.owner == Some(owner)
-    }
-
-    /// Keep displayed contacts and paid-action guards after a failed read.
-    pub(crate) fn record_load_error(&mut self, kind: ContactsLoadKind, retry_at: Option<Instant>) {
-        if kind == ContactsLoadKind::Contacts {
-            self.load_failed = true;
-        }
-        let sent = self.retries_sent.get(&kind).copied().unwrap_or(0);
-        if sent < MAX_AUTOMATIC_READ_RETRIES
-            && let Some(retry_at) = retry_at
-        {
-            self.retry_at
-                .entry(kind)
-                .and_modify(|pending| *pending = (*pending).min(retry_at))
-                .or_insert(retry_at);
-        }
-    }
-
-    /// Whether the contact-list read failed with no automatic retry left, so
-    /// the user has to recover by hand. A failure whose retry is still waiting
-    /// for its delay or for the network counts as loading.
-    pub fn load_failed(&self) -> bool {
-        let retry_pending = self.retry_at.contains_key(&ContactsLoadKind::Contacts)
-            || self.due_reads.contains(&ContactsLoadKind::Contacts);
-        self.load_failed && !retry_pending
-    }
-
-    /// Claim the initial reads or only the failed reads due for a retry.
-    pub(crate) fn claim_reads(&mut self) -> Option<BTreeSet<ContactsLoadKind>> {
-        if !self.claim_load() {
-            return None;
-        }
-        let reads = if self.due_reads.is_empty() {
-            // A full load supersedes any retry still waiting for its delay.
-            self.retry_at.clear();
-            BTreeSet::from([ContactsLoadKind::Contacts, ContactsLoadKind::Requests])
-        } else {
-            let reads = std::mem::take(&mut self.due_reads);
-            for kind in &reads {
-                *self.retries_sent.entry(*kind).or_default() += 1;
-            }
-            reads
-        };
-        if reads.contains(&ContactsLoadKind::Contacts) {
-            self.load_failed = false;
-        }
-        Some(reads)
-    }
-
-    /// Re-arm the load for each failed read whose own retry delay has passed;
-    /// reads still waiting stay out of the batch. The hub calls this only while
-    /// its network is ready.
-    pub(crate) fn retry_load_if_due(&mut self, now: Instant) {
-        self.retry_at.retain(|kind, retry_at| {
-            let due = now >= *retry_at;
-            if due {
-                self.due_reads.insert(*kind);
-            }
-            !due
-        });
-        if !self.due_reads.is_empty() {
-            self.load_requested = false;
-        }
-    }
-
-    fn clear_retries(&mut self) {
-        self.retry_at.clear();
-        self.due_reads.clear();
-        self.retries_sent.clear();
-    }
-
     /// Reset identity-scoped view data while retaining live paid-action guards.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();
@@ -253,10 +115,10 @@ impl ContactsState {
 
     /// Bind the lists to the identity on screen. The selection can change
     /// without the hub hearing of it, so every renderer calls this before it
-    /// reads or loads them: lists of another identity are dropped and the load
-    /// re-armed, the same identity keeps its own. Paid-action guards name
-    /// their owner and outlive the change, so an action still running for
-    /// the identity switched away from stays guarded.
+    /// reads them: lists of another identity are dropped, the same identity
+    /// keeps its own. Paid-action guards name their owner and outlive the
+    /// change, so an action still running for the identity switched away from
+    /// stays guarded.
     pub fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
         let owner = Some((identity.network, identity.identity.id()));
         if self.owner != owner {
@@ -265,13 +127,46 @@ impl ContactsState {
         }
     }
 
-    /// Re-arm the load without clearing what is already on screen. Used after a
-    /// request is resolved: the authoritative lists are re-fetched while the
-    /// user keeps seeing (and searching) the contacts they already had.
-    pub fn invalidate(&mut self) {
-        self.load_requested = false;
-        self.load_failed = false;
-        self.clear_retries();
+    /// Rebuild the lists from `snapshot`, the bound owner's DashPay snapshot,
+    /// when it is not the one they were built from. `None` while no sync has
+    /// produced one.
+    pub fn apply_snapshot(&mut self, snapshot: Option<Arc<DashPaySnapshot>>) {
+        let unchanged = match (&self.applied, &snapshot) {
+            (Some(applied), Some(snapshot)) => Arc::ptr_eq(applied, snapshot),
+            (None, None) => true,
+            _ => false,
+        };
+        let Some(owner) = self.owner_id() else {
+            return;
+        };
+        if unchanged {
+            return;
+        }
+        let Some(snapshot) = snapshot else {
+            self.applied = None;
+            return;
+        };
+        self.incoming = snapshot
+            .incoming
+            .iter()
+            .map(|request| ContactRequestEntry::new(owner, request))
+            .collect();
+        self.outgoing = snapshot
+            .outgoing
+            .iter()
+            .map(|request| ContactRequestEntry::new(owner, request))
+            .collect();
+        let mut contacts = snapshot.contacts.clone();
+        // An unhide still running stays shown as unhidden.
+        for contact in &mut contacts {
+            if self.detail.pending_write(&owner, &contact.identity_id)
+                == Some(&PendingWrite::Visibility)
+            {
+                contact.is_hidden = false;
+            }
+        }
+        self.record_contacts(contacts);
+        self.applied = Some(snapshot);
     }
 
     /// Pending requests received by this identity.
@@ -289,82 +184,16 @@ impl ContactsState {
         &mut self.search
     }
 
-    /// Populate the incoming/outgoing caches from a raw `DashPayContactRequests`
-    /// backend result.
-    ///
-    /// Incoming sender = `doc.owner_id()`; outgoing recipient =
-    /// `doc.properties()["toUserId"]`. An outgoing document whose `toUserId` is
-    /// unreadable is dropped rather than shown against a default identity — a
-    /// row the user cannot act on correctly is worse than no row.
-    pub fn record_requests(
-        &mut self,
-        incoming: Vec<(Identifier, Document)>,
-        outgoing: Vec<(Identifier, Document)>,
-    ) {
-        self.incoming = incoming
-            .into_iter()
-            .filter_map(|(_, doc)| {
-                Some(ContactRequestEntry {
-                    request: ContactRequestKey {
-                        owner: contact_request_recipient(&doc)?,
-                        counterparty: doc.owner_id(),
-                    },
-                    relative_time: relative_time(&doc),
-                })
-            })
-            .collect();
-
-        self.outgoing = outgoing
-            .into_iter()
-            .filter_map(|(_, doc)| {
-                Some(ContactRequestEntry {
-                    request: ContactRequestKey {
-                        owner: doc.owner_id(),
-                        counterparty: contact_request_recipient(&doc)?,
-                    },
-                    relative_time: relative_time(&doc),
-                })
-            })
-            .collect();
-    }
-
-    /// Store the established-contact list from `DashPayTask::LoadContacts`,
-    /// split into the visible contacts and the hidden ones. Hidden contacts stay
-    /// out of the active list — that is what "hidden" promises — but remain
-    /// reachable through [`ContactsState::hidden_contacts`]. The selected
-    /// contact's note draft follows the reloaded note.
-    pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
-        self.record_loaded_contacts(contacts, None);
-    }
-
-    /// [`Self::record_contacts`] for the list load `dispatch_id` returned; see
-    /// [`ConfirmedNote`] for how it meets the notes the hub saved.
-    pub fn record_loaded_contacts(
-        &mut self,
-        mut contacts: Vec<ContactData>,
-        dispatch_id: Option<u64>,
-    ) {
-        if let Some((network, owner)) = self.owner {
-            for contact in &mut contacts {
-                let key = (network, owner, contact.identity_id);
-                let Some(confirmed) = self.confirmed_notes.get(&key) else {
-                    continue;
-                };
-                let from_before = dispatch_id.is_none_or(|id| id <= confirmed.after_load);
-                if contact.note != confirmed.note
-                    && (from_before || confirmed.lagging.as_ref() == Some(&contact.note))
-                {
-                    contact.note.clone_from(&confirmed.note);
-                } else {
-                    self.confirmed_notes.remove(&key);
-                }
-            }
-        }
+    /// Show `contacts`, split into the visible contacts and the hidden ones.
+    /// Hidden contacts stay out of the active list — that is what "hidden"
+    /// promises — but remain reachable through
+    /// [`ContactsState::hidden_contacts`]. The selected contact's note draft
+    /// follows the stored note.
+    fn record_contacts(&mut self, contacts: Vec<ContactData>) {
         let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
         self.contacts = visible;
         self.hidden = hidden;
         self.contacts_known = true;
-        self.load_failed = false;
         if let Some(selected) = self.detail.selected()
             && let Some(contact) = self.contacts.iter().find(|c| c.identity_id == selected)
         {
@@ -372,7 +201,13 @@ impl ContactsState {
         }
     }
 
-    /// Whether the established-contact list has been loaded for this identity.
+    /// Show `contacts` as a snapshot would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn record_contacts_for_test(&mut self, contacts: Vec<ContactData>) {
+        self.record_contacts(contacts);
+    }
+
+    /// Whether the contact lists have been synced for this identity.
     pub fn contacts_known(&self) -> bool {
         self.contacts_known
     }
@@ -414,7 +249,7 @@ impl ContactsState {
     }
 
     /// Move a contact out of the hidden list and back into the active one, so an
-    /// unhide shows up immediately instead of waiting for the reload. A no-op
+    /// unhide shows up immediately instead of waiting for its result. A no-op
     /// when the contact is not hidden.
     pub fn unhide_contact(&mut self, contact_id: &Identifier) {
         if let Some(pos) = self
@@ -429,8 +264,7 @@ impl ContactsState {
     }
 
     /// Drop a resolved request (accepted, declined, or cancelled) from both
-    /// lists so the row leaves the UI immediately, without waiting for the
-    /// authoritative reload to land. Also releases the request's in-flight
+    /// lists so the row leaves the UI immediately, and release its in-flight
     /// guard, since its action is now resolved.
     pub fn remove_request(&mut self, request: &ContactRequestKey) {
         self.incoming.retain(|e| e.request != *request);
@@ -497,64 +331,33 @@ impl ContactsState {
         &mut self.detail
     }
 
-    /// Settle a confirmed contact details write `owner` ran on `network`;
-    /// `published` when it reached Platform rather than staying on this
-    /// device. Returns whether one was running. After a note save the listed contact
-    /// shows the stored note right away when the lists belong to that owner on
-    /// that network, without waiting for the reload; see [`ConfirmedNote`].
+    /// Settle a confirmed contact details write `owner` ran on `network`.
+    /// Returns whether one was running. After a note save the listed contact
+    /// shows the saved note right away when the lists belong to that owner on
+    /// that network.
     pub fn finish_contact_info_write(
         &mut self,
         network: Network,
         owner: &Identifier,
         contact_id: &Identifier,
-        published: bool,
     ) -> bool {
         let Some(write) = self.detail.finish_write(owner, contact_id) else {
             return false;
         };
-        let PendingWrite::Note { note, before } = write else {
+        let PendingWrite::Note { note } = write else {
             return true;
         };
-        let listed = if self.owner == Some((network, *owner)) {
-            self.contacts
+        if self.owner == Some((network, *owner))
+            && let Some(contact) = self
+                .contacts
                 .iter_mut()
                 .chain(self.hidden.iter_mut())
                 .find(|c| c.identity_id == *contact_id)
-        } else {
-            None
-        };
-        // The list read last, else the note the edit started from: lists of
-        // another identity are on screen when the save lands. A save kept on
-        // this device has none; no read lags behind it.
-        let lagging = published.then(|| {
-            listed
-                .as_ref()
-                .map_or(before, |contact| contact.note.clone())
-        });
-        self.confirmed_notes.insert(
-            (network, *owner, *contact_id),
-            ConfirmedNote {
-                note: note.clone(),
-                lagging,
-                after_load: self.latest_contacts_load.unwrap_or_default(),
-            },
-        );
-        if let Some(contact) = listed {
+        {
             contact.note = note;
             self.detail.sync(contact);
         }
         true
-    }
-
-    /// Another screen saved the contact's details after the hub did, so the
-    /// hub's confirmed note is no longer the newest.
-    pub fn forget_confirmed_note(
-        &mut self,
-        network: Network,
-        owner: &Identifier,
-        contact_id: &Identifier,
-    ) {
-        self.confirmed_notes.remove(&(network, *owner, *contact_id));
     }
 
     /// Release a failed or abandoned write `owner` ran on `network`, rolling
@@ -567,17 +370,14 @@ impl ContactsState {
     ) {
         if self.detail.finish_write(owner, contact_id) == Some(PendingWrite::Visibility)
             && self.owner == Some((network, *owner))
-        {
-            if let Some(pos) = self
+            && let Some(pos) = self
                 .contacts
                 .iter()
                 .position(|c| c.identity_id == *contact_id)
-            {
-                let mut contact = self.contacts.remove(pos);
-                contact.is_hidden = true;
-                self.hidden.push(contact);
-            }
-            self.invalidate();
+        {
+            let mut contact = self.contacts.remove(pos);
+            contact.is_hidden = true;
+            self.hidden.push(contact);
         }
     }
 }
@@ -653,12 +453,6 @@ pub fn contact_label(contact: &ContactData) -> String {
     )
 }
 
-/// Pre-format a document's `created_at` as a human-relative timestamp.
-fn relative_time(doc: &Document) -> Option<String> {
-    let ts = doc.created_at().or_else(|| doc.updated_at())?;
-    crate::ui::dashpay::format_relative_time(ts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,16 +488,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claim_load_fires_once_per_tab_entry() {
-        let mut state = ContactsState::default();
-        assert!(state.claim_load(), "first claim must dispatch the load");
-        assert!(!state.claim_load(), "second claim must be debounced");
-
-        state.reset();
-        assert!(state.claim_load(), "reset must re-arm the load");
-    }
-
     fn owned_state(owner: u8) -> ContactsState {
         let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
             id(owner),
@@ -714,6 +498,90 @@ mod tests {
             owner: Some((Network::Testnet, identity.id())),
             ..Default::default()
         }
+    }
+
+    fn pending(counterparty: u8) -> PendingContactRequest {
+        PendingContactRequest {
+            counterparty_id: id(counterparty),
+            created_at_ms: 0,
+            account_reference: 0,
+            has_auto_accept_proof: false,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+        }
+    }
+
+    fn snapshot(contacts: Vec<ContactData>) -> Arc<DashPaySnapshot> {
+        Arc::new(DashPaySnapshot {
+            contacts,
+            incoming: vec![pending(2)],
+            outgoing: vec![pending(4)],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_lists_follow_the_owners_snapshot() {
+        let mut state = owned_state(1);
+        assert!(!state.contacts_known(), "nothing is known before a sync");
+
+        state.apply_snapshot(Some(snapshot(vec![
+            contact(Some("Bao"), None, None),
+            hidden_contact("Ghost", id(8)),
+        ])));
+
+        assert!(state.contacts_known());
+        assert_eq!(state.contacts_len(), 1);
+        assert_eq!(state.hidden_contacts().len(), 1);
+        let owner = state.owner_id().expect("bound owner");
+        assert_eq!(
+            state.incoming()[0].request,
+            ContactRequestKey {
+                owner,
+                counterparty: id(2),
+            },
+            "a received request is acted on as this owner's, with its sender"
+        );
+        assert_eq!(state.outgoing()[0].counterpart_id(), id(4));
+    }
+
+    #[test]
+    fn the_same_snapshot_is_applied_once() {
+        let mut state = owned_state(1);
+        let shown = snapshot(vec![hidden_contact("Ghost", id(8))]);
+        state.apply_snapshot(Some(shown.clone()));
+        state.unhide_contact(&id(8));
+
+        state.apply_snapshot(Some(shown));
+
+        assert_eq!(
+            state.contacts_len(),
+            1,
+            "an unchanged snapshot does not undo what the screen shows"
+        );
+    }
+
+    #[test]
+    fn an_unhide_still_running_survives_a_newer_snapshot() {
+        let mut state = owned_state(1);
+        let owner = state.owner_id().expect("bound owner");
+        state.apply_snapshot(Some(snapshot(vec![hidden_contact("Ghost", id(8))])));
+        assert!(state.detail_mut().begin_visibility_write(owner, id(8)));
+        state.unhide_contact(&id(8));
+
+        state.apply_snapshot(Some(snapshot(vec![hidden_contact("Ghost", id(8))])));
+
+        assert_eq!(state.contacts_len(), 1);
+        assert!(state.hidden_contacts().is_empty());
+    }
+
+    #[test]
+    fn unbound_lists_ignore_snapshots() {
+        let mut state = ContactsState::default();
+        state.apply_snapshot(Some(snapshot(vec![contact(Some("Bao"), None, None)])));
+        assert!(!state.contacts_known());
+        assert!(state.incoming().is_empty());
     }
 
     #[test]
@@ -756,14 +624,14 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_note_save_shows_the_stored_note_right_away() {
+    fn a_confirmed_note_save_shows_the_saved_note_right_away() {
         let mut state = owned_state(1);
         state.record_contacts(vec![contact(Some("Bao"), None, None)]);
         state.select_contact(&id(7));
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Met at the meetup".into();
         assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -771,42 +639,9 @@ mod tests {
         );
         assert!(!state.detail().is_dirty(&id(7)));
         assert!(
-            !state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true),
+            !state.finish_contact_info_write(Network::Testnet, &id(1), &id(7)),
             "a save settles only once"
         );
-    }
-
-    #[test]
-    fn confirmed_note_survives_stale_reload_and_tab_reset_until_observed() {
-        for note in [Some("Confirmed"), None] {
-            let mut state = owned_state(1);
-            let stale = ContactData {
-                note: Some("Old note".into()),
-                ..contact(Some("Bao"), None, None)
-            };
-            state.record_contacts(vec![stale.clone()]);
-            state.select_contact(&id(7));
-            *state.detail_mut().note_mut(&id(7)).unwrap() = note.unwrap_or_default().into();
-            assert!(state.detail_mut().begin_save(id(1), id(7)).is_some());
-            assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(7), true));
-            state.reset();
-            state.record_contacts(vec![stale.clone()]);
-            state.select_contact(&id(7));
-            assert_eq!(state.selected_contact().unwrap().note.as_deref(), note);
-            assert!(!state.detail().is_dirty(&id(7)));
-            state.record_contacts(vec![ContactData {
-                note: note.map(str::to_string),
-                ..stale.clone()
-            }]);
-            state.record_contacts(vec![ContactData {
-                note: Some("Later remote edit".into()),
-                ..stale
-            }]);
-            assert_eq!(
-                state.selected_contact().unwrap().note.as_deref(),
-                Some("Later remote edit")
-            );
-        }
     }
 
     #[test]
@@ -817,7 +652,7 @@ mod tests {
         *state.detail_mut().note_mut(&id(7)).expect("draft") = "Theirs".into();
         assert!(state.detail_mut().begin_save(id(2), id(7)).is_some());
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(2), &id(7), true));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(2), &id(7)));
 
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
@@ -825,65 +660,9 @@ mod tests {
         );
     }
 
-    /// Each failed read waits out its own retry delay: a later failure of one
-    /// read must not pull it into an earlier retry of the other.
-    #[test]
-    fn staggered_read_failures_retry_each_read_at_its_own_deadline() {
-        use ContactsLoadKind::{Contacts, Requests};
-        let start = Instant::now();
-        let at = |secs| start + Duration::from_secs(secs);
-        let mut state = ContactsState::default();
-        assert_eq!(
-            state.claim_reads(),
-            Some(BTreeSet::from([Contacts, Requests]))
-        );
-
-        state.record_load_error(Contacts, Some(at(5)));
-        state.record_load_error(Requests, Some(at(9)));
-        state.retry_load_if_due(at(5));
-        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
-        state.retry_load_if_due(at(8));
-        assert_eq!(state.claim_reads(), None, "Requests waits its full delay");
-        state.retry_load_if_due(at(9));
-        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
-
-        // An immediate retry (startup sync finished) must not drag along a
-        // read still waiting out an endpoint delay.
-        state.record_load_error(Contacts, Some(at(15)));
-        state.record_load_error(Requests, Some(at(10)));
-        state.retry_load_if_due(at(10));
-        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
-        state.retry_load_if_due(at(15));
-        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
-    }
-
-    /// Each read is retried automatically at most three times per refresh, so
-    /// staggered retries of one read never use up the other read's attempts.
-    #[test]
-    fn automatic_retries_stop_after_three_per_read() {
-        use ContactsLoadKind::{Contacts, Requests};
-        let start = Instant::now();
-        let mut state = ContactsState::default();
-        assert!(state.claim_reads().is_some());
-        for retry in 1..=4u64 {
-            let due = start + Duration::from_secs(retry);
-            state.record_load_error(Contacts, Some(due));
-            state.retry_load_if_due(due);
-            let expected = (retry <= 3).then(|| BTreeSet::from([Contacts]));
-            assert_eq!(state.claim_reads(), expected, "Contacts retry {retry}");
-        }
-        assert!(state.load_failed(), "the exhausted failure stays visible");
-
-        let due = start + Duration::from_secs(10);
-        state.record_load_error(Requests, Some(due));
-        state.retry_load_if_due(due);
-        assert_eq!(state.claim_reads(), Some(BTreeSet::from([Requests])));
-    }
-
     #[test]
     fn reset_clears_guard_lists_and_search() {
         let mut state = ContactsState::default();
-        state.claim_load();
         state.incoming.push(ContactRequestEntry {
             request: req(2),
             relative_time: None,
@@ -897,7 +676,6 @@ mod tests {
 
         state.reset();
 
-        assert!(state.claim_load(), "reset must clear the load guard");
         assert!(state.incoming().is_empty(), "reset must clear incoming");
         assert!(state.outgoing().is_empty(), "reset must clear outgoing");
         assert_eq!(state.contacts_len(), 0, "reset must clear contacts");
@@ -1236,7 +1014,6 @@ mod tests {
         });
         state.record_contacts(vec![contact(Some("Bao"), None, None)]);
         *state.search_mut() = "bao".to_string();
-        assert!(state.claim_load());
         assert!(state.begin_request(req(2)));
         state.in_flight.insert(
             req(5),
@@ -1249,10 +1026,6 @@ mod tests {
         assert!(state.outgoing().is_empty());
         assert_eq!(state.contacts_len(), 0);
         assert!(state.search.is_empty());
-        assert!(
-            state.claim_load(),
-            "the new identity must trigger a fresh load"
-        );
         assert!(
             state.is_in_flight(&req(2)),
             "an identity switch does not cancel the paid backend action"
@@ -1308,123 +1081,5 @@ mod tests {
             contact_label(&contact(None, None, None)),
             shorten_id(&base58),
         );
-    }
-
-    #[test]
-    fn a_contacts_label_is_the_hub_wide_label_for_the_same_identity() {
-        // `contact_label` must stay a pure delegation to `display_label` — the
-        // whole point of the shared resolver is that no tier can drift.
-        for (nickname, display, username) in [
-            (Some("Bao"), Some("Alex Kim"), Some("alex.dash")),
-            (None, Some("Alex Kim"), Some("alex.dash")),
-            (None, None, Some("alex.dash")),
-            (None, None, None),
-        ] {
-            let c = contact(nickname, display, username);
-            assert_eq!(
-                contact_label(&c),
-                display_label(
-                    nickname,
-                    display,
-                    username,
-                    &c.identity_id.to_string(Encoding::Base58)
-                ),
-            );
-        }
-    }
-    #[test]
-    fn contact_read_retries_are_capped_and_do_not_repeat_a_successful_sibling() {
-        for kind in [ContactsLoadKind::Contacts, ContactsLoadKind::Requests] {
-            let sibling = if kind == ContactsLoadKind::Contacts {
-                ContactsLoadKind::Requests
-            } else {
-                ContactsLoadKind::Contacts
-            };
-            let mut state = ContactsState::default();
-            assert_eq!(state.claim_reads().unwrap().len(), 2);
-            let now = Instant::now();
-            for _ in 0..3 {
-                state.record_load_error(kind, Some(now));
-                // Neither a permanent sibling error nor a successful list
-                // response may cancel recovery of the other read.
-                state.record_load_error(sibling, None);
-                state.record_contacts(vec![]);
-                state.retry_load_if_due(now);
-                assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
-                assert!(state.claim_reads().is_none());
-            }
-            state.record_load_error(kind, Some(now));
-            state.retry_load_if_due(now + Duration::from_secs(60));
-            assert!(
-                state.claim_reads().is_none(),
-                "stop after three automatic retries"
-            );
-            assert_eq!(state.load_failed(), kind == ContactsLoadKind::Contacts);
-
-            state.invalidate();
-            assert_eq!(state.claim_reads().unwrap().len(), 2);
-            state.record_load_error(kind, Some(now));
-            state.retry_load_if_due(now);
-            assert_eq!(state.claim_reads(), Some(BTreeSet::from([kind])));
-        }
-    }
-
-    /// A Contacts failure that will be retried automatically is still loading,
-    /// not failed: Home must not ask the user to recover by hand while the
-    /// retry waits for its delay or for the network to finish syncing.
-    #[test]
-    fn a_contacts_failure_with_an_automatic_retry_pending_is_not_reported_failed() {
-        use ContactsLoadKind::Contacts;
-        let start = Instant::now();
-        let mut state = ContactsState::default();
-        assert!(state.claim_reads().is_some());
-        for retry in 1..=3u64 {
-            let due = start + Duration::from_secs(retry);
-            state.record_load_error(Contacts, Some(due));
-            assert!(!state.load_failed(), "retry {retry} is scheduled");
-            state.retry_load_if_due(due);
-            assert!(!state.load_failed(), "retry {retry} is due");
-            assert_eq!(state.claim_reads(), Some(BTreeSet::from([Contacts])));
-        }
-        state.record_load_error(Contacts, Some(start + Duration::from_secs(4)));
-        assert!(state.load_failed(), "no retry is left after the cap");
-
-        state.invalidate();
-        assert!(state.claim_reads().is_some());
-        state.record_load_error(Contacts, None);
-        assert!(
-            state.load_failed(),
-            "a permanent failure is reported at once"
-        );
-    }
-
-    #[test]
-    fn request_retry_does_not_hide_a_permanent_contacts_load_failure() {
-        for contacts_fail_first in [false, true] {
-            let mut state = ContactsState::default();
-            state.claim_reads().unwrap();
-            let now = Instant::now();
-            if contacts_fail_first {
-                state.record_load_error(ContactsLoadKind::Contacts, None);
-            }
-            state.record_load_error(ContactsLoadKind::Requests, Some(now));
-            if !contacts_fail_first {
-                state.record_load_error(ContactsLoadKind::Contacts, None);
-            }
-            state.retry_load_if_due(now);
-            assert_eq!(
-                state.claim_reads(),
-                Some(BTreeSet::from([ContactsLoadKind::Requests]))
-            );
-            state.record_requests(vec![], vec![]);
-            assert!(
-                state.load_failed(),
-                "Contacts still failed, rather than loading"
-            );
-            assert!(
-                !state.contacts_known(),
-                "no contact-list answer has arrived"
-            );
-        }
     }
 }

@@ -24,7 +24,7 @@ const USERNAME_LOOKUP_CHUNK: usize = 10;
 
 /// Republish the DashPay snapshots. After a new sync pass, first look up what
 /// platform-wallet does not hold: counterparties' usernames, the profiles of
-/// identities no wallet manages, and the time this device first saw each
+/// identities it does not sync, and the time this device first saw each
 /// payment.
 pub(super) async fn refresh(
     app_context: &Arc<AppContext>,
@@ -37,7 +37,7 @@ pub(super) async fn refresh(
         // pass time instead of hearing about each pass.
         changed |= backend.refresh_dashpay_snapshots().await;
         look_up_usernames(&backend, sdk).await;
-        read_wallet_less_profiles(app_context, &backend, sdk).await;
+        read_unsynced_profiles(app_context, &backend, sdk).await;
         backend.stamp_unseen_dashpay_payments(chrono::Utc::now().timestamp_millis().max(0));
     }
     changed |= backend.refresh_dashpay_snapshots().await;
@@ -98,31 +98,25 @@ async fn look_up_usernames(backend: &WalletBackend, sdk: &Sdk) {
     }
 }
 
-/// Read, once per session, the profile of each identity no wallet manages.
+/// Read, once per session, the profile of each local identity platform-wallet
+/// does not sync: one no wallet manages, or one whose wallet is not loaded.
 // TODO(upstream): wallet-less identities are not synced by
 // `DashPaySyncManager`; remove once it syncs the unowned scope.
-async fn read_wallet_less_profiles(
-    app_context: &Arc<AppContext>,
-    backend: &WalletBackend,
-    sdk: &Sdk,
-) {
-    let ids = match backend.unowned_identity_ids() {
-        Ok(ids) => ids,
+async fn read_unsynced_profiles(app_context: &Arc<AppContext>, backend: &WalletBackend, sdk: &Sdk) {
+    let identities = match app_context.load_local_user_identities() {
+        Ok(identities) => identities,
         Err(error) => {
-            tracing::debug!(
-                ?error,
-                "Wallet-less identities not listed for their profiles"
-            );
+            tracing::debug!(?error, "Local identities not listed for their profiles");
             return;
         }
     };
-    for id in ids {
-        if backend.wallet_less_profile_known(&id) {
+    for id in identities.iter().map(|identity| identity.identity.id()) {
+        if backend.unsynced_profile_known(&id) || backend.dashpay_snapshot(&id).is_some() {
             continue;
         }
         match fetch_profile(app_context, sdk, id).await {
-            Ok(profile) => backend.record_wallet_less_profile(id, profile),
-            Err(error) => tracing::debug!(?error, "Wallet-less identity profile not read"),
+            Ok(profile) => backend.record_unsynced_profile(id, profile),
+            Err(error) => tracing::debug!(?error, "Unsynced identity profile not read"),
         }
     }
 }

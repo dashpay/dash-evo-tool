@@ -175,7 +175,6 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
     use dash_evo_tool::backend_task::BackendTaskSuccessResult;
     use dash_evo_tool::ui::ScreenLike;
     use dash_evo_tool::ui::dashpay::{DashPayScreen, DashPaySubscreen};
-    use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
     with_isolated_data_dir(|| {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
@@ -208,15 +207,14 @@ fn profile_screen_rejects_late_picker_profile_for_other_identity() {
                 },
             ),
         );
-        let mut picker_load = ProfileCache::default();
-        picker_load.get_or_request(&first);
-        let AppAction::BackendTaskWithContext {
-            context: picker_context,
-            ..
-        } = picker_load.dispatch_pending()
-        else {
-            panic!("picker dispatch");
-        };
+        // Another screen's profile read of the other identity.
+        let picker_context = dash_evo_tool::backend_task::BackendTaskContext::for_dispatch_for_test(
+            &dash_evo_tool::backend_task::BackendTask::DashPayTask(Box::new(
+                dash_evo_tool::backend_task::dashpay::DashPayTask::LoadProfile {
+                    identity: first.clone(),
+                },
+            )),
+        );
         assert_eq!(
             screen
                 .profile_screen

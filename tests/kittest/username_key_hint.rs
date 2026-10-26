@@ -14,9 +14,9 @@ use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use dash_evo_tool::ui::components::MessageBanner;
-use dash_evo_tool::ui::identity::profile_cache::ProfileCache;
 use dash_evo_tool::ui::identity::settings::SettingsTab;
 use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab};
+use dash_evo_tool::ui::state::hub_profiles::HubProfiles;
 use dash_evo_tool::ui::{Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{Identity, Purpose};
@@ -128,7 +128,7 @@ fn identity_without_a_suitable_key_is_told_to_add_one() {
                         ui,
                         &app_context,
                         app_context.resolve_selected_identity().as_ref(),
-                        &mut ProfileCache::default(),
+                        &HubProfiles::default(),
                     );
                 },
                 SettingsTab::new(),

@@ -23,6 +23,15 @@ impl ProfileName {
 }
 
 impl AppContext {
+    /// `owner`'s DashPay snapshot; `None` until a sync produced one, or while
+    /// the wallet backend is not wired.
+    pub(crate) fn dashpay_snapshot(
+        &self,
+        owner: &Identifier,
+    ) -> Option<std::sync::Arc<crate::model::dashpay::DashPaySnapshot>> {
+        self.wallet_backend().ok()?.dashpay_snapshot(owner)
+    }
+
     /// Read persisted profile fields already held in wallet memory without blocking.
     pub(crate) fn cached_identity_profile(
         &self,

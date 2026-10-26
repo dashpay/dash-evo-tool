@@ -48,7 +48,6 @@ pub mod landing;
 pub mod onboarding;
 pub mod onboarding_checklist;
 pub mod picker;
-pub mod profile_cache;
 pub mod register_dpns_name_screen;
 pub mod request_card;
 pub mod settings;

@@ -1,7 +1,6 @@
 //! Identity summary and Home: shared send flows, setup, payments, and contacts.
 
 use super::onboarding_checklist::{ChecklistAction, ChecklistStep, OnboardingChecklist};
-use super::profile_cache::ProfileCache;
 use super::usernames_card::{UsernameRow, register_action_for, username_rows};
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
@@ -12,6 +11,7 @@ use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
+use crate::ui::state::hub_profiles::HubProfiles;
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
@@ -38,12 +38,11 @@ pub fn render_header(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
-    profiles: &mut ProfileCache,
+    profiles: &HubProfiles,
     avatars: &mut AvatarCache,
     pending_avatars: &mut Vec<BackendTask>,
 ) -> (AppAction, HomeOutcome) {
-    profiles.seed_cached(app_context, identity);
-    let profile = profiles.get_or_request(identity).and_then(Option::as_ref);
+    let profile = profiles.get(identity).and_then(Option::as_ref);
     let name = app_context.identity_display_name_or(
         identity.identity.id(),
         profile.and_then(|p| p.display_name_opt()),
@@ -204,22 +203,22 @@ fn summary_balance(
     });
 }
 
-/// Home content below the identity summary and tabs. Its data loads are not
-/// part of rendering: see [`load_action`].
+/// Home content below the identity summary and tabs.
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut HomeState,
-    profiles: &mut ProfileCache,
+    profiles: &HubProfiles,
     contacts: &mut ContactsState,
 ) -> (AppAction, HomeOutcome) {
     state.reconcile_owner(identity);
+    state.apply_snapshot(app_context.dashpay_snapshot(&identity.identity.id()));
     contacts.reconcile_owner(identity);
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
-    // `None` until the profile is read.
-    let has_profile = profiles.get_or_request(identity).map(|profile| {
+    // `None` until the profile is synced.
+    let has_profile = profiles.get(identity).map(|profile| {
         profile
             .as_ref()
             .and_then(|p| p.display_name_opt())
@@ -283,40 +282,6 @@ pub fn render(
         action |= render_receive(ui, app_context, identity, state);
     }
     (action, outcome)
-}
-
-/// Home's next due load for the selected identity: its contact lists, then its
-/// payment history.
-///
-/// Returning a load claims its one dispatch slot, so the caller must ask only
-/// once nothing else on the screen produced an action this frame, and must
-/// return what it gets: a load that is replaced never goes out again.
-pub fn load_action(
-    app_context: &Arc<AppContext>,
-    state: &mut HomeState,
-    contacts: &mut ContactsState,
-) -> AppAction {
-    if !contacts.load_is_due() && !state.payments_load_is_due() {
-        return AppAction::None;
-    }
-    let Some(identity) = app_context.resolve_selected_identity() else {
-        return AppAction::None;
-    };
-    state.reconcile_owner(&identity);
-    contacts.reconcile_owner(&identity);
-    // Both loads reach proof-verifying reads: the contact lists directly, the
-    // payment history through the DashPay sync it runs first. Sent before the
-    // masternode list is synced they fail locally and get the queried nodes
-    // banned, so hold both until then.
-    if !app_context.connection_status().masternodes_ready() {
-        return AppAction::None;
-    }
-    let action = super::contacts::load_action(&identity, contacts);
-    if matches!(action, AppAction::None) {
-        state.load_payments(&identity)
-    } else {
-        action
-    }
 }
 
 fn render_main_column(
@@ -425,11 +390,13 @@ fn render_payments(ui: &mut Ui, app_context: &Arc<AppContext>, state: &HomeState
     let mut action = AppAction::None;
     card(ui, |ui| {
         ui.strong("Recent payments");
-        for (_, contact, amount, incoming, _) in state.payments.iter().take(5) {
+        for payment in &state.payments {
             ui.horizontal_wrapped(|ui| {
-                ui.label(crate::model::identity_name::clean_display_text(contact));
-                let amount = format_duffs_as_dash(*amount);
-                ui.label(if *incoming {
+                ui.label(crate::model::identity_name::clean_display_text(
+                    &payment.counterparty,
+                ));
+                let amount = format_duffs_as_dash(payment.amount_duffs);
+                ui.label(if payment.incoming {
                     format!("Received {amount}")
                 } else {
                     format!("Sent {amount}")

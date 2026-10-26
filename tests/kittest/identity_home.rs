@@ -9,7 +9,7 @@ use dash_evo_tool::model::qualified_identity::{
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::Screen;
 use dash_evo_tool::ui::identity::home::{self, HomeOutcome, HomeState};
-use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
+use dash_evo_tool::ui::state::hub_profiles::{HubProfiles, ProfileFields};
 use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -90,15 +90,15 @@ pub(crate) fn seed_identity_with_id(
     identity_id
 }
 
-/// Harness state for `home::render`: its own mutable inputs (`HomeState`,
-/// `ProfileCache`) plus the `(AppAction, HomeOutcome)` pair the most recent
+/// Harness state for `home::render`: its own inputs (`HomeState`,
+/// `HubProfiles`) plus the `(AppAction, HomeOutcome)` pair the most recent
 /// render produced. Capturing the result (rather than discarding it, as a
 /// prior version of this harness did) is what lets tests assert a clicked
 /// button actually routes to its intended destination, not merely that the
 /// click was accepted.
 type HomeHarnessState = (
     HomeState,
-    ProfileCache,
+    HubProfiles,
     Option<(AppAction, HomeOutcome)>,
     dash_evo_tool::ui::state::AvatarCache,
     dash_evo_tool::ui::state::contacts_view::ContactsState,
@@ -120,7 +120,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     ui,
                     &app_context,
                     &identity,
-                    &mut state.1,
+                    &state.1,
                     &mut state.3,
                     &mut pending,
                 );
@@ -129,7 +129,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     &app_context,
                     &identity,
                     &mut state.0,
-                    &mut state.1,
+                    &state.1,
                     &mut state.4,
                 );
                 result.0 |= header_action;
@@ -138,10 +138,6 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 }
                 if let Some(task) = pending.pop() {
                     result.0 = AppAction::BackendTask(task);
-                }
-                // As in the hub, a load goes out only on a frame nothing else took.
-                if matches!(result.0, AppAction::None) {
-                    result.0 = home::load_action(&app_context, &mut state.0, &mut state.4);
                 }
                 // `Harness::run`/`step` internally renders extra idle frames
                 // (it loops until no immediate repaint is pending), and
@@ -156,7 +152,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
             },
             (
                 HomeState::default(),
-                ProfileCache::default(),
+                HubProfiles::default(),
                 None,
                 Default::default(),
                 Default::default(),
@@ -179,7 +175,7 @@ fn home_contacts_are_not_reported_empty_before_the_load_answers() {
                 .is_none(),
             "an unanswered contact load is not an empty contact list"
         );
-        harness.state_mut().4.record_contacts(vec![]);
+        harness.state_mut().4.record_contacts_for_test(vec![]);
         harness.run();
         assert!(
             harness
@@ -409,12 +405,12 @@ fn home_add_contact_opens_contact_screen() {
             seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
 
         let mut harness = mount_home(app_context);
-        harness.state_mut().1.record_saved(
+        harness.state_mut().1.set_for_test(
             identity_id,
-            ProfileFields {
+            Some(ProfileFields {
                 display_name: "Alex".to_string(),
                 ..Default::default()
-            },
+            }),
         );
         harness.run();
 
@@ -440,13 +436,13 @@ fn home_profile_avatar_requests_its_image() {
         let (_runtime, app_context) = fresh_app_context();
         let id = seed_identity(&app_context, vec![key(1, Purpose::AUTHENTICATION)], vec![]);
         let mut harness = mount_home(app_context);
-        harness.state_mut().1.record_saved(
+        harness.state_mut().1.set_for_test(
             id,
-            ProfileFields {
+            Some(ProfileFields {
                 display_name: "Alex".into(),
                 avatar_url: "https://example.com/avatar.png".into(),
                 ..Default::default()
-            },
+            }),
         );
         harness.run_steps(1);
         assert!(
@@ -573,13 +569,13 @@ fn home_profile_avatar_decodes_and_caches_published_image() {
         let id = seed_identity(&ctx, vec![], vec![]);
         let mut harness = mount_home(ctx);
         let url = "https://example.com/photo.png";
-        harness.state_mut().1.record_saved(
+        harness.state_mut().1.set_for_test(
             id,
-            ProfileFields {
+            Some(ProfileFields {
                 avatar_url: url.into(),
                 display_name: "Alex".into(),
                 ..Default::default()
-            },
+            }),
         );
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(8, 8)
@@ -603,13 +599,13 @@ fn home_failed_avatar_does_not_retry_each_frame() {
         let id = seed_identity(&ctx, vec![], vec![]);
         let mut harness = mount_home(ctx);
         let url = "https://example.com/broken.png";
-        harness.state_mut().1.record_saved(
+        harness.state_mut().1.set_for_test(
             id,
-            ProfileFields {
+            Some(ProfileFields {
                 avatar_url: url.into(),
                 display_name: "Alex".into(),
                 ..Default::default()
-            },
+            }),
         );
         harness.state_mut().3.seed(url, b"not an image".to_vec());
         harness.run();
@@ -623,195 +619,76 @@ fn home_failed_avatar_does_not_retry_each_frame() {
     });
 }
 
-#[test]
-fn home_payment_preview_rejects_stale_dispatches() {
-    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
-    with_isolated_data_dir(|| {
-        let (_runtime, app_context) = fresh_app_context();
-        seed_identity(&app_context, vec![], vec![]);
-        let identity = app_context.resolve_selected_identity().expect("identity");
-        let mut state = HomeState::default();
-        let AppAction::BackendTaskWithContext { context: stale, .. } =
-            state.load_payments(&identity)
-        else {
-            panic!("payment load");
-        };
-        state.refresh_payments();
-        let AppAction::BackendTaskWithContext {
-            context: current, ..
-        } = state.load_payments(&identity)
-        else {
-            panic!("new payment load");
-        };
-        let result = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-            String::new(),
-            "Alice".into(),
-            1_000,
-            true,
-            String::new(),
-        )]);
-        state.record_payments(&stale, &result);
-        assert!(state.payments.is_empty());
-        state.record_payments(&current, &result);
-        assert_eq!(state.payments.len(), 1);
-        state = HomeState::default();
-        state.record_payments(&current, &result);
-        assert!(
-            state.payments.is_empty(),
-            "switching identities discards the old preview"
-        );
-    });
-}
-
-/// Renders one frame at a time until `wanted` recognises the action a frame
-/// produced, so a test does not depend on which frame a load goes out in.
-fn step_until<T>(
-    harness: &mut Harness<'static, HomeHarnessState>,
-    what: &str,
-    wanted: impl Fn(&AppAction) -> Option<T>,
-) -> T {
-    for _ in 0..8 {
-        harness.state_mut().2 = None;
-        harness.step();
-        let found = harness
-            .state()
-            .2
-            .as_ref()
-            .and_then(|(action, _)| wanted(action));
-        if let Some(found) = found {
-            return found;
-        }
-    }
-    panic!("{what} was never dispatched");
-}
-
-/// One recorded payment for the selected identity, loaded the way an arrival
-/// refresh loads it.
-fn record_one_payment(harness: &mut Harness<'static, HomeHarnessState>, app_context: &AppContext) {
-    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
-    let identity = app_context.resolve_selected_identity().expect("identity");
-    let state = &mut harness.state_mut().0;
-    state.refresh_payments();
-    let AppAction::BackendTaskWithContext { context, .. } = state.load_payments(&identity) else {
-        panic!("payment load");
+/// A snapshot holding one payment from `counterparty` to the selected
+/// identity.
+fn snapshot_with_payment(
+    owner: Identifier,
+    counterparty: Identifier,
+) -> Arc<dash_evo_tool::model::dashpay::DashPaySnapshot> {
+    use dash_evo_tool::model::dashpay::{
+        DashPaySnapshot, PaymentDirection, PaymentStatus, StoredPayment,
     };
-    state.record_payments(
-        &context,
-        &BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-            String::new(),
-            "Alice".into(),
-            1_000,
-            true,
-            String::new(),
-        )]),
-    );
+    Arc::new(DashPaySnapshot {
+        payments: vec![StoredPayment {
+            id: 0,
+            tx_id: "tx".into(),
+            from_identity_id: counterparty.to_vec(),
+            to_identity_id: owner.to_vec(),
+            amount: 1_000,
+            memo: None,
+            payment_type: PaymentDirection::Received,
+            status: PaymentStatus::Confirmed,
+            created_at: 0,
+            confirmed_at: None,
+        }],
+        ..Default::default()
+    })
 }
 
 #[test]
 fn home_payments_follow_an_identity_selected_outside_the_hub() {
-    use dash_evo_tool::backend_task::dashpay::DashPayTask;
-    use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
         let first = seed_identity(&app_context, vec![], vec![]);
         let mut harness = mount_home(app_context.clone());
-        record_one_payment(&mut harness, &app_context);
-        let first_request = {
-            let state = &mut harness.state_mut().0;
-            state.refresh_payments();
-            let identity = app_context.resolve_selected_identity().expect("identity");
-            assert_eq!(identity.identity.id(), first);
-            let AppAction::BackendTaskWithContext { context, .. } = state.load_payments(&identity)
-            else {
-                panic!("payment load");
-            };
-            context
-        };
+        harness
+            .state_mut()
+            .0
+            .apply_snapshot(Some(snapshot_with_payment(first, second)));
         harness.run();
         assert!(harness.query_by_label("Recent payments").is_some());
 
         // Another screen's identity selector changes the selection and returns
         // without refreshing the hub; the same `HomeState` keeps rendering.
         app_context.set_selected_identity(Some(second));
-        let second_request = step_until(
-            &mut harness,
-            "the newly selected identity's payment history load",
-            |action| match action {
-                AppAction::BackendTaskWithContext {
-                    task: BackendTask::DashPayTask(task),
-                    context,
-                } => match &**task {
-                    DashPayTask::LoadPaymentHistory { identity }
-                        if identity.identity.id() == second =>
-                    {
-                        Some(context.clone())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            },
-        );
         harness.run();
         assert!(
             harness.query_by_label("Recent payments").is_none(),
             "one identity's payments must never be shown under another"
         );
-
-        let late = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-            String::new(),
-            "Alice".into(),
-            1_000,
-            true,
-            String::new(),
-        )]);
-        harness.state_mut().0.record_payments(&first_request, &late);
-        harness.run();
-        assert!(
-            harness.query_by_label("Recent payments").is_none(),
-            "a late answer for the previous identity must be discarded"
-        );
-
-        let current = BackendTaskSuccessResult::DashPayPaymentHistory(vec![(
-            String::new(),
-            "Bob".into(),
-            2_000,
-            false,
-            String::new(),
-        )]);
-        harness
-            .state_mut()
-            .0
-            .record_payments(&second_request, &current);
-        harness.run();
-        assert!(harness.query_by_label("Bob").is_some());
     });
 }
 
 #[test]
 fn home_contacts_follow_an_identity_selected_outside_the_hub() {
-    use dash_evo_tool::backend_task::BackendTask;
-    use dash_evo_tool::backend_task::dashpay::{ContactData, DashPayTask};
-    use dash_sdk::dpp::document::{Document, DocumentV0};
+    use dash_evo_tool::backend_task::dashpay::ContactData;
+    use dash_evo_tool::model::dashpay::{
+        ContactRequestKey, DashPaySnapshot, PendingContactRequest,
+    };
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         let second = seed_identity_with_id(&app_context, 0xB6, vec![], vec![]);
         let first = seed_identity(&app_context, vec![], vec![]);
-        // A request the first identity sent to the second: one document, listed
-        // as sent for one identity and as received for the other.
-        let request = Identifier::from([0xC7; 32]);
-        let incoming_for_second = vec![(
-            request,
-            Document::V0(DocumentV0 {
-                id: request,
-                owner_id: first,
-                ..Default::default()
-            }),
-        )];
+        // A request the second identity sent the first one.
+        let request = ContactRequestKey {
+            owner: first,
+            counterparty: second,
+        };
         let mut harness = mount_home(app_context.clone());
         {
             let contacts = &mut harness.state_mut().4;
-            contacts.record_contacts(vec![ContactData {
+            contacts.record_contacts_for_test(vec![ContactData {
                 identity_id: Identifier::from([0xD8; 32]),
                 nickname: Some("Bao".into()),
                 note: None,
@@ -822,7 +699,7 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
                 avatar_url: None,
                 bio: None,
             }]);
-            // The first identity withdraws that request; the paid action runs.
+            // The first identity declines that request; the paid action runs.
             assert!(contacts.begin_request(request));
         }
         harness.run();
@@ -831,48 +708,32 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
         // Another screen's identity selector changes the selection and returns
         // without refreshing the hub; the same `ContactsState` keeps rendering.
         app_context.set_selected_identity(Some(second));
-        let loaded_for = step_until(
-            &mut harness,
-            "the newly selected identity's contact load",
-            |action| match action {
-                AppAction::BackendTasksWithContexts(tasks, _) => Some(
-                    tasks
-                        .iter()
-                        .filter_map(|(task, _)| match task {
-                            BackendTask::DashPayTask(task) => match &**task {
-                                DashPayTask::LoadContacts { identity }
-                                | DashPayTask::LoadContactRequests { identity } => {
-                                    Some(identity.identity.id())
-                                }
-                                _ => None,
-                            },
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                _ => None,
-            },
-        );
-        assert_eq!(loaded_for, [second, second]);
         harness.run();
         assert!(
             harness.query_by_label("Bao").is_none(),
             "one identity's contacts must never be shown under another"
         );
         assert!(harness.query_by_label("Loading contacts…").is_some());
-        assert!(
-            harness
-                .query_by_label("No contacts yet. Add someone by their username.")
-                .is_none(),
-            "the new identity's list has not answered yet"
-        );
 
-        // The second identity's list arrives and holds the very request the
-        // first identity is still withdrawing: it must stay guarded.
+        // Back on the first identity, whose snapshot holds the request still
+        // being declined: it must stay guarded.
+        app_context.set_selected_identity(Some(first));
+        harness.run();
         harness
             .state_mut()
             .4
-            .record_requests(incoming_for_second, vec![]);
+            .apply_snapshot(Some(Arc::new(DashPaySnapshot {
+                incoming: vec![PendingContactRequest {
+                    counterparty_id: second,
+                    created_at_ms: 0,
+                    account_reference: 0,
+                    has_auto_accept_proof: false,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                }],
+                ..Default::default()
+            })));
         harness.run();
         assert!(
             harness
@@ -882,7 +743,7 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             "a request with a paid action still running must not be acted on again"
         );
 
-        // The withdrawal fails and releases its guard.
+        // The decline fails and releases its guard.
         harness.state_mut().4.release_request(&request);
         harness.run();
         assert!(
@@ -911,13 +772,13 @@ fn contact(byte: u8, name: &str) -> dash_evo_tool::backend_task::dashpay::Contac
 }
 
 fn record_profile(harness: &mut Harness<'static, HomeHarnessState>, id: Identifier) {
-    harness.state_mut().1.record_saved(
+    harness.state_mut().1.set_for_test(
         id,
-        ProfileFields {
+        Some(ProfileFields {
             display_name: "Ann".into(),
             bio: String::new(),
             avatar_url: String::new(),
-        },
+        }),
     );
 }
 
@@ -944,7 +805,7 @@ fn home_shows_no_setup_checklist_while_its_inputs_load() {
         );
 
         let mut harness = mount_home(app_context);
-        harness.state_mut().4.record_contacts(vec![]);
+        harness.state_mut().4.record_contacts_for_test(vec![]);
         harness.run();
         assert!(
             harness.query_by_label(SETUP_CHECKLIST).is_none(),
@@ -961,7 +822,7 @@ fn home_shows_the_setup_checklist_once_its_inputs_are_known() {
         let id = seed_identity(&app_context, vec![], vec![]);
         let mut harness = mount_home(app_context);
         record_profile(&mut harness, id);
-        harness.state_mut().4.record_contacts(vec![]);
+        harness.state_mut().4.record_contacts_for_test(vec![]);
         harness.run();
         assert!(harness.query_by_label(SETUP_CHECKLIST).is_some());
     });
@@ -985,7 +846,7 @@ fn home_shows_no_setup_checklist_when_setup_is_finished() {
         harness
             .state_mut()
             .4
-            .record_contacts(vec![contact(0x63, "Bao")]);
+            .record_contacts_for_test(vec![contact(0x63, "Bao")]);
         harness.run();
         assert!(
             harness.query_by_label("Bao").is_some(),
@@ -1003,7 +864,7 @@ fn home_contact_preview_shows_the_first_six_contacts() {
         seed_identity(&app_context, vec![], vec![]);
         let mut harness = mount_home(app_context);
         let names = ["Ana", "Bao", "Cy", "Dee", "Eli", "Fay", "Gus"];
-        harness.state_mut().4.record_contacts(
+        harness.state_mut().4.record_contacts_for_test(
             names
                 .iter()
                 .zip(1u8..)
@@ -1030,22 +891,6 @@ fn home_contact_preview_shows_the_first_six_contacts() {
         assert!(
             harness.query_by_label("Gus").is_none(),
             "the preview stops at six contacts"
-        );
-    });
-}
-
-#[test]
-fn home_payments_survive_a_refresh_for_the_same_identity() {
-    with_isolated_data_dir(|| {
-        let (_runtime, app_context) = fresh_app_context();
-        seed_identity(&app_context, vec![], vec![]);
-        let mut harness = mount_home(app_context.clone());
-        record_one_payment(&mut harness, &app_context);
-        harness.state_mut().0.refresh_payments();
-        harness.run();
-        assert!(
-            harness.query_by_label("Alice").is_some(),
-            "a refresh keeps the preview on screen while it reloads"
         );
     });
 }

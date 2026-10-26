@@ -5,10 +5,9 @@
 //! currently-active identity has no DashPay profile yet. See design-spec §B.4
 //! and §B.4.1.
 //!
-//! The three sections feed off [`DashPayTask::LoadContacts`] and
-//! [`DashPayTask::LoadContactRequests`], dispatched once per tab entry. Results
-//! are stored by `hub_screen::display_task_result` into the
-//! [`ContactsState`] view-model, which this module only reads.
+//! The three sections show the identity's DashPay snapshot, which
+//! platform-wallet's background sync keeps current, through the
+//! [`ContactsState`] view-model.
 //!
 //! Row actions dispatch the DashPay backend tasks directly: Accept and Decline
 //! on a received request, Cancel on a sent one, and Pay on an established
@@ -19,9 +18,9 @@
 
 use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
-use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::{
@@ -35,6 +34,7 @@ use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::state::AvatarCache;
 use crate::ui::state::contacts_view::contact_label;
+use crate::ui::state::hub_profiles::HubProfiles;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -230,49 +230,6 @@ fn dispatch_request_shared(
     dispatch_request(state, identity, clicked)
 }
 
-/// One-shot hydration of the tab: the contact list and the request lists.
-///
-/// Both loads travel as a single [`AppAction::BackendTasksWithContexts`]. Two separate
-/// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
-/// so the first load would be dropped on the floor and the active section would
-/// never fill.
-pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
-    let Some(reads) = state.claim_reads() else {
-        return AppAction::None;
-    };
-    let tasks = reads
-        .into_iter()
-        .map(|kind| {
-            let task = BackendTask::DashPayTask(Box::new(match kind {
-                crate::model::dashpay::ContactsLoadKind::Contacts => DashPayTask::LoadContacts {
-                    identity: identity.clone(),
-                },
-                crate::model::dashpay::ContactsLoadKind::Requests => {
-                    DashPayTask::LoadContactRequests {
-                        identity: identity.clone(),
-                    }
-                }
-            }));
-            let context = match kind {
-                // Its own dispatch, so an older load answering late is
-                // recognised as stale.
-                crate::model::dashpay::ContactsLoadKind::Contacts => {
-                    let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
-                    if let Some(dispatch_id) = context.dispatch_id() {
-                        state.record_contacts_load(dispatch_id);
-                    }
-                    context
-                }
-                crate::model::dashpay::ContactsLoadKind::Requests => {
-                    BackendTaskContext::for_task_on(&task, identity.network)
-                }
-            };
-            (task, context)
-        })
-        .collect();
-    AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Concurrent)
-}
-
 /// Backend task for a request-card action. Accept and Decline act on the
 /// request `counterparty_id` sent; Cancel withdraws the one sent to them.
 pub fn request_task(
@@ -382,14 +339,13 @@ fn dispatch_unhide(
 /// identity is loaded, or the active identity has no DashPay profile, the gated
 /// state is rendered.
 ///
-/// The caller owns the [`ContactsState`]. The tab's data load is not part of
-/// rendering: see [`tab_load_action`].
+/// The caller owns the [`ContactsState`].
 pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: Option<&QualifiedIdentity>,
     state: &mut ContactsState,
-    profiles: &mut super::profile_cache::ProfileCache,
+    profiles: &HubProfiles,
     avatars: &mut AvatarCache,
     pending_avatars: &mut Vec<BackendTask>,
 ) -> AppAction {
@@ -407,36 +363,6 @@ struct DetailAvatars<'a> {
     pending: &'a mut Vec<BackendTask>,
 }
 
-/// The populated Contacts tab's load, when it is due: the contact list and the
-/// request lists of the identity the tab shows. A gated tab loads nothing.
-///
-/// Returning the load claims its one dispatch slot, so the caller must ask only
-/// once nothing else on the screen produced an action this frame, and must
-/// return what it gets: a load that is replaced never goes out again.
-pub fn tab_load_action(
-    app_context: &Arc<AppContext>,
-    state: &mut ContactsState,
-    profiles: &mut super::profile_cache::ProfileCache,
-) -> AppAction {
-    if !state.load_is_due() {
-        return AppAction::None;
-    }
-    let active = app_context.resolve_selected_identity();
-    match ContactsTabState::resolve(app_context, active.as_ref(), profiles) {
-        ContactsTabState::Populated { identity } => {
-            state.reconcile_owner(&identity);
-            // Held until the masternode list is synced, as on Home: an earlier
-            // proof-verifying read gets the queried nodes banned.
-            if app_context.connection_status().masternodes_ready() {
-                load_action(&identity, state)
-            } else {
-                AppAction::None
-            }
-        }
-        ContactsTabState::Gated { .. } => AppAction::None,
-    }
-}
-
 /// Resolved rendering mode for the Contacts tab.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContactsTabState {
@@ -449,8 +375,7 @@ pub enum ContactsTabState {
     /// The active identity has a DashPay profile — render the three-section
     /// populated shell.
     Populated {
-        /// The currently-active identity. The populated-state renderer uses
-        /// this to dispatch `DashPayTask::LoadContacts` and friends.
+        /// The currently-active identity, whose lists the shell shows.
         identity: Box<QualifiedIdentity>,
     },
 }
@@ -462,7 +387,7 @@ impl ContactsTabState {
     pub fn resolve(
         app_context: &Arc<AppContext>,
         active: Option<&QualifiedIdentity>,
-        profiles: &mut super::profile_cache::ProfileCache,
+        profiles: &HubProfiles,
     ) -> Self {
         // `active` is the app-scoped active identity (selected → first → none).
         // `None` on a load error or no identities falls back to Gated so the
@@ -536,6 +461,7 @@ fn render_populated(
     avatars: &mut DetailAvatars<'_>,
 ) -> AppAction {
     state.reconcile_owner(identity);
+    state.apply_snapshot(app_context.dashpay_snapshot(&identity.identity.id()));
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
@@ -1147,15 +1073,11 @@ fn section_card(ui: &mut Ui, dark_mode: bool, heading: &str, body: impl FnOnce(&
     });
 }
 
-/// Detect whether the identity has a DashPay social profile. Reads the hub's
-/// async profile cache; an entry that is absent (not loaded yet) or holds no
-/// profile yields `false`, so the gate is shown and the user is not blocked
-/// until a profile is confirmed to exist.
-fn has_social_profile(
-    profiles: &mut super::profile_cache::ProfileCache,
-    identity: &QualifiedIdentity,
-) -> bool {
-    matches!(profiles.get_or_request(identity), Some(Some(_)))
+/// Detect whether the identity has a DashPay social profile. A profile not
+/// synced yet, or none published, yields `false`, so the gate is shown until
+/// a profile is confirmed to exist.
+fn has_social_profile(profiles: &HubProfiles, identity: &QualifiedIdentity) -> bool {
+    matches!(profiles.get(identity), Some(Some(_)))
 }
 
 /// A contact's `@username`, shown under its label unless the label already
@@ -1177,6 +1099,8 @@ pub(super) fn render_preview(
     state: &mut ContactsState,
     outcome: &mut super::home::HomeOutcome,
 ) -> AppAction {
+    state.reconcile_owner(identity);
+    state.apply_snapshot(app_context.dashpay_snapshot(&identity.identity.id()));
     let mut action = AppAction::None;
     super::home::card(ui, |ui| {
         ui.strong("Contacts");
@@ -1206,11 +1130,7 @@ pub(super) fn render_preview(
             }
         }
         if !state.contacts_known() {
-            ui.label(if state.load_failed() {
-                "Contacts could not be loaded. Open Contacts to try again."
-            } else {
-                "Loading contacts…"
-            });
+            ui.label("Loading contacts…");
         } else if state.contacts_len() == 0 && state.incoming().is_empty() {
             ui.label("No contacts yet. Add someone by their username.");
         }
@@ -1284,7 +1204,7 @@ mod tests {
             format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len()),
             "Active contacts · 0"
         );
-        state.record_contacts(vec![crate::backend_task::dashpay::ContactData {
+        state.record_contacts_for_test(vec![crate::backend_task::dashpay::ContactData {
             identity_id: id(5),
             nickname: Some("Bao".into()),
             note: None,
@@ -1334,50 +1254,12 @@ mod tests {
         assert_eq!(contact_handle(&contact, "Bao"), None);
     }
 
-    /// A request `sender` sent `recipient`, as the request list loads it.
-    fn request_from(
-        sender: Identifier,
-        recipient: Identifier,
-    ) -> (Identifier, dash_sdk::platform::Document) {
-        use dash_sdk::dpp::document::DocumentV0;
-        use dash_sdk::dpp::platform_value::Value;
-        (
-            id(99),
-            dash_sdk::platform::Document::V0(DocumentV0 {
-                id: id(99),
-                owner_id: sender,
-                properties: std::collections::BTreeMap::from([(
-                    "toUserId".to_string(),
-                    Value::Identifier(recipient.to_buffer()),
-                )]),
-                ..Default::default()
-            }),
-        )
-    }
-
     /// The request between the owner `id(1)` and `id(counterparty)`.
     fn req(counterparty: u8) -> ContactRequestKey {
         ContactRequestKey {
             owner: id(1),
             counterparty: id(counterparty),
         }
-    }
-
-    fn load_owner_ids(action: AppAction) -> Vec<Identifier> {
-        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
-            panic!("expected the contact loads, got {action:?}");
-        };
-        tasks
-            .into_iter()
-            .map(|(task, _)| match task {
-                BackendTask::DashPayTask(task) => match *task {
-                    DashPayTask::LoadContacts { identity }
-                    | DashPayTask::LoadContactRequests { identity } => identity.identity.id(),
-                    other => panic!("unexpected task {other:?}"),
-                },
-                other => panic!("unexpected task {other:?}"),
-            })
-            .collect()
     }
 
     /// The selection can change without the hub resetting this state. The lists
@@ -1391,29 +1273,27 @@ mod tests {
         let mut state = ContactsState::default();
 
         state.reconcile_owner(&first);
-        assert_eq!(
-            load_owner_ids(load_action(&first, &mut state)),
-            [id(1), id(1)]
-        );
-        state.record_contacts(vec![contact_named("Bao")]);
-        state.record_requests(vec![request_from(id(3), id(1))], vec![]);
+        state.apply_snapshot(Some(Arc::new(crate::model::dashpay::DashPaySnapshot {
+            contacts: vec![contact_named("Bao")],
+            incoming: vec![crate::model::dashpay::PendingContactRequest {
+                counterparty_id: id(3),
+                created_at_ms: 0,
+                account_reference: 0,
+                has_auto_accept_proof: false,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+            }],
+            ..Default::default()
+        })));
         assert!(state.begin_request(request));
 
         state.reconcile_owner(&first);
         assert_eq!(state.contacts_len(), 1, "the same identity keeps its lists");
-        assert!(
-            matches!(load_action(&first, &mut state), AppAction::None),
-            "and its load is not dispatched again"
-        );
 
         state.reconcile_owner(&second);
         assert_eq!(state.contacts_len(), 0);
         assert!(state.incoming().is_empty());
-        assert_eq!(
-            load_owner_ids(load_action(&second, &mut state)),
-            [id(2), id(2)],
-            "the lists of the identity on screen must load"
-        );
         assert!(
             state.is_in_flight(&request),
             "the action still running for the previous identity keeps its guard"
@@ -1442,7 +1322,7 @@ mod tests {
     ) -> ContactsState {
         let mut state = ContactsState::default();
         state.reconcile_owner(identity);
-        state.record_contacts(vec![contact_with_note(note)]);
+        state.record_contacts_for_test(vec![contact_with_note(note)]);
         state.select_contact(&id(5));
         state
     }
@@ -1539,7 +1419,7 @@ mod tests {
         let identity = qualified_identity(id(1));
         let mut state = ContactsState::default();
         state.reconcile_owner(&identity);
-        state.record_contacts(vec![hidden_bao()]);
+        state.record_contacts_for_test(vec![hidden_bao()]);
 
         let (_, contact_id, update) =
             saved_note(dispatch_unhide(&mut state, &identity, &hidden_bao()));
@@ -1782,53 +1662,6 @@ mod tests {
             }
             other => panic!("expected UpdateContactInfo, got {other:?}"),
         }
-    }
-
-    // ---------------------------------------------------------------
-    // Hydration — both loads must survive the trip to `AppState`.
-    // `AppAction`'s `|=` is last-writer-wins, so two separate
-    // `BackendTask` actions in one frame mean the first is silently lost.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn hydration_dispatches_both_loads_in_one_action() {
-        let identity = qualified_identity(id(1));
-        let mut state = ContactsState::default();
-
-        let AppAction::BackendTasksWithContexts(tasks, mode) = load_action(&identity, &mut state)
-        else {
-            panic!("hydration must dispatch its loads as one multi-task action");
-        };
-
-        assert_eq!(mode, BackendTasksExecutionMode::Concurrent);
-        assert!(
-            tasks.iter().any(|(t, _)| matches!(
-                t,
-                BackendTask::DashPayTask(task) if matches!(**task, DashPayTask::LoadContacts { .. })
-            )),
-            "the contact list must be loaded — without it the active section stays empty"
-        );
-        assert!(
-            tasks.iter().any(|(t, _)| matches!(
-                t,
-                BackendTask::DashPayTask(task)
-                    if matches!(**task, DashPayTask::LoadContactRequests { .. })
-            )),
-            "the request lists must be loaded"
-        );
-    }
-
-    #[test]
-    fn hydration_fires_once_per_tab_entry() {
-        let identity = qualified_identity(id(1));
-        let mut state = ContactsState::default();
-
-        assert_ne!(load_action(&identity, &mut state), AppAction::None);
-        assert_eq!(
-            load_action(&identity, &mut state),
-            AppAction::None,
-            "a second paint must not re-dispatch the loads"
-        );
     }
 
     // ---------------------------------------------------------------

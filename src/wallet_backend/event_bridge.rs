@@ -254,6 +254,17 @@ impl EventHandler for EventBridge {
                 *wallet_id
             }
             WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::ChainTruncated {
+                wallet_id,
+                txids,
+                unconfirmed_txids,
+                ..
+            } => {
+                self.snapshots.remove_transactions(wallet_id, txids);
+                self.snapshots
+                    .unconfirm_instant_locked(wallet_id, unconfirmed_txids);
+                *wallet_id
+            }
             WalletEvent::TransactionsSwept {
                 wallet_id, txids, ..
             } => {
@@ -541,7 +552,9 @@ fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)
             WalletShieldedOutcome::Ok(sync) => match sync.balance_total() {
                 Ok(balance) => Some((*wallet_id, balance)),
                 Err(error) => {
-                    tracing::debug!(
+                    // An overflowing note total means corrupt or hostile sync
+                    // data, not routine noise: surface it at warn.
+                    tracing::warn!(
                         ?wallet_id,
                         ?error,
                         "Shielded sync balance total is invalid; preserving the cached balance"

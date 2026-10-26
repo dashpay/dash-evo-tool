@@ -48,13 +48,12 @@ pub async fn update_profile(
             "Failed to cache the avatar fetched for a profile update"
         );
     }
-    let mut query =
-        DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {
-            DashPayError::QueryCreation {
-                query_target: "DashPay profile",
-                source: Box::new(e.into()),
-            }
-        })?;
+    let mut query = DocumentQuery::new(app_context.dashpay_contract(), "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
+            source: Box::new(e.into()),
+        }
+    })?;
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
         operator: WhereOperator::Equal,
@@ -140,7 +139,7 @@ pub async fn fetch_contact_profile(
     _identity: QualifiedIdentity, // May be needed for future privacy features
     contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     // Query for the contact's profile document
     let mut query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
@@ -177,7 +176,7 @@ pub async fn search_profiles(
     sdk: &Sdk,
     search_query: String,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
 
     let query_trimmed = search_query.trim();
@@ -251,7 +250,7 @@ mod tests {
             "Alice",
             Value::Identifier(holder.to_buffer()),
         );
-        let mut prefix_query = DocumentQuery::new(ctx.dpns_contract.clone(), "domain")
+        let mut prefix_query = DocumentQuery::new(ctx.dpns_contract(), "domain")
             .expect("domain query")
             .with_where(WhereClause {
                 field: "normalizedParentDomainName".to_string(),
@@ -382,6 +381,8 @@ mod tests {
     fn profile_removal_is_rejected_instead_of_silently_retaining_fields() {
         for field in ["displayName", "publicMessage", "avatarUrl"] {
             let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+                moderated_at: None,
+                moderated_by: None,
                 properties: [(field.to_string(), Value::Text("existing value".into()))].into(),
                 ..Default::default()
             });
@@ -401,6 +402,8 @@ mod tests {
     #[test]
     fn profile_replacement_is_allowed_with_unchanged_optional_fields() {
         let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             properties: [("displayName".to_string(), Value::Text("Alice".into()))].into(),
             ..Default::default()
         });

@@ -2364,7 +2364,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
 async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear() {
     use crate::backend_task::system_task::SystemTask;
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     let (ctx, sender, _tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender.clone())
@@ -2380,11 +2380,10 @@ async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear
     let backend = ctx.wallet_backend().expect("backend wired");
     let late_writer = Arc::clone(&backend);
     backend.set_after_forget_all_test_hook(move || {
-        let secp = Secp256k1::new();
         let key = PublicKey::new(
-            SecretKey::from_slice(&[0x42; 32])
+            SecretKey::from_secret_bytes([0x42; 32])
                 .expect("valid secret key")
-                .public_key(&secp),
+                .public_key(),
         );
         late_writer
             .auth_pubkey_cache()
@@ -3625,7 +3624,6 @@ fn seed_legacy_protected_single_key(
     alias: Option<&str>,
 ) -> String {
     use crate::model::wallet::single_key::ClosedSingleKey;
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
 
     let path = ctx.db.db_file_path().expect("data.db path");
@@ -3637,10 +3635,9 @@ fn seed_legacy_protected_single_key(
         nonce,
     } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
     let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
-    let secp = Secp256k1::new();
     let pub_key = PublicKey {
         compressed: priv_key.compressed,
-        inner: priv_key.inner.public_key(&secp),
+        inner: priv_key.inner.public_key(),
     };
     let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
     let key_hash = ClosedSingleKey::compute_key_hash(raw_key);
@@ -3654,7 +3651,7 @@ fn seed_legacy_protected_single_key(
             ciphertext,
             salt,
             nonce,
-            pub_key.inner.serialize().to_vec(),
+            pub_key.inner.to_compressed().to_vec(),
             address,
             alias,
             Network::Testnet.to_string(),

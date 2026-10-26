@@ -1,37 +1,37 @@
 use crate::app::TaskResult;
-use crate::model::dashpay::ContactRequestKey;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::document::DocumentTask;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
-use crate::model::masternode_input::decode_identity_id;
+use crate::model::dashpay::ContactRequestKey;
 use crate::model::dpns_voting::{
     DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
 };
-use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use crate::model::grovestark_prover::ProofDataOutput;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function;
 use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -39,15 +39,15 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use grovestark::GroveSTARKTask;
+use migration::MigrationTask;
+use shielded::ShieldedTask;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use migration::MigrationTask;
-use shielded::ShieldedTask;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -367,6 +367,8 @@ pub enum BackendTaskContext {
         identity_id: Identifier,
         contact_id: Identifier,
     },
+    /// A DashPay sync of one identity, which also reads its contact details.
+    DashPaySync(Identifier),
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -559,6 +561,14 @@ impl BackendTaskContext {
         }
     }
 
+    /// The identity a DashPay sync was for, through dispatch wrappers.
+    pub(crate) fn dashpay_sync_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::DashPaySync(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
@@ -692,6 +702,9 @@ impl From<&BackendTask> for BackendTaskContext {
                     identity_id: identity.identity.id(),
                     contact_id: *contact_id,
                 },
+                DashPayTask::SyncNow {
+                    identity: Some(identity),
+                } => Self::DashPaySync(identity.identity.id()),
                 _ => Self::Other,
             },
             BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
@@ -835,7 +848,7 @@ pub enum BackendTaskSuccessResult {
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
         TokenAmount,
-        IntervalEvaluationExplanation,
+        distribution_function::evaluate_interval::IntervalEvaluationExplanation,
     ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
@@ -1451,7 +1464,7 @@ impl AppContext {
                 Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
-                Arc::clone(self).reinit_core_client_and_sdk()?;
+                self.rebuild_connection().await?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {
@@ -2408,7 +2421,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());

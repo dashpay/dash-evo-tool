@@ -129,13 +129,12 @@ async fn fetch_profile(
     sdk: &Sdk,
     owner: Identifier,
 ) -> Result<Option<StoredProfile>, TaskError> {
-    let mut query =
-        DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {
-            DashPayError::QueryCreation {
-                query_target: "DashPay profile",
-                source: Box::new(e.into()),
-            }
-        })?;
+    let mut query = DocumentQuery::new(app_context.dashpay_contract(), "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
+            source: Box::new(e.into()),
+        }
+    })?;
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
         operator: WhereOperator::Equal,

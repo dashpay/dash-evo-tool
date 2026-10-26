@@ -258,7 +258,17 @@ async fn save_contact_details<O: SaveOps>(
     })?;
 
     let outcome = ops.publish(details).await?;
-    ops.mark_synced()?;
+    match ops.mark_synced() {
+        Ok(()) => {}
+        // A deferred save published nothing, so the storage error's claim
+        // that the change reached the network would be false.
+        Err(TaskError::DashpaySidecarStorage { source })
+            if outcome == ContactInfoPublishOutcome::DeferredUntilTwoContacts =>
+        {
+            return Err(TaskError::DashPayContactDetailsNotRecorded { source });
+        }
+        Err(error) => return Err(error),
+    }
     match outcome {
         ContactInfoPublishOutcome::Published => Ok(true),
         ContactInfoPublishOutcome::DeferredUntilTwoContacts => Ok(false),
@@ -362,6 +372,8 @@ mod tests {
             ),
         ]);
         DppDocument::V0(DocumentV0 {
+            moderated_at: None,
+            moderated_by: None,
             id: id(document_id),
             owner_id: id(254),
             creator_id: None,
@@ -443,6 +455,7 @@ mod tests {
     struct ScriptedSave {
         current: std::sync::Mutex<Option<Result<ContactDetails, TaskError>>>,
         mark_fails: bool,
+        outcome: ContactInfoPublishOutcome,
         published: std::sync::Mutex<Vec<ContactDetails>>,
     }
 
@@ -451,8 +464,14 @@ mod tests {
             Self {
                 current: std::sync::Mutex::new(Some(current)),
                 mark_fails,
+                outcome: ContactInfoPublishOutcome::DeferredUntilTwoContacts,
                 published: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        fn with_outcome(mut self, outcome: ContactInfoPublishOutcome) -> Self {
+            self.outcome = outcome;
+            self
         }
     }
 
@@ -466,7 +485,7 @@ mod tests {
             details: ContactDetails,
         ) -> Result<ContactInfoPublishOutcome, TaskError> {
             self.published.lock().unwrap().push(details);
-            Ok(ContactInfoPublishOutcome::DeferredUntilTwoContacts)
+            Ok(self.outcome)
         }
 
         fn mark_synced(&self) -> Result<(), TaskError> {
@@ -492,11 +511,13 @@ mod tests {
         assert!(ops.published.lock().unwrap().is_empty());
     }
 
-    /// A save whose synced record fails is not reported as saved: on reload
-    /// the old legacy details would show again.
+    /// A published save whose synced record fails is not reported as saved:
+    /// on reload the old legacy details would show again. The details did
+    /// reach the network, and the error says so.
     #[tokio::test]
     async fn a_failed_synced_record_fails_the_save() {
-        let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
+        let ops = ScriptedSave::new(Ok(ContactDetails::default()), true)
+            .with_outcome(ContactInfoPublishOutcome::Published);
 
         let result =
             save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
@@ -505,6 +526,26 @@ mod tests {
             result,
             Err(TaskError::DashpaySidecarStorage { .. })
         ));
+    }
+
+    /// A save kept on this device until a second contact exists published
+    /// nothing, so a failed synced record must not claim the change reached
+    /// the network; the user is asked to save again.
+    #[tokio::test]
+    async fn a_failed_synced_record_of_a_deferred_save_claims_no_publish() {
+        let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
+
+        let result =
+            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+
+        let Err(error) = result else {
+            panic!("a failed synced record fails the save");
+        };
+        assert!(
+            matches!(error, TaskError::DashPayContactDetailsNotRecorded { .. }),
+            "got {error:?}"
+        );
+        assert!(!error.to_string().contains("reached the network"));
     }
 
     #[tokio::test]

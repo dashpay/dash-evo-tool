@@ -262,7 +262,7 @@ pub(super) async fn stored_contact_details(
     sdk: &Sdk,
     identity: &QualifiedIdentity,
 ) -> Result<StoredContactDetails, TaskError> {
-    let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactInfo")
+    let query = DocumentQuery::new(app_context.dashpay_contract(), "contactInfo")
         .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
             source: Box::new(e.into()),

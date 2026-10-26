@@ -1,4 +1,3 @@
-use crate::context::default_platform_version;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::ContextProvider;
@@ -17,16 +16,20 @@ fn request_settings() -> RequestSettings {
     }
 }
 
+/// Build an SDK for `network` that tracks the network's protocol version.
+///
+/// The SDK is never pinned: it starts at upstream's per-network minimum (the
+/// lowest version the network still runs) and ratchets upward to whatever the
+/// network reports in proven responses. A rebuilt connection starts there
+/// too: nothing learned from the endpoints it replaces is carried over.
 pub fn initialize_sdk<P: ContextProvider + 'static>(
     address_list: AddressList,
     network: Network,
     context_provider: P,
 ) -> Result<Sdk, String> {
     let request_settings = request_settings();
-    let platform_version = default_platform_version(&network);
 
     let sdk = SdkBuilder::new(address_list)
-        .with_initial_version(platform_version)
         .with_network(network)
         .with_context_provider(context_provider)
         .with_settings(request_settings)
@@ -35,7 +38,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
 
     info!(
         ?network,
-        protocol_version = platform_version.protocol_version,
+        protocol_version = sdk.protocol_version_number(),
         "SDK initialized successfully"
     );
 

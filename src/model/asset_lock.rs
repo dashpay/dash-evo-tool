@@ -84,6 +84,7 @@ pub(crate) fn confirmed_funding_for_test(
     use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
     let out_point = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), 0);
     TrackedAssetLock {
+        operation_id: None,
         out_point,
         transaction: Transaction {
             version: 3,

@@ -1730,11 +1730,13 @@ mod tests {
 
     fn known_testnet_wif() -> String {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+        use dash_sdk::dpp::secp256k1::SecretKey;
         let mut bytes = [0u8; 32];
         bytes[31] = 1;
-        let sk = SecretKey::from_byte_array(&bytes).unwrap();
-        PrivateKey::new(sk, Network::Testnet).to_wif()
+        let sk = SecretKey::from_secret_bytes(bytes).unwrap();
+        PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif()
     }
 
     /// Write a legacy DET AES-GCM `SingleKeyEntry` straight to the vault Tier-1 —
@@ -1742,19 +1744,16 @@ mod tests {
     /// import time, so this is how the legacy→Tier-2 lazy migration path stays
     /// covered.
     fn write_legacy_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
         use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
 
         let priv_key = PrivateKey::from_wif(&known_testnet_wif()).expect("wif");
-        let raw: Zeroizing<[u8; 32]> =
-            Zeroizing::new(priv_key.inner[..].try_into().expect("32 bytes"));
-        let secp = Secp256k1::new();
+        let raw: Zeroizing<[u8; 32]> = priv_key.inner.to_bytes();
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(&secp),
+            inner: priv_key.inner.public_key(),
         };
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
-        let pub_bytes = pub_key.inner.serialize().to_vec();
+        let pub_bytes = pub_key.inner.to_compressed().to_vec();
         let entry =
             SingleKeyEntry::protected(&raw, passphrase, Some("the usual".into()), pub_bytes)
                 .expect("build legacy protected entry");
@@ -1819,9 +1818,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let address = write_legacy_protected_key(&store, SENTINEL_PASSPHRASE);
-        let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif()).unwrap().inner[..]
-            .try_into()
-            .unwrap();
+        let expected: [u8; 32] = *PrivateKey::from_wif(&known_testnet_wif())
+            .unwrap()
+            .inner
+            .to_bytes();
 
         // First resolve: one passphrase, re-wraps to Tier-2.
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));

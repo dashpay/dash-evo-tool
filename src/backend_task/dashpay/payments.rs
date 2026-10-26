@@ -89,7 +89,7 @@ pub async fn derive_contact_payment_address(
     contact_id: Identifier,
 ) -> Result<(Address, u32), String> {
     // Fetch the contact request from the contact to us (they sent us their encrypted xpub)
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
 
     let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
         .map_err(|e| format!("Failed to create query: {}", e))?;
@@ -182,8 +182,8 @@ pub async fn derive_contact_payment_address(
 
     // Create extended public key from components
     // This is simplified - in production you'd properly reconstruct with all fields
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1};
     use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ChildNumber, ExtendedPubKey, Fingerprint};
+    use dash_sdk::dpp::secp256k1::{PublicKey, Secp256k1};
 
     let _secp = Secp256k1::new();
     let pubkey =
@@ -196,7 +196,7 @@ pub async fn derive_contact_payment_address(
         parent_fingerprint: Fingerprint::default(),
         child_number: ChildNumber::from_normal_idx(0)
             .expect("invariant: BIP32 child index 0 is below 2^31"),
-        public_key: pubkey,
+        public_key: pubkey.into(),
         chain_code: ChainCode::from(chain_code),
     };
 

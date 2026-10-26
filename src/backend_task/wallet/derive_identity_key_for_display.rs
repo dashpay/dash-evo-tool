@@ -28,7 +28,9 @@ impl AppContext {
         let network = self.network;
         let wif = self
             .with_identity_secret_key(identity_id, target.clone(), key_id, |secret_key| {
-                let private_key = PrivateKey::new(secret_key, network);
+                // Identity keys are compressed by convention. The clone erases
+                // itself when `private_key` drops.
+                let private_key = PrivateKey::new(secret_key.clone(), network);
                 Ok(Secret::new(private_key.to_wif()))
             })
             .await?;

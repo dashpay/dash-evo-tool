@@ -18,7 +18,6 @@
 
 use std::sync::Arc;
 
-use dash_sdk::dpp::dashcore::base58;
 use dash_sdk::platform::Identifier;
 
 use crate::wallet_backend::kv::{KvAdapterError, kv_get_logged};
@@ -35,7 +34,13 @@ struct StoredUsername {
 }
 
 fn key_for(contact: &Identifier) -> String {
-    format!("{KEY_PREFIX}{}", base58::encode_slice(&contact.to_buffer()))
+    format!(
+        "{KEY_PREFIX}{}",
+        dash_sdk::dpp::platform_value::string_encoding::encode(
+            &contact.to_buffer(),
+            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
+        )
+    )
 }
 
 /// View borrowing a shared [`DetKv`] handle. Cheap to construct.

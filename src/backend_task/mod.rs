@@ -354,6 +354,11 @@ pub enum BackendTaskContext {
         identity_id: Identifier,
         contact_id: Identifier,
     },
+    /// A read of the details shown for one contact.
+    DashPayContactDetailsLoad {
+        identity_id: Identifier,
+        contact_id: Identifier,
+    },
     /// A read of an identity's contacts or contact requests.
     DashPayContactsLoad {
         network: Network,
@@ -565,6 +570,17 @@ impl BackendTaskContext {
         }
     }
 
+    /// Identify a contact-details read through dispatch wrappers.
+    pub(crate) fn dashpay_contact_details_target(&self) -> Option<(Identifier, Identifier)> {
+        match self.operation() {
+            Self::DashPayContactDetailsLoad {
+                identity_id,
+                contact_id,
+            } => Some((*identity_id, *contact_id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
         match self.operation() {
             Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
@@ -696,6 +712,13 @@ impl From<&BackendTask> for BackendTaskContext {
                     network: identity.network,
                     identity_id: identity.identity.id(),
                     kind: crate::model::dashpay::ContactsLoadKind::Requests,
+                },
+                DashPayTask::LoadContactDetails {
+                    identity,
+                    contact_id,
+                } => Self::DashPayContactDetailsLoad {
+                    identity_id: identity.identity.id(),
+                    contact_id: *contact_id,
                 },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())

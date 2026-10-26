@@ -1,7 +1,7 @@
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::{ContactDetails, ContactInfoField, ContactInfoUpdate};
@@ -632,10 +632,19 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        // A failed read leaves this device's copy in place; a save from it
-        // still replaces only the fields the user edits.
         self.loading = false;
-        self.details_loading = false;
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        // Only this screen's own details read reopens the editor: a failed
+        // profile read must not unlock it from this device's older copy while
+        // the details read is still pending. A failed details read leaves that
+        // copy in place; a save from it still replaces only the edited fields.
+        if context.dashpay_contact_details_target()
+            == Some((self.identity.identity.id(), self.contact_id))
+        {
+            self.details_loading = false;
+        }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -869,6 +878,59 @@ mod tests {
         assert_eq!(screen.edit_nickname, "Bao");
         assert_eq!(screen.edit_note, "published");
         assert!(screen.edit_hidden);
+    }
+
+    /// A failed profile read does not open the editor while the details read
+    /// is still pending; only the details read's own failure does, leaving
+    /// this device's copy in place.
+    #[test]
+    fn a_failed_profile_read_keeps_the_editor_closed_until_the_details_read_ends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let owner = Identifier::from([1; 32]);
+        let contact = Identifier::from([2; 32]);
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+
+        let AppAction::BackendTasks(tasks, _) = screen.trigger_backend_fetch() else {
+            panic!("expected the profile and details reads");
+        };
+        let is_details_read = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::DashPayTask(task)
+                    if matches!(task.as_ref(), DashPayTask::LoadContactDetails { .. })
+            )
+        };
+        let profile = tasks
+            .iter()
+            .find(|task| !is_details_read(task))
+            .expect("profile read");
+        let details = tasks
+            .iter()
+            .find(|task| is_details_read(task))
+            .expect("details read");
+        // What AppState delivers for a failure the screen does not handle.
+        let fail = |screen: &mut ContactDetailsScreen, task: &BackendTask| {
+            let error = TaskError::ContactWalletSeedUnavailable;
+            screen.display_backend_task_error(&BackendTaskContext::for_dispatch(task), &error);
+            assert!(!screen.display_task_error(&error));
+            screen.display_message(&error.to_string(), MessageType::Error);
+        };
+
+        fail(&mut screen, profile);
+        screen.start_editing();
+        assert!(
+            !screen.editing_info,
+            "the editor still waits for the details read"
+        );
+
+        fail(&mut screen, details);
+        screen.start_editing();
+        assert!(
+            screen.editing_info,
+            "a failed details read opens the editor"
+        );
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no

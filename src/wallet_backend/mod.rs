@@ -2326,7 +2326,7 @@ impl WalletBackend {
         &self,
         address: &str,
         msg: &[u8; 32],
-    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+    ) -> Result<dash_sdk::dpp::secp256k1::ecdsa::Signature, TaskError> {
         let scope = SecretScope::SingleKey {
             address: address.to_string(),
         };
@@ -3378,6 +3378,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // A token operation keeps its SDK cause, so it is classified like any
+        // SDK error; an unclassified one still names the operation.
+        P::TokenOperationFailed { operation, source } => {
+            TaskError::from_token_operation_failure(operation, source)
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3427,8 +3433,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::NoWalletsConfigured
         | P::SpvError(_)
         | P::TokenError(_)
-        // Upstream's typed successor of `TokenError`; same message.
-        | P::TokenOperationFailed { .. }
         | P::ShieldedNoUnspentNotes
         | P::ShieldedInsufficientBalance { .. }
         | P::ShieldedBuildError(_)
@@ -3453,6 +3457,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MessageSigningMessageInvalid { .. }
         | P::MessageSigningKeyUnavailable { .. }
         | P::MessageSigningFailed { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
@@ -3783,6 +3793,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // know", so it is not `NotManaged` (which asserts the identity is
         // absent and must be reloaded); upstream's contract is to retry.
         | P::IdentityDiscoveryIncomplete { .. }
+        | P::PersisterFlush(_)
+        | P::IdentityBalanceUnavailable(_)
+        | P::InvitationNetworkMismatch { .. }
+        | P::AssetLockTooManyInputs { .. }
+        | P::QuorumNotVerified { .. }
+        | P::SpvProcessRestartRequired(_)
         // Background sync failed to quiesce — a shutdown fault, unrelated to
         // whether this op reached Platform.
         | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,

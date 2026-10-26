@@ -28,7 +28,7 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
 use dash_sdk::platform::transition::put_settings::PutSettings;
 use dash_sdk::platform::transition::waitable::Waitable;
-use dash_sdk::query_types::ContestedResource;
+use dash_sdk::query_types::{ContestedResource, ResourceVoteWithCount};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -114,13 +114,13 @@ pub(super) async fn proved_dpns_vote_choice(
         start_at: Some((key.vote_poll_id.to_buffer(), true)),
         order_ascending: true,
     };
-    let votes = ResourceVote::fetch_many(sdk, query)
+    let votes = ResourceVoteWithCount::fetch_many(sdk, query)
         .await
         .map_err(TaskError::from)?;
     Ok(votes
         .get(&key.vote_poll_id)
         .and_then(Option::as_ref)
-        .map(ResourceVoteGettersV0::resource_vote_choice))
+        .map(|vote| vote.resource_vote.resource_vote_choice()))
 }
 
 /// Settle a rejection that `broadcast` reported.
@@ -169,7 +169,7 @@ impl AppContext {
         name: &str,
         sdk: &Sdk,
     ) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
-        let vote_poll = dpns_vote_poll(&self.dpns_contract, name)?;
+        let vote_poll = dpns_vote_poll(&self.dpns_contract(), name)?;
         let normalized_label = convert_to_homograph_safe_chars(name);
 
         // Pre-flight: confirm Platform has an open poll for this label before

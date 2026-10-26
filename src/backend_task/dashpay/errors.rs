@@ -1,4 +1,4 @@
-use dash_sdk::dpp::dashcore::secp256k1;
+use dash_sdk::dpp::secp256k1;
 use dash_sdk::platform::Identifier;
 use thiserror::Error;
 

@@ -17,6 +17,7 @@ use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
     PlatformSerializableWithPlatformVersion,
 };
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -130,11 +131,11 @@ impl AppContext {
 
         // Pin the system contracts at the head of the list, in display order.
         let system_contracts = [
-            (&self.dpns_contract, "dpns"),
-            (&self.token_history_contract, "token_history"),
-            (&self.withdraws_contract, "withdrawals"),
-            (&self.keyword_search_contract, "keyword_search"),
-            (&self.dashpay_contract, "dashpay"),
+            (self.dpns_contract(), "dpns"),
+            (self.token_history_contract(), "token_history"),
+            (self.withdraws_contract(), "withdrawals"),
+            (self.keyword_search_contract(), "keyword_search"),
+            (self.dashpay_contract(), "dashpay"),
         ];
         for (index, (contract, alias)) in system_contracts.into_iter().enumerate() {
             contracts.insert(
@@ -184,6 +185,14 @@ impl AppContext {
         &self,
         stored: StoredContract,
     ) -> std::result::Result<QualifiedContract, TaskError> {
+        Self::decode_stored_contract_at(stored, self.platform_version())
+    }
+
+    /// [`Self::decode_stored_contract`] at `platform_version`.
+    fn decode_stored_contract_at(
+        stored: StoredContract,
+        platform_version: &PlatformVersion,
+    ) -> std::result::Result<QualifiedContract, TaskError> {
         // DET wrote these bytes, but the untrusted decoder accepts every valid
         // stored contract under the same no-limit config and does not
         // pre-allocate from length prefixes, so a corrupt local entry fails
@@ -191,7 +200,7 @@ impl AppContext {
         let contract = DataContract::versioned_deserialize_untrusted(
             &stored.contract_bytes,
             false,
-            self.platform_version(),
+            platform_version,
         )
         .map_err(|source| TaskError::ContractEncoding {
             source: Box::new(source),
@@ -206,16 +215,26 @@ impl AppContext {
         &self,
         contract_id: &Identifier,
     ) -> std::result::Result<Option<QualifiedContract>, TaskError> {
+        self.get_contract_by_id_at(contract_id, self.platform_version())
+    }
+
+    /// [`Self::get_contract_by_id`], decoded at `platform_version`. The proof
+    /// verifier reads contracts at the version it verifies with, which can be
+    /// newer than the SDK's.
+    pub(crate) fn get_contract_by_id_at(
+        &self,
+        contract_id: &Identifier,
+        platform_version: &PlatformVersion,
+    ) -> std::result::Result<Option<QualifiedContract>, TaskError> {
         let backend = self.wallet_backend()?;
         let key = contract_key(contract_id);
         let stored: Option<StoredContract> = backend
             .kv()
             .get(DetScope::Global, &key)
             .map_err(contract_err)?;
-        match stored {
-            Some(stored) => Ok(Some(self.decode_stored_contract(stored)?)),
-            None => Ok(None),
-        }
+        stored
+            .map(|stored| Self::decode_stored_contract_at(stored, platform_version))
+            .transpose()
     }
 
     pub fn get_unqualified_contract_by_id(
@@ -924,6 +943,191 @@ mod tests {
         let suffix = key.strip_prefix(TOKEN_KEY_PREFIX).unwrap();
         let decoded = Identifier::from_string(suffix, Encoding::Base58).unwrap();
         assert_eq!(decoded, token);
+    }
+
+    /// A user contract as DET builds one at `platform_version`: a document
+    /// type with a unique index (charging `action_fees`, if given), and a token.
+    fn user_contract_at(
+        platform_version: &PlatformVersion,
+        action_fees: Option<dash_sdk::dpp::platform_value::Value>,
+    ) -> DataContract {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::data_contract::v1::DataContractV1;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use std::collections::BTreeMap;
+
+        let id = ident(8);
+        let config = DataContractConfig::default_for_version(platform_version).expect("config");
+        let mut schema = platform_value!({
+            "type": "object",
+            "properties": {"name": {"type": "string", "position": 0, "maxLength": 63_u32}},
+            "required": ["name"],
+            "indices": [{"name": "byName", "properties": [{"name": "asc"}], "unique": true}],
+            "additionalProperties": false,
+        });
+        if let Some(action_fees) = action_fees {
+            schema
+                .insert("actionFees".to_string(), action_fees)
+                .expect("a map schema");
+        }
+        let note = DocumentType::try_from_schema(
+            id,
+            1,
+            config.version(),
+            "note",
+            schema,
+            None,
+            &BTreeMap::new(),
+            &config,
+            true,
+            &mut Vec::new(),
+            platform_version,
+        )
+        .expect("document type");
+        DataContract::V1(DataContractV1 {
+            id,
+            version: 1,
+            owner_id: ident(7),
+            document_types: BTreeMap::from([("note".to_string(), note)]),
+            config,
+            schema_defs: None,
+            groups: BTreeMap::new(),
+            tokens: BTreeMap::from([(
+                0,
+                TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+            )]),
+            keywords: vec![],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
+        })
+    }
+
+    /// The contracts a user may hold locally, encoded as DET encodes them at
+    /// `protocol_version`.
+    fn stored_contracts_at(protocol_version: u32) -> Vec<(DataContract, StoredContract)> {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+        let pv = PlatformVersion::get(protocol_version).expect("known version");
+        [
+            user_contract_at(pv, None),
+            load_system_data_contract(SystemDataContract::DPNS, pv).expect("dpns"),
+            load_system_data_contract(SystemDataContract::Dashpay, pv).expect("dashpay"),
+            load_system_data_contract(SystemDataContract::TokenHistory, pv).expect("history"),
+        ]
+        .into_iter()
+        .map(|contract| {
+            let stored = StoredContract {
+                contract_bytes: contract
+                    .serialize_to_bytes_with_platform_version(pv)
+                    .expect("encode"),
+                alias: Some("saved".to_string()),
+            };
+            (contract, stored)
+        })
+        .collect()
+    }
+
+    /// Contracts saved while DET built at protocol 12 still load, unchanged,
+    /// once DET builds at the network's 13 or 14.
+    #[test]
+    fn contracts_stored_at_protocol_12_decode_at_13_and_14() {
+        let v12 = PlatformVersion::get(12).expect("v12");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        for version in [13, 14] {
+            crate::context::test_support::set_sdk_protocol_version(&ctx, version);
+            for (original, stored) in stored_contracts_at(12) {
+                let bytes = stored.contract_bytes.clone();
+                let decoded = ctx
+                    .decode_stored_contract(stored)
+                    .unwrap_or_else(|e| panic!("protocol {version}: {e:?}"));
+                assert_eq!(decoded.alias.as_deref(), Some("saved"));
+                assert_eq!(decoded.contract.id(), original.id());
+                assert_eq!(
+                    decoded
+                        .contract
+                        .serialize_to_bytes_with_platform_version(v12)
+                        .expect("re-encode"),
+                    bytes,
+                    "protocol {version}: contract {} lost data",
+                    original.id()
+                );
+            }
+        }
+    }
+
+    /// A contract saved at protocol 14 and read back while DET still builds at
+    /// 13 (after a restart, before the first proven response) decodes without
+    /// error. Protocol 14 features (here `actionFees`) are not parsed at 13,
+    /// but the saved bytes are untouched and decode in full once DET builds at
+    /// 14 again.
+    #[test]
+    fn contracts_stored_at_protocol_14_decode_at_13_and_recover_at_14() {
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        for (original, stored) in stored_contracts_at(14) {
+            let decoded = ctx
+                .decode_stored_contract(stored)
+                .unwrap_or_else(|e| panic!("contract {}: {e:?}", original.id()));
+            assert_eq!(decoded.contract, original);
+        }
+
+        let v14 = PlatformVersion::get(14).expect("v14");
+        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
+        let stored = || StoredContract {
+            contract_bytes: charging
+                .serialize_to_bytes_with_platform_version(v14)
+                .expect("encode"),
+            alias: None,
+        };
+        let at_13 = ctx.decode_stored_contract(stored()).expect("decodes at 13");
+        assert_eq!(at_13.contract.id(), charging.id());
+
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
+        let at_14 = ctx.decode_stored_contract(stored()).expect("decodes at 14");
+        assert_eq!(at_14.contract, charging);
+    }
+
+    /// The proof verifier reads a saved user contract at the version it
+    /// verifies with, as it reads system contracts: a contract saved at
+    /// protocol 14 comes back in full when asked at 14 while the SDK still
+    /// sits at 13.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_proof_verifier_reads_a_saved_contract_at_the_version_it_asks_for() {
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        let v14 = PlatformVersion::get(14).expect("v14");
+        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
+        let stored = StoredContract {
+            contract_bytes: charging
+                .serialize_to_bytes_with_platform_version(v14)
+                .expect("encode"),
+            alias: None,
+        };
+        ctx.wallet_backend()
+            .expect("wired backend")
+            .kv()
+            .put(DetScope::Global, &contract_key(&charging.id()), &stored)
+            .expect("store the contract");
+
+        let resolved = crate::context_provider::resolve_data_contract(&ctx, &charging.id(), v14)
+            .expect("resolves")
+            .expect("the saved contract");
+
+        assert_eq!(*resolved, charging);
     }
 
     #[test]

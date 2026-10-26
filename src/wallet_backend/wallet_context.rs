@@ -489,7 +489,7 @@ impl WalletContext {
                 network,
                 has_passphrase: w.uses_password,
                 passphrase_hint: None,
-                public_key_bytes: w.public_key.inner.serialize().to_vec(),
+                public_key_bytes: w.public_key.inner.to_compressed().to_vec(),
             }
         };
         let _writer = self.lock_writer();
@@ -853,7 +853,7 @@ mod tests {
             network,
             has_passphrase: false,
             passphrase_hint: None,
-            public_key_bytes: open.public_key.inner.serialize().to_vec(),
+            public_key_bytes: open.public_key.inner.to_compressed().to_vec(),
         };
         (meta, open, protected)
     }

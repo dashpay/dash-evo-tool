@@ -197,7 +197,7 @@ impl RegisterDpnsNameScreen {
         let Some(identity) = &self.selected_qualified_identity else {
             return;
         };
-        let required = dpns_signing_requirement(&self.app_context.dpns_contract);
+        let required = dpns_signing_requirement(&self.app_context.dpns_contract());
         let wallets = self.app_context.wallet_context();
         let arrived = missing_registration_wallets(identity, required)
             .any(|seed_hash| wallets.contains_hd(seed_hash));
@@ -590,7 +590,7 @@ impl RegisterDpnsNameScreen {
                 .show(ui, |ui| {
                     let document_type = self
                         .app_context
-                        .dpns_contract
+                        .dpns_contract()
                         .document_type_cloned_for_name("domain")
                         .ok();
                     if self.selected_key.is_none() {
@@ -913,7 +913,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     // and Keys screen; this page only says what helps.
                     let key_status = registration_key_status(
                         identity,
-                        dpns_signing_requirement(&self.app_context.dpns_contract),
+                        dpns_signing_requirement(&self.app_context.dpns_contract()),
                     );
                     let updated_install = key_status.key_is_unusable_here()
                         && self.app_context.has_legacy_identities();

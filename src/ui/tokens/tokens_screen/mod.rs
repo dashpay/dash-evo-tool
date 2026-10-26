@@ -3784,7 +3784,7 @@ mod tests {
             .expect_err("a network below protocol 14 refuses a non-transferable token");
         assert!(err.contains("does not accept"), "got: {err}");
 
-        app_context.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&app_context, 14);
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");

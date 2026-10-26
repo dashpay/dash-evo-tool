@@ -813,13 +813,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
 
-        ctx.set_platform_protocol_version(13);
+        crate::context::test_support::prove_protocol_version(&ctx, 13);
         assert!(ctx.ensure_transferability_supported(true).is_ok());
         assert!(matches!(
             ctx.ensure_transferability_supported(false),
             Err(TaskError::NonTransferableTokenNotSupported)
         ));
-        ctx.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&ctx, 14);
         assert!(ctx.ensure_transferability_supported(false).is_ok());
     }
 

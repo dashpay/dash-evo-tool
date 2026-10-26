@@ -2471,6 +2471,37 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// The scanned text is not a DashPay contact QR code (DIP-15
+    /// `dash:?du=…&dapk=…`), as upstream platform-wallet's codecs read it.
+    #[error(
+        "This is not a DashPay contact QR code. Scan your contact's QR code again, or ask them for a new one."
+    )]
+    ContactQrInvalid {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The scanned contact QR code's auto-accept key has expired.
+    #[error("This contact QR code has expired. Ask your contact for a new one.")]
+    ContactQrExpired,
+
+    /// The identity has no wallet on this device whose recovery phrase can
+    /// derive its contact QR code's auto-accept key.
+    #[error(
+        "This identity's wallet is not on this device, so it cannot create a contact QR code. Import the wallet that created the identity and try again."
+    )]
+    ContactQrWalletMissing,
+
+    /// Upstream platform-wallet could not build the contact QR code, for
+    /// example because the identity has no username to put in it.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Deriving the per-contact encryption keys from the wallet's recovery
     /// phrase failed. The seam already proved the seed is present, so this is a
     /// derivation-math failure rather than a missing wallet.

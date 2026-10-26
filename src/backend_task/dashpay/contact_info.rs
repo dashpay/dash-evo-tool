@@ -17,13 +17,14 @@ use dash_sdk::dpp::document::{
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -583,11 +584,6 @@ pub(super) async fn contact_info_is_hidden(
 /// encryption keys cannot be derived, when an encoded field exceeds its v0 or
 /// contract limit, when the identity has no usable authentication key, or when
 /// the state transition is rejected.
-// TODO(upstream): publish through platform-wallet's
-// `DashPayView::set_contact_info_with_external_signer` once it preserves the
-// stored `acceptedAccounts` (it writes an empty list) and DET supplies a
-// `ContactCryptoProvider`; until then DET keeps its own write path and takes
-// the signing key from `QualifiedIdentity::dashpay_signing_key`.
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -638,8 +634,20 @@ pub async fn create_or_update_contact_info(
         ));
     }
 
+    // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
+    // Platform accepts all for document state transitions.
     let signing_key = identity
-        .dashpay_signing_key(&dashpay_contract, "contactInfo")
+        .identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ]),
+            KeyType::all_key_types().into(),
+            false,
+        )
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Create document properties

@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::ContactQr;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -26,7 +26,7 @@ pub struct QRScannerScreen {
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     qr_data_input: String,
-    parsed_qr_data: Option<AutoAcceptProofData>,
+    parsed_qr_data: Option<ContactQr>,
     sending: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -78,7 +78,7 @@ impl QRScannerScreen {
             return;
         }
 
-        match AutoAcceptProofData::from_qr_string(&self.qr_data_input) {
+        match ContactQr::parse(&self.qr_data_input, now_secs()) {
             Ok(data) => {
                 self.parsed_qr_data = Some(data);
                 MessageBanner::set_global(
@@ -91,7 +91,7 @@ impl QRScannerScreen {
                 self.parsed_qr_data = None;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    "The QR code is not valid for DashPay. Scan a DashPay code and try again.",
+                    error.to_string(),
                     MessageType::Error,
                 )
                 .with_details(error);
@@ -124,12 +124,7 @@ impl QRScannerScreen {
                     BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequestWithProof {
                         identity: identity.clone(),
                         signing_key: signing_key.clone(),
-                        to_identity_id: qr_data.identity_id,
-                        account_label: Some(format!(
-                            "QR Contact (Account #{})",
-                            qr_data.account_reference
-                        )),
-                        qr_auto_accept: qr_data.clone(),
+                        qr: qr_data.clone(),
                     }));
 
                 return AppAction::BackendTask(task);
@@ -222,7 +217,7 @@ impl QRScannerScreen {
 
                 ui.add(
                     TextEdit::multiline(&mut self.qr_data_input)
-                        .hint_text("dash:?di=...")
+                        .hint_text("dash:?du=...&dapk=...")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
                 );
@@ -251,19 +246,14 @@ impl QRScannerScreen {
                         .num_columns(2)
                         .spacing([10.0, 5.0])
                         .show(ui, |ui| {
-                            ui.label("Contact Identity:");
-                            ui.label(qr_data.identity_id.to_string(
-                                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
-                            ));
-                            ui.end_row();
-
-                            ui.label("Account Reference:");
-                            ui.label(format!("{}", qr_data.account_reference));
+                            ui.label("Contact:");
+                            ui.label(qr_data.dpns_name());
                             ui.end_row();
 
                             ui.label("Expires:");
-                            let expiry_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(qr_data.expires_at);
-                            ui.label(format!("{:?}", expiry_time));
+                            ui.label(crate::model::datetime::local_date_time_from_unix_millis(
+                                u64::from(qr_data.expires_at()) * 1000,
+                            ));
                             ui.end_row();
                         });
 
@@ -305,8 +295,7 @@ impl QRScannerScreen {
 
                     ui.add_space(10.0);
 
-                    ui.label(RichText::new("ℹ️ This will send a contact request that will be automatically accepted").small());
-                    ui.label(RichText::new("⚡ Both you and the contact will become mutual contacts instantly").small());
+                    ui.label(RichText::new("ℹ️ This sends a contact request that your contact's DashPay wallet can accept automatically.").small());
                 });
             }
 
@@ -316,11 +305,9 @@ impl QRScannerScreen {
             ui.group(|ui| {
                 ui.label(RichText::new("ℹ️ About QR Code Scanning").strong());
                 ui.separator();
-                ui.label("• QR codes enable instant mutual contact establishment");
-                ui.label("• The contact request is automatically accepted by both parties");
-                ui.label("• No manual approval is needed when using valid QR codes");
-                ui.label("• QR codes expire after the specified time period");
-                ui.label("• Each QR code can only be used once");
+                ui.label("• A contact QR code names your contact's username");
+                ui.label("• Your contact's DashPay wallet can accept a request sent from it automatically");
+                ui.label("• A contact QR code works for one hour after it is created");
             });
         });
 
@@ -392,4 +379,13 @@ impl ScreenLike for QRScannerScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
     }
+}
+
+/// The wall clock in Unix seconds, the clock a contact QR code's expiry is
+/// compared against.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
 }

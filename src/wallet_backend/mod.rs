@@ -83,6 +83,7 @@ pub(crate) use dashpay::{
     ContactRequestActionKind, derive_contact_info_encryption_keys, derive_contact_xpub_material,
 };
 
+pub(crate) use contact_info::PublishedContactInfos;
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;

@@ -135,7 +135,10 @@ async fn shown_details_for(
         .await
         .remove(contact_id);
     let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
-    let published = stored.published?.remove(contact_id);
+    let published = stored
+        .published?
+        .take(contact_id)
+        .map(|(details, _)| details);
     let legacy = stored.legacy?;
     let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
         || super::contacts::holds_details(published.as_ref(), local.as_ref());

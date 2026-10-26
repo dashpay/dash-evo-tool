@@ -15,7 +15,7 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
 use futures::future::join_all;
 use platform_wallet::wallet::identity::crypto::{ContactInfoPrivateData, decode_private_data};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -171,8 +171,10 @@ where
 }
 
 /// The details `documents` (oldest first) hold under the legacy key root;
-/// a later document for a contact replaces an earlier one. A document that
-/// does not open is skipped.
+/// a later document for a contact replaces an earlier one. A document whose
+/// keys or contact id do not open is skipped, since nothing tells whose it
+/// is. One whose details do not decrypt or decode marks its contact
+/// unreadable and hidden.
 ///
 /// # Errors
 ///
@@ -261,7 +263,7 @@ pub(super) struct StoredContactDetails {
     /// From DIP-0015 documents platform-wallet can read, newest per contact;
     /// an error when the seed could not be used to read them. A save must not
     /// guess past that error; the contacts list may.
-    pub(super) published: Result<BTreeMap<Identifier, ContactDetails>, TaskError>,
+    pub(super) published: Result<crate::wallet_backend::PublishedContactInfos, TaskError>,
     /// From documents older versions of this app wrote under the legacy
     /// key root, newest per contact; an error as for `published`.
     pub(super) legacy: Result<HashMap<Identifier, ContactData>, TaskError>,
@@ -300,7 +302,7 @@ pub(super) async fn stored_contact_details(
                 .dashpay_open_contact_infos(identity, &documents)
                 .await
         }
-        Err(_) => Ok(BTreeMap::new()),
+        Err(_) => Ok(crate::wallet_backend::PublishedContactInfos::default()),
     };
     // Without a wallet seed no legacy key exists, so no document opens.
     let legacy = if identity.dashpay_wallet_seed_hash().is_some() {
@@ -493,7 +495,7 @@ pub async fn load_contacts(
         stored_contact_details(app_context, sdk, &identity).await?;
     let mut published = published.unwrap_or_else(|error| {
         tracing::debug!(?error, "LoadContacts: published contact details not read");
-        BTreeMap::new()
+        crate::wallet_backend::PublishedContactInfos::default()
     });
     let legacy = legacy.unwrap_or_else(|error| {
         tracing::debug!(?error, "LoadContacts: legacy contact details not read");
@@ -506,7 +508,10 @@ pub async fn load_contacts(
         .map(|contact_id| {
             let legacy = legacy.get(&contact_id);
             let synced = synced.remove(&contact_id);
-            let published = published.remove(&contact_id);
+            let (published, published_unreadable) = match published.take(&contact_id) {
+                Some((details, unreadable)) => (Some(details), unreadable),
+                None => (None, false),
+            };
             let synced_before = backend.as_ref().is_some_and(|backend| {
                 let synced_before = backend
                     .dashpay_details_synced(&identity_id, &contact_id)
@@ -523,8 +528,8 @@ pub async fn load_contacts(
                 }
                 synced_before
             });
-            let details_unreadable =
-                legacy_details_shown(published.as_ref(), synced.as_ref(), synced_before)
+            let details_unreadable = published_unreadable
+                || legacy_details_shown(published.as_ref(), synced.as_ref(), synced_before)
                     && legacy.is_some_and(|legacy| legacy.details_unreadable);
             let details = shown_contact_details(
                 published,
@@ -758,6 +763,7 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// After a restart the offline list shows the details platform-wallet
     /// holds (synced from Platform) rather than this device's older copy, so
@@ -990,7 +996,11 @@ mod tests {
             (None, Some(&empty), false),
             (None, Some(&note), false),
             (None, None, true),
+            (None, Some(&empty), true),
+            (None, Some(&note), true),
             (Some(&empty), None, false),
+            (Some(&note), None, false),
+            (Some(&note), Some(&note), true),
         ] {
             let legacy = details("legacy");
             assert_eq!(

@@ -7,7 +7,7 @@
 //! platform-wallet's own `derive_contact_info_keys`, the AES steps from the
 //! `platform-encryption` crate it uses, so both sides always agree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
@@ -202,12 +202,12 @@ impl WalletBackend {
         &self,
         identity: &QualifiedIdentity,
         documents: &[Document],
-    ) -> Result<BTreeMap<Identifier, ContactDetails>, TaskError> {
+    ) -> Result<PublishedContactInfos, TaskError> {
         if documents.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(PublishedContactInfos::default());
         }
         let Some(seed_hash) = identity.dashpay_wallet_seed_hash() else {
-            return Ok(BTreeMap::new());
+            return Ok(PublishedContactInfos::default());
         };
         // A wallet that cannot be resolved is an error: a save keeps every
         // field it does not replace from this read, so an empty result here
@@ -222,7 +222,7 @@ impl WalletBackend {
                 .and_then(|managed| managed.identity_index)
         };
         let Some(identity_index) = identity_index else {
-            return Ok(BTreeMap::new());
+            return Ok(PublishedContactInfos::default());
         };
         let network = identity.network;
         self.secret_access()
@@ -238,8 +238,37 @@ impl WalletBackend {
     }
 }
 
-/// Open `documents` (oldest first) through `crypto`; the newest readable
-/// document per contact wins.
+/// The details published `contactInfo` documents hold, from the newest
+/// document per contact.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct PublishedContactInfos {
+    details: BTreeMap<Identifier, ContactDetails>,
+    /// Contacts whose newest document opens to their id but whose details do
+    /// not decrypt or decode. It may also hold ids of no contact, from
+    /// documents sealed under another key.
+    unreadable: BTreeSet<Identifier>,
+}
+
+impl PublishedContactInfos {
+    /// Take the published details for `contact_id`, and whether they are
+    /// unreadable. Unreadable details stand in as hidden: their hidden flag
+    /// cannot be read, and must not be taken as cleared.
+    pub(crate) fn take(&mut self, contact_id: &Identifier) -> Option<(ContactDetails, bool)> {
+        if self.unreadable.remove(contact_id) {
+            let hidden = ContactDetails {
+                hidden: true,
+                ..Default::default()
+            };
+            return Some((hidden, true));
+        }
+        self.details
+            .remove(contact_id)
+            .map(|details| (details, false))
+    }
+}
+
+/// Open `documents` (oldest first) through `crypto`; the newest document per
+/// contact wins, readable or not.
 // TODO(upstream): dip15-contactinfo-reader — replace with a platform-wallet
 // contactInfo-only, provider-backed read for seedless wallets once one exists;
 // platform-wallet's own drain is crate-private and runs unrelated contact work.
@@ -247,8 +276,8 @@ impl WalletBackend {
 async fn open_contact_info_documents(
     crypto: &ContactInfoCrypto<'_>,
     documents: &[Document],
-) -> BTreeMap<Identifier, ContactDetails> {
-    let mut opened = BTreeMap::new();
+) -> PublishedContactInfos {
+    let mut opened = PublishedContactInfos::default();
     for document in documents {
         let Some(stored) = StoredContactInfo::of(document) else {
             continue;
@@ -261,7 +290,7 @@ async fn open_contact_info_documents(
         ) else {
             continue;
         };
-        let Ok(contact) = crypto
+        let (contact_id, data) = match crypto
             .contact_info_open(
                 &root_path,
                 stored.derivation_index,
@@ -269,20 +298,42 @@ async fn open_contact_info_documents(
                 stored.private_data,
             )
             .await
-        else {
-            continue;
-        };
-        let Ok(data) = decode_private_data(&contact.private_data) else {
-            continue;
-        };
-        opened.insert(
-            Identifier::from(contact.contact_id),
-            ContactDetails {
-                nickname: data.alias_name,
-                note: data.note,
-                hidden: data.display_hidden,
+        {
+            Ok(contact) => (
+                contact.contact_id,
+                decode_private_data(&contact.private_data).ok(),
+            ),
+            // The contact id still opens: the document is that contact's,
+            // with details that do not decrypt.
+            Err(_) => match crypto.keys(&root_path, stored.derivation_index) {
+                Ok(keys) => (
+                    platform_encryption::decrypt_enc_to_user_id(
+                        &keys.enc_to_user_id_key,
+                        &stored.enc_to_user_id,
+                    ),
+                    None,
+                ),
+                Err(_) => continue,
             },
-        );
+        };
+        let contact_id = Identifier::from(contact_id);
+        match data {
+            Some(data) => {
+                opened.unreadable.remove(&contact_id);
+                opened.details.insert(
+                    contact_id,
+                    ContactDetails {
+                        nickname: data.alias_name,
+                        note: data.note,
+                        hidden: data.display_hidden,
+                    },
+                );
+            }
+            None => {
+                opened.details.remove(&contact_id);
+                opened.unreadable.insert(contact_id);
+            }
+        }
     }
     opened
 }
@@ -627,7 +678,8 @@ mod tests {
 
     /// SEC-003: DIP-0015 documents are read back without platform-wallet
     /// holding the seed; the newest per contact wins, and documents that do
-    /// not open (another key root, or garbage) are skipped, not fatal.
+    /// not open (another key root, or garbage) give no details and are not
+    /// fatal.
     #[tokio::test]
     async fn dip15_documents_are_read_back_newest_first() {
         let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
@@ -661,7 +713,7 @@ mod tests {
         let opened = open_contact_info_documents(&crypto, &documents).await;
 
         assert_eq!(
-            opened,
+            opened.details,
             BTreeMap::from([
                 (Identifier::from([7; 32]), note("newer")),
                 (
@@ -673,6 +725,59 @@ mod tests {
                 ),
             ])
         );
+    }
+
+    /// A newest document that names its contact but whose details do not
+    /// decrypt or decode is not skipped in favour of an older readable one:
+    /// the contact stays hidden, marked unreadable, since its hidden flag
+    /// cannot be read.
+    #[tokio::test]
+    async fn an_unreadable_newest_document_keeps_its_contact_hidden() {
+        let crypto = ContactInfoCrypto::new(&SEED, NETWORK, IDENTITY_INDEX);
+        let shown = ContactDetails {
+            note: Some("older".into()),
+            ..Default::default()
+        };
+        let older = sealed(&crypto, 0, [7; 32], shown.clone()).await;
+        let mut undecryptable = sealed(&crypto, 1, [7; 32], shown.clone()).await;
+        undecryptable.private_data = vec![9; 48];
+        let older_other = sealed(&crypto, 2, [8; 32], shown.clone()).await;
+        let undecodable = {
+            let keys = crypto
+                .keys(&root(IDENTITY_INDEX, 2), 3)
+                .expect("own root keys");
+            ContactInfoSealed {
+                enc_to_user_id: platform_encryption::encrypt_enc_to_user_id(
+                    &keys.enc_to_user_id_key,
+                    &[8; 32],
+                ),
+                private_data: platform_encryption::encrypt_private_data(
+                    &keys.private_data_key,
+                    &[4; 16],
+                    &[0xFF; 40],
+                ),
+            }
+        };
+        let documents = [
+            stored_document(1, 2, 0, &older),
+            stored_document(2, 2, 1, &undecryptable),
+            stored_document(3, 2, 2, &older_other),
+            stored_document(4, 2, 3, &undecodable),
+        ];
+
+        let mut opened = open_contact_info_documents(&crypto, &documents).await;
+
+        let hidden = ContactDetails {
+            hidden: true,
+            ..Default::default()
+        };
+        for contact in [[7; 32], [8; 32]] {
+            assert_eq!(
+                opened.take(&Identifier::from(contact)),
+                Some((hidden.clone(), true)),
+                "{contact:?}"
+            );
+        }
     }
 
     /// A root that belongs to another wallet identity is refused.

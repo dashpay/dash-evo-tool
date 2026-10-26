@@ -3,13 +3,9 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::request_type::RequestType;
-use dash_sdk::Sdk;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::platform::tokens::builders::emergency_action::TokenEmergencyActionTransitionBuilder;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::tokens::transitions::EmergencyActionResult;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use std::sync::Arc;
 
@@ -23,42 +19,25 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
-        sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Use .resume(...) constructor
-        let mut builder = TokenEmergencyActionTransitionBuilder::resume(
-            data_contract.clone(),
-            token_position,
-            actor_identity.identity.id(),
-        );
-
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        if let Some(group_info) = group_info {
-            builder = builder.with_using_group_info(group_info);
-        }
-
-        if let Some(options) = self.state_transition_options() {
-            builder = builder.with_state_transition_creation_options(options);
-        }
+        let actor = self.token_actor(actor_identity).await?;
+        let common = self.token_action_common(data_contract.clone(), token_position, &signing_key);
 
         self.execute_token_op(
-            async {
-                let state_transition = builder
-                    .sign(sdk, &signing_key, actor_identity, self.platform_version())
-                    .await
-                    .map_err(TaskError::from)?;
-                state_transition
-                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
-                    .await
-                    .map_err(|e| {
-                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                    })
+            actor.resume(common, public_note, group_info),
+            |result| match result {
+                EmergencyActionResult::Document(document) => {
+                    tracing::info!("ResumeTokens: document id={}", document.id());
+                }
+                EmergencyActionResult::GroupActionWithDocument(power, document) => {
+                    tracing::info!(
+                        "ResumeTokens: group action power={}, has_doc={}",
+                        power,
+                        document.is_some()
+                    );
+                }
             },
-            |proof_result| tracing::info!("ResumeTokens proof result: {}", proof_result),
             BackendTaskSuccessResult::ResumedTokens,
         )
         .await

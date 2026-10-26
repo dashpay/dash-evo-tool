@@ -2784,6 +2784,11 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A token action was requested for an identity no wallet in this app
+    /// holds; token transactions go through the identity's own wallet.
+    #[error("{}", crate::model::token::TOKEN_ACTIONS_NEED_WALLET)]
+    TokenActionNeedsWallet,
+
     /// Platform refused a token operation for a reason with no dedicated
     /// variant. Built by [`TaskError::from_token_operation`].
     #[error("{}", operation.rejection_message())]

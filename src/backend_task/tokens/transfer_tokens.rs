@@ -5,13 +5,9 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::request_type::RequestType;
-use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::transfer::TokenTransferTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::TransferResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -27,34 +23,13 @@ impl AppContext {
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
-        sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut builder = TokenTransferTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            sending_identity.identity.id(),
-            recipient_id,
-            amount,
-        );
-
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
+        let actor = self.token_actor(sending_identity).await?;
+        let common = self.token_action_common(data_contract.clone(), token_position, &signing_key);
 
         self.execute_token_op(
-            async {
-                sdk.token_transfer(builder, &signing_key, sending_identity)
-                    .await
-                    .map_err(|e| {
-                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                    })
-            },
+            actor.transfer(common, recipient_id, amount, public_note),
             |result| {
                 // Using the result, update the balance of both sender and recipient identities
                 if let Some(token_id) = data_contract.token_id(token_position) {

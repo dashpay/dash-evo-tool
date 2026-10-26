@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
+use crate::model::identity_name::shorten_id;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::clicked_outside_window_after_open;
@@ -32,6 +33,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::platform::Identifier;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
 use egui::{Frame, Margin, RichText, Ui};
@@ -392,7 +394,7 @@ impl TokensScreen {
                             .resizable(true)
                             .cell_layout(egui::Layout::left_to_right(Align::Center))
                             .column(Column::initial(60.0).resizable(true)) // Identity name
-                            .column(Column::initial(200.0).resizable(true)) // Identity ID
+                            .column(Column::initial(80.0).resizable(true)) // Identity ID
                             .column(Column::initial(60.0).resizable(true)); // Balance
 
 
@@ -451,14 +453,11 @@ impl TokensScreen {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
                                         });
                                         row.col(|ui| {
-                                            if itb.identity_id == token_info.data_contract.owner_id() {
-                                                ui.label(
-                                                    RichText::new(itb.identity_id.to_string(Encoding::Base58))
-                                                        .color(Color32::from_rgb(0, 100, 0)) // Dark green
-                                                ).info_tooltip("Owner of the contract");
-                                            } else {
-                                                ui.label(itb.identity_id.to_string(Encoding::Base58));
-                                            }
+                                            short_id_cell(
+                                                ui,
+                                                itb.identity_id,
+                                                itb.identity_id == token_info.data_contract.owner_id(),
+                                            );
                                         });
                                         row.col(|ui| {
                                             if let Some(balance) = itb.balance {
@@ -531,27 +530,23 @@ impl TokensScreen {
                                             });
                                         }
                                         row.col(|ui| {
-                                            if itb.available_actions.shown_buttons() < 3 {
-                                                action |= self.render_actions(itb, &token_info, 0..10, ui);
-                                            } else {
-                                                action |= self.render_actions(itb, &token_info, 0..3, ui);
-                                                // Expandable advanced actions menu
-                                                ui.menu_button("...", |ui| {
-                                                    action |= self.render_actions(itb, &token_info, 3..128, ui);
-                                                });
-                                            }
-
-                                            // Remove
-                                            if ui
-                                                .button("X")
-                                                .clickable_tooltip(
-                                                    "Remove identity token balance from DET",
-                                                )
-                                                .clicked()
-                                            {
-                                                self.confirm_remove_identity_token_balance_popup = true;
-                                                self.identity_token_balance_to_remove = Some(itb.into());
-                                            }
+                                            // The first three actions stay inline; the rest and
+                                            // Remove live in the "..." menu, so the row fits
+                                            // narrow windows.
+                                            action |= self.render_actions(itb, &token_info, 0..3, ui);
+                                            ui.menu_button("...", |ui| {
+                                                action |= self.render_actions(itb, &token_info, 3..128, ui);
+                                                if ui
+                                                    .button("Remove from DET")
+                                                    .clickable_tooltip(
+                                                        "Remove identity token balance from DET",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.confirm_remove_identity_token_balance_popup = true;
+                                                    self.identity_token_balance_to_remove = Some(itb.into());
+                                                }
+                                            });
                                         });
                                     });
                                 }
@@ -1027,7 +1022,7 @@ impl TokensScreen {
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(Align::Center))
                 .column(Column::initial(150.0).resizable(true)) // Token Name
-                .column(Column::initial(200.0).resizable(true)) // Token ID
+                .column(Column::initial(80.0).resizable(true)) // Token ID
                 .column(Column::initial(80.0).resizable(true)) // Description
                 .column(Column::initial(80.0).resizable(true)) // Actions
                 .header(30.0, |mut header| {
@@ -1074,9 +1069,7 @@ impl TokensScreen {
                                     }
                                 });
                             });
-                            row.col(|ui| {
-                                ui.label(token_id.to_string(Encoding::Base58));
-                            });
+                            row.col(|ui| short_id_cell(ui, *token_id, false));
                             row.col(|ui| {
                                 ui.label(description.as_ref().unwrap_or(&"None".to_string()));
                             });
@@ -1102,6 +1095,26 @@ impl TokensScreen {
                 });
         });
         Ok(action)
+    }
+}
+
+/// A table cell with a shortened ID that copies the full ID when clicked, so
+/// long IDs do not push the row's actions off-screen.
+fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
+    let full = id.to_string(Encoding::Base58);
+    let mut text = RichText::new(shorten_id(&full));
+    let tooltip = if is_contract_owner {
+        text = text.color(Color32::from_rgb(0, 100, 0)); // Dark green
+        format!("Owner of the contract. Click to copy the full ID: {full}")
+    } else {
+        format!("Click to copy the full ID: {full}")
+    };
+    if ui
+        .add(egui::Label::new(text).sense(egui::Sense::click()))
+        .clickable_tooltip(tooltip)
+        .clicked()
+    {
+        ui.ctx().copy_text(full);
     }
 }
 
@@ -1221,7 +1234,7 @@ mod tests {
         harness.get_by_label("Identity name").click();
         harness.run();
         let positions = [3, 1, 2].map(|byte| {
-            let id = Identifier::from([byte; 32]).to_string(Encoding::Base58);
+            let id = shorten_id(&Identifier::from([byte; 32]).to_string(Encoding::Base58));
             harness.get_by_label(&id).rect().center().y
         });
         assert!(

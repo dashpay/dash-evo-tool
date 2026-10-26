@@ -572,12 +572,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     app_context: &self.common.app_context,
                     is_group_signing: self.common.group_action_id.is_some(),
                 };
+                let steps_before = step.0;
                 self.action.render_form(ui, &action_ctx, &mut step);
+                // Pause and resume have no form; a separator there would only
+                // leave a blank band under the heading.
+                if step.0 > steps_before {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                }
             }
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
 
             let note_step = step.advance();
             self.render_public_note(ui, note_step);

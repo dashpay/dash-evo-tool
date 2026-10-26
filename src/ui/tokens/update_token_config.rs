@@ -150,8 +150,10 @@ impl UpdateTokenConfigScreen {
 
     fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        // Step 1 (choosing the signing key) only shows in advanced mode.
+        let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading("2. Select the item to update");
+        ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -617,7 +619,7 @@ impl UpdateTokenConfigScreen {
         ui.separator();
         ui.add_space(10.0);
 
-        ui.heading("3. Public note (optional)");
+        ui.heading(format!("{}. Public note (optional)", first_step + 1));
         ui.add_space(5.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -921,7 +923,13 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     return;
                 }
 
-                ui.heading("Update Token Configuration");
+                // The page heading shares its row with the Advanced Options toggle.
+                ui.horizontal(|ui| {
+                    ui.heading("Update Token Configuration");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -994,14 +1002,6 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     }
                 }
 
-                // Header with Advanced Options checkbox
-                ui.horizontal(|ui| {
-                    ui.heading("Update Token Config");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                    });
-                });
-                ui.add_space(10.0);
 
                 // Key selection (only in advanced mode)
                 if self.show_advanced_options {

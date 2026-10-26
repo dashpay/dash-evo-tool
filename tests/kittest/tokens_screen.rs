@@ -243,7 +243,7 @@ fn token_action_forms_start_right_under_the_heading() {
             );
             let gap = first_step_rect.top() - heading_rect.bottom();
             assert!(
-                (0.0..=60.0).contains(&gap),
+                (0.0..=40.0).contains(&gap),
                 "{heading}: the first form step must start right under the heading, \
                  found a {gap}px gap (heading {heading_rect:?}, step {first_step_rect:?})"
             );
@@ -600,6 +600,15 @@ fn assert_intact_layout(
         })
         .map(|(rect, _)| *rect)
         .collect();
+    // The central panel's island ends 30px before the window edge (panel
+    // margin plus the island's inner margin); anything further right is clipped.
+    let visible_right = harness.ctx.content_rect().width() - 30.0;
+    for control in &controls {
+        assert!(
+            control.right() <= visible_right + 0.5,
+            "{screen}: a control at {control:?} is cut off past x={visible_right}"
+        );
+    }
     for (i, a) in controls.iter().enumerate() {
         for b in &controls[i + 1..] {
             let overlap = a.intersect(*b);
@@ -746,9 +755,24 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         f.harness.state_mut().screen_stack.clear();
         f.harness.run_steps(5);
         assert_intact_layout(&f.harness, "My Tokens", 360.0);
+        // Known limitation: in Power and Developer modes the details row adds a
+        // rewards column and stays wider than a 1050px window (it scrolls
+        // sideways), so the fit is checked in the default mode.
+        f.app_context.set_user_role(UserRole::Everyday);
+        f.harness
+            .state_mut()
+            .active_root_screen_mut()
+            .refresh_on_arrival();
+        f.harness.run_steps(5);
         f.harness.get_by_label(SMOKE_TOKEN).click();
         f.harness.run_steps(5);
         assert_intact_layout(&f.harness, "Token details", 360.0);
+        f.harness.get_by_label("...").click();
+        f.harness.run_steps(3);
+        f.harness.get_by_label("Remove from DET");
+        f.harness.key_press(egui::Key::Escape);
+        f.harness.run_steps(3);
+        f.app_context.set_user_role(UserRole::Developer);
         f.click_breadcrumb("Tokens");
         f.harness.get_by_label("More Info").click();
         f.harness.run_steps(5);
@@ -831,5 +855,69 @@ fn token_action_buttons_wait_for_valid_input() {
             f.click_button("Cancel");
             assert!(!f.confirmation_open(), "{button}: Cancel closes the dialog");
         }
+    });
+}
+
+/// Each token form shows one page heading, with Advanced Options on its row,
+/// and numbers its steps from 1. Breadcrumbs use plain words.
+#[test]
+fn token_forms_show_one_heading_and_number_steps_from_one() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let info = f.info.clone();
+        let transfer_heading = format!("Transfer {SMOKE_TOKEN}");
+
+        // (screen, page heading, a heading that must no longer repeat it)
+        let cases = [
+            (
+                ScreenType::TransferTokensScreen(f.balance.clone()),
+                transfer_heading.as_str(),
+                "Transfer Tokens",
+            ),
+            (
+                ScreenType::PurchaseTokenScreen(info.clone()),
+                "Purchase Tokens",
+                "Purchase Tokens",
+            ),
+            (
+                ScreenType::SetTokenPriceScreen(info.clone()),
+                "Set Token Pricing Schedule",
+                "Set Token Price",
+            ),
+            (
+                ScreenType::UpdateTokenConfigScreen(info.clone()),
+                "Update Token Configuration",
+                "Update Token Config",
+            ),
+        ];
+        for (screen_type, heading, repeated) in cases {
+            f.open(screen_type);
+            assert_eq!(
+                f.harness
+                    .query_all_by_label(repeated)
+                    .filter(|node| node.rect().top() > 60.0) // below the breadcrumbs
+                    .count(),
+                usize::from(repeated == heading),
+                "{heading}: the page heading must not be repeated"
+            );
+            let heading_rect = f.harness.get_by_label(heading).rect();
+            let checkbox = f.harness.get_by_label("Advanced Options").rect();
+            assert!(
+                heading_rect.y_range().contains(checkbox.center().y),
+                "{heading}: Advanced Options must sit on the heading's row"
+            );
+        }
+
+        f.open(ScreenType::SetTokenPriceScreen(info.clone()));
+        f.harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Set Price")
+            .find(|node| node.rect().top() < 60.0)
+            .expect("the breadcrumb reads \"Set Price\"");
+
+        f.open(ScreenType::UpdateTokenConfigScreen(info));
+        f.harness.get_by_label("1. Select the item to update");
+        f.harness.get_by_label("2. Public note (optional)");
     });
 }

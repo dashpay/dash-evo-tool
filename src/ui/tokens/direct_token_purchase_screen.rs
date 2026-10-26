@@ -431,7 +431,13 @@ impl ScreenLike for PurchaseTokenScreen {
                 return;
             }
 
-            ui.heading("Purchase Tokens");
+            // The page heading shares its row with the Advanced Options toggle.
+            ui.horizontal(|ui| {
+                ui.heading("Purchase Tokens");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
+            });
             ui.add_space(10.0);
 
             // Check if user has any auth keys
@@ -513,15 +519,6 @@ impl ScreenLike for PurchaseTokenScreen {
                         return;
                     }
                 }
-
-                // Header with Advanced Options checkbox
-                ui.horizontal(|ui| {
-                    ui.heading("Purchase Tokens");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                    });
-                });
-                ui.add_space(10.0);
 
                 // Key selection (only in advanced mode)
                 if self.show_advanced_options {

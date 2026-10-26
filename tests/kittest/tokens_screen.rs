@@ -30,6 +30,11 @@ use egui_kittest::Harness;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Shown next to Simple mode's "Create Token" until a preset is chosen.
+const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";
+/// Shown next to Advanced mode's "Register Token Contract" until a preset or Custom is chosen.
+const ADVANCED_PRESET_HINT: &str = "Choose a preset, or Custom to use the rules below.";
+
 fn build_ctx() -> (
     Harness<'static, dash_evo_tool::app::AppState>,
     Arc<AppContext>,
@@ -156,14 +161,17 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
                 harness.query_by_value("All Allowed").is_some(),
                 "the chosen preset must survive {route}"
             );
-            // The hint below "Create Token" names whatever still blocks it.
-            assert!(
-                harness
-                    .query_all_by_label_contains("to continue.")
-                    .next()
-                    .is_none(),
-                "\"Create Token\" must stay enabled after {route}"
-            );
+            // The hint next to "Create Token" names whatever still blocks it.
+            for hint in [
+                SIMPLE_PRESET_HINT,
+                "Enter a token name to continue.",
+                "Enter an initial supply to continue.",
+            ] {
+                assert!(
+                    harness.query_by_label(hint).is_none(),
+                    "\"Create Token\" must stay enabled after {route}"
+                );
+            }
         };
         assert_form_kept(&harness, "filling the form");
 
@@ -236,17 +244,20 @@ fn advanced_register_requires_a_preset_choice() {
             harness.run_steps(3);
         };
         const CONFIRMATION: &str = "Confirm Token Contract Registration";
+        assert!(
+            harness.query_by_label(SIMPLE_PRESET_HINT).is_some(),
+            "Simple mode must say a preset is needed"
+        );
         // Room for the whole Advanced form, so its bottom buttons are on screen.
         harness.set_size(egui::vec2(1280.0, 2400.0));
         harness.run_steps(2);
 
         toggle_advanced(&mut harness);
         assert!(
-            harness
-                .query_by_label("Select a token preset to continue.")
-                .is_some(),
+            harness.query_by_label(ADVANCED_PRESET_HINT).is_some(),
             "the blocked button must say why"
         );
+        assert!(harness.query_by_label(SIMPLE_PRESET_HINT).is_none());
         click_register(&mut harness);
         assert!(
             harness.query_by_label(CONFIRMATION).is_none(),
@@ -262,11 +273,7 @@ fn advanced_register_requires_a_preset_choice() {
             .click();
         harness.run_steps(3);
         toggle_advanced(&mut harness);
-        assert!(
-            harness
-                .query_by_label("Select a token preset to continue.")
-                .is_none()
-        );
+        assert!(harness.query_by_label(ADVANCED_PRESET_HINT).is_none());
         // Advanced mode also asks for the plural name, right after the singular one.
         let plural_index = harness
             .query_all_by_role(Role::TextInput)

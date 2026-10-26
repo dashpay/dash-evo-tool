@@ -4110,6 +4110,10 @@ mod tests {
         // Even with the other required fields filled in again, a preset is needed.
         fill_minimal_creator_inputs(&mut screen, &app_context);
         assert!(!screen.can_create_in_simple_mode());
+        assert_eq!(
+            screen.simple_mode_blocked_reason(),
+            Some("Choose a preset to create the token.")
+        );
     }
 
     /// A network switch drops the form: its identity belongs to the old network.

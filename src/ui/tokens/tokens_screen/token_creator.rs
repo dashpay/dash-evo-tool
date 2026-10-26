@@ -12,7 +12,7 @@ use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -404,16 +404,19 @@ impl TokensScreen {
                             ui.add_space(20.0);
 
                             // Create Token button
-                            let can_create = self.can_create_in_simple_mode();
+                            let blocked_reason = self.simple_mode_blocked_reason();
 
                             ui.horizontal(|ui| {
-                                if ComponentStyles::add_primary_button_enabled(
+                                let mut response = ComponentStyles::add_primary_button_enabled(
                                     ui,
-                                    can_create,
+                                    blocked_reason.is_none(),
                                     "Create Token",
-                                )
-                                .clicked()
-                                {
+                                );
+                                if let Some(reason) = blocked_reason {
+                                    response = response.disabled_tooltip(reason);
+                                    Self::render_blocked_hint(ui, reason);
+                                }
+                                if response.clicked() {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
@@ -433,21 +436,6 @@ impl TokensScreen {
                                 }
                             });
 
-                            if !can_create {
-                                ui.add_space(5.0);
-                                let hint = if self.token_names_input[0].0.trim().is_empty() {
-                                    "Enter a token name to continue."
-                                } else if self.base_supply_amount.is_none() {
-                                    "Enter an initial supply to continue."
-                                } else {
-                                    PRESET_REQUIRED_HINT
-                                };
-                                ui.label(
-                                    RichText::new(hint)
-                                        .color(egui::Color32::GRAY)
-                                        .italics(),
-                                );
-                            }
                         } else {
                             // =====================================================
                             // ADVANCED MODE - Full options
@@ -833,13 +821,15 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            if ComponentStyles::add_primary_button_enabled(
+                            let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
                                 self.preset_chosen(),
                                 "Register Token Contract",
-                            )
-                            .clicked()
-                            {
+                            );
+                            if !self.preset_chosen() {
+                                register = register.disabled_tooltip(ADVANCED_PRESET_HINT);
+                            }
+                            if register.clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -889,15 +879,10 @@ impl TokensScreen {
                                     },
                                 }
                             }
+                            if !self.preset_chosen() {
+                                Self::render_blocked_hint(ui, ADVANCED_PRESET_HINT);
+                            }
                         });
-                        if !self.preset_chosen() {
-                            ui.add_space(5.0);
-                            ui.label(
-                                RichText::new(PRESET_REQUIRED_HINT)
-                                    .color(egui::Color32::GRAY)
-                                    .italics(),
-                            );
-                        }
 
         // Reset the expanded states after processing
         if self.should_reset_collapsing_states {
@@ -1407,10 +1392,33 @@ impl TokensScreen {
 
     /// Whether Simple mode's "Create Token" is enabled: a name, an initial supply
     /// and a preset — or individually chosen ("Custom") rules — are required.
+    #[cfg(test)]
     pub(super) fn can_create_in_simple_mode(&self) -> bool {
-        !self.token_names_input[0].0.trim().is_empty()
-            && self.base_supply_amount.is_some()
-            && self.preset_chosen()
+        self.simple_mode_blocked_reason().is_none()
+    }
+
+    /// Why Simple mode's "Create Token" is blocked, shown next to the button.
+    pub(super) fn simple_mode_blocked_reason(&self) -> Option<&'static str> {
+        if self.token_names_input[0].0.trim().is_empty() {
+            Some("Enter a token name to continue.")
+        } else if self.base_supply_amount.is_none() {
+            Some("Enter an initial supply to continue.")
+        } else if !self.preset_chosen() {
+            Some(SIMPLE_PRESET_HINT)
+        } else {
+            None
+        }
+    }
+
+    /// Visible explanation next to a blocked create button, so the reason does
+    /// not depend on hovering.
+    fn render_blocked_hint(ui: &mut Ui, reason: &str) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(reason)
+                .color(DashColors::muted_color(dark_mode))
+                .italics(),
+        );
     }
 
     /// Whether a preset or individually chosen ("Custom") rules were picked. Both
@@ -1688,8 +1696,12 @@ impl TokensScreen {
     }
 }
 
-/// Why token creation is blocked until a preset is chosen.
-const PRESET_REQUIRED_HINT: &str = "Select a token preset to continue.";
+/// Why Simple mode's "Create Token" is blocked until a preset is chosen.
+const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";
+
+/// Why Advanced mode's "Register Token Contract" is blocked until a preset or
+/// "Custom" is chosen; editing a rule below also switches to "Custom".
+const ADVANCED_PRESET_HINT: &str = "Choose a preset, or Custom to use the rules below.";
 
 /// Selector text for rules that are not exactly one preset's.
 const CUSTOM_PRESET_LABEL: &str = "Custom";

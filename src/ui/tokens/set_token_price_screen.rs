@@ -1120,7 +1120,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()

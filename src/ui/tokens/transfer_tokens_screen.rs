@@ -579,7 +579,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 // Fee estimation display
                 let fee_estimator = self.app_context.fee_estimator();
-                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token transfers are document batch transitions
+                let estimated_fee = fee_estimator.estimate_token_transition();
 
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))

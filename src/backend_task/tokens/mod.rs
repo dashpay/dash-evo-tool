@@ -279,7 +279,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let result = call.await?;
         post_broadcast(result);
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
+        let estimated_fee = self.fee_estimator().estimate_token_transition();
         Ok(make_success(FeeResult::estimated_only(estimated_fee)))
     }
 
@@ -1219,6 +1219,29 @@ mod token_action_routing_tests {
                 "{kind:?}: {err:?}"
             );
         }
+    }
+
+    /// A completed token action reports the same fee estimate its
+    /// confirmation screens show (`estimate_token_transition`).
+    #[tokio::test]
+    async fn token_action_reports_the_fee_its_screens_show() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let result = ctx
+            .execute_token_op(
+                async { Ok::<_, TaskError>(()) },
+                |()| {},
+                BackendTaskSuccessResult::MintedTokens,
+            )
+            .await
+            .expect("a successful action");
+        let BackendTaskSuccessResult::MintedTokens(fee) = result else {
+            panic!("got {result:?}");
+        };
+        assert_eq!(
+            fee,
+            FeeResult::estimated_only(ctx.fee_estimator().estimate_token_transition())
+        );
     }
 
     /// An identity whose wallet is known but not loaded waits for it.

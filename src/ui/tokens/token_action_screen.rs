@@ -330,7 +330,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
             .common
             .app_context
             .fee_estimator()
-            .estimate_document_batch(1);
+            .estimate_token_transition();
         let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))

@@ -8,7 +8,7 @@
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
-use crate::model::spend_limit::SpendLimitKind;
+use crate::model::spend_limit::{CoreSendShortfall, SpendLimitKind};
 use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -29,6 +29,8 @@ enum Phase {
     /// Another transaction from the wallet is in progress; no limit is
     /// offered until the revision changes.
     Busy,
+    /// The wallet answered that a Core send has nothing to offer, and why.
+    Unavailable(CoreSendShortfall),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,7 +60,9 @@ impl SpendLimitCache {
             && state.revision == revision
         {
             match state.phase {
-                Phase::Loaded { .. } | Phase::Failed | Phase::Busy => return None,
+                Phase::Loaded { .. } | Phase::Failed | Phase::Busy | Phase::Unavailable(_) => {
+                    return None;
+                }
                 Phase::InFlight { started_at, .. }
                     if started_at.elapsed() < SPEND_LIMIT_REQUEST_DEADLINE =>
                 {
@@ -142,6 +146,22 @@ impl SpendLimitCache {
         )
     }
 
+    /// Why the wallet offers no limit for `revision`, when it said so.
+    pub fn unavailable(
+        &self,
+        seed_hash: &WalletSeedHash,
+        kind: SpendLimitKind,
+        revision: u64,
+    ) -> Option<CoreSendShortfall> {
+        match self.states.get(&(*seed_hash, kind)) {
+            Some(State {
+                revision: answered_for,
+                phase: Phase::Unavailable(reason),
+            }) if *answered_for == revision => Some(*reason),
+            _ => None,
+        }
+    }
+
     /// Record why the awaited request returned no limit.
     pub fn mark_request_error(
         &mut self,
@@ -152,6 +172,7 @@ impl SpendLimitCache {
     ) {
         let phase = match error {
             TaskError::SpendInProgress => Phase::Busy,
+            TaskError::CoreSendMaxUnavailable { reason } => Phase::Unavailable(*reason),
             _ => Phase::Failed,
         };
         self.settle(seed_hash, kind, request_id, phase);
@@ -244,6 +265,33 @@ mod tests {
 
         cache.store(SEED, kind, current, 2);
         assert_eq!(cache.get(&SEED, kind, 2), Some(2));
+    }
+
+    /// A Core send the wallet says has nothing to offer keeps that reason
+    /// for the revision, and is not asked again for it.
+    #[test]
+    fn an_unavailable_core_send_max_keeps_its_reason() {
+        let mut cache = SpendLimitCache::default();
+        let kind = SpendLimitKind::CoreSend {
+            destination: Default::default(),
+        };
+        let id = request_id(cache.ensure_requested(SEED, kind, 1));
+        cache.mark_request_error(
+            SEED,
+            kind,
+            id,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+
+        assert_eq!(
+            cache.unavailable(&SEED, kind, 1),
+            Some(CoreSendShortfall::NothingSpendable)
+        );
+        assert!(!cache.is_failed(&SEED, kind, 1), "no retry is offered");
+        assert!(cache.ensure_requested(SEED, kind, 1).is_none());
+        assert!(cache.ensure_requested(SEED, kind, 2).is_some());
     }
 
     #[test]

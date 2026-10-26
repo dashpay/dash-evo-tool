@@ -10,7 +10,7 @@
 //! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
-use crate::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
+use crate::model::spend_limit::{CoreDestinationScript, CoreSendShortfall, SpendLimitKind};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
@@ -679,8 +679,8 @@ impl WalletBackend {
                 // dispatch, so an operation opening after this check leaves
                 // the result stale rather than current.
                 self.spend_quote_key(seed_hash)?;
-                let upper_duffs = wallet
-                    .core()
+                let core = wallet.core();
+                let upper_duffs = core
                     .pooled_max_sendable(
                         &platform_wallet::SEND_FUNDING_SOURCES,
                         DEFAULT_BIP44_ACCOUNT,
@@ -688,8 +688,27 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(quote_failed)?;
-                self.core_send_max_within_reservations(&wallet, upper_duffs, destination)
-                    .await
+                if upper_duffs == 0 {
+                    // No coin is worth its input: none spendable at all, or
+                    // too small to pay for its own spend.
+                    let spendable_duffs = core
+                        .pooled_spendable_balance(
+                            &platform_wallet::SEND_FUNDING_SOURCES,
+                            DEFAULT_BIP44_ACCOUNT,
+                        )
+                        .await
+                        .map_err(quote_failed)?;
+                    let reason = if spendable_duffs == 0 {
+                        CoreSendShortfall::NothingSpendable
+                    } else {
+                        CoreSendShortfall::BelowFee
+                    };
+                    return Err(TaskError::CoreSendMaxUnavailable { reason });
+                }
+                let (proven_duffs, timed_out) = self
+                    .core_send_max_within_reservations(&wallet, upper_duffs, destination)
+                    .await?;
+                core_send_search_outcome(proven_duffs, timed_out)
                     .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
             }
             SpendLimitKind::ShieldFromPlatform => wallet
@@ -725,9 +744,9 @@ impl WalletBackend {
         wallet: &platform_wallet::PlatformWallet,
         upper_duffs: u64,
         destination: CoreDestinationScript,
-    ) -> Result<u64, TaskError> {
+    ) -> Result<(u64, bool), TaskError> {
         if upper_duffs == 0 {
-            return Ok(0);
+            return Ok((0, false));
         }
         let wallet_id = wallet.wallet_id();
         let network = self.inner.network;
@@ -739,13 +758,14 @@ impl WalletBackend {
             let (key_wallet, info) = wallet_manager
                 .get_wallet_and_info(&wallet_id)
                 .ok_or(TaskError::WalletStateInconsistent)?;
-            Ok(largest_core_payment_at_most(
+            let largest = largest_core_payment_at_most(
                 key_wallet,
                 &info.core_wallet,
                 &recipient,
                 upper_duffs,
                 &deadline,
-            ))
+            );
+            Ok((largest, deadline.timed_out()))
         })
         .await?
     }
@@ -1243,6 +1263,19 @@ fn largest_core_payment_at_most(
     low
 }
 
+/// The Core send Max a reservation-aware search settled on. Zero is never
+/// offered as Max: with time to spare it means every spendable coin is held
+/// by another build; out of time, it means nothing was proven yet.
+fn core_send_search_outcome(proven_duffs: u64, timed_out: bool) -> Result<u64, TaskError> {
+    match proven_duffs {
+        0 if timed_out => Err(TaskError::SpendLimitTimedOut),
+        0 => Err(TaskError::CoreSendMaxUnavailable {
+            reason: CoreSendShortfall::HeldByPendingTransaction,
+        }),
+        proven => Ok(proven),
+    }
+}
+
 /// A stand-in payee paid through a `destination` script: the output's size,
 /// not its payee, sets the fee.
 fn core_quote_recipient(
@@ -1268,13 +1301,11 @@ fn fee_saved_against_p2pkh(
     network: dash_sdk::dpp::dashcore::Network,
     recipient: &dash_sdk::dpp::dashcore::Address,
 ) -> u64 {
-    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
     let p2pkh = core_quote_recipient(network, CoreDestinationScript::PubkeyHash);
-    let saved_bytes = p2pkh
-        .script_pubkey()
-        .len()
-        .saturating_sub(recipient.script_pubkey().len());
-    FeeRate::normal().calculate_fee(saved_bytes)
+    crate::model::fee_estimation::core_output_script_fee_saved_duffs(
+        p2pkh.script_pubkey().len(),
+        recipient.script_pubkey().len(),
+    )
 }
 
 /// The total a payment to `recipients` asks for, in duffs.
@@ -2421,6 +2452,203 @@ mod tests {
         assert!(
             coordinator.last_sync_unix_seconds().is_some(),
             "no Platform-address sync pass ran after the spend"
+        );
+    }
+
+    /// The Core send Max quoted for a wallet whose funds sit only in
+    /// `account_type`, as the error it is refused with.
+    async fn core_send_max_refusal(
+        account_type: dash_sdk::dpp::key_wallet::account::AccountType,
+        values: &[u64],
+    ) -> Result<u64, TaskError> {
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, account_type, 0x73, values).await;
+        backend
+            .spend_limit_credits(
+                &seed_hash,
+                crate::model::spend_limit::SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
+            .await
+    }
+
+    /// Funds held only in CoinJoin are not "too low for the fee": the form
+    /// must say they cannot be sent from here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_names_coinjoin_only_funds_as_nothing_spendable() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        use dash_sdk::dpp::key_wallet::account::AccountType;
+        let coinjoin = AccountType::CoinJoin { index: 0 };
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        {
+            // CoinJoin accounts have no receive chain; the coin's address
+            // does not decide where a send may spend it from.
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let info = manager
+                .get_wallet_info_mut(&wallet_id)
+                .expect("wallet info");
+            info.core_wallet.update_last_processed_height(200);
+            let managed = info
+                .core_wallet
+                .accounts
+                .funds_account_mut(&coinjoin)
+                .expect("CoinJoin account");
+            let outpoint = OutPoint::new(Txid::from_byte_array([0x77; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value: 5_000_000,
+                    script_pubkey: payment_recipient().script_pubkey(),
+                },
+                payment_recipient(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            managed.utxos.insert(outpoint, utxo);
+        }
+        let quote = backend
+            .spend_limit_credits(
+                &seed_hash,
+                crate::model::spend_limit::SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                quote,
+                Err(TaskError::CoreSendMaxUnavailable {
+                    reason: CoreSendShortfall::NothingSpendable
+                })
+            ),
+            "{quote:?}"
+        );
+    }
+
+    /// Coins too small to pay for their own input leave a fee shortfall.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_names_dust_only_funds_as_below_the_fee() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let quote = core_send_max_refusal(bip44, &[100, 120]).await;
+        assert!(
+            matches!(
+                quote,
+                Err(TaskError::CoreSendMaxUnavailable {
+                    reason: CoreSendShortfall::BelowFee
+                })
+            ),
+            "{quote:?}"
+        );
+    }
+
+    /// When every spendable coin is held by a build the wallet has not
+    /// finished, the form says so instead of blaming the fee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_names_reserved_funds_as_held() {
+        use crate::model::spend_limit::{CoreSendShortfall, SpendLimitKind};
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, bip44, 0x74, &[2_000_000]).await;
+        {
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let account = manager
+                .get_wallet_and_info(&wallet_id)
+                .and_then(|(key_wallet, _)| key_wallet.accounts.account_of_type(bip44))
+                .expect("funding account keys")
+                .clone();
+            let managed = manager
+                .get_wallet_info_mut(&wallet_id)
+                .and_then(|info| info.core_wallet.accounts.funds_account_mut(&bip44))
+                .expect("managed funding account");
+            let (_, _, reservation) = TransactionBuilder::new()
+                .set_current_height(200)
+                .set_selection_strategy(SelectionStrategy::LargestFirst)
+                .add_output(&payment_recipient(), 1_000_000)
+                .add_funding(managed, &account)
+                .build_unsigned_reserved()
+                .expect("in-flight build");
+            assert!(reservation.is_some(), "the in-flight build holds the coin");
+        }
+
+        let quote = backend
+            .spend_limit_credits(
+                &seed_hash,
+                SpendLimitKind::CoreSend {
+                    destination: Default::default(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                quote,
+                Err(TaskError::CoreSendMaxUnavailable {
+                    reason: CoreSendShortfall::HeldByPendingTransaction
+                })
+            ),
+            "{quote:?}"
+        );
+    }
+
+    /// A search that ran out of time before proving any amount is not a
+    /// zero Max; one that proved an amount keeps it.
+    #[test]
+    fn a_timed_out_core_send_search_with_nothing_proven_is_not_a_zero_max() {
+        assert!(matches!(
+            super::core_send_search_outcome(0, true),
+            Err(TaskError::SpendLimitTimedOut)
+        ));
+        assert!(matches!(
+            super::core_send_search_outcome(5_000, true),
+            Ok(5_000)
+        ));
+    }
+
+    /// Wallet events that leave the coins a send can spend unchanged (a new
+    /// block, a chainlock) must not re-key the Core Max quote; a new coin
+    /// must.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_quote_revision_follows_the_coins_not_the_events() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        let wallet_id = platform_wallet.wallet_id();
+        fund_account(&platform_wallet, bip44, 0x75, &[1_000_000]).await;
+        backend.inner.snapshots.recompute(&wallet_id);
+        let funded = backend.core_send_quote_revision(&seed_hash);
+
+        backend.inner.snapshots.recompute(&wallet_id);
+        assert_eq!(
+            backend.core_send_quote_revision(&seed_hash),
+            funded,
+            "a republish of the same coins keeps the quote"
+        );
+
+        fund_account(&platform_wallet, bip44, 0x76, &[2_000_000]).await;
+        backend.inner.snapshots.recompute(&wallet_id);
+        assert_ne!(
+            backend.core_send_quote_revision(&seed_hash),
+            funded,
+            "a new coin re-keys the quote"
         );
     }
 

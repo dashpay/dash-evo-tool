@@ -448,6 +448,19 @@ pub enum TaskError {
     #[error("{}", crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)]
     SpendInProgress,
 
+    /// A Core send has no amount to offer as Max, for `reason`.
+    #[error("{}", .reason.message())]
+    CoreSendMaxUnavailable {
+        reason: crate::model::spend_limit::CoreSendShortfall,
+    },
+
+    /// The search for the largest Core payment ran out of time before it
+    /// proved any amount.
+    #[error(
+        "Checking the available amount took too long. Try again, or enter the amount yourself."
+    )]
+    SpendLimitTimedOut,
+
     /// The wallet could not quote the largest amount an operation accepts.
     #[error("The wallet's available amount could not be checked. Wait a moment and try again.")]
     SpendLimitQueryFailed {

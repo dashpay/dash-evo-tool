@@ -2907,12 +2907,15 @@ impl WalletBackend {
         (generation, inputs.with_spend_key(spend_key), revision)
     }
 
-    /// The revision a Core send Max quote is made against: the published
-    /// wallet state and the operations that can move its reservations.
+    /// The revision a Core send Max quote is made against: the coins the
+    /// pooled build can draw on and the operations that can move their
+    /// reservations. Keyed on the coins, not the snapshot generation, so wallet
+    /// events that leave them unchanged (new blocks, chainlocks) do not
+    /// re-quote.
     pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
-        let generation = self.inner.snapshots.asset_lock_probe_snapshot(seed_hash).0;
+        let coins = self.inner.snapshots.core_send_inputs_key(seed_hash);
         let spend_key = self.inner.spend_activity.quote_state(seed_hash).key;
-        generation ^ spend_key.rotate_left(32)
+        coins ^ spend_key.rotate_left(32)
     }
 
     /// The key a Max quote made now for `seed_hash` is valid under, or

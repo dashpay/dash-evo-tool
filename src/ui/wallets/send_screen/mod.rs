@@ -609,18 +609,20 @@ impl WalletSendScreen {
         &self,
         fee_estimator: &PlatformFeeEstimator,
         addresses: &[(PlatformAddress, Address, u64)],
-        destination: Option<&PlatformAddress>,
+        recipients: &[PlatformAddress],
     ) -> u64 {
+        // A recipient never pays; each one is an output of the transfer.
+        let outputs = recipients.len().max(1);
         let mut sorted_addresses: Vec<_> = addresses
             .iter()
-            .filter(|(addr, _, _)| destination != Some(addr))
+            .filter(|(addr, _, _)| !recipients.contains(addr))
             .cloned()
             .collect();
         sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1, 1);
+            return estimate_platform_fee(fee_estimator, 1, outputs);
         }
 
         let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
@@ -644,7 +646,7 @@ impl WalletSendScreen {
             }
         }
 
-        estimate_platform_fee(fee_estimator, usable_count, 1)
+        estimate_platform_fee(fee_estimator, usable_count, outputs)
     }
 
     /// Clear the AddressInput widget so it picks up the new network on next frame.
@@ -1563,7 +1565,7 @@ impl WalletSendScreen {
             let max_fee = self.estimate_max_fee_for_platform_send(
                 &fee_estimator,
                 &allocation.sorted_addresses,
-                Some(&destination),
+                std::slice::from_ref(&destination),
             );
             let max_sendable = max_balance.saturating_sub(max_fee);
 
@@ -3938,7 +3940,8 @@ impl ScreenLike for WalletSendScreen {
         self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.identities_by_wallet = None;
-        self.own_addresses.invalidate();
+        // Own receiving addresses stay: refetching one could change where an
+        // open form pays. A new form or network fetches them again.
         self.asset_lock_balance.invalidate();
         self.spend_limits.invalidate();
     }
@@ -3947,7 +3950,6 @@ impl ScreenLike for WalletSendScreen {
         self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.identities_by_wallet = None;
-        self.own_addresses.invalidate();
         self.asset_lock_balance.invalidate();
         self.spend_limits.invalidate();
     }
@@ -7316,6 +7318,145 @@ mod tests {
                 .own_addresses
                 .get(&seed_hash, OwnAddressKind::Core)
                 .is_some()
+        );
+    }
+
+    /// A Platform address of the paying wallet is its own even with nothing
+    /// on it, so Auto never pays it from the same Platform balance.
+    #[test]
+    fn an_empty_platform_address_of_the_paying_wallet_is_its_own() {
+        let (screen, _temp_dir) = funded_send_screen();
+        let own = testnet_core_address(13);
+        screen
+            .selected_wallet
+            .as_ref()
+            .expect("a wallet")
+            .write()
+            .expect("wallet lock")
+            .platform_address_info
+            .insert(
+                own.clone(),
+                crate::model::wallet::PlatformAddressInfo {
+                    balance: 0,
+                    nonce: 0,
+                },
+            );
+        let address = PlatformAddress::try_from(own).expect("platform address");
+        let destination = ValidatedAddress::Platform {
+            address,
+            bech32m: address.to_bech32m_string(Network::Testnet),
+        };
+        assert_eq!(
+            screen.own_account_of(&destination),
+            Some(crate::model::send_route::PayFromKind::Platform)
+        );
+    }
+
+    /// A refresh while the form is open keeps the own receiving address it
+    /// already fetched, so the payment destination never changes unasked.
+    #[test]
+    fn a_refresh_keeps_the_own_receiving_address() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        let own = testnet_core_address(14).to_string();
+        screen.seed_own_core_address_for_test(seed_hash, own.clone());
+        screen.refresh();
+        screen.refresh_on_arrival();
+        assert_eq!(
+            screen.own_addresses.get(&seed_hash, OwnAddressKind::Core),
+            Some(own.as_str())
+        );
+        screen.reset_form();
+        assert_eq!(
+            screen.own_addresses.get(&seed_hash, OwnAddressKind::Core),
+            None,
+            "a new form asks again"
+        );
+    }
+
+    /// The Platform maximum for several recipients leaves out every
+    /// recipient's address and reserves the fee for all of their outputs, as
+    /// the dispatched payment does.
+    #[test]
+    fn platform_max_for_several_recipients_matches_the_dispatched_payment() {
+        let (mut screen, _temp_dir) = send_screen();
+        let paying = testnet_core_address(15);
+        let recipient_own = testnet_core_address(16);
+        let platform = |address: &Address| PlatformAddress::try_from(address.clone()).unwrap();
+        let addresses = vec![
+            (
+                paying.clone(),
+                platform(&paying),
+                100_000_000 * CREDITS_PER_DUFF,
+            ),
+            (
+                recipient_own.clone(),
+                platform(&recipient_own),
+                200_000_000 * CREDITS_PER_DUFF,
+            ),
+        ];
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: addresses.clone(),
+            shielded_credits: 0,
+        });
+        let external = platform(&testnet_core_address(17));
+        screen.form.add_recipient(
+            platform(&recipient_own).to_bech32m_string(Network::Testnet),
+            "0.1".to_string(),
+        );
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: external.to_bech32m_string(Network::Testnet),
+            amount: "0.1".to_string(),
+        };
+        let source = SourceSelection::PlatformAddresses(
+            addresses
+                .iter()
+                .map(|(core, platform, credits)| (*platform, core.clone(), *credits))
+                .collect(),
+        );
+        let fee = estimate_platform_fee(&screen.app_context.fee_estimator(), 1, 2);
+        assert_eq!(
+            screen.amount_limits_for(&source, None).max_credits,
+            Some(100_000_000 * CREDITS_PER_DUFF - fee)
+        );
+    }
+
+    /// Fee options appear only where the payment uses them: an Advanced Core
+    /// payment to Platform without per-address amounts always takes the fee
+    /// from the output.
+    #[test]
+    fn fee_options_show_only_where_the_fee_strategy_is_used() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .app_context
+            .set_user_role(crate::model::user_role::UserRole::Power);
+        let core = testnet_core_address(9).to_string();
+        screen.form.choose_pay_from(
+            PayFrom::Advanced,
+            crate::model::send_route::PayFromKind::Core,
+        );
+        screen.form.choose_advanced_type(AdvancedSourceType::Core);
+        screen.form.set_advanced_ticked(&core, true);
+        screen.typed_destination = Some(platform_destination());
+        screen.sync_route();
+        assert!(!screen.shows_fee_options());
+        screen.form.set_advanced_amount(&core, "0.5".to_string());
+        assert!(screen.shows_fee_options());
+    }
+
+    /// Unshield leaves the private balance whichever wallet receives: its
+    /// Auto never picks another wallet's private address.
+    #[test]
+    fn unshield_auto_receives_into_a_public_address_of_another_wallet() {
+        let (screen, _temp_dir) = send_screen();
+        let mut screen = screen.with_flow(SendFlow::Unshield);
+        screen.form.choose_to_wallet([0x42; 32]);
+        screen.sync_route();
+        assert_eq!(
+            screen.route.receive_kind,
+            Some(crate::model::send_route::PayFromKind::Platform)
         );
     }
 }

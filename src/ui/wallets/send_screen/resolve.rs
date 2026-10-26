@@ -275,11 +275,28 @@ impl WalletSendScreen {
                 )
             }
             SourceSelection::PlatformAddresses(addresses) => {
-                // Exclude the destination from the inputs (it cannot pay itself).
-                let destination_platform = destination.and_then(|v| v.as_platform().copied());
+                // Recipients never pay: several recipients exclude every one of
+                // them and each adds an output, as their dispatch does.
+                let recipients: Vec<PlatformAddress> = if self.form.has_several_recipients() {
+                    // Distinct, as the dispatch merges repeated recipients.
+                    self.form
+                        .recipients()
+                        .iter()
+                        .filter_map(|row| {
+                            PlatformAddress::from_bech32m_string(row.address.trim()).ok()
+                        })
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                } else {
+                    destination
+                        .and_then(|v| v.as_platform().copied())
+                        .into_iter()
+                        .collect()
+                };
                 let mut sorted_addresses: Vec<_> = addresses
                     .iter()
-                    .filter(|(addr, _, _)| destination_platform.as_ref() != Some(addr))
+                    .filter(|(addr, _, _)| !recipients.contains(addr))
                     .cloned()
                     .collect();
                 sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
@@ -293,7 +310,7 @@ impl WalletSendScreen {
                 let max_fee = self.estimate_max_fee_for_platform_send(
                     &fee_estimator,
                     &sorted_addresses,
-                    destination_platform.as_ref(),
+                    &recipients,
                 );
                 let fee = format_credits_as_dash(max_fee);
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
@@ -470,7 +487,7 @@ impl WalletSendScreen {
     }
 
     /// The paying wallet's balance a typed destination belongs to, if any.
-    fn own_account_of(&self, destination: &ValidatedAddress) -> Option<PayFromKind> {
+    pub(super) fn own_account_of(&self, destination: &ValidatedAddress) -> Option<PayFromKind> {
         let seed_hash = self.selected_wallet_seed_hash?;
         match destination {
             ValidatedAddress::Core(address) => self
@@ -480,15 +497,48 @@ impl WalletSendScreen {
                 .filter(|path| !path.is_platform_payment(self.app_context.network))
                 .map(|_| PayFromKind::Core),
             ValidatedAddress::Platform { address, .. } => self
-                .platform_source_addresses()
-                .iter()
-                .any(|(platform, _, _)| platform == address)
+                .is_own_platform_address(&seed_hash, address)
                 .then_some(PayFromKind::Platform),
             ValidatedAddress::Shielded(_) => self
                 .shielded_destination_is_own_pool()
                 .then_some(PayFromKind::Shielded),
             ValidatedAddress::Identity { .. } => None,
         }
+    }
+
+    /// Whether `address` belongs to the paying wallet, whatever it holds: the
+    /// derivation inventory (as for Core), the watched addresses, and every
+    /// address with recorded Platform state, not only those with a balance.
+    fn is_own_platform_address(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: &PlatformAddress,
+    ) -> bool {
+        let network = self.app_context.network;
+        let matches =
+            |core: &Address| PlatformAddress::try_from(core.clone()).is_ok_and(|p| p == *address);
+        if self
+            .platform_source_addresses()
+            .iter()
+            .any(|(platform, _, _)| platform == address)
+            || self
+                .app_context
+                .snapshot_address_paths(seed_hash)
+                .iter()
+                .any(|(core, path)| path.is_platform_payment(network) && matches(core))
+        {
+            return true;
+        }
+        self.selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok())
+            .is_some_and(|wallet| {
+                wallet
+                    .platform_addresses(network)
+                    .iter()
+                    .any(|(_, p)| p == address)
+                    || wallet.platform_address_info.keys().any(matches)
+            })
     }
 
     /// An unused watched Platform address of `wallet`: no balance, no history.
@@ -524,7 +574,16 @@ impl WalletSendScreen {
                     .explicit_source_kind()
                     .or_else(|| self.selected_source.as_ref().map(Self::source_kind))
                     .unwrap_or(PayFromKind::Core);
-                match resolve_destination_auto(source, same_wallet) {
+                let mut kind = resolve_destination_auto(source, same_wallet);
+                // A preset that fixes the destination kinds (Unshield) keeps
+                // Auto within them, whichever wallet receives.
+                if let Some(allowed) = self.flow.preset_destination_kinds()
+                    && !allowed.contains(&kind)
+                    && let Some(first) = allowed.first()
+                {
+                    kind = *first;
+                }
+                match kind {
                     AddressKind::Core => PayFromKind::Core,
                     AddressKind::Platform => PayFromKind::Platform,
                     AddressKind::Shielded => PayFromKind::Shielded,
@@ -814,7 +873,7 @@ impl WalletSendScreen {
                                 );
                                 None
                             }
-                            AutoMax::NoFunds => None,
+                            AutoMax::QuoteFailed { .. } | AutoMax::NoFunds => None,
                         };
                         view.auto_max = Some(outcome);
                         source

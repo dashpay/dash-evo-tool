@@ -420,6 +420,19 @@ impl WalletSendScreen {
                     ),
                 ),
                 AutoMax::Checking { .. } => status_line(ui, "Auto: checking balances…"),
+                AutoMax::QuoteFailed { kind } => {
+                    status_line(
+                        ui,
+                        format!(
+                            "Auto: the available amount in {source} could not be checked.",
+                            source = kind_label(kind)
+                        ),
+                    );
+                    if ui.button("Retry available amount check").clicked() {
+                        self.asset_lock_balance.invalidate();
+                        self.spend_limits.invalidate();
+                    }
+                }
                 AutoMax::NoFunds => {
                     status_line(ui, format!("Auto: {wallet} has no funds to send."))
                 }
@@ -1433,9 +1446,10 @@ impl WalletSendScreen {
     }
 
     /// Whether the Fee options row applies (spec SR-22).
-    fn shows_fee_options(&self) -> bool {
-        let explicit =
-            self.form.pay_from() == PayFrom::Advanced || self.form.has_several_recipients();
+    pub(super) fn shows_fee_options(&self) -> bool {
+        // Only the explicit payment reads the strategy: an Advanced source
+        // without per-address amounts pays as the simple route does.
+        let explicit = self.uses_explicit_payment();
         let platform_involved =
             self.form.explicit_source_kind() == Some(PayFromKind::Platform)
                 || matches!(

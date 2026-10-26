@@ -129,6 +129,9 @@ pub enum AutoMax {
     Chosen { kind: PayFromKind, max: u64 },
     /// Some candidates' quotes are still outstanding.
     Checking { pending: Vec<PayFromKind> },
+    /// The maximum of `kind` could not be checked, so the largest is unknown
+    /// until that quote is retried.
+    QuoteFailed { kind: PayFromKind },
     /// Nothing can be sent to this destination.
     NoFunds,
 }
@@ -245,6 +248,13 @@ pub fn resolve_auto_max(destination: &AutoDestination, maxima: &CandidateMaxima)
         .collect();
     if !pending.is_empty() {
         return AutoMax::Checking { pending };
+    }
+    if let Some(kind) = candidates
+        .iter()
+        .copied()
+        .find(|kind| maxima.get(*kind) == CandidateMax::Failed)
+    {
+        return AutoMax::QuoteFailed { kind };
     }
     candidates
         .into_iter()
@@ -671,8 +681,19 @@ mod tests {
                 &to(AddressKind::Core),
                 &maxima(Ready(0), Failed, Unavailable)
             ),
-            AutoMax::NoFunds
+            AutoMax::QuoteFailed { kind: Platform }
         );
+    }
+
+    /// A candidate whose quote failed might hold the most, so Max is not
+    /// chosen among the others until that quote is retried.
+    #[test]
+    fn auto_max_is_not_chosen_while_a_candidate_quote_has_failed() {
+        let outcome = resolve_auto_max(
+            &to(AddressKind::Core),
+            &maxima(Ready(30), Failed, Unavailable),
+        );
+        assert_eq!(outcome, AutoMax::QuoteFailed { kind: Platform });
     }
 
     #[test]

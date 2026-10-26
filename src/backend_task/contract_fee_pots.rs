@@ -229,9 +229,12 @@ mod tests {
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         let sdk = Sdk::new_mock();
 
-        // Not known yet (0), and mainnet's 13.
+        // Not proven yet (0), and mainnet's 13. Proving only ever raises, so
+        // the unproven case runs first.
         for version in [0, 13] {
-            ctx.set_platform_protocol_version(version);
+            if version != 0 {
+                crate::context::test_support::prove_protocol_version(&ctx, version);
+            }
             let fetched = ctx
                 .fetch_contract_fee_pots(&sdk, Identifier::random())
                 .await;
@@ -260,7 +263,10 @@ mod tests {
     async fn a_claim_needs_a_critical_unbound_key() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.set_platform_protocol_version(dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14,
+        );
         let sdk = Sdk::new_mock();
         let identity = crate::context::test_support::bare_user_identity(
             Identifier::random(),

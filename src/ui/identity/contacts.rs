@@ -80,6 +80,11 @@ pub const UNHIDE_TOOLTIP: &str = "Show this contact in your contact list again."
 /// count tells the user there is something to recover.
 pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 
+/// Shown under a hidden contact whose saved details could not be read: its
+/// hidden flag is unknown, so it stays hidden until the user unhides it.
+pub const UNREADABLE_DETAILS_NOTE: &str = "The details you saved for this contact could not be read, so it stays \
+     hidden. Unhide it to show it in your list again.";
+
 /// Hidden-section caption. Only an explicit hide puts a contact here;
 /// declining or cancelling a request writes no contact details.
 pub const HIDDEN_EXPLAINER: &str =
@@ -993,6 +998,13 @@ fn hidden_section(
                 }
             },
         );
+        if contact.details_unreadable {
+            ui.label(
+                RichText::new(UNREADABLE_DETAILS_NOTE)
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+        }
         ui.add_space(4.0);
     }
 
@@ -1287,6 +1299,7 @@ mod tests {
             nickname: Some("Bao".into()),
             note: None,
             is_hidden: false,
+            details_unreadable: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -1306,6 +1319,7 @@ mod tests {
             nickname: Some(nickname.into()),
             note: None,
             is_hidden: false,
+            details_unreadable: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -1511,6 +1525,7 @@ mod tests {
     fn hidden_bao() -> ContactData {
         ContactData {
             is_hidden: true,
+            details_unreadable: false,
             ..contact_with_note(None)
         }
     }
@@ -1718,6 +1733,7 @@ mod tests {
             nickname: nickname.map(str::to_string),
             note: note.map(str::to_string),
             is_hidden: true,
+            details_unreadable: false,
             account_reference: 0,
             username: None,
             display_name: None,

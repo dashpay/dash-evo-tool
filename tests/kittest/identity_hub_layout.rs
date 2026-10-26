@@ -165,6 +165,7 @@ fn deliver_contact_with(
                 nickname: Some(nickname.into()),
                 note: None,
                 is_hidden,
+                details_unreadable: false,
                 account_reference: 0,
                 username,
                 display_name: None,

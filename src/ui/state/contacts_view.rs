@@ -668,6 +668,7 @@ mod tests {
             nickname: nickname.map(str::to_string),
             note: None,
             is_hidden: false,
+            details_unreadable: false,
             account_reference: 0,
             username: username.map(str::to_string),
             display_name: display.map(str::to_string),
@@ -722,6 +723,7 @@ mod tests {
 
         state.record_contacts(vec![ContactData {
             is_hidden: true,
+            details_unreadable: false,
             ..contact(Some("Bao"), None, None)
         }]);
         assert!(
@@ -893,6 +895,7 @@ mod tests {
         ContactData {
             identity_id,
             is_hidden: true,
+            details_unreadable: false,
             ..contact(Some(nickname), None, None)
         }
     }

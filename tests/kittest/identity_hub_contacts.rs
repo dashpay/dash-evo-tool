@@ -151,6 +151,7 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             nickname: Some("Bao".into()),
             note: None,
             is_hidden: false,
+            details_unreadable: false,
             account_reference: 0,
             username: None,
             display_name: None,

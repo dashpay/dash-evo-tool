@@ -677,6 +677,52 @@ mod tests {
         );
     }
 
+    /// Stored details that cannot be decrypted or decoded are not "no
+    /// details": the contact is marked unreadable and kept hidden, since its
+    /// hidden flag cannot be read.
+    #[tokio::test]
+    async fn unreadable_contact_details_keep_the_contact_hidden() {
+        let undecryptable = id(201);
+        let undecodable = id(202);
+        let mut first = lookup_contact_info_document(
+            1,
+            1,
+            encrypt_to_user_id(&undecryptable.to_buffer(), &KEY),
+        );
+        first.set("privateData", Value::Bytes(vec![0xA5; 48]));
+        let mut second =
+            lookup_contact_info_document(2, 2, encrypt_to_user_id(&undecodable.to_buffer(), &KEY));
+        second.set(
+            "privateData",
+            Value::Bytes(platform_encryption::encrypt_private_data(
+                &KEY,
+                &[5; 16],
+                &[0xFF; 40],
+            )),
+        );
+
+        let (details, _) = load_details(vec![contact_details_page([first, second])]).await;
+
+        for contact in [undecryptable, undecodable] {
+            let shown = details.get(&contact).expect("the contact is listed");
+            assert!(shown.details_unreadable, "{contact} is marked unreadable");
+            assert!(shown.is_hidden, "{contact} stays hidden");
+            assert_eq!(shown.note, None);
+        }
+    }
+
+    /// Readable details are not marked unreadable.
+    #[tokio::test]
+    async fn readable_contact_details_are_not_marked_unreadable() {
+        let contact = id(201);
+        let (details, _) = load_details(vec![contact_details_page([saved_note_document(
+            1, contact, "n",
+        )])])
+        .await;
+
+        assert!(!details.get(&contact).expect("listed").details_unreadable);
+    }
+
     /// With two readable documents for one contact, the newer one is shown:
     /// pages are ordered by `$updatedAt`, oldest first.
     #[tokio::test]

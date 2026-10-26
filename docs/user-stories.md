@@ -1172,6 +1172,7 @@ As a token issuer, I want to mint additional tokens so that I can increase the c
 
 - Requires authorized identity.
 - Specify amount to mint.
+- A recipient can be chosen only when the token allows it; otherwise the screen and the confirmation name the token's destination identity.
 
 ### TOK-007: Burn tokens [Implemented]
 **Persona:** Jordan
@@ -1283,6 +1284,16 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 - The Claim screen and My Tokens show the distribution.
 - After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
 - A second claim refused by the network is explained.
+
+### TOK-020: Token transactions need the identity's wallet [Implemented]
+**Persona:** Alex, Jordan
+
+As a user, I want to be told up front when an identity cannot send token transactions, so that I do not fill in a form the network step will refuse.
+
+- Token transactions (transfer, mint, burn, freeze, unfreeze, destroy frozen funds, pause, resume, claim, set price, purchase, settings update) are sent through the wallet in this app that holds the identity.
+- An identity no wallet in this app holds still shows its token balances, rewards and claims; My Tokens marks it "View only" and its transaction buttons are disabled with the reason.
+- Opening a token action screen for such an identity explains what to do (add or import the wallet that holds it) instead of showing the form.
+- When the identity's wallet is known but not loaded yet, the reason asks to unlock the wallet or wait for it to load.
 
 ## Contracts and Documents (DOC)
 

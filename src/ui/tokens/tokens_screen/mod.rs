@@ -4111,7 +4111,7 @@ mod tests {
         fill_minimal_creator_inputs(&mut screen, &app_context);
         assert!(!screen.can_create_in_simple_mode());
         assert_eq!(
-            screen.simple_mode_blocked_reason(),
+            screen.simple_mode_blocked_reason().as_deref(),
             Some("Choose a preset to create the token.")
         );
     }
@@ -4294,5 +4294,86 @@ mod tests {
                 "the {features:?} preset must build Platform's full preset configuration"
             );
         }
+    }
+
+    /// Renders the "holders can send this token" row once, as a frame would.
+    fn render_transferable_row(screen: &mut TokensScreen) {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| screen.transferable_row(ui))
+            .drop_without_applying_deltas();
+    }
+
+    /// A non-transferable choice is kept, not silently flipped back to
+    /// transferable, while the network's support is not confirmed; creating is
+    /// blocked with the reason instead.
+    #[test]
+    fn non_transferable_choice_survives_until_the_network_supports_it() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.transferable_input = false;
+
+        render_transferable_row(&mut screen);
+
+        assert!(
+            !screen.transferable_input,
+            "the user's non-transferable choice must not be overwritten"
+        );
+        assert_eq!(
+            screen.creation_blocked_reason(),
+            Some(TaskError::NonTransferableTokenNotSupported.to_string())
+        );
+
+        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        render_transferable_row(&mut screen);
+        assert!(!screen.transferable_input);
+        assert_eq!(screen.creation_blocked_reason(), None);
+    }
+
+    /// The confirmation states whether holders can send the token.
+    #[test]
+    fn confirmation_states_whether_holders_can_send_the_token() {
+        assert_eq!(
+            TokensScreen::transferability_summary(true),
+            "Holders can send this token to other identities."
+        );
+        assert_eq!(
+            TokensScreen::transferability_summary(false),
+            "Holders cannot send this token to other identities. This cannot be changed later."
+        );
+    }
+
+    /// Both modes name the preset first and then a setting the network does not
+    /// accept, so the user fixes one thing at a time.
+    #[test]
+    fn blocked_reasons_name_the_preset_before_transferability() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.transferable_input = false;
+        let unsupported = TaskError::NonTransferableTokenNotSupported.to_string();
+
+        assert_eq!(
+            screen.simple_mode_blocked_reason().as_deref(),
+            Some("Choose a preset to create the token.")
+        );
+        assert_eq!(
+            screen.advanced_mode_blocked_reason().as_deref(),
+            Some("Choose a preset, or Custom to use the rules below.")
+        );
+
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert_eq!(
+            screen.simple_mode_blocked_reason(),
+            Some(unsupported.clone())
+        );
+        assert_eq!(screen.advanced_mode_blocked_reason(), Some(unsupported));
+
+        screen.transferable_input = true;
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
     }
 }

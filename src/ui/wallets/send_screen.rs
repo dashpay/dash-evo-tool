@@ -3895,6 +3895,20 @@ impl WalletSendScreen {
         self.render_send_button(ui)
     }
 
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Renders the production send confirmation in a headless harness.
+    pub fn render_send_confirmation_for_test(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_send_confirmation(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether a send confirmation is waiting for an answer.
+    pub fn has_send_confirmation_for_test(&self) -> bool {
+        self.send_confirmation.is_some()
+    }
+
     /// Render the advanced send UI with multiple inputs/outputs
     fn render_advanced_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;

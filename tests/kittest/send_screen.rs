@@ -367,10 +367,46 @@ fn rejects_shielded_to_identity_route() {
     );
 }
 
-/// Pressing Send only opens the confirmation; nothing is in flight until it
-/// is confirmed. A private-balance send must not show "Sending..." while the
-/// dialog is open, or cancelling it leaves the form stuck on that state.
-fn assert_send_waits_for_confirmation(destination: ValidatedAddress, button_label: &str) {
+/// The send button with its confirmation, as the screen renders them. The
+/// confirmed task is dropped: no funds may move in a test.
+fn send_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+    let mut harness = Harness::builder().build_ui_state(
+        |ui, screen: &mut WalletSendScreen| {
+            screen.render_simple_send_button_for_test(ui);
+            screen.render_send_confirmation_for_test(ui);
+        },
+        screen,
+    );
+    harness.run();
+    harness
+}
+
+/// Press Send and check that it opened the confirmation, with nothing in
+/// flight yet.
+fn press_send_expecting_confirmation(
+    harness: &mut Harness<'_, WalletSendScreen>,
+    button_label: &str,
+) {
+    harness.get_by_label(button_label).click();
+    harness.run();
+    assert!(
+        harness.state().has_send_confirmation_for_test(),
+        "Send opens the confirmation"
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Confirm this send.")
+            .is_some()
+    );
+    assert!(
+        harness.query_by_label("Sending...").is_none(),
+        "nothing is sent before the confirmation"
+    );
+}
+
+/// Cancelling a private-balance send at its confirmation gives the form
+/// back: Send works again, and only a confirmed send shows "Sending...".
+fn assert_cancel_leaves_send_usable(destination: ValidatedAddress, button_label: &str) {
     with_isolated_data_dir(|| {
         let (_runtime, mut screen, seed_hash) = send_screen();
         screen.set_simple_send_input_for_test(
@@ -378,37 +414,40 @@ fn assert_send_waits_for_confirmation(destination: ValidatedAddress, button_labe
             Some(destination),
             Some(Amount::new_dash(1.0)),
         );
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, screen: &mut WalletSendScreen| {
-                screen.render_simple_send_button_for_test(ui);
-            },
-            screen,
-        );
-        harness.run();
+        let mut harness = send_harness(screen);
 
-        harness.get_by_label(button_label).click();
-        harness.run();
+        press_send_expecting_confirmation(&mut harness, button_label);
 
-        assert!(
-            harness.query_by_label("Sending...").is_none(),
-            "nothing is sent before the confirmation"
-        );
-        assert!(harness.query_by_label(button_label).is_some());
+        // The dialog's Cancel renders after the form's own Cancel.
+        harness
+            .get_all_by_label("Cancel")
+            .last()
+            .expect("the confirmation's Cancel")
+            .click();
+        harness.run();
+        assert!(!harness.state().has_send_confirmation_for_test());
+        assert!(harness.query_by_label("Sending...").is_none());
+
+        // Send is usable again, and a confirmed send is in flight.
+        press_send_expecting_confirmation(&mut harness, button_label);
+        harness.get_by_label("Confirm and Send").click();
+        harness.run();
+        assert!(harness.query_by_label("Sending...").is_some());
     });
 }
 
 #[test]
-fn private_send_is_not_in_flight_before_its_confirmation() {
-    assert_send_waits_for_confirmation(
+fn cancelling_a_private_send_leaves_send_usable() {
+    assert_cancel_leaves_send_usable(
         ValidatedAddress::Shielded(shielded_address()),
         "Private Send",
     );
 }
 
 #[test]
-fn unshield_is_not_in_flight_before_its_confirmation() {
+fn cancelling_an_unshield_leaves_send_usable() {
     let address = platform_address();
-    assert_send_waits_for_confirmation(
+    assert_cancel_leaves_send_usable(
         ValidatedAddress::Platform {
             address,
             bech32m: address.to_bech32m_string(Network::Testnet),
@@ -417,30 +456,33 @@ fn unshield_is_not_in_flight_before_its_confirmation() {
     );
 }
 
-/// A send that fails to build reports its error and leaves Send usable.
+/// A send that fails to build opens no confirmation and leaves Send usable:
+/// once the recipient is fixed, Send opens the confirmation.
 #[test]
 fn a_private_send_that_fails_to_build_leaves_send_usable() {
     with_isolated_data_dir(|| {
         let (_runtime, mut screen, seed_hash) = send_screen();
+        let source = SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS);
         screen.set_simple_send_input_for_test(
-            Some(SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS)),
+            Some(source.clone()),
             Some(ValidatedAddress::Shielded(
                 "not a private address".to_string(),
             )),
             Some(Amount::new_dash(1.0)),
         );
-        assert!(screen.validate_and_send_for_test().is_err());
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, screen: &mut WalletSendScreen| {
-                screen.render_simple_send_button_for_test(ui);
-            },
-            screen,
-        );
-        harness.run();
+        let mut harness = send_harness(screen);
+
         harness.get_by_label("Private Send").click();
         harness.run();
-
+        assert!(!harness.state().has_send_confirmation_for_test());
         assert!(harness.query_by_label("Sending...").is_none());
-        assert!(harness.query_by_label("Private Send").is_some());
+
+        harness.state_mut().set_simple_send_input_for_test(
+            Some(source),
+            Some(ValidatedAddress::Shielded(shielded_address())),
+            Some(Amount::new_dash(1.0)),
+        );
+        harness.run();
+        press_send_expecting_confirmation(&mut harness, "Private Send");
     });
 }

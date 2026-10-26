@@ -5,7 +5,6 @@ use crate::model::datetime;
 use chrono::{LocalResult, prelude::*};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
 use dash_sdk::Error as SdkError;
-use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::block::extended_epoch_info::{
@@ -36,6 +35,7 @@ use dash_sdk::platform::{
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
+use dash_sdk::{ProtocolVersionInfo, Sdk};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +276,21 @@ fn format_unavailable_current_epoch_info(
              known fee multiplier. Refresh again in a moment to read the current one."
         ),
     }
+}
+
+/// Appends the update advice when the connected network has proven a protocol
+/// version newer than any this build defines. Capabilities fail closed on such
+/// a version (`context::feature_gate`), so the advice names that outcome.
+fn append_newer_protocol_advisory(text: &mut String, info: &ProtocolVersionInfo) {
+    let (true, Some(verified)) = (info.newer_protocol_available, info.verified_version) else {
+        return;
+    };
+    let maximum = info.maximum_supported_version;
+    text.push_str(&format!(
+        "\n\nThe network runs protocol version {verified}, which is newer than this version \
+         of Dash Evo Tool supports (up to {maximum}). Some features stay unavailable until \
+         you update Dash Evo Tool."
+    ));
 }
 
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
@@ -641,6 +656,10 @@ impl AppContext {
                             "\n\n(Fee multiplier cache updated: {}x)",
                             fee_multiplier as f64 / 1000.0
                         ));
+                        append_newer_protocol_advisory(
+                            &mut formatted,
+                            &sdk.protocol_version_info(),
+                        );
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))
@@ -661,14 +680,15 @@ impl AppContext {
                                  the network's protocol version stays unconfirmed"
                             );
                         }
-                        let confirmed = self.proven_protocol_version();
+                        // The SDK that made the requests holds what they proved.
+                        let info = sdk.protocol_version_info();
+                        let mut formatted = format_unavailable_current_epoch_info(
+                            info.verified_version,
+                            self.fee_multiplier_permille(),
+                        );
+                        append_newer_protocol_advisory(&mut formatted, &info);
                         Ok(BackendTaskSuccessResult::PlatformInfo(
-                            PlatformInfoTaskResult::TextResult(
-                                format_unavailable_current_epoch_info(
-                                    confirmed,
-                                    self.fee_multiplier_permille(),
-                                ),
-                            ),
+                            PlatformInfoTaskResult::TextResult(formatted),
                         ))
                     }
                 }
@@ -1082,7 +1102,7 @@ mod tests {
             0,
             "precondition: a seeded SDK"
         );
-        assert_eq!(ctx.proven_protocol_version(), None);
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
     }
 
     /// The limit is whatever the network's own protocol version says it is,
@@ -1146,6 +1166,85 @@ mod tests {
             withdrawal_with_status(WithdrawalStatus::EXPIRED),
         ]));
         assert!(FAILED_WITHDRAWAL_NOTE.contains("not returned"));
+    }
+
+    const NEWER_PROTOCOL_ADVISORY: &str = "The network runs protocol version {verified}, \
+        which is newer than this version of Dash Evo Tool supports (up to {maximum}). \
+        Some features stay unavailable until you update Dash Evo Tool.";
+
+    fn expected_newer_protocol_advisory(verified: u32, maximum: u32) -> String {
+        NEWER_PROTOCOL_ADVISORY
+            .replace("{verified}", &verified.to_string())
+            .replace("{maximum}", &maximum.to_string())
+    }
+
+    /// A network that proved a version newer than this build gets the update
+    /// advice, naming both versions, after the epoch summary.
+    #[test]
+    fn a_newer_proven_protocol_appends_the_update_advisory() {
+        use crate::context::test_support::{prove_protocol_version, test_app_context};
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+
+        let mut text = String::from("Current Epoch Information:");
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+
+        assert_eq!(
+            text,
+            format!(
+                "Current Epoch Information:\n\n{}",
+                expected_newer_protocol_advisory(LATEST_VERSION + 1, LATEST_VERSION)
+            )
+        );
+    }
+
+    /// No advice while nothing is proven, nor for a version this build defines.
+    #[test]
+    fn no_update_advisory_without_a_newer_proven_protocol() {
+        use crate::context::test_support::{prove_protocol_version, test_app_context};
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+
+        let mut text = String::from("summary");
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+        assert_eq!(text, "summary", "nothing proven");
+
+        prove_protocol_version(&ctx, LATEST_VERSION);
+        append_newer_protocol_advisory(&mut text, &ctx.protocol_version_info());
+        assert_eq!(text, "summary", "a version this build defines");
+    }
+
+    /// The advice reaches the user even when the epoch itself cannot be read.
+    #[tokio::test]
+    async fn a_failed_epoch_fetch_still_advises_updating_for_a_newer_network() {
+        use crate::context::test_support::prove_protocol_version;
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+        let sdk = ctx.sdk.load_full();
+
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("a failed epoch fetch degrades to a text result");
+
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("a failed epoch fetch returns a text result");
+        };
+        assert!(
+            text.ends_with(&expected_newer_protocol_advisory(
+                LATEST_VERSION + 1,
+                LATEST_VERSION
+            )),
+            "the update advice must close the report, got: {text}"
+        );
     }
 
     #[test]
@@ -1233,7 +1332,7 @@ mod tests {
             .await
             .expect("a failed epoch fetch degrades to a text result");
 
-        assert_eq!(ctx.proven_protocol_version(), None);
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
         let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
             result
         else {

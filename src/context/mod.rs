@@ -49,7 +49,6 @@ use crate::wallet_backend::{
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
-use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
@@ -61,6 +60,7 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
+use dash_sdk::{ProtocolVersionInfo, Sdk};
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
@@ -1121,26 +1121,14 @@ impl AppContext {
         self.system_contracts.try_get(platform_version)
     }
 
-    /// The protocol version the current SDK has seen in a response whose
-    /// proof and quorum signature were verified, or `None` before any such
-    /// response. A rebuilt connection is a new SDK and starts from `None`.
-    /// The number may be one this build does not define; see
-    /// [`Self::proven_platform_version`].
-    pub fn proven_protocol_version(&self) -> Option<u32> {
-        match self.sdk.load().query_settings().verified_protocol_version {
-            0 => None,
-            version => Some(version),
-        }
-    }
-
-    /// The platform version the connected network has proven
-    /// ([`Self::proven_protocol_version`]), when this build defines it.
-    /// `None` before the network proves a version and for a version newer
-    /// than any this build knows, so every capability reading it fails
-    /// closed.
-    pub fn proven_platform_version(&self) -> Option<&'static PlatformVersion> {
-        self.proven_protocol_version()
-            .and_then(PlatformVersion::get_optional)
+    /// The current SDK's view of the network's protocol version
+    /// ([`dash_sdk::Sdk::protocol_version_info`]): the version proven by a
+    /// response whose proof and quorum signature were verified (`None` before
+    /// any; a rebuilt connection is a new SDK and starts from `None`), the
+    /// version transitions are built at, and whether the proven version is
+    /// newer than any this build defines.
+    pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
+        self.sdk.load().protocol_version_info()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -2030,28 +2018,25 @@ mod tests {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(temp_dir.path());
-        assert_eq!(ctx.proven_protocol_version(), None, "boot");
-        assert!(ctx.proven_platform_version().is_none(), "boot");
+        assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
         prove_protocol_version(&ctx, 13);
-        assert_eq!(ctx.proven_protocol_version(), Some(13));
-        assert_eq!(
-            ctx.proven_platform_version().map(|v| v.protocol_version),
-            Some(13)
-        );
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(13));
+        assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
-        assert_eq!(ctx.proven_protocol_version(), None, "rebuilt connection");
-        assert!(
-            ctx.proven_platform_version().is_none(),
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
             "rebuilt connection"
         );
     }
 
-    /// A proven version this build does not define is reported as proven, but
-    /// no platform version is derived from it: nothing here knows its rules.
+    /// A proven version this build does not define is reported as proven and
+    /// flagged as newer than this build: nothing here knows its rules.
     #[test]
-    fn an_unknown_proven_version_has_no_platform_version() {
+    fn an_unknown_proven_version_is_flagged_as_newer() {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         use dash_sdk::dpp::version::LATEST_VERSION;
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -2059,8 +2044,10 @@ mod tests {
 
         prove_protocol_version(&ctx, LATEST_VERSION + 1);
 
-        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION + 1));
-        assert!(ctx.proven_platform_version().is_none());
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(LATEST_VERSION + 1));
+        assert_eq!(info.maximum_supported_version, LATEST_VERSION);
+        assert!(info.newer_protocol_available);
     }
 
     /// Contest windows stay consistent as the SDK ratchets upward from each

@@ -39,3 +39,34 @@ pub enum SpendLimitKind {
     /// upstream shield planner's input rules.
     ShieldFromPlatform,
 }
+
+/// Why a Core send has no Max to offer although the wallet answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreSendShortfall {
+    /// No coin in the accounts a send spends from can be spent yet: the
+    /// funds are mixed (CoinJoin), recent rewards still maturing, or none.
+    NothingSpendable,
+    /// Spendable coins exist, but none brings in more than the network fee
+    /// its own spend costs.
+    BelowFee,
+    /// Every spendable coin is held by a transaction the wallet has not
+    /// finished processing yet.
+    HeldByPendingTransaction,
+}
+
+impl CoreSendShortfall {
+    /// What the form tells the user instead of offering Max.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NothingSpendable => {
+                "None of your funds can be sent from this form yet. CoinJoin funds cannot be sent here, and recent masternode or mining rewards become available a few hours after they arrive."
+            }
+            Self::BelowFee => {
+                "Your spendable balance is too low to cover the network fee. Add more Dash to this wallet, then try again."
+            }
+            Self::HeldByPendingTransaction => {
+                "Your funds are held by a recent transaction that has not finished yet. The available amount is shown again when it completes."
+            }
+        }
+    }
+}

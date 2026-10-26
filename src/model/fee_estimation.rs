@@ -1340,6 +1340,24 @@ pub fn shielded_fee_for_actions(
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
+/// Fee (credits) shielding from Platform is estimated to cost: the
+/// two-action minimum shielded fee the upstream shield claims from its
+/// fee-paying input. The planner keeps a larger reserve back
+/// ([`shield_from_balance_fee_headroom`]); what the fee does not use stays on
+/// the Platform address. `0` when the protocol version has no shielded-fee
+/// formula (the backend re-validates before dispatch).
+pub fn shield_from_balance_fee_estimate(platform_version: &PlatformVersion) -> u64 {
+    shielded_fee_for_actions(2, platform_version).unwrap_or(0)
+}
+
+/// Fee (duffs) a Core payment saves when its output script is `script_len`
+/// bytes instead of `priced_script_len`, at the default rate the send builds
+/// with. Zero when the script is not smaller.
+pub fn core_output_script_fee_saved_duffs(priced_script_len: usize, script_len: usize) -> u64 {
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+    FeeRate::normal().calculate_fee(priced_script_len.saturating_sub(script_len))
+}
+
 /// Balance (credits) shielding from Platform keeps back for its fee: the
 /// upstream shield planner's versioned reserve, which the fee-paying input
 /// retains unclaimed. The planner derives the Max it accepts from this same
@@ -2063,6 +2081,24 @@ mod tests {
                 .shield_from_core_funding(100_000, &platform_version)
                 .is_err()
         );
+    }
+
+    /// The shield fee preview states the fee the shield is charged, which is
+    /// half the reserve the planner keeps back.
+    #[test]
+    fn shield_from_balance_fee_estimate_is_the_two_action_fee_not_the_reserve() {
+        let pv = PlatformVersion::latest();
+        let fee = shield_from_balance_fee_estimate(pv);
+        assert_eq!(fee, shielded_fee_for_actions(2, pv).expect("shielded fee"));
+        assert_eq!(fee * 2, shield_from_balance_fee_headroom(pv));
+    }
+
+    /// A smaller output script saves its bytes' fee at the default rate.
+    #[test]
+    fn core_output_script_fee_saved_prices_the_saved_bytes() {
+        // P2PKH (25 bytes) against P2SH (23 bytes) at 1000 duffs/kB.
+        assert_eq!(core_output_script_fee_saved_duffs(25, 23), 2);
+        assert_eq!(core_output_script_fee_saved_duffs(23, 25), 0);
     }
 
     #[test]

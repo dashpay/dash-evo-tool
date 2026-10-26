@@ -1114,6 +1114,8 @@ impl WalletSendScreen {
         };
         if self.spend_limits.is_busy(&seed_hash, kind, revision) {
             ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if let Some(reason) = self.spend_limits.unavailable(&seed_hash, kind, revision) {
+            ui.label(reason.message());
         } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
             ui.label("The available amount could not be checked.");
             if ui.button("Retry available amount check").clicked() {
@@ -2571,10 +2573,13 @@ impl WalletSendScreen {
                 );
                 Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
             }
-            // Platform → Shielded: two-action shield fee headroom, paid on top.
+            // Platform → Shielded: the two-action shield fee, paid on top. The
+            // planner keeps a larger reserve back; what the fee does not use
+            // stays on the Platform address.
             (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => {
-                let fee_credits =
-                    shield_from_balance_fee_headroom(self.app_context.platform_version());
+                let fee_credits = crate::model::fee_estimation::shield_from_balance_fee_estimate(
+                    self.app_context.platform_version(),
+                );
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
             // Identity → Core: credit-withdrawal fee, paid on top.
@@ -5856,6 +5861,91 @@ mod tests {
                 )))
             ),
             "an explicit amount must reach the backend: {action:?}"
+        );
+    }
+
+    /// When the wallet says a Core send has nothing to offer, the form names
+    /// the reason (here: only CoinJoin funds) instead of a fee shortfall or a
+    /// retry, and Max fills nothing.
+    #[test]
+    fn core_send_states_why_no_max_is_offered() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+
+        assert!(screen.request_spend_limit().is_none());
+        // Auto reads the same limits: a settled zero, not a pending quote.
+        let source = screen.selected_source.clone().expect("source");
+        let destination = screen.validated_destination.clone();
+        let limits = screen.amount_limits_for(&source, destination.as_ref());
+        assert_eq!(limits.max_credits, None);
+        assert_eq!(limits.quote, resolve::QuoteState::Ready);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_spend_limit_status(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let caption = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(CoreSendShortfall::NothingSpendable.message())
+                    .include_labels(),
+            )
+            .count();
+        assert_eq!(caption, 1, "the form must say why Max is unavailable");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none(),
+            "retrying cannot change the answer"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Checking the available amount")
+                .is_none(),
+            "the answer is in, not pending"
+        );
+    }
+
+    /// The shield fee preview states the fee the shield is charged, not the
+    /// larger reserve the planner keeps back on the Platform address.
+    #[test]
+    fn shield_from_platform_preview_states_the_shield_fee_not_the_reserve() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            100 * CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(1.0));
+        let platform_version = screen.app_context.platform_version();
+
+        let preview = screen.current_fee_preview().expect("shield fee preview");
+
+        let fee = crate::model::fee_estimation::shield_from_balance_fee_estimate(platform_version);
+        assert_eq!(preview.fee_credits, fee);
+        assert_eq!(
+            preview.total_debit_credits,
+            Amount::new_dash(1.0).value() + fee
         );
     }
 

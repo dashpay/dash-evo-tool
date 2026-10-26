@@ -222,11 +222,11 @@ impl WalletSendScreen {
                         // payment the pooled build accepts, net of its fee.
                         // Nothing is offered until it arrives.
                         match self.spend_limit_for(source, dest_kind, self.core_send_limit_kind()) {
+                            // The backend states a zero as its reason; this
+                            // only keeps a zero from being offered.
                             Some(0) => {
                                 max = None;
-                                Some(
-                                    "Your balance is too low to cover the network fee.".to_string(),
-                                )
+                                None
                             }
                             Some(max_credits) => {
                                 max = Some(max_credits);
@@ -391,6 +391,16 @@ impl WalletSendScreen {
                 if self.spend_limits.is_busy(&seed_hash, kind, revision) =>
             {
                 QuoteState::Busy
+            }
+            // The wallet answered with a reason there is nothing to offer: a
+            // settled zero, so Auto passes over this balance instead of waiting.
+            Some((seed_hash, kind, revision))
+                if self
+                    .spend_limits
+                    .unavailable(&seed_hash, kind, revision)
+                    .is_some() =>
+            {
+                QuoteState::Ready
             }
             Some(_) => QuoteState::Pending,
             None => QuoteState::Ready,

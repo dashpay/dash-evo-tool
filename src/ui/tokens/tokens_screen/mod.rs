@@ -214,7 +214,8 @@ fn is_duplicate_balance_refresh(
     action: &AppAction,
 ) -> bool {
     *status == RefreshingStatus::Refreshing
-        && pending_context == Some(&BackendTaskContext::TokenBalanceRefresh)
+        && pending_context.map(BackendTaskContext::operation)
+            == Some(&BackendTaskContext::TokenBalanceRefresh)
         && matches!(
             action,
             AppAction::BackendTask(BackendTask::TokenTask(task))
@@ -234,13 +235,13 @@ fn completes_pending_operation(
     match result {
         BackendTaskSuccessResult::FetchedTokenBalances
         | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
-            *result_context == BackendTaskContext::TokenBalanceRefresh
+            *result_context.operation() == BackendTaskContext::TokenBalanceRefresh
         }
         BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
             identity_token_id,
             ..
         ) => {
-            *result_context == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
+            *result_context.operation() == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
         }
         _ => false,
     }
@@ -2900,17 +2901,21 @@ impl ScreenLike for TokensScreen {
             self.pending_operation_context.as_ref(),
             &action,
         );
+        // A tracked operation is sent under a dispatch context of its own, so
+        // only its own result or failure settles it.
+        let mut dispatch_context = None;
         if duplicate_balance_refresh {
             action = AppAction::None;
-        } else if let AppAction::BackendTask(task) = &action {
-            let context = BackendTaskContext::from(task);
-            if matches!(
-                context,
+        } else if let AppAction::BackendTask(task) = &action
+            && matches!(
+                BackendTaskContext::from(task),
                 BackendTaskContext::TokenBalanceRefresh
                     | BackendTaskContext::TokenRewardEstimate(_)
-            ) {
-                self.pending_operation_context = Some(context);
-            }
+            )
+        {
+            let context = BackendTaskContext::for_dispatch_on(task, self.app_context.network);
+            self.pending_operation_context = Some(context.clone());
+            dispatch_context = Some(context);
         }
 
         // Post-processing on user actions
@@ -2951,6 +2956,12 @@ impl ScreenLike for TokensScreen {
             _ => {
                 // No extra processing needed
             }
+        }
+
+        if let Some(context) = dispatch_context
+            && let AppAction::BackendTask(task) = std::mem::replace(&mut action, AppAction::None)
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
         }
 
         if action == AppAction::None

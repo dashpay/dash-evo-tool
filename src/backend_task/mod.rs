@@ -500,7 +500,10 @@ impl BackendTaskContext {
         }
     }
 
-    fn operation(&self) -> &Self {
+    /// The operation this context names, looking through its dispatch and
+    /// network wrappers. A screen that matches on what finished, rather than
+    /// on which of its own dispatches finished, compares this.
+    pub(crate) fn operation(&self) -> &Self {
         match self {
             Self::Dispatched { operation, .. }
             | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),

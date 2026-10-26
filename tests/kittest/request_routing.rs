@@ -662,3 +662,104 @@ fn home_retries_a_contact_read_that_failed_while_covered() {
         );
     });
 }
+
+/// The tasks dispatched since capture began that satisfy `pick`.
+fn captured_contexts(
+    harness: &App,
+    pick: impl Fn(&BackendTask) -> bool,
+) -> Vec<BackendTaskContext> {
+    harness
+        .state()
+        .test_captured_dispatches()
+        .iter()
+        .filter(|(task, _)| pick(task))
+        .map(|(_, context)| context.clone())
+        .collect()
+}
+
+/// A balance refresh started from My Tokens settles when its own result
+/// arrives through the production dispatch, so its progress banner goes away
+/// and the next Refresh is sent instead of being taken for a duplicate.
+#[test]
+fn token_balance_refresh_settles_on_its_dispatched_result() {
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    let is_refresh = |task: &BackendTask| {
+        matches!(task, BackendTask::TokenTask(task)
+            if matches!(**task, TokenTask::QueryMyTokenBalances))
+    };
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+        harness.state_mut().test_capture_dispatches();
+        harness.get_by_label("Refresh").click();
+        harness.run_steps(3);
+        let refreshes = captured_contexts(&harness, is_refresh);
+        assert_eq!(refreshes.len(), 1, "Refresh sends one balance query");
+        assert!(
+            harness
+                .query_all_by_label_contains("Refreshing tokens")
+                .next()
+                .is_some()
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: refreshes[0].clone(),
+                result: Box::new(BackendTaskSuccessResult::FetchedTokenBalances),
+            },
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Refreshing tokens")
+                .next()
+                .is_none(),
+            "the refresh's own result ends it"
+        );
+
+        harness.get_by_label("Refresh").click();
+        harness.run_steps(3);
+        assert_eq!(
+            captured_contexts(&harness, is_refresh).len(),
+            2,
+            "a finished refresh does not block the next one"
+        );
+    });
+}
+
+/// A restore from the previous version that fails through the production
+/// dispatch frees the Restore button again.
+#[test]
+fn failed_restore_from_previous_version_frees_its_button() {
+    fn chooser(
+        harness: &mut App,
+    ) -> &mut dash_evo_tool::ui::network_chooser_screen::NetworkChooserScreen {
+        match harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenNetworkChooser)
+        {
+            Some(Screen::NetworkChooserScreen(screen)) => screen,
+            _ => panic!("the network chooser is open"),
+        }
+    }
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+        harness.state_mut().test_capture_dispatches();
+        let action = chooser(&mut harness).begin_restore_for_test();
+        harness.state_mut().test_dispatch_screen_action(action);
+        let restores = captured_contexts(&harness, |_| true);
+        assert_eq!(restores.len(), 1, "the restore is dispatched once");
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: restores[0].clone(),
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(
+            !chooser(&mut harness).restore_in_progress_for_test(),
+            "the failed restore releases the button"
+        );
+    });
+}

@@ -896,7 +896,7 @@ pub enum AppAction {
 /// screen whichever screen is visible: it tracks the task and must hear how it ended.
 fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
     matches!(
-        context,
+        context.operation(),
         BackendTaskContext::ClearNetworkDatabase
             | BackendTaskContext::UpdateBackupRetention
             | BackendTaskContext::RestoreFromPreviousVersion
@@ -3722,5 +3722,10 @@ mod network_chooser_routing_tests {
         let context = BackendTaskContext::from(&task);
         assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
         assert!(network_chooser_owns_task(&context));
+        let dispatched = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        assert!(
+            network_chooser_owns_task(&dispatched),
+            "the chooser's own dispatch is still the chooser's task"
+        );
     }
 }

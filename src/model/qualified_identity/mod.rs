@@ -395,6 +395,12 @@ impl Display for QualifiedIdentity {
 /// [`Signer::can_sign_with`] is a cheaper per-frame check that also accepts a
 /// key filed under a wallet that is not on this device, or in the legacy
 /// encrypted form; selecting such a key would fail at signing time.
+///
+/// For key selection only: hand the identity itself to anything that signs.
+/// `sign` and `sign_create_witness` forward to the identity without
+/// re-checking [`QualifiedIdentity::holds_obtainable_key`], so a key this
+/// device cannot obtain still fails with the identity's own typed signing
+/// errors (e.g. a missing wallet seed) rather than a generic refusal.
 struct ObtainableKeys<'a>(&'a QualifiedIdentity);
 
 /// Names only the identity: the view carries no state of its own.

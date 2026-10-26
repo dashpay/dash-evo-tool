@@ -435,6 +435,17 @@ impl TokenFixture {
         self.harness.run_steps(5);
     }
 
+    /// Clicks the screen's primary button (the last button carrying `label`,
+    /// so a breadcrumb with the same text is skipped).
+    fn click_button(&mut self, label: &str) {
+        self.harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, label)
+            .last()
+            .unwrap_or_else(|| panic!("no {label:?} button"))
+            .click();
+        self.harness.run_steps(5);
+    }
+
     /// Clicks the top panel's breadcrumb `label` (the left navigation repeats
     /// some of these names lower down).
     fn click_breadcrumb(&mut self, label: &str) {
@@ -444,6 +455,44 @@ impl TokenFixture {
             .unwrap_or_else(|| panic!("no {label:?} breadcrumb"))
             .click();
         self.harness.run_steps(5);
+    }
+
+    /// Types `text` into the `index`-th text field of the central panel,
+    /// counted from the top.
+    fn fill_text_input(&mut self, index: usize, text: &str) {
+        let field = |harness: &Harness<'static, dash_evo_tool::app::AppState>| {
+            let mut fields: Vec<_> = harness
+                .query_all_by_role(egui::accesskit::Role::TextInput)
+                .filter(|node| node.rect().left() >= 360.0)
+                .map(|node| node.rect())
+                .collect();
+            fields.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            fields[index]
+        };
+        let rect = field(&self.harness);
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|node| node.rect() == rect)
+            .expect("text field")
+            .focus();
+        self.harness.run_steps(2);
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|node| node.rect() == rect)
+            .expect("text field")
+            .type_text(text);
+        self.harness.run_steps(5);
+    }
+
+    fn confirmation_open(&self) -> bool {
+        self.harness
+            .query_all_by_role(egui::accesskit::Role::Window)
+            .any(|window| {
+                window
+                    .accesskit_node()
+                    .label()
+                    .is_some_and(|label| label.starts_with("Confirm"))
+            })
     }
 }
 
@@ -621,5 +670,67 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
             f.harness.query_by_label("No Identities Loaded").is_none(),
             "the Token Creator must offer the seeded identity, so its form renders"
         );
+    });
+}
+
+/// The single-shot token actions only ask for confirmation once their inputs
+/// are valid: an empty amount or identity must not open a "mint 0 tokens to ?"
+/// dialog.
+#[test]
+fn token_action_buttons_wait_for_valid_input() {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let info = f.info.clone();
+        let other = Identifier::from([0x99; 32]).to_string(Encoding::Base58);
+
+        // (screen, primary button, values for its text fields from the top)
+        let cases: [(ScreenType, &str, Vec<&str>); 5] = [
+            (
+                ScreenType::MintTokensScreen(info.clone()),
+                "Mint",
+                vec!["5", other.as_str()],
+            ),
+            (
+                ScreenType::BurnTokensScreen(info.clone()),
+                "Burn",
+                vec!["5"],
+            ),
+            (
+                ScreenType::FreezeTokensScreen(info.clone()),
+                "Freeze",
+                vec![other.as_str()],
+            ),
+            (
+                ScreenType::UnfreezeTokensScreen(info.clone()),
+                "Unfreeze",
+                vec![other.as_str()],
+            ),
+            (
+                ScreenType::DestroyFrozenFundsScreen(info.clone()),
+                "Destroy",
+                vec![other.as_str()],
+            ),
+        ];
+        for (screen_type, button, values) in cases {
+            f.open(screen_type);
+            f.click_button(button);
+            assert!(
+                !f.confirmation_open(),
+                "{button}: an empty form must not ask for confirmation"
+            );
+            for (index, value) in values.into_iter().enumerate() {
+                f.fill_text_input(index, value);
+            }
+            f.click_button(button);
+            assert!(
+                f.confirmation_open(),
+                "{button}: a filled form must ask for confirmation"
+            );
+            f.click_button("Cancel");
+            assert!(!f.confirmation_open(), "{button}: Cancel closes the dialog");
+        }
     });
 }

@@ -10,6 +10,7 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -39,6 +40,7 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Ui};
 use std::collections::HashSet;
@@ -57,6 +59,19 @@ impl StepCounter {
         self.0 += 1;
         self.0
     }
+}
+
+/// The entered amount in base units, when it is greater than zero.
+pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
+    amount
+        .as_ref()
+        .map(Amount::value)
+        .filter(|value| *value > 0)
+}
+
+/// The identity ID typed into a field (Base58 or hex), when it is valid.
+pub fn parse_identity_id(input: &str) -> Option<Identifier> {
+    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
 }
 
 /// Lifecycle of a single-shot token action.
@@ -108,6 +123,12 @@ pub trait TokenAction: Sized + 'static {
     /// Renders the per-action form section between the key chooser and the note.
     fn render_form(&mut self, ui: &mut Ui, ctx: &TokenActionCtx, step: &mut StepCounter) {
         let _ = (ui, ctx, step);
+    }
+
+    /// Whether the form holds everything [`Self::build_action`] needs. The primary
+    /// button stays disabled until it does.
+    fn inputs_ready(&self) -> bool {
+        true
     }
 
     /// Validates inputs and builds the dispatch action. Returns `None` after showing
@@ -580,7 +601,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                if ComponentStyles::add_primary_button(ui, button_text).clicked() {
+                let ready = self.action.inputs_ready();
+                if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
+                    .disabled_tooltip("Fill in the form to continue.")
+                    .clicked()
+                {
                     let message = self.action.confirm_message(&self.ctx());
                     let mut dialog = ConfirmationDialog::new(A::CONFIRM_TITLE, message)
                         .confirm_text(Some(A::VERB))

@@ -1,4 +1,6 @@
-use super::token_action_screen::{StepCounter, TokenAction, TokenActionCtx, TokenActionScreen};
+use super::token_action_screen::{
+    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, parse_identity_id, positive_amount,
+};
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
@@ -18,8 +20,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::ac
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Ui;
 use std::sync::Arc;
 
@@ -130,6 +131,11 @@ impl TokenAction for MintAction {
         }
     }
 
+    fn inputs_ready(&self) -> bool {
+        positive_amount(&self.amount).is_some()
+            && parse_identity_id(&self.recipient_identity_id).is_some()
+    }
+
     fn build_action(
         &mut self,
         ctx: &TokenActionCtx,
@@ -137,19 +143,16 @@ impl TokenAction for MintAction {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Option<AppAction> {
-        if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
+        let Some(amount) = positive_amount(&self.amount) else {
             MessageBanner::set_global(
                 ctx.app_context.egui_ctx(),
                 "Invalid amount",
                 MessageType::Error,
             );
             return None;
-        }
+        };
 
-        let Ok(recipient_id) = Identifier::from_string_try_encodings(
-            &self.recipient_identity_id,
-            &[Encoding::Base58, Encoding::Hex],
-        ) else {
+        let Some(recipient_id) = parse_identity_id(&self.recipient_identity_id) else {
             MessageBanner::set_global(
                 ctx.app_context.egui_ctx(),
                 "Invalid receiver",
@@ -166,7 +169,7 @@ impl TokenAction for MintAction {
                 signing_key,
                 public_note,
                 recipient_id: Some(recipient_id),
-                amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
+                amount,
                 group_info,
             },
         ))))

@@ -17,6 +17,7 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;

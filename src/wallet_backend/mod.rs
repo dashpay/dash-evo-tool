@@ -1866,8 +1866,8 @@ impl WalletBackend {
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
     /// orchestrates the parts: `SpvRuntime::start(ClientConfig)` followed by
-    /// `spawn_run_loop()`, plus the platform-address / identity / shielded sync
-    /// coordinators.
+    /// `spawn_run_loop()`, plus the platform-address / identity / shielded /
+    /// DashPay sync coordinators.
     ///
     /// `SpvRuntime::start()` initializes the network manager, disk storage,
     /// and SPV client. The sync loop runs separately on the tokio runtime;
@@ -1969,6 +1969,9 @@ impl WalletBackend {
         // If no wallets have called `bind_shielded` yet, each pass produces
         // an empty summary and returns immediately — safe no-op.
         let shielded_sync = Arc::downgrade(&self.inner.pwm.shielded_sync_arc());
+        // DashPay sync coordinator: contact requests, profiles, contactInfo and
+        // payments for every registered wallet, every 15 s.
+        let dashpay_sync = Arc::downgrade(&self.inner.pwm.dashpay_sync_arc());
         // Owned clone of the frame-loop sender: the gate closure fires exactly
         // once per session (single-winner `fired`), so this nudges `AppState` to
         // run the all-wallets identity sweep at most once, right when Platform
@@ -1994,6 +1997,13 @@ impl WalletBackend {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
                     coordinator = "shielded-sync",
+                    "Coordinator start skipped: backend torn down before the quorum gate fired"
+                ),
+            }
+            match dashpay_sync.upgrade() {
+                Some(coordinator) => coordinator.start(),
+                None => tracing::warn!(
+                    coordinator = "dashpay-sync",
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
                 ),
             }
@@ -2084,7 +2094,7 @@ impl WalletBackend {
     /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
     ///    storage advisory lock) while leaving the `SpvRuntime` and its
     ///    `PlatformEventManager` in place for the next `spawn_in_background`.
-    /// 2. `quiesce()` the three sync coordinators (cancel + drain the in-flight
+    /// 2. `quiesce()` the four sync coordinators (cancel + drain the in-flight
     ///    pass) via their `Arc` accessors — NOT `pwm.shutdown()` — so the event
     ///    adapter keeps running.
     /// 3. Re-arm the DET start gates ([`StartLatch::reset`] +
@@ -2100,8 +2110,9 @@ impl WalletBackend {
     /// SAFETY (restart-in-place vs the upstream coordinators): restarting the
     /// SAME coordinator instance is race-free because every coordinator clears
     /// its cancel slot under a `background_generation` guard in the pinned
-    /// platform rev — `identity_sync`, `shielded_sync`, and (since b4506492)
-    /// `platform_address_sync`. Without that guard a lagging old thread could
+    /// platform rev — `identity_sync`, `shielded_sync`, (since b4506492)
+    /// `platform_address_sync`, and `dashpay_sync` (through the shared
+    /// generation-guarded thread registry). Without that guard a lagging old thread could
     /// clobber a freshly-installed cancel token, leaking an uncancellable /
     /// duplicate loop; the guard makes the stale thread observe the bumped
     /// generation and stand down.
@@ -2135,9 +2146,27 @@ impl WalletBackend {
                 "Shielded sync did not drain during disconnect; it stays inactive until a later stop drains it"
             );
         }
+        if !self.inner.pwm.dashpay_sync_arc().quiesce().await {
+            tracing::warn!(
+                "DashPay sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
+    }
+
+    /// Report the masternode list ready, firing the coordinator start the way
+    /// the `EventBridge` does.
+    #[cfg(test)]
+    pub(crate) fn report_masternodes_ready_for_test(&self) {
+        self.inner.coordinator_gate.on_masternodes_ready();
+    }
+
+    /// Whether the DashPay sync coordinator's loop is running.
+    #[cfg(test)]
+    pub(crate) fn dashpay_sync_running_for_test(&self) -> bool {
+        self.inner.pwm.dashpay_sync().is_running()
     }
 
     /// Hold starts and stops pending, so tests can join multiple callers to

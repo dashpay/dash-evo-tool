@@ -374,6 +374,35 @@ async fn reconnect_restart_in_place_reuses_backend() {
     second.shutdown().await;
 }
 
+/// The DashPay sync coordinator starts with the other Platform coordinators
+/// once the masternode list is ready, and a disconnect stops it with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dashpay_sync_runs_with_the_platform_coordinators() {
+    let _reopen_guard = backend_reopen_lock().await;
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect("start should wire then start offline");
+    let backend = ctx.wallet_backend().expect("backend wired after start");
+    assert!(
+        !backend.dashpay_sync_running_for_test(),
+        "DashPay sync waits for the masternode list"
+    );
+
+    backend.report_masternodes_ready_for_test();
+    assert!(
+        backend.dashpay_sync_running_for_test(),
+        "DashPay sync starts once the masternode list is ready"
+    );
+
+    backend.stop_in_place().await;
+    assert!(
+        !backend.dashpay_sync_running_for_test(),
+        "a disconnect stops DashPay sync"
+    );
+    backend.shutdown().await;
+}
+
 /// Two genuinely-parallel first-open attempts on the SAME never-wired context
 /// must NOT race into a double `WalletBackend::new` / `SqlitePersister::open`.
 /// The upstream persister is single-open-per-path, so a concurrent double-open

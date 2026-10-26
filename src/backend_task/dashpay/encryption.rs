@@ -24,7 +24,12 @@ impl EcdhSecretKey {
     /// Build a secret key from a 32-byte scalar, refusing zero and values not
     /// below the curve order.
     fn from_secret_bytes(scalar: &[u8; 32]) -> Result<Self, secp256k1::Error> {
-        secp256k1::SecretKey::from_secret_bytes(*scalar).map(Self)
+        let mut source = secp256k1::SecretKey::from_secret_bytes(*scalar)?;
+        let key = Self(source);
+        // `SecretKey` is `Copy`, so wrapping it copies the scalar; erase the
+        // local copy as well so only the wrapped one remains.
+        source.non_secure_erase();
+        Ok(key)
     }
 }
 

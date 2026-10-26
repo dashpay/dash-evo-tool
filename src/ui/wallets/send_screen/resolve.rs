@@ -221,7 +221,7 @@ impl WalletSendScreen {
                         // Core-to-Core "Max": the backend's quote of the largest
                         // payment the pooled build accepts, net of its fee.
                         // Nothing is offered until it arrives.
-                        match self.spend_limit_for(source, dest_kind, SpendLimitKind::CoreSend) {
+                        match self.spend_limit_for(source, dest_kind, self.core_send_limit_kind()) {
                             Some(0) => {
                                 max = None;
                                 Some(
@@ -262,17 +262,27 @@ impl WalletSendScreen {
                 let headroom =
                     shield_from_balance_fee_headroom(self.app_context.platform_version());
                 let fee = format_credits_as_dash(headroom);
-                let max =
-                    self.spend_limit_for(source, dest_kind, SpendLimitKind::ShieldFromPlatform);
-                if max.is_none() {
-                    quote = self.spend_limit_quote_state(source, dest_kind);
+                match self.spend_limit_for(source, dest_kind, SpendLimitKind::ShieldFromPlatform) {
+                    // No address can keep the fee back: a zero Max would only
+                    // fill in an amount the form refuses.
+                    Some(0) => (
+                        None,
+                        Some(format!(
+                            "None of your Platform addresses can cover the shielding fee of approximately {fee}, so nothing can be shielded right now."
+                        )),
+                    ),
+                    max => {
+                        if max.is_none() {
+                            quote = self.spend_limit_quote_state(source, dest_kind);
+                        }
+                        (
+                            max,
+                            Some(format!(
+                                "A shielding fee of approximately {fee} is reserved from your balance."
+                            )),
+                        )
+                    }
                 }
-                (
-                    max,
-                    Some(format!(
-                        "A shielding fee of approximately {fee} is reserved from your balance."
-                    )),
-                )
             }
             SourceSelection::PlatformAddresses(addresses) => {
                 // Recipients never pay: several recipients exclude every one of
@@ -466,24 +476,6 @@ impl WalletSendScreen {
             .find(|qi| Some(qi.identity.id()) == preferred)
             .or_else(|| identities.iter().max_by_key(|qi| qi.identity.balance()))
             .cloned()
-    }
-
-    /// The private address of the paying wallet, if the backend reported it.
-    fn own_shielded_address(&self) -> Option<String> {
-        self.selected_wallet_seed_hash
-            .and_then(|seed_hash| self.app_context.shielded_receive_address(&seed_hash))
-    }
-
-    /// Whether a shielded destination is the paying wallet's own private
-    /// balance — the only one Core and Platform can shield into. The empty
-    /// address is the form's own-pool marker.
-    pub(super) fn shielded_destination_is_own_pool(&self) -> bool {
-        match &self.validated_destination {
-            Some(ValidatedAddress::Shielded(address)) => {
-                address.is_empty() || self.own_shielded_address().as_deref() == Some(address)
-            }
-            _ => false,
-        }
     }
 
     /// The paying wallet's balance a typed destination belongs to, if any.

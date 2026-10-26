@@ -30,6 +30,7 @@ fn bao(note: Option<&str>) -> ContactData {
         nickname: None,
         note: note.map(str::to_string),
         is_hidden: false,
+        details_unreadable: false,
         account_reference: 0,
         username: Some("bao".into()),
         display_name: Some("Bao Nguyen".into()),
@@ -630,6 +631,45 @@ fn a_foreign_same_contact_failure_does_not_release_the_hubs_note() {
             );
         }
     });
+}
+
+/// A hidden contact whose saved details could not be read says so; a
+/// readable hidden contact does not.
+#[test]
+fn an_unreadable_hidden_contact_is_labelled() {
+    use dash_evo_tool::ui::identity::contacts::{SHOW_HIDDEN_LABEL, UNREADABLE_DETAILS_NOTE};
+    for unreadable in [true, false] {
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let app = crate::support::mount_app(
+                dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances,
+            );
+            let app_context = app.state().current_app_context().clone();
+            let owner = seed_identity_with_usernames(&app_context);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                WIDE,
+                IdentityHubTab::Contacts,
+                |hub, owner| {
+                    let mut contact = bao(None);
+                    contact.is_hidden = true;
+                    contact.details_unreadable = unreadable;
+                    deliver(hub, owner, contact);
+                },
+            );
+            hub.get_by_label(&format!("{SHOW_HIDDEN_LABEL} · 1"))
+                .click();
+            hub.run_steps(2);
+
+            assert_eq!(
+                hub.query_by_label(UNREADABLE_DETAILS_NOTE).is_some(),
+                unreadable,
+                "unreadable = {unreadable}"
+            );
+        });
+    }
 }
 
 #[test]

@@ -14,7 +14,7 @@ use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
 use futures::future::join_all;
-use platform_wallet::wallet::identity::crypto::decode_private_data;
+use platform_wallet::wallet::identity::crypto::{ContactInfoPrivateData, decode_private_data};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -185,15 +185,22 @@ where
             continue;
         }
 
-        // The DIP-15 codec platform-wallet writes with; an unreadable payload
-        // shows as no stored details.
+        // The DIP-15 codec platform-wallet writes with. A payload that is
+        // present but cannot be opened is not "no details": its hidden flag
+        // is unknown, so the contact stays hidden.
         let private_data = match props.get("privateData") {
-            Some(Value::Bytes(encrypted)) => decrypt_private_data(encrypted, &private_data_key)
+            None => Some(ContactInfoPrivateData::default()),
+            Some(value) => value
+                .as_bytes_slice()
                 .ok()
+                .and_then(|encrypted| decrypt_private_data(encrypted, &private_data_key).ok())
                 .and_then(|plaintext| decode_private_data(&plaintext).ok()),
-            _ => None,
-        }
-        .unwrap_or_default();
+        };
+        let details_unreadable = private_data.is_none();
+        let private_data = private_data.unwrap_or(ContactInfoPrivateData {
+            display_hidden: true,
+            ..Default::default()
+        });
 
         contact_info_map.insert(
             contact_id,
@@ -203,6 +210,7 @@ where
                 nickname: private_data.alias_name,
                 note: private_data.note,
                 is_hidden: private_data.display_hidden,
+                details_unreadable,
                 username: None,
                 display_name: None,
                 avatar_url: None,
@@ -220,6 +228,9 @@ pub struct ContactData {
     pub nickname: Option<String>,
     pub note: Option<String>,
     pub is_hidden: bool,
+    /// The stored details exist but could not be decrypted or decoded. Such a
+    /// contact is kept hidden, since its hidden flag cannot be read.
+    pub details_unreadable: bool,
     pub account_reference: u32,
     // Profile data (fetched from Platform)
     pub username: Option<String>,
@@ -324,6 +335,7 @@ pub async fn load_contacts(
                     nickname: None,
                     note: None,
                     is_hidden: false,
+                    details_unreadable: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,
@@ -461,6 +473,7 @@ pub async fn load_contacts_offline(
                 .map(|m| m.notes.clone())
                 .filter(|s| !s.is_empty()),
             is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            details_unreadable: false,
             // Carry the cached account reference so the "Account #N" badge shows
             // and offline ordering matches the post-refresh view. Falls back to
             // 0 ("default account") when no network read has cached one yet.

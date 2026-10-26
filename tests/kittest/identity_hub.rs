@@ -278,7 +278,6 @@ pub(crate) mod loads {
     /// Entering the Contacts tab asks for a sync of the identity it lists.
     #[test]
     fn entering_the_contacts_tab_asks_for_a_sync() {
-        use dash_evo_tool::ui::identity::IdentityHubTab;
         with_isolated_data_dir(|| {
             let (_runtime, app_context) = fresh_app_context();
             let owner = seed_identity_that_can_move_funds(&app_context);

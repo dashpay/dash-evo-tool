@@ -27,7 +27,7 @@ use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{
-    Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
+    Document, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use platform_wallet::ContactRequest as UpstreamContactRequest;
@@ -1070,6 +1070,7 @@ pub async fn cancel_contact_request(
 mod tests {
     use super::*;
     use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::platform::DocumentQuery;
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
@@ -1231,6 +1232,40 @@ mod tests {
             sender_of_received_request(&doc, &id(2)),
             Err(DashPayError::InvalidDocument { .. })
         ));
+    }
+
+    #[derive(Default)]
+    struct ScriptedReEngage {
+        withdrawn: bool,
+        declined: bool,
+        unreadable: bool,
+        re_engage_fails: bool,
+        re_engaged: std::sync::Mutex<bool>,
+    }
+
+    impl ReEngageOps for ScriptedReEngage {
+        fn is_withdrawn(&self) -> Result<bool, TaskError> {
+            if self.unreadable {
+                return Err(TaskError::DashPayLocalStateRead {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
+            Ok(self.withdrawn)
+        }
+
+        fn is_declined(&self) -> Result<bool, TaskError> {
+            Ok(self.declined)
+        }
+
+        async fn re_engage(&self) -> Result<(), TaskError> {
+            if self.re_engage_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
+            *self.re_engaged.lock().unwrap() = true;
+            Ok(())
+        }
     }
 
     /// A send that reached Platform but could not update this device is

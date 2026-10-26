@@ -770,20 +770,18 @@ impl ScreenLike for ContactDetailsScreen {
                 identity,
                 contact_id,
                 published,
-            } => {
-                if identity == self.identity.identity.id() && contact_id == self.contact_id {
-                    self.loading = false;
-                    self.commit_pending_update();
-                    let (message, kind) = if published {
-                        ("Contact information saved.", MessageType::Success)
-                    } else {
-                        (
-                            crate::ui::identity::contacts::DETAILS_SAVED_ON_THIS_DEVICE,
-                            MessageType::Info,
-                        )
-                    };
-                    MessageBanner::set_global(self.app_context.egui_ctx(), message, kind);
-                }
+            } if identity == self.identity.identity.id() && contact_id == self.contact_id => {
+                self.loading = false;
+                self.commit_pending_update();
+                let (message, kind) = if published {
+                    ("Contact information saved.", MessageType::Success)
+                } else {
+                    (
+                        crate::ui::identity::contacts::DETAILS_SAVED_ON_THIS_DEVICE,
+                        MessageType::Info,
+                    )
+                };
+                MessageBanner::set_global(self.app_context.egui_ctx(), message, kind);
             }
             _ => {}
         }

@@ -52,7 +52,7 @@ impl HubProfiles {
             };
             match &snapshot.profile {
                 ProfileState::Present(profile) => {
-                    self.shown.insert(id, Some(profile.into()));
+                    self.shown.insert(id, Some((&**profile).into()));
                 }
                 ProfileState::Absent => {
                     self.shown.insert(id, None);

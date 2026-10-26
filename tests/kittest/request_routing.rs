@@ -8,7 +8,7 @@
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::{AppState, TaskResult};
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::platform::Identifier;

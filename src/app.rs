@@ -55,7 +55,6 @@ use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
 use crate::wallet_backend::{DetScope, WalletBackend};
 use dash_sdk::dpp::dashcore::{Network, Txid};
-use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
@@ -530,6 +529,7 @@ mod backend_task_join_tests {
     use crate::backend_task::BackendTaskContext;
     use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::platform::Identifier;
 
     fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
         BackendTaskContext::Dispatched {
@@ -4595,6 +4595,7 @@ mod migration_banner_tests {
     use super::*;
     use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    use dash_sdk::platform::Identifier;
 
     fn feedback_operation(statuses: &[DpnsVoteTargetStatus]) -> DpnsVoteOperation {
         let mut operation = AppContext::new_dpns_vote_operation(
@@ -5359,6 +5360,7 @@ mod contact_request_routing_tests {
 #[cfg(test)]
 mod dpns_result_routing_tests {
     use super::*;
+    use dash_sdk::platform::Identifier;
 
     /// The route a result nobody open dispatched takes to the voting panel.
     fn dpns_result_needs_hidden_route(

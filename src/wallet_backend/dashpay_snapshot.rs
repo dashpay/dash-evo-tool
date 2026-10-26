@@ -80,7 +80,9 @@ pub(super) fn build_snapshot(
     let profile = match &dashpay.profile {
         Some(profile) => {
             let (created_at, updated_at) = overlays.profile_times(owner);
-            ProfileState::Present(profile_to_det(owner, profile, created_at, updated_at))
+            ProfileState::Present(Box::new(profile_to_det(
+                owner, profile, created_at, updated_at,
+            )))
         }
         None if profile_synced => ProfileState::Absent,
         None => ProfileState::Unknown,
@@ -416,7 +418,7 @@ impl WalletBackend {
         profile: Option<StoredProfile>,
     ) {
         let state = match profile {
-            Some(profile) => ProfileState::Present(profile),
+            Some(profile) => ProfileState::Present(Box::new(profile)),
             None => ProfileState::Absent,
         };
         self.inner
@@ -806,5 +808,76 @@ mod tests {
             vec![("bb", 200), ("aa", 100)],
             "one row per payment, newest first"
         );
+    }
+
+    /// End to end through the wallet backend: a contact's details held in
+    /// platform-wallet win over this device's older copy in the snapshot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_snapshot_shows_the_details_platform_wallet_holds() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed = [0x4Du8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, _wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let (owner, contact) = (id(0x11), id(0x22));
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        let request = |from, to| {
+            platform_wallet::ContactRequest::new(from, to, 0, 0, 0, vec![0u8; 96], 100_000, 1)
+        };
+        backend
+            .record_sent_contact_request(&seed_hash, &owner, request(owner, contact))
+            .await
+            .expect("record sent request");
+        backend
+            .record_incoming_contact_request(&seed_hash, &owner, request(contact, owner))
+            .await
+            .expect("record incoming request");
+        // This device's older copy.
+        backend
+            .dashpay_set_private_info(
+                &owner,
+                &contact,
+                &crate::model::dashpay::ContactPrivateInfo {
+                    nickname: "Old".to_string(),
+                    notes: "old note".to_string(),
+                    is_hidden: false,
+                },
+            )
+            .expect("sidecar written");
+        let synced = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        backend
+            .set_contact_details_for_tests(&seed_hash, &owner, &contact, synced.clone())
+            .await;
+
+        backend.refresh_dashpay_snapshots().await;
+
+        let snapshot = backend.dashpay_snapshot(&owner).expect("owner's snapshot");
+        let [row] = snapshot.contacts.as_slice() else {
+            panic!("expected one contact, got {:?}", snapshot.contacts);
+        };
+        assert_eq!(row.details(), synced);
     }
 }

@@ -10,6 +10,7 @@ use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::Screen;
 use dash_evo_tool::ui::identity::home::{self, HomeOutcome, HomeState};
 use dash_evo_tool::ui::state::hub_profiles::{HubProfiles, ProfileFields};
+use dash_evo_tool::ui::state::identity_home::PaymentPreview;
 use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -218,13 +219,11 @@ fn home_contacts_start_beside_actions_and_username_notice_stays_with_history() {
             .expect("request");
         let mut harness = mount_home(app_context);
         harness.state_mut().0.dismissed_checklist = true;
-        harness.state_mut().0.payments = vec![(
-            String::new(),
-            "History contact".into(),
-            100,
-            true,
-            String::new(),
-        )];
+        harness.state_mut().0.payments = vec![PaymentPreview {
+            counterparty: "History contact".into(),
+            amount_duffs: 100,
+            incoming: true,
+        }];
         harness.run();
 
         let send = harness.get_by_label("Send").rect();
@@ -954,8 +953,11 @@ fn home_payment_preview_opens_real_payment_history() {
         let (_runtime, app_context) = fresh_app_context();
         seed_identity(&app_context, vec![], vec![]);
         let mut harness = mount_home(app_context);
-        harness.state_mut().0.payments =
-            vec![(String::new(), "Alice".into(), 100_000, true, String::new())];
+        harness.state_mut().0.payments = vec![PaymentPreview {
+            counterparty: "Alice".into(),
+            amount_duffs: 100_000,
+            incoming: true,
+        }];
         harness.run();
         assert!(harness.query_by_label("Alice").is_some());
         harness.get_by_label("See all payments").click();

@@ -1439,7 +1439,7 @@ mod tests {
             "the note save must wait for the unhide"
         );
 
-        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(5), true));
+        assert!(state.finish_contact_info_write(Network::Testnet, &id(1), &id(5)));
         assert_eq!(
             state.selected_contact().and_then(|c| c.note.as_deref()),
             None,

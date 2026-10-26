@@ -915,7 +915,7 @@ mod tests {
                         ui,
                         &render_ctx,
                         render_ctx.resolve_selected_identity().as_ref(),
-                        &mut Default::default(),
+                        &Default::default(),
                     );
                     if !matches!(action, AppAction::None) {
                         state.1.push(action);

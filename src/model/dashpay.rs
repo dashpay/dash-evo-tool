@@ -381,7 +381,7 @@ pub enum ProfileState {
     Unknown,
     /// Synced; the identity has published no profile.
     Absent,
-    Present(StoredProfile),
+    Present(Box<StoredProfile>),
 }
 
 impl ProfileState {

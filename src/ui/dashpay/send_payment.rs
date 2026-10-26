@@ -587,7 +587,7 @@ impl PaymentHistory {
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = AppAction::None;
 
         self.apply_snapshot();
 

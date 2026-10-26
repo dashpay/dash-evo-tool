@@ -1459,6 +1459,15 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A contact-details save that stayed on this device, because publishing
+    /// waits for a second contact, could not record which details this device
+    /// holds; on reload the older details would show again.
+    #[error("Could not finish saving your contact details on this device. Try saving them again.")]
+    DashPayContactDetailsNotRecorded {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// A DashPay record this device keeps (which contact details it holds,
     /// which requests were withdrawn) could not be read, so an action that
     /// depends on it cannot tell what to do.

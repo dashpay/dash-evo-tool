@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::LazyLock;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -381,13 +382,7 @@ impl TokensScreen {
                                         .width(200.0)
                                         .selected_text(self.preset_selection_label())
                                         .show_ui(ui, |ui| {
-                                            for variant in [
-                                                MostRestrictive,
-                                                WithOnlyEmergencyAction,
-                                                WithMintingAndBurningActions,
-                                                WithAllAdvancedActions,
-                                                WithExtremeActions,
-                                            ] {
+                                            for variant in CREATOR_PRESETS {
                                                 let text = preset_label(variant);
                                                 let description = match variant {
                                                     MostRestrictive => "No actions allowed after creation",
@@ -676,13 +671,7 @@ impl TokensScreen {
                                             self.selected_token_preset = TokenPresetSelection::Custom;
                                         }
 
-                                        for variant in [
-                                            MostRestrictive,
-                                            WithOnlyEmergencyAction,
-                                            WithMintingAndBurningActions,
-                                            WithAllAdvancedActions,
-                                            WithExtremeActions,
-                                        ] {
+                                        for variant in CREATOR_PRESETS {
                                             if ui.selectable_label(
                                                 self.selected_token_preset == TokenPresetSelection::Preset(variant),
                                                 preset_label(variant),
@@ -1365,7 +1354,7 @@ impl TokensScreen {
     }
 
     /// Whether every rule a preset controls currently holds exactly `expected`.
-    fn rules_match(&self, expected: PresetRules) -> bool {
+    fn rules_match(&self, expected: &PresetRules) -> bool {
         let PresetRules {
             manual_minting,
             manual_burning,
@@ -1384,22 +1373,22 @@ impl TokensScreen {
             main_control_group_change,
         } = expected;
 
-        self.manual_minting_rules.rules == manual_minting
-            && self.manual_burning_rules.rules == manual_burning
-            && self.freeze_rules.rules == freeze
-            && self.unfreeze_rules.rules == unfreeze
-            && self.destroy_frozen_funds_rules.rules == destroy_frozen_funds
-            && self.emergency_action_rules.rules == emergency_action
-            && self.max_supply_change_rules.rules == max_supply_change
-            && self.conventions_change_rules.rules == conventions_change
-            && self.perpetual_distribution_rules.rules == perpetual_distribution
-            && self.new_tokens_destination_identity_rules.rules == new_tokens_destination_identity
+        self.manual_minting_rules.rules == *manual_minting
+            && self.manual_burning_rules.rules == *manual_burning
+            && self.freeze_rules.rules == *freeze
+            && self.unfreeze_rules.rules == *unfreeze
+            && self.destroy_frozen_funds_rules.rules == *destroy_frozen_funds
+            && self.emergency_action_rules.rules == *emergency_action
+            && self.max_supply_change_rules.rules == *max_supply_change
+            && self.conventions_change_rules.rules == *conventions_change
+            && self.perpetual_distribution_rules.rules == *perpetual_distribution
+            && self.new_tokens_destination_identity_rules.rules == *new_tokens_destination_identity
             && self.minting_allow_choosing_destination_rules.rules
-                == minting_allow_choosing_destination
-            && self.minting_allow_choosing_destination == minting_may_choose_destination
-            && self.marketplace_rules.rules == marketplace
-            && self.change_direct_purchase_pricing_rules.rules == direct_purchase_pricing
-            && self.authorized_main_control_group_change == main_control_group_change
+                == *minting_allow_choosing_destination
+            && self.minting_allow_choosing_destination == *minting_may_choose_destination
+            && self.marketplace_rules.rules == *marketplace
+            && self.change_direct_purchase_pricing_rules.rules == *direct_purchase_pricing
+            && self.authorized_main_control_group_change == *main_control_group_change
     }
 
     /// Keeps the preset selector truthful. Once the rules stop matching what it
@@ -1409,7 +1398,7 @@ impl TokensScreen {
         let still_accurate = match self.selected_token_preset {
             TokenPresetSelection::Unselected => self.rules_match(PresetRules::initial()),
             TokenPresetSelection::Preset(features) => {
-                self.rules_match(PresetRules::from_preset(&creator_preset(features)))
+                self.rules_match(PresetRules::for_creator_preset(features))
             }
             TokenPresetSelection::Custom => true,
         };
@@ -1749,6 +1738,15 @@ const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";
 /// "Custom" is chosen; editing a rule below also switches to "Custom".
 const ADVANCED_PRESET_HINT: &str = "Choose a preset, or Custom to use the rules below.";
 
+/// Every preset the creator offers, in selector order.
+const CREATOR_PRESETS: [TokenConfigurationPresetFeatures; 5] = [
+    MostRestrictive,
+    WithOnlyEmergencyAction,
+    WithMintingAndBurningActions,
+    WithAllAdvancedActions,
+    WithExtremeActions,
+];
+
 /// Selector text for rules that are not exactly one preset's.
 const CUSTOM_PRESET_LABEL: &str = "Custom";
 
@@ -1775,6 +1773,7 @@ fn creator_preset(features: TokenConfigurationPresetFeatures) -> TokenConfigurat
 /// Every rule a Token Creator preset sets, taken from the Platform preset
 /// definition. The single mapping used both to apply a preset and to check that
 /// the rules on screen still match it.
+#[derive(PartialEq)]
 struct PresetRules {
     manual_minting: ChangeControlRulesV0,
     manual_burning: ChangeControlRulesV0,
@@ -1796,7 +1795,27 @@ struct PresetRules {
 
 impl PresetRules {
     /// The rules of a freshly opened creator, before any preset or rule is chosen.
-    fn initial() -> Self {
+    /// Built once: the selector compares against it every frame.
+    fn initial() -> &'static Self {
+        static INITIAL: LazyLock<PresetRules> = LazyLock::new(PresetRules::initial_rules);
+        &INITIAL
+    }
+
+    /// The rules of `features` as the creator offers it (owner-authorized).
+    /// Built once per preset: the selector compares against them every frame,
+    /// and deriving them builds Platform's whole token configuration.
+    fn for_creator_preset(features: TokenConfigurationPresetFeatures) -> &'static Self {
+        static TABLE: LazyLock<[PresetRules; CREATOR_PRESETS.len()]> = LazyLock::new(|| {
+            CREATOR_PRESETS.map(|features| PresetRules::from_preset(&creator_preset(features)))
+        });
+        let index = CREATOR_PRESETS
+            .iter()
+            .position(|preset| *preset == features)
+            .expect("every preset feature set is offered by the creator");
+        &TABLE[index]
+    }
+
+    fn initial_rules() -> Self {
         Self {
             manual_minting: ChangeControlRulesV0::default(),
             manual_burning: ChangeControlRulesV0::default(),
@@ -1864,5 +1883,25 @@ impl PresetRules {
             direct_purchase_pricing: v0(distribution.change_direct_purchase_pricing_rules()),
             main_control_group_change: config.main_control_group_can_be_modified,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The selector reconciles every frame, so each creator preset's rules are
+    /// derived once and reused, and they equal what applying the preset sets.
+    #[test]
+    fn creator_preset_rules_are_built_once_and_match_the_preset() {
+        for features in CREATOR_PRESETS {
+            let cached = PresetRules::for_creator_preset(features);
+            assert!(std::ptr::eq(
+                cached,
+                PresetRules::for_creator_preset(features)
+            ));
+            assert!(*cached == PresetRules::from_preset(&creator_preset(features)));
+        }
+        assert!(std::ptr::eq(PresetRules::initial(), PresetRules::initial()));
     }
 }

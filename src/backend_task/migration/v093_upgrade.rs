@@ -24,15 +24,16 @@ use std::sync::{Arc, LazyLock};
 use rand::Rng;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-use dash_sdk::dpp::identity::v0::IdentityV0;
 use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel,
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::BinaryData;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
+use dash_sdk::sdk::min_protocol_version;
 use rusqlite::{Connection, params};
 
 use crate::backend_task::migration::finish_unwire::{
@@ -185,13 +186,16 @@ fn legacy_identity_blob(
         );
     }
 
+    // The protocol version a fresh context on `network` starts at.
+    let platform_version = PlatformVersion::get(min_protocol_version(network)).expect("version");
+    let mut identity =
+        Identity::new_with_id_and_keys(Identifier::from(id), public_keys, platform_version)
+            .expect("identity");
+    identity.set_balance(1_000_000);
+    identity.set_revision(1);
+
     QualifiedIdentity {
-        identity: Identity::V0(IdentityV0 {
-            id: Identifier::from(id),
-            public_keys,
-            balance: 1_000_000,
-            revision: 1,
-        }),
+        identity,
         associated_voter_identity: None,
         associated_operator_identity: None,
         associated_owner_key_id: None,

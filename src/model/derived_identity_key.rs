@@ -226,10 +226,10 @@ pub(crate) mod test_support {
         identity.private_keys.insert_if_absent(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
             (
-                QualifiedIdentityPublicKey {
-                    identity_public_key: key.into(),
-                    in_wallet_at_derivation_path: Some(path.clone()),
-                },
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    key.into(),
+                    Some(path.clone()),
+                ),
                 PrivateKeyData::AtWalletDerivationPath(path),
             ),
         );

@@ -377,10 +377,9 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let new_qualified_key = QualifiedIdentityPublicKey {
-                            identity_public_key: new_key.into(),
-                            in_wallet_at_derivation_path: None,
-                        };
+                        let new_qualified_key = QualifiedIdentityPublicKey::from(
+                            dash_sdk::platform::IdentityPublicKey::from(new_key),
+                        );
                         self.submitted_private_key
                             .set_text(hex::encode(private_key_bytes));
                         app_action = self.dispatch_add(BackendTask::IdentityTask(

@@ -8,10 +8,10 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 /// as specified in DIP-0014 for DashPay contact relationships.
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
-use dash_sdk::dpp::secp256k1::SecretKey;
 use dash_sdk::platform::Identifier;
 
 use super::DerivationError;
+use crate::model::erased_secret_key::ErasedSecretKey;
 
 /// Perform DIP-14 compliant 256-bit child key derivation for private keys
 ///
@@ -66,7 +66,7 @@ pub fn ckd_priv_256(
     let i_l: &[u8; 32] = i_l
         .try_into()
         .map_err(|_| dash_sdk::dpp::secp256k1::Error::InvalidSecretKey)?;
-    SecretKey::from_secret_bytes(*i_l)?;
+    ErasedSecretKey::from_secret_bytes(i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
     let child_key = parent_key.private_key.add_tweak(i_l)?;

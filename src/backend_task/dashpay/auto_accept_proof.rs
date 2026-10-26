@@ -1,5 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay_derivation::derive_auto_accept_key;
+use crate::model::erased_secret_key::ErasedSecretKey;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -213,7 +214,7 @@ pub fn create_auto_accept_proof_bytes_with_key(
 
     let message = Message::from_digest(message_hash.into());
 
-    let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(signing_key_bytes))
+    let secret_key = ErasedSecretKey::from_secret_bytes(signing_key_bytes)
         .map_err(|e| format!("Failed to create secret key: {}", e))?;
 
     let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret_key);

@@ -14,6 +14,7 @@ mod withdraw_from_platform_address;
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::erased_secret_key::ErasedSecretKey;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -118,10 +119,10 @@ impl AppContext {
     }
 
     /// Resolve the vault-backed identity key at `(identity_id, target,
-    /// key_id)` through the JIT chokepoint and hand its `SecretKey` to `f`.
-    /// The raw key zeroizes when the closure returns — only `f`'s result
-    /// crosses back to the caller. Shared by the identity-key sign and
-    /// display tasks.
+    /// key_id)` through the JIT chokepoint and lend its `SecretKey` to `f`.
+    /// The raw key and its secp256k1 copy are wiped when the closure returns
+    /// — only `f`'s result crosses back to the caller. Shared by the
+    /// identity-key sign and display tasks.
     ///
     /// The placement is the caller's word, and it addresses the vault label
     /// directly, so the bytes are matched against the public key the stored
@@ -150,7 +151,7 @@ impl AppContext {
         identity_id: Identifier,
         target: PrivateKeyTarget,
         key_id: KeyID,
-        f: impl FnOnce(SecretKey) -> Result<T, TaskError>,
+        f: impl FnOnce(&SecretKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
         let identity = self
             .get_local_qualified_identity(&identity_id)?
@@ -200,7 +201,7 @@ impl AppContext {
                     .ok_or(TaskError::IdentityKeyMissing)?;
                 // Present-but-malformed key bytes are distinct from a
                 // genuinely absent key and from a signing/derivation failure.
-                let secret_key = SecretKey::from_secret_bytes(*key).map_err(|detail| {
+                let secret_key = ErasedSecretKey::from_secret_bytes(key).map_err(|detail| {
                     tracing::warn!(error = %detail, "Identity-key secret construction failed");
                     TaskError::IdentityKeyMalformed
                 })?;
@@ -216,7 +217,7 @@ impl AppContext {
                     );
                     return Err(TaskError::IdentityKeyMismatch);
                 }
-                f(secret_key)
+                f(&secret_key)
             })
             .await
     }

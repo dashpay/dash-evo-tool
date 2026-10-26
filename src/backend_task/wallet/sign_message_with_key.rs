@@ -5,10 +5,10 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::dash_signed_message;
 use crate::context::AppContext;
+use crate::model::erased_secret_key::ErasedSecretKey;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::secp256k1::SecretKey;
 use std::sync::Arc;
 
 impl AppContext {
@@ -40,7 +40,7 @@ impl AppContext {
                 &derivation_path,
                 TaskError::WalletMessageSigningFailed,
                 |private_key| {
-                    let secret_key = SecretKey::from_secret_bytes(*private_key.inner.to_bytes())
+                    let secret_key = ErasedSecretKey::from_secret_bytes(&private_key.inner.to_bytes())
                         .map_err(|detail| {
                             tracing::warn!(error = %detail, "Sign-message secret key construction failed");
                             TaskError::WalletMessageSigningFailed

@@ -4,9 +4,11 @@ use cbc;
 use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+use dash_sdk::dpp::secp256k1::PublicKey;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
+
+use crate::model::erased_secret_key::ErasedSecretKey;
 
 /// Generate ECDH shared key according to DashPay DIP-15
 /// Uses libsecp256k1_ecdh method: SHA256((y[31]&0x1|0x2) || x)
@@ -19,10 +21,8 @@ pub fn generate_ecdh_shared_key(
     public_key: &IdentityPublicKey,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     // Parse the private key
-    let secret_key = SecretKey::from_secret_bytes(
-        private_key
-            .try_into()
-            .map_err(|_| "Invalid private key length".to_string())?,
+    let secret_key = ErasedSecretKey::from_secret_bytes(
+        <&[u8; 32]>::try_from(private_key).map_err(|_| "Invalid private key length".to_string())?,
     )
     .map_err(|e| format!("Invalid private key: {}", e))?;
 

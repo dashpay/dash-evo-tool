@@ -442,13 +442,13 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 // For ECDSA_HASH160, verify that the private key matches the public key hash on Platform
                 // If there's a mismatch (due to incorrect stored derivation path), regenerate the correct path
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
+                    use crate::model::erased_secret_key::ErasedSecretKey;
                     use dash_sdk::dpp::dashcore::PublicKey;
                     use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-                    use dash_sdk::dpp::secp256k1::SecretKey;
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
-                    if let Ok(secret_key) = SecretKey::from_secret_bytes(*private_key) {
+                    if let Ok(secret_key) = ErasedSecretKey::from_secret_bytes(&private_key) {
                         let derived_pubkey = PublicKey::new(secret_key.public_key());
                         let pubkey_bytes = derived_pubkey.to_bytes();
                         let sha256_hash = sha256::Hash::hash(&pubkey_bytes);

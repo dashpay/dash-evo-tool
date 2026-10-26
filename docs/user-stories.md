@@ -1072,7 +1072,8 @@ As a user, I want to view past payments sent and received through DashPay so tha
 
 As an everyday user, I want to generate a DashPay QR code so that someone nearby can scan it to add me as a contact or send a payment.
 
-- QR code encodes DashPay profile or payment info.
+- The QR code is a DashPay contact code in the standard DashPay format (DIP-15), so other DashPay wallets can scan it. It shows the identity's username and works for one hour.
+- Scanning another wallet's contact QR code sends that contact a request it can accept automatically. An expired or unreadable code is refused before anything is sent.
 
 ### DPY-009: Edit contact info [Implemented]
 **Persona:** Alex, Priya
@@ -1281,6 +1282,16 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 - The row comes back when the user asks for it again: re-importing the token restores it for every identity that dismissed it, and checking that one balance restores just that pair.
 
 ---
+
+### TOK-020: Create a token holders cannot transfer [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
+
+- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- A network that does not support it is refused before anything is paid.
+- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- A transfer refused by the network is explained.
 
 ## Contracts and Documents (DOC)
 

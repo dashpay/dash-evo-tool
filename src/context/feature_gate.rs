@@ -3,6 +3,7 @@ use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::{
     CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
 };
+use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -12,6 +13,11 @@ use dash_sdk::dpp::version::feature_initial_protocol_versions::{
 /// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+/// Tokens that cannot be transferred (a version 1 token configuration) are
+/// accepted from protocol version 14. Upstream names no feature constant for
+/// them, so the protocol version they shipped in is used directly.
+const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -31,6 +37,9 @@ pub enum Capability {
     /// The connected platform keeps contract fee pots (filled by document
     /// action fees) and accepts the transition that pays them out.
     ContractFeePots,
+    /// The connected platform accepts version 1 token configurations, which
+    /// can make a token non-transferable.
+    NonTransferableTokens,
 }
 
 /// Whether the protocol version the connected network has proven is one this
@@ -58,6 +67,10 @@ impl Capability {
             Capability::ContractFeePots => {
                 known_protocol_version_at_least(ctx, CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION)
             }
+            Capability::NonTransferableTokens => known_protocol_version_at_least(
+                ctx,
+                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
+            ),
         }
     }
 }
@@ -156,6 +169,9 @@ pub enum FeatureGate {
     /// Viewing and claiming the fee pots of a contract. Offered only where
     /// the connected network keeps them.
     ContractFeePots,
+    /// Creating a token that holders cannot transfer. Offered only where the
+    /// connected network accepts one.
+    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -173,6 +189,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
+            FeatureGate::NonTransferableTokens => {
+                &[Check::Capability(Capability::NonTransferableTokens)]
+            }
         }
     }
 
@@ -446,14 +465,21 @@ mod tests {
     /// the network's version is known, whatever the role.
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
+        // One entry per protocol version 14 gate this build offers.
+        let gates = [
+            FeatureGate::ContractFeePots,
+            FeatureGate::NonTransferableTokens,
+        ];
         for role in ROLES {
-            let (_tmp, ctx) = ctx_with_role(role);
-            let gate = FeatureGate::ContractFeePots;
-            assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-            prove_protocol_version(&ctx, 13);
-            assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-            prove_protocol_version(&ctx, 14);
-            assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+            for gate in gates {
+                // A proven version only rises, so each gate gets a fresh context.
+                let (_tmp, ctx) = ctx_with_role(role);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                prove_protocol_version(&ctx, 13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                prove_protocol_version(&ctx, 14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+            }
         }
     }
 
@@ -464,7 +490,11 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol, Capability::ContractFeePots];
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::ContractFeePots,
+            Capability::NonTransferableTokens,
+        ];
 
         prove_protocol_version(&ctx, LATEST_VERSION);
         for capability in capabilities {

@@ -78,6 +78,9 @@ impl KeyCaveat {
 /// Whether a key carrying `bounds` may sign in `scope`, when that can be known
 /// offline. `None` means only Platform can answer (a contract-group bound on a
 /// batch transition).
+// TODO(upstream): delegate to a dpp pre-build bounds check (dpp's public
+// `ContractBounds::check_batched_transition` needs a built transition, and the
+// non-batch rule lives in the private `verify_identity_key_bounds`).
 pub fn bounds_permit(bounds: Option<&ContractBounds>, scope: SigningScope<'_>) -> Option<bool> {
     match (bounds, scope) {
         (None, _) => Some(true),
@@ -162,6 +165,8 @@ pub fn is_auto_selectable(
 /// The security levels Platform accepts for a document action on
 /// `document_type`: CRITICAL up to and including the level the type requires,
 /// since a stronger key satisfies a weaker requirement. Never MASTER.
+// TODO(upstream): call dpp's accepted-levels helper for a requirement once it
+// is public (platform-wallet's `allowed_signing_security_levels` is private).
 pub fn document_security_levels(document_type: DocumentTypeRef<'_>) -> Vec<SecurityLevel> {
     let required = document_type.security_level_requirement() as u8;
     [
@@ -205,6 +210,9 @@ impl KeyRequirements<'_> {
 /// this device can sign with wins. So a limited key held here beats an
 /// unlimited one whose private half lives elsewhere — the delegated-key case
 /// protocol version 14 limits exist for.
+// TODO(upstream): replace with platform-wallet's public signer-aware key
+// selector once it exists (`usable_authentication_key` and `first_available`
+// are crate-private).
 pub fn select_signing_key<'k>(
     keys: impl IntoIterator<Item = &'k IdentityPublicKey>,
     requirements: KeyRequirements<'_>,

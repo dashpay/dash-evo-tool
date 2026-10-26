@@ -56,7 +56,10 @@ async fn test_pi001_current_epoch_is_fetched_live() {
     // The fetch is a network observation, so it confirms the protocol version.
     let ctx = ctx().await;
     assert!(
-        ctx.app_context.proven_protocol_version().is_some(),
+        ctx.app_context
+            .protocol_version_info()
+            .verified_version
+            .is_some(),
         "a live epoch fetch must confirm the network's protocol version"
     );
 }

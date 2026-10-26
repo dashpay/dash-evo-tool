@@ -355,3 +355,33 @@ pub(crate) fn identity_with_bound_wallet_key(
         .insert(seed_hash, Arc::clone(&wallet));
     (identity, wallet)
 }
+
+/// A user identity whose key 1 (HIGH AUTHENTICATION) is derived by wallet A
+/// and key 2 (likewise) by wallet B, and those two wallets, both open.
+pub(crate) fn identity_across_two_wallets() -> (
+    QualifiedIdentity,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+) {
+    use dash_sdk::dpp::identity::SecurityLevel;
+    let mut identity = identity_holding(&[
+        auth_key(1, SecurityLevel::HIGH),
+        auth_key(2, SecurityLevel::HIGH),
+    ]);
+    let (seed_a, seed_b) = ([0xA1; 32], [0xB2; 32]);
+    hold_as_wallet_reference(&mut identity, 1, seed_a);
+    hold_as_wallet_reference(&mut identity, 2, seed_b);
+    let wallet = || {
+        Arc::new(std::sync::RwLock::new(
+            crate::model::wallet::test_support::open_wallet(),
+        ))
+    };
+    let (wallet_a, wallet_b) = (wallet(), wallet());
+    identity
+        .associated_wallets
+        .insert(seed_a, Arc::clone(&wallet_a));
+    identity
+        .associated_wallets
+        .insert(seed_b, Arc::clone(&wallet_b));
+    (identity, wallet_a, wallet_b)
+}

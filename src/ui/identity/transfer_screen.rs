@@ -33,8 +33,8 @@ use egui::{Color32, RichText};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
+use super::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -133,14 +133,21 @@ impl TransferScreen {
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) -> AppAction {
-        add_key_chooser(
+        let action = add_key_chooser(
             ui,
             &self.app_context,
             &self.identity,
             &mut self.selected_key,
             TransactionType::Transfer,
             SigningScope::NonBatch,
-        )
+        );
+        follow_signing_key_wallet(
+            &self.identity,
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+        action
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {

@@ -35,7 +35,7 @@ use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::tokens::validate_signing_key;
 
 use super::tokens_screen::IdentityTokenBalance;
@@ -526,6 +526,12 @@ impl ScreenLike for TransferTokensScreen {
                         SigningScope::ContractWide {
                             contract_id: self.identity_token_balance.data_contract_id,
                         },
+                    );
+                    follow_signing_key_wallet(
+                        identity,
+                        self.selected_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();

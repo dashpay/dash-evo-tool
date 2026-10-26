@@ -27,9 +27,9 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
 };
-use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -544,6 +544,12 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     SigningScope::ContractWide {
                         contract_id: self.common.identity_token_info.data_contract.contract.id(),
                     },
+                );
+                follow_signing_key_wallet(
+                    &self.common.identity_token_info.identity,
+                    self.common.selected_key.as_ref(),
+                    &mut self.common.selected_wallet,
+                    &mut self.common.wallet_open_attempted,
                 );
                 ui.add_space(10.0);
                 ui.separator();

@@ -33,9 +33,9 @@ use egui::{Color32, RichText};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
 use super::keys::key_info_screen::KeyInfoScreen;
+use super::{follow_signing_key_wallet, get_selected_wallet};
 
 #[derive(PartialEq)]
 pub enum WithdrawFromIdentityStatus {
@@ -491,48 +491,33 @@ impl ScreenLike for WithdrawalScreen {
             } else {
                 // Render wallet unlock component if needed
                 if let Some(selected_key) = self.selected_key.as_ref() {
-                    // If there is an associated wallet then render the wallet unlock component for it if its locked
-                    if let Some(wallet_derivation_path) =
-                        self.identity.private_keys.wallet_derived_at(selected_key)
-                    {
-                        let new_wallet = self
-                            .identity
-                            .associated_wallets
-                            .get(&wallet_derivation_path.wallet_seed_hash)
-                            .cloned();
-                        // Reset guard when wallet changes (different Arc pointer)
-                        let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                            (None, None) => false,
-                            _ => true,
-                        };
-                        if wallet_changed {
-                            self.wallet_open_attempted = false;
+                    // The wallet that derives the chosen key, if any, is the
+                    // one to open or unlock.
+                    follow_signing_key_wallet(
+                        &self.identity,
+                        Some(selected_key),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    );
+                    if let Some(wallet) = &self.selected_wallet {
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
+                            }
+                            self.wallet_open_attempted = true;
                         }
-                        self.selected_wallet = new_wallet;
-
-                        if let Some(wallet) = &self.selected_wallet {
-                            if !self.wallet_open_attempted {
-                                if let Err(e) =
-                                    try_open_wallet_no_password(&self.app_context, wallet)
-                                {
-                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                        .disable_auto_dismiss();
-                                }
-                                self.wallet_open_attempted = true;
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
                             }
-                            if wallet_needs_unlock(wallet) {
-                                ui.add_space(10.0);
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(200, 150, 50),
-                                    "Wallet is locked. Please unlock to continue.",
-                                );
-                                ui.add_space(8.0);
-                                if ui.button("Unlock Wallet").clicked() {
-                                    self.wallet_unlock_popup.open();
-                                }
-                                return inner_action;
-                            }
+                            return inner_action;
                         }
                     }
                 } else {

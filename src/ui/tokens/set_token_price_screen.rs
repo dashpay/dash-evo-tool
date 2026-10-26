@@ -21,9 +21,9 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -1015,6 +1015,12 @@ impl ScreenLike for SetTokenPriceScreen {
                         SigningScope::ContractWide {
                             contract_id: self.identity_token_info.data_contract.contract.id(),
                         },
+                    );
+                    follow_signing_key_wallet(
+                        &self.identity_token_info.identity,
+                        self.selected_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
                     );
                     ui.add_space(10.0);
                     ui.separator();

@@ -346,17 +346,25 @@ impl AppContext {
                 ProTxHash::from_byte_array(identity_id.to_buffer()),
                 &voting_address,
             );
-            let voter_identity = match await_network_request_with_timeout(
+            let fetched = await_network_request_with_timeout(
                 NETWORK_REQUEST_TIMEOUT,
                 Identity::fetch_by_identifier(sdk, voter_identifier),
                 |source| TaskError::IdentityLoadTimeout { source },
             )
-            .await?
-            {
+            .await
+            .and_then(|result| result.map_err(TaskError::from));
+            let voter_identity = match fetched {
                 Ok(Some(identity)) => Some(identity),
                 Ok(None) if from_wallet => None,
                 Ok(None) => return Err(TaskError::MasternodeVotingKeyNotFound),
-                Err(e) => return Err(TaskError::from(e)),
+                Err(error) if from_wallet => {
+                    tracing::warn!(
+                        ?error,
+                        "Could not fetch the voter identity for the voting key found in a wallet; loading the node without it"
+                    );
+                    None
+                }
+                Err(error) => return Err(error),
             };
             let usable = voter_identity.and_then(|voter| {
                 let key = select_voting_key(&voter, &voting_address)?.clone();

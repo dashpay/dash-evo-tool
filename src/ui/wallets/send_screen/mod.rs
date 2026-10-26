@@ -1229,6 +1229,22 @@ impl WalletSendScreen {
 
     /// Returns the destination address string, from the validated address if
     /// available or an empty string otherwise.
+    /// The recipient on the confirmation. Addresses are shown whole: a
+    /// lookalike sharing only the first and last characters must not pass
+    /// the last check before an irreversible payment (address poisoning).
+    fn confirmation_recipient(&self) -> String {
+        match &self.validated_destination {
+            Some(ValidatedAddress::Shielded(address)) if address.is_empty() => {
+                self.destination_label()
+            }
+            Some(ValidatedAddress::Identity {
+                dpns_name: Some(name),
+                ..
+            }) => format!("{name} ({id})", id = self.destination_address_string()),
+            _ => self.destination_address_string(),
+        }
+    }
+
     fn destination_address_string(&self) -> String {
         self.validated_destination
             .as_ref()
@@ -2701,7 +2717,7 @@ impl WalletSendScreen {
             format!("From: {source}", source = self.source_label()),
             format!(
                 "To: {destination}",
-                destination = form_view::short_address(&self.destination_address_string())
+                destination = self.confirmation_recipient()
             ),
             format!(
                 "Amount: {amount}",
@@ -3015,7 +3031,7 @@ impl WalletSendScreen {
             .fold(0u64, u64::saturating_add);
         let mut lines = vec![format!("From: {source}", source = self.source_label())];
         for (address, credits) in &recipients {
-            let destination = form_view::short_address(address);
+            let destination = address;
             lines.push(if several {
                 format!(
                     "To: {destination} · {amount}",
@@ -3180,6 +3196,13 @@ impl WalletSendScreen {
     /// Answers the Core send quote with "another transaction is in
     /// progress", as the backend does while a build holds reservations.
     pub fn mark_core_send_busy_for_test(&mut self) {
+        self.mark_core_send_error_for_test(&TaskError::SpendInProgress);
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Answers the Core send quote with `error`.
+    pub fn mark_core_send_error_for_test(&mut self, error: &TaskError) {
         let Some((seed_hash, kind, revision)) =
             self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
         else {
@@ -3189,12 +3212,8 @@ impl WalletSendScreen {
             .spend_limits
             .ensure_requested(seed_hash, kind, revision)
         {
-            self.spend_limits.mark_request_error(
-                seed_hash,
-                kind,
-                request_id,
-                &TaskError::SpendInProgress,
-            );
+            self.spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error);
         }
     }
 
@@ -5891,7 +5910,10 @@ mod tests {
         let destination = screen.validated_destination.clone();
         let limits = screen.amount_limits_for(&source, destination.as_ref());
         assert_eq!(limits.max_credits, None);
-        assert_eq!(limits.quote, resolve::QuoteState::Ready);
+        assert_eq!(
+            limits.quote,
+            resolve::QuoteState::Shortfall(CoreSendShortfall::NothingSpendable)
+        );
         let mut harness = Harness::builder().build_ui_state(
             |ui, screen: &mut WalletSendScreen| {
                 screen.render_amount_input(ui);
@@ -6159,7 +6181,7 @@ mod tests {
             screen.simple_send_confirmation_message(),
             format!(
                 "From: Unnamed wallet · Core\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nThe network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}.\nYour Dash is moved to Platform first, so this takes a little longer than a regular payment.\nCheck the recipient. Payments can't be undone.",
-                short = form_view::short_address(&destination)
+                short = destination
             )
         );
     }
@@ -6194,7 +6216,7 @@ mod tests {
             screen.simple_send_confirmation_message(),
             format!(
                 "From: Unnamed wallet · Platform\nTo: {short}\nAmount: {amount}\nFee: ≈ {estimated_fee}\nTotal: ≈ {total}\nCheck the recipient. Payments can't be undone.",
-                short = form_view::short_address(&destination)
+                short = destination
             )
         );
     }
@@ -6372,14 +6394,8 @@ mod tests {
         let lines: Vec<&str> = message.lines().collect();
 
         assert_eq!(lines[0], "From: Unnamed wallet · Platform");
-        assert_eq!(
-            lines[1],
-            format!("To: {} · 0.02 DASH", form_view::short_address(&first))
-        );
-        assert_eq!(
-            lines[2],
-            format!("To: {} · 0.02 DASH", form_view::short_address(&second))
-        );
+        assert_eq!(lines[1], format!("To: {} · 0.02 DASH", first));
+        assert_eq!(lines[2], format!("To: {} · 0.02 DASH", second));
         assert_eq!(lines[3], "Amount: 0.04 DASH");
         assert!(lines[4].starts_with("Fee: "), "{message}");
         assert!(lines[5].starts_with("Total: "), "{message}");
@@ -6388,8 +6404,8 @@ mod tests {
             Some("Check the recipients. Payments can't be undone.")
         );
         assert!(
-            !message.contains(&first),
-            "addresses are shortened: {message}"
+            message.contains(&format!("To: {first} · ")),
+            "addresses are shown whole: {message}"
         );
     }
 
@@ -7557,6 +7573,49 @@ mod tests {
         assert!(!screen.shows_fee_options());
         screen.form.set_advanced_amount(&core, "0.5".to_string());
         assert!(screen.shows_fee_options());
+
+        // Platform sources pick the paying input themselves.
+        screen.form.choose_pay_from(
+            PayFrom::Platform,
+            crate::model::send_route::PayFromKind::Platform,
+        );
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert!(screen.uses_explicit_payment());
+        assert!(!screen.shows_fee_options());
+    }
+
+    fn testnet_platform_bech32m(seed: u8) -> String {
+        PlatformAddress::try_from(testnet_core_address(seed))
+            .expect("platform address")
+            .to_bech32m_string(Network::Testnet)
+    }
+
+    /// Shielding from Platform lets the planner pick the inputs, so the
+    /// Summary does not list addresses it may not use.
+    #[test]
+    fn summary_details_are_not_shown_for_a_platform_shield() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let source = screen
+            .get_platform_addresses()
+            .into_iter()
+            .map(|(core, platform, credits)| (platform, core, credits))
+            .collect();
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(source));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(0.5));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_summary_details(ui),
+            screen,
+        );
+        harness.run();
+        assert!(harness.query_by_label("Details").is_none());
     }
 
     /// Unshield leaves the private balance whichever wallet receives: its

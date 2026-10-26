@@ -8,6 +8,7 @@ use crate::model::send_route::{
     AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind, RouteRefusal,
     resolve_auto_max, resolve_destination_auto, resolve_source_auto, route_refusal,
 };
+use crate::model::spend_limit::CoreSendShortfall;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::state::own_receive_addresses::OwnAddressKind;
 use crate::ui::state::send_form::{PayFrom, ToMode};
@@ -21,6 +22,8 @@ pub(super) enum QuoteState {
     /// Another transaction from the wallet is in progress: no Max is
     /// offered until it finishes, and nothing is asked again meanwhile.
     Busy,
+    /// The wallet answered that Core can send nothing, and why.
+    Shortfall(CoreSendShortfall),
 }
 
 /// What the Amount field may offer for one source and destination.
@@ -47,9 +50,9 @@ impl AmountLimits {
             (Some(max), _) => CandidateMax::Ready(max),
             (None, QuoteState::Pending) => CandidateMax::Pending,
             (None, QuoteState::Failed) => CandidateMax::Failed,
-            // Unknown until the other transaction finishes: Auto passes it over.
-            (None, QuoteState::Busy) => CandidateMax::Unavailable,
-            (None, QuoteState::Ready) => CandidateMax::Ready(0),
+            // Unknown until the other transaction finishes.
+            (None, QuoteState::Busy) => CandidateMax::Withheld,
+            (None, QuoteState::Ready | QuoteState::Shortfall(_)) => CandidateMax::Ready(0),
         }
     }
 }
@@ -77,9 +80,8 @@ pub(super) struct RouteView {
     pub auto: Option<AutoSource>,
     /// Max-with-Auto's outcome, when Pay from is Auto and Max is on.
     pub auto_max: Option<AutoMax>,
-    /// Auto passed over a balance because another transaction from the
-    /// wallet is in progress.
-    pub auto_busy: bool,
+    /// Why the wallet said Core can send nothing, when it did.
+    pub auto_shortfall: Option<CoreSendShortfall>,
     /// The destination Auto resolved against.
     pub destination: Option<AutoDestination>,
     pub destination_status: DestinationStatus,
@@ -381,29 +383,22 @@ impl WalletSendScreen {
         source: &SourceSelection,
         destination: Option<AddressKind>,
     ) -> QuoteState {
-        match self.spend_limit_target_for(source, destination) {
-            Some((seed_hash, kind, revision))
-                if self.spend_limits.is_failed(&seed_hash, kind, revision) =>
-            {
-                QuoteState::Failed
-            }
-            Some((seed_hash, kind, revision))
-                if self.spend_limits.is_busy(&seed_hash, kind, revision) =>
-            {
-                QuoteState::Busy
-            }
-            // The wallet answered with a reason there is nothing to offer: a
-            // settled zero, so Auto passes over this balance instead of waiting.
-            Some((seed_hash, kind, revision))
-                if self
-                    .spend_limits
-                    .unavailable(&seed_hash, kind, revision)
-                    .is_some() =>
-            {
-                QuoteState::Ready
-            }
-            Some(_) => QuoteState::Pending,
-            None => QuoteState::Ready,
+        let Some((seed_hash, kind, revision)) = self.spend_limit_target_for(source, destination)
+        else {
+            return QuoteState::Ready;
+        };
+        if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+            return QuoteState::Failed;
+        }
+        if self.spend_limits.is_busy(&seed_hash, kind, revision) {
+            return QuoteState::Busy;
+        }
+        match self.spend_limits.unavailable(&seed_hash, kind, revision) {
+            // Held funds come back once the other transaction finishes.
+            Some(CoreSendShortfall::HeldByPendingTransaction) => QuoteState::Busy,
+            // A settled zero: Auto passes over this balance instead of waiting.
+            Some(reason) => QuoteState::Shortfall(reason),
+            None => QuoteState::Pending,
         }
     }
 
@@ -699,7 +694,11 @@ impl WalletSendScreen {
         match self.form.to_mode() {
             ToMode::MyWallets => self.resolve_own_destination(view),
             ToMode::SomeoneElse => {
-                let typed = self.typed_destination.clone();
+                let typed = if self.form.has_several_recipients() {
+                    self.rows_destination()
+                } else {
+                    self.typed_destination.clone()
+                };
                 self.set_destination(typed);
                 view.destination_status = if self.validated_destination.is_some() {
                     DestinationStatus::Ready
@@ -717,6 +716,36 @@ impl WalletSendScreen {
                 }
             }
         }
+    }
+
+    /// With several recipients, the destination Auto resolves against: the
+    /// first row, once every filled-in row is a valid address of its kind.
+    fn rows_destination(&self) -> Option<ValidatedAddress> {
+        let network = self.app_context.network;
+        let mut rows =
+            self.form
+                .recipients()
+                .iter()
+                .map(|row| row.address.trim())
+                .filter(|address| !address.is_empty())
+                .map(|address| match AddressKind::detect(address)? {
+                    AddressKind::Core => address
+                        .parse::<Address<NetworkUnchecked>>()
+                        .ok()?
+                        .require_network(network)
+                        .ok()
+                        .map(ValidatedAddress::Core),
+                    AddressKind::Platform => PlatformAddress::from_bech32m_string(address)
+                        .ok()
+                        .map(|platform| ValidatedAddress::Platform {
+                            address: platform,
+                            bech32m: address.to_string(),
+                        }),
+                    _ => None,
+                });
+        let first = rows.next()??;
+        rows.all(|row| row.is_some_and(|row| row.kind() == first.kind()))
+            .then_some(first)
     }
 
     /// The amount the source must cover, in credits: the single amount, or
@@ -782,11 +811,14 @@ impl WalletSendScreen {
         }
     }
 
-    /// Spendable maxima of the balances Auto may choose from, and whether
-    /// any was passed over because the wallet is busy.
-    fn candidate_maxima(&self, destination: &AutoDestination) -> (CandidateMaxima, bool) {
+    /// Spendable maxima of the balances Auto may choose from, and why the
+    /// wallet said Core can send nothing, if it did.
+    fn candidate_maxima(
+        &self,
+        destination: &AutoDestination,
+    ) -> (CandidateMaxima, Option<CoreSendShortfall>) {
         if self.selected_wallet.is_none() {
-            return (CandidateMaxima::default(), false);
+            return (CandidateMaxima::default(), None);
         }
         let platform = self.platform_source_addresses();
         if destination.kind.is_none() {
@@ -796,15 +828,15 @@ impl WalletSendScreen {
                 platform: CandidateMax::Ready(platform.iter().map(|(_, _, b)| *b).sum()),
                 shielded: CandidateMax::Unavailable,
             };
-            return (maxima, false);
+            return (maxima, None);
         }
         let several = self.form.has_several_recipients();
         let destination_value = self.validated_destination.as_ref();
-        let busy = std::cell::Cell::new(false);
+        let shortfall = std::cell::Cell::new(None);
         let max_of = |source: &SourceSelection| {
             let limits = self.amount_limits_for(source, destination_value);
-            if limits.quote == QuoteState::Busy {
-                busy.set(true);
+            if let QuoteState::Shortfall(reason) = limits.quote {
+                shortfall.set(Some(reason));
             }
             limits.candidate_max()
         };
@@ -833,7 +865,7 @@ impl WalletSendScreen {
             platform,
             shielded,
         };
-        (maxima, busy.get())
+        (maxima, shortfall.get())
     }
 
     /// The source for a balance kind Auto chose.
@@ -863,8 +895,8 @@ impl WalletSendScreen {
         if !identity_sender {
             let source = match self.form.pay_from() {
                 PayFrom::Auto => {
-                    let (maxima, busy) = self.candidate_maxima(&destination);
-                    view.auto_busy = busy;
+                    let (maxima, shortfall) = self.candidate_maxima(&destination);
+                    view.auto_shortfall = shortfall;
                     if self.form.max_intent() && destination.kind.is_some() {
                         let outcome = resolve_auto_max(&destination, &maxima);
                         let source = match &outcome {
@@ -875,7 +907,9 @@ impl WalletSendScreen {
                                 );
                                 None
                             }
-                            AutoMax::QuoteFailed { .. } | AutoMax::NoFunds => None,
+                            AutoMax::QuoteFailed { .. }
+                            | AutoMax::Withheld { .. }
+                            | AutoMax::NoFunds => None,
                         };
                         view.auto_max = Some(outcome);
                         source

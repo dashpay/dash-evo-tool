@@ -4,6 +4,7 @@
 use super::resolve::{DestinationStatus, QuoteState};
 use super::*;
 use crate::model::send_route::{AutoMax, AutoSource, PayFromKind, RouteRefusal};
+use crate::model::spend_limit::CoreSendShortfall;
 use crate::model::wallet::balance_summary::{WalletChoice, format_selector_balance};
 use crate::ui::components::choice_chips::{ChoiceChip, ChoiceChips};
 use crate::ui::components::wallet_selector::WalletSelector;
@@ -343,7 +344,7 @@ impl WalletSendScreen {
             if self.flow == SendFlow::General && self.identity_flow.is_none() && self.is_expert() {
                 chips.push(
                     ChoiceChip::new(PayFrom::Advanced, "Advanced")
-                        .with_tooltip("Choose exactly which addresses to spend from."),
+                        .with_tooltip("Choose which addresses pay, or how much each pays."),
                 );
             }
         }
@@ -420,6 +421,12 @@ impl WalletSendScreen {
                     ),
                 ),
                 AutoMax::Checking { .. } => status_line(ui, "Auto: checking balances…"),
+                AutoMax::Withheld { .. } => status_line(
+                    ui,
+                    format!(
+                        "Auto: another transaction from {wallet} is still in progress. Wait for it to finish, or choose a balance under Pay from."
+                    ),
+                ),
                 AutoMax::QuoteFailed { kind } => {
                     status_line(
                         ui,
@@ -486,11 +493,18 @@ impl WalletSendScreen {
                 ui,
                 format!("Auto: no single balance in {wallet} covers {amount} plus the fee."),
             ),
-            Some(AutoSource::NoFunds) if self.route.auto_busy => status_line(
+            Some(AutoSource::Withheld { .. }) => status_line(
                 ui,
                 format!(
                     "Auto: another transaction from {wallet} is still in progress. Wait for it to finish, or choose a balance under Pay from."
                 ),
+            ),
+            Some(AutoSource::NoFunds) if self.route.auto_shortfall.is_some() => status_line(
+                ui,
+                self.route
+                    .auto_shortfall
+                    .map(CoreSendShortfall::message)
+                    .unwrap_or_default(),
             ),
             Some(AutoSource::NoFunds) if foreign_private => status_line(
                 ui,
@@ -644,7 +658,11 @@ impl WalletSendScreen {
                 );
                 status_line(
                     ui,
-                    "Leave the amounts empty to spread the payment over the ticked addresses.",
+                    if self.form.advanced_type() == AdvancedSourceType::Core {
+                        "Core pays from the whole wallet. The ticked addresses only limit how much you can send."
+                    } else {
+                        "Leave the amounts empty to spread the payment over the ticked addresses."
+                    },
                 );
             });
     }
@@ -1187,15 +1205,20 @@ impl WalletSendScreen {
             .map(|source| self.amount_limits_for(&source, self.validated_destination.as_ref()));
 
         let fee_not_covered = limits.as_ref().is_some_and(|limits| limits.fee_not_covered);
-        // Max offers nothing the network would refuse.
+        // Max offers nothing the network would refuse, nor more than the
+        // ticked Advanced addresses hold.
         let max_credits = limits
             .as_ref()
             .filter(|limits| !limits.fee_not_covered)
-            .and_then(|limits| limits.max_credits);
+            .and_then(|limits| limits.max_credits)
+            .map(|max| self.ticked_held().map_or(max, |held| max.min(held)));
         let quote_pending = limits
             .as_ref()
             .is_some_and(|limits| limits.quote == QuoteState::Pending)
-            || matches!(self.route.auto_max, Some(AutoMax::Checking { .. }));
+            || matches!(
+                self.route.auto_max,
+                Some(AutoMax::Checking { .. } | AutoMax::Withheld { .. })
+            );
         let amount_input = self.amount_input.get_or_insert_with(Self::new_amount_input);
         amount_input.set_max_amount(max_credits);
         amount_input.set_caption(limits.as_ref().and_then(|limits| limits.hint.clone()));
@@ -1268,22 +1291,10 @@ impl WalletSendScreen {
         if limits.fee_not_covered {
             return Some(AmountProblem::FeeNotCovered);
         }
-        if self.form.pay_from() == PayFrom::Advanced {
-            let ticked: Vec<String> = self
-                .form
-                .ticked_advanced()
-                .into_iter()
-                .map(|(address, _)| address)
-                .collect();
-            let held: u64 = self
-                .advanced_rows()
-                .into_iter()
-                .filter(|(address, _)| ticked.contains(address))
-                .map(|(_, balance)| balance)
-                .fold(0, u64::saturating_add);
-            if !ticked.is_empty() && requested > held {
-                return Some(AmountProblem::OverTicked { max: held });
-            }
+        if let Some(held) = self.ticked_held()
+            && requested > held
+        {
+            return Some(AmountProblem::OverTicked { max: held });
         }
         match limits.max_credits {
             Some(max) if requested > max => Some(AmountProblem::OverMax {
@@ -1292,6 +1303,26 @@ impl WalletSendScreen {
             }),
             _ => None,
         }
+    }
+
+    /// What the ticked Advanced addresses hold, when any are ticked.
+    fn ticked_held(&self) -> Option<u64> {
+        if self.form.pay_from() != PayFrom::Advanced {
+            return None;
+        }
+        let ticked: Vec<String> = self
+            .form
+            .ticked_advanced()
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect();
+        (!ticked.is_empty()).then(|| {
+            self.advanced_rows()
+                .into_iter()
+                .filter(|(address, _)| ticked.contains(address))
+                .map(|(_, balance)| balance)
+                .fold(0, u64::saturating_add)
+        })
     }
 
     /// The inline problem under the Amount field (or under the recipient
@@ -1334,8 +1365,14 @@ impl WalletSendScreen {
                 );
                 None
             }
-            Some(AmountProblem::NoFunds) if self.route.auto_busy => {
-                inline_warning(ui, crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+            Some(AmountProblem::NoFunds) if self.route.auto_shortfall.is_some() => {
+                inline_warning(
+                    ui,
+                    self.route
+                        .auto_shortfall
+                        .map(CoreSendShortfall::message)
+                        .unwrap_or_default(),
+                );
                 None
             }
             Some(AmountProblem::NoFunds) if self.paying_identities().is_empty() => {
@@ -1447,20 +1484,16 @@ impl WalletSendScreen {
 
     /// Whether the Fee options row applies (spec SR-22).
     pub(super) fn shows_fee_options(&self) -> bool {
-        // Only the explicit payment reads the strategy: an Advanced source
-        // without per-address amounts pays as the simple route does.
-        let explicit = self.uses_explicit_payment();
-        let platform_involved =
-            self.form.explicit_source_kind() == Some(PayFromKind::Platform)
-                || matches!(
-                    &self.selected_source,
-                    Some(SourceSelection::PlatformAddresses(_))
-                )
-                || self.destination_kind() == Some(AddressKind::Platform)
+        // Only an explicit Core-to-Platform payment reads the strategy: an
+        // Advanced source without per-address amounts pays as the simple
+        // route does, and Platform sources pick the paying input themselves.
+        let core_source = matches!(&self.selected_source, Some(SourceSelection::CoreWallet));
+        let to_platform =
+            self.destination_kind() == Some(AddressKind::Platform)
                 || self.form.recipients().iter().any(|row| {
                     AddressKind::detect(row.address.trim()) == Some(AddressKind::Platform)
                 });
-        self.is_expert() && explicit && platform_involved
+        self.is_expert() && self.uses_explicit_payment() && core_source && to_platform
     }
 
     fn render_fee_options(&mut self, ui: &mut Ui) {
@@ -1495,10 +1528,14 @@ impl WalletSendScreen {
             });
     }
 
-    fn render_summary_details(&self, ui: &mut Ui) {
+    pub(super) fn render_summary_details(&self, ui: &mut Ui) {
         let Some(SourceSelection::PlatformAddresses(addresses)) = &self.selected_source else {
             return;
         };
+        // A shield's planner picks its own inputs.
+        if self.destination_kind() == Some(AddressKind::Shielded) {
+            return;
+        }
         let Some(amount_credits) = self.requested_credits() else {
             return;
         };
@@ -1671,6 +1708,7 @@ impl WalletSendScreen {
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {
                 Some(AutoMax::Checking { .. }) => "Checking the available amount…",
+                Some(AutoMax::Withheld { .. }) => "Wait for the other transaction to finish.",
                 _ => "Enter an amount.",
             });
         }
@@ -1680,7 +1718,10 @@ impl WalletSendScreen {
         if self.route.refusal.is_some() || self.selected_source.is_none() {
             return Some(match self.route.auto {
                 Some(AutoSource::Checking { .. }) => "Checking the available amount…",
-                Some(AutoSource::NoFunds) if self.route.auto_busy => "Fix the highlighted field.",
+                Some(AutoSource::Withheld { .. }) => "Wait for the other transaction to finish.",
+                Some(AutoSource::NoFunds) if self.route.auto_shortfall.is_some() => {
+                    "Fix the highlighted field."
+                }
                 Some(AutoSource::NoFunds) => "Add funds to this wallet first.",
                 _ => "Fix the highlighted field.",
             });

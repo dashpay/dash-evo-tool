@@ -45,6 +45,9 @@ pub enum CandidateMax {
     Pending,
     /// The backend quote for the maximum failed.
     Failed,
+    /// The balance holds funds, but another transaction from the wallet holds
+    /// them until it finishes, so how much it can send is unknown.
+    Withheld,
     /// The balance cannot pay this destination at all (absent, gated off,
     /// not yet verified).
     #[default]
@@ -113,6 +116,9 @@ pub enum AutoSource {
     Checking { kind: PayFromKind },
     /// The quote of the candidate being checked failed.
     QuoteFailed { kind: PayFromKind },
+    /// The candidate being checked is held by another transaction; Auto
+    /// waits rather than switch to a different kind of payment.
+    Withheld { kind: PayFromKind },
     /// No destination yet: the larger of Core and Platform, as a preview only.
     Preview { kind: PayFromKind, available: u64 },
     /// No single balance covers the amount. `best` is the largest amount one
@@ -132,6 +138,9 @@ pub enum AutoMax {
     /// The maximum of `kind` could not be checked, so the largest is unknown
     /// until that quote is retried.
     QuoteFailed { kind: PayFromKind },
+    /// `kind` is held by another transaction, so the largest is unknown
+    /// until it finishes.
+    Withheld { kind: PayFromKind },
     /// Nothing can be sent to this destination.
     NoFunds,
 }
@@ -209,6 +218,7 @@ pub fn resolve_source_auto(
         match maxima.get(kind) {
             CandidateMax::Pending => return AutoSource::Checking { kind },
             CandidateMax::Failed => return AutoSource::QuoteFailed { kind },
+            CandidateMax::Withheld => return AutoSource::Withheld { kind },
             CandidateMax::Unavailable => {}
             CandidateMax::Ready(max) => {
                 let covers = match amount {
@@ -255,6 +265,13 @@ pub fn resolve_auto_max(destination: &AutoDestination, maxima: &CandidateMaxima)
         .find(|kind| maxima.get(*kind) == CandidateMax::Failed)
     {
         return AutoMax::QuoteFailed { kind };
+    }
+    if let Some(kind) = candidates
+        .iter()
+        .copied()
+        .find(|kind| maxima.get(*kind) == CandidateMax::Withheld)
+    {
+        return AutoMax::Withheld { kind };
     }
     candidates
         .into_iter()
@@ -333,7 +350,7 @@ pub fn route_refusal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use CandidateMax::{Failed, Pending, Ready, Unavailable};
+    use CandidateMax::{Failed, Pending, Ready, Unavailable, Withheld};
     use PayFromKind::{Core, Identity, Platform, Shielded};
 
     fn maxima(
@@ -694,6 +711,27 @@ mod tests {
             &maxima(Ready(30), Failed, Unavailable),
         );
         assert_eq!(outcome, AutoMax::QuoteFailed { kind: Platform });
+    }
+
+    /// A held Core balance stops Auto instead of turning a Core payment
+    /// into a Platform one.
+    #[test]
+    fn source_auto_waits_for_a_withheld_candidate() {
+        let outcome = resolve_source_auto(
+            &to(AddressKind::Core),
+            Some(10),
+            &maxima(Withheld, Ready(30), Unavailable),
+        );
+        assert_eq!(outcome, AutoSource::Withheld { kind: Core });
+    }
+
+    #[test]
+    fn auto_max_is_not_chosen_while_a_candidate_is_withheld() {
+        let outcome = resolve_auto_max(
+            &to(AddressKind::Platform),
+            &maxima(Withheld, Ready(30), Unavailable),
+        );
+        assert_eq!(outcome, AutoMax::Withheld { kind: Core });
     }
 
     #[test]

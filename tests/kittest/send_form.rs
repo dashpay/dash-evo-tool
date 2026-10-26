@@ -5,9 +5,11 @@
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
 use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::secret::Secret;
+use dash_evo_tool::model::spend_limit::CoreSendShortfall;
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::ui::wallets::send_screen::{
@@ -305,7 +307,7 @@ fn w8_the_advanced_source_lists_addresses_in_expert_view() {
         assert!(harness.query_by_label("Platform addresses").is_some());
         assert!(has(
             &harness,
-            "Leave the amounts empty to spread the payment over the ticked addresses."
+            "Core pays from the whole wallet. The ticked addresses only limit how much you can send."
         ));
         assert!(harness.query_by_label("+ Add another recipient").is_some());
     });
@@ -706,8 +708,10 @@ fn a_busy_core_source_withholds_only_max() {
     });
 }
 
+/// A Core balance held by another transaction is not a reason to pay a Core
+/// recipient from Platform: Auto waits and says why instead of switching.
 #[test]
-fn auto_passes_over_a_busy_core_source() {
+fn auto_waits_while_another_transaction_holds_core() {
     with_isolated_data_dir(|| {
         let mut fixture = fixture(None);
         enter(
@@ -719,6 +723,228 @@ fn auto_passes_over_a_busy_core_source() {
         let (harness, _) = harness(fixture.screen, 900.0);
 
         assert!(!has(&harness, "Auto: checking balances…"));
-        assert!(has(&harness, "Auto: paying from Platform"));
+        assert!(!has(&harness, "Auto: paying from Platform"));
+        assert_eq!(harness.state().resolved_route_for_test().0, None);
+        assert!(has(&harness, "is still in progress"));
+    });
+}
+
+/// Auto Max cannot claim the largest balance while one balance is held.
+#[test]
+fn auto_max_waits_while_another_transaction_holds_core() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            1.0,
+        );
+        fixture.screen.mark_core_send_busy_for_test();
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("Max").click();
+        harness.run();
+
+        assert!(!has(&harness, "Max uses the largest balance"));
+        assert_eq!(harness.state().resolved_route_for_test().0, None);
+        assert!(has(&harness, "is still in progress"));
+    });
+}
+
+/// When the wallet says why Core can send nothing, Auto repeats that reason
+/// instead of claiming the wallet has no funds.
+#[test]
+fn auto_states_why_core_funds_cannot_be_sent() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.set_balances_for_test(SendBalances {
+            core_duffs: ONE_DASH_DUFFS,
+            core_addresses: vec![(core_address(), ONE_DASH_DUFFS)],
+            platform: Vec::new(),
+            shielded_credits: 0,
+        });
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            0.5,
+        );
+        fixture
+            .screen
+            .mark_core_send_error_for_test(&TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            });
+        let (harness, _) = harness(fixture.screen, 900.0);
+
+        assert!(!has(&harness, "Add funds first"));
+        assert!(
+            harness
+                .query_all_by_label_contains("CoinJoin funds cannot be sent here")
+                .next()
+                .is_some()
+        );
+    });
+}
+
+/// Text inputs in the order they render: each recipient row is an address
+/// field followed by its amount field.
+fn type_into_input(harness: &mut Harness<'_, WalletSendScreen>, index: usize, text: &str) {
+    let input = || {
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .nth(index)
+            .expect("a text input")
+    };
+    input().focus();
+    harness.run();
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(index)
+        .expect("a text input")
+        .type_text(text);
+    harness.run();
+}
+
+fn enter_two_core_rows(harness: &mut Harness<'_, WalletSendScreen>) {
+    let network = harness.state().app_context.network();
+    type_into_input(harness, 0, &core_address_on(network).to_string());
+    type_into_input(harness, 2, &core_address_on(network).to_string());
+    type_into_input(harness, 1, "0.1");
+    type_into_input(harness, 3, "0.2");
+}
+
+/// Several recipients entered from scratch: Auto resolves against the rows.
+#[test]
+fn auto_pays_several_core_recipients_entered_from_scratch() {
+    with_isolated_data_dir(|| {
+        let fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+        enter_two_core_rows(&mut harness);
+        harness
+            .state_mut()
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        harness.run();
+
+        assert!(matches!(
+            harness.state().resolved_route_for_test().0,
+            Some(SourceSelection::CoreWallet)
+        ));
+        assert!(send_responds(&mut harness), "Auto pays two Core recipients");
+    });
+}
+
+/// The single recipient typed before adding rows does not steer Auto once
+/// the rows say otherwise.
+#[test]
+fn auto_follows_the_rows_not_the_first_typed_recipient() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        enter(&mut fixture.screen, platform_destination(), 0.5);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+        // Drop the Platform row: two blank rows remain.
+        harness
+            .get_all_by_label("✕")
+            .next()
+            .expect("remove")
+            .click();
+        harness.run();
+        enter_two_core_rows(&mut harness);
+        harness
+            .state_mut()
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        harness.run();
+
+        assert!(matches!(
+            harness.state().resolved_route_for_test().0,
+            Some(SourceSelection::CoreWallet)
+        ));
+        assert!(send_responds(&mut harness), "Auto pays two Core recipients");
+    });
+}
+
+/// The confirmation names where a Shield lands instead of an empty line.
+#[test]
+fn shield_confirmation_names_the_private_balance() {
+    with_isolated_data_dir(|| {
+        let fixture = fixture(None);
+        let mut screen = fixture.screen.with_flow(SendFlow::Shield);
+        screen.set_simple_send_input_for_test(None, None, Some(Amount::new_dash(0.5)));
+        let (mut harness, _) = harness(screen, 900.0);
+        harness.get_by_label("Platform · 3.0000").click();
+        harness.run();
+        click_send(&mut harness);
+
+        assert!(harness.state().has_send_confirmation_for_test());
+        assert!(has(&harness, "To: your private balance in "));
+    });
+}
+
+/// The confirmation shows the whole recipient address: a lookalike that
+/// shares only its first and last characters must not pass the check.
+#[test]
+fn confirmation_shows_the_whole_recipient_address() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        let recipient = core_address();
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(recipient.clone()),
+            0.5,
+        );
+        fixture
+            .screen
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        click_send(&mut harness);
+
+        assert!(harness.state().has_send_confirmation_for_test());
+        assert!(has(&harness, &format!("To: {recipient}\n")));
+    });
+}
+
+/// Advanced Core: Max offers only what the ticked addresses hold.
+#[test]
+fn advanced_core_max_offers_only_the_ticked_addresses() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        fixture.screen.set_balances_for_test(SendBalances {
+            core_duffs: 2 * ONE_DASH_DUFFS,
+            core_addresses: vec![
+                (core_address(), ONE_DASH_DUFFS),
+                (core_address(), ONE_DASH_DUFFS),
+            ],
+            platform: Vec::new(),
+            shielded_credits: 0,
+        });
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            0.1,
+        );
+        fixture
+            .screen
+            .seed_core_send_limit_for_test(2 * ONE_DASH_CREDITS - 1_000_000);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("Advanced").click();
+        harness.run();
+        harness
+            .query_all_by_role(egui::accesskit::Role::CheckBox)
+            .next()
+            .expect("a checkbox")
+            .click();
+        harness.run();
+        harness.get_by_label("Max").click();
+        harness.run();
+        harness.run();
+
+        assert!(!has(&harness, "The ticked addresses hold"));
+        assert!(has(&harness, "Everything available in Core · ≈ 1 DASH"));
     });
 }

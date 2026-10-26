@@ -20,7 +20,8 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::ac
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::Ui;
 use std::sync::Arc;
 
@@ -32,9 +33,20 @@ pub struct MintAction {
     amount_input: Option<AmountInput>,
     recipient_identity_id: String,
     known_identities: Vec<QualifiedIdentity>,
+    /// The token sends new tokens to a configured identity unless told otherwise.
+    has_default_destination: bool,
 }
 
 impl MintAction {
+    /// The recipient to mint to: `Some(None)` leaves an empty field to the
+    /// token's configured destination; `None` when no valid recipient is known.
+    fn recipient(&self) -> Option<Option<Identifier>> {
+        if self.recipient_identity_id.trim().is_empty() && self.has_default_destination {
+            return Some(None);
+        }
+        parse_identity_id(&self.recipient_identity_id).map(Some)
+    }
+
     fn render_amount_input(&mut self, ui: &mut Ui, ctx: &TokenActionCtx) {
         let amount_input = self.amount_input.get_or_insert_with(|| {
             let token_amount = Amount::from_token(ctx.info, 0);
@@ -65,12 +77,17 @@ impl TokenAction for MintAction {
     const PROGRESS: &'static str = "Minting tokens...";
     const CONFIRM_TITLE: &'static str = "Confirm Mint";
 
-    fn new(_info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
+    fn new(info: &IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         MintAction {
             amount: None,
             amount_input: None,
             recipient_identity_id: String::new(),
             known_identities: super::load_identities_with_banner(app_context),
+            has_default_destination: info
+                .token_config
+                .distribution_rules()
+                .new_tokens_destination_identity()
+                .is_some(),
         }
     }
 
@@ -80,11 +97,23 @@ impl TokenAction for MintAction {
             .authorized_to_make_change_action_takers()
     }
 
-    fn confirm_message(&self, _ctx: &TokenActionCtx) -> String {
+    fn confirm_message(&self, ctx: &TokenActionCtx) -> String {
+        let default_destination = ctx
+            .info
+            .token_config
+            .distribution_rules()
+            .new_tokens_destination_identity()
+            .copied();
+        let recipient = match self.recipient() {
+            Some(None) => default_destination,
+            recipient => recipient.flatten(),
+        }
+        .map(|id| id.to_string(Encoding::Base58))
+        .unwrap_or_default();
         format!(
             "Are you sure you want to mint {} tokens to {}?",
             self.amount.clone().unwrap_or(Amount::new(0, 0)),
-            self.recipient_identity_id
+            recipient
         )
     }
 
@@ -132,8 +161,7 @@ impl TokenAction for MintAction {
     }
 
     fn inputs_ready(&self) -> bool {
-        positive_amount(&self.amount).is_some()
-            && parse_identity_id(&self.recipient_identity_id).is_some()
+        positive_amount(&self.amount).is_some() && self.recipient().is_some()
     }
 
     fn build_action(
@@ -152,7 +180,7 @@ impl TokenAction for MintAction {
             return None;
         };
 
-        let Some(recipient_id) = parse_identity_id(&self.recipient_identity_id) else {
+        let Some(recipient_id) = self.recipient() else {
             MessageBanner::set_global(
                 ctx.app_context.egui_ctx(),
                 "Invalid receiver",
@@ -168,7 +196,7 @@ impl TokenAction for MintAction {
                 token_position: ctx.info.token_position,
                 signing_key,
                 public_note,
-                recipient_id: Some(recipient_id),
+                recipient_id,
                 amount,
                 group_info,
             },
@@ -180,5 +208,107 @@ impl TokenAction for MintAction {
             BackendTaskSuccessResult::MintedTokens(fee) => Some(fee.clone()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::QualifiedContract;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::BinaryData;
+
+    /// Token info whose token sends new tokens to `destination` by default.
+    fn token_info(context: &Arc<AppContext>, destination: Option<Identifier>) -> IdentityTokenInfo {
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config
+            .distribution_rules
+            .set_new_tokens_destination_identity(destination);
+        IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: config.into(),
+            token_position: 0,
+        }
+    }
+
+    fn signing_key() -> IdentityPublicKey {
+        IdentityPublicKeyV0 {
+            id: 0,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: false,
+            data: BinaryData::new(vec![1; 20]),
+            disabled_at: None,
+            contract_bounds: None,
+        }
+        .into()
+    }
+
+    /// The recipient is labelled optional when the token has a default
+    /// destination; leaving it empty must mint to that destination instead of
+    /// failing with "Invalid receiver".
+    #[test]
+    fn empty_recipient_mints_to_the_configured_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, Some(Identifier::from([5; 32])));
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: false,
+        };
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+
+        assert!(
+            action.inputs_ready(),
+            "the optional recipient may stay empty"
+        );
+        assert!(
+            action
+                .confirm_message(&ctx)
+                .ends_with(&format!("{}?", Identifier::from([5; 32]))),
+            "the confirmation names the configured destination"
+        );
+        match action.build_action(&ctx, signing_key(), None, None) {
+            Some(AppAction::BackendTask(BackendTask::TokenTask(task))) => match *task {
+                TokenTask::MintTokens { recipient_id, .. } => assert_eq!(
+                    recipient_id, None,
+                    "an empty recipient defers to the configured destination"
+                ),
+                other => panic!("unexpected task {other:?}"),
+            },
+            other => panic!("expected a mint task, got {other:?}"),
+        }
+    }
+
+    /// Without a configured destination the recipient stays required.
+    #[test]
+    fn empty_recipient_is_rejected_without_a_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = token_info(&context, None);
+        let mut action = MintAction::new(&info, &context);
+        action.amount = Some(Amount::from_token(&info, 5));
+
+        assert!(!action.inputs_ready());
     }
 }

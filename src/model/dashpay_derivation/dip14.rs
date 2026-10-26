@@ -1,5 +1,5 @@
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::ecdsa::EcdsaPublicKey;
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
@@ -8,8 +8,8 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 /// as specified in DIP-0014 for DashPay contact relationships.
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
-use dash_sdk::dpp::secp256k1::SecretKey;
 use dash_sdk::platform::Identifier;
+use zeroize::Zeroizing;
 
 use super::DerivationError;
 
@@ -56,17 +56,15 @@ pub fn ckd_priv_256(
     }
 
     let hmac_result = Hmac::<sha512::Hash>::from_engine(hmac_engine);
-    let hmac_bytes = hmac_result.to_byte_array();
+    let hmac_bytes = Zeroizing::new(hmac_result.to_byte_array());
 
     // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
     let (i_l, i_r) = hmac_bytes.split_at(32);
 
     // Parse I_L as a private key (refusing zero and values >= n) and add it
     // to the parent key.
-    let i_l: &[u8; 32] = i_l
-        .try_into()
-        .map_err(|_| dash_sdk::dpp::secp256k1::Error::InvalidSecretKey)?;
-    SecretKey::from_secret_bytes(*i_l)?;
+    let i_l: &[u8; 32] = i_l.try_into().map_err(|_| EcdsaError::InvalidSecretKey)?;
+    EcdsaSecretKey::from_bytes(i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
     let child_key = parent_key.private_key.add_tweak(i_l)?;

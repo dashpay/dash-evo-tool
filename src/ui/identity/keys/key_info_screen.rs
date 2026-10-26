@@ -43,6 +43,7 @@ use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
+use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::fee::Credits;
@@ -56,7 +57,6 @@ use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::secp256k1::SecretKey;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
@@ -1674,7 +1674,7 @@ impl KeyInfoScreen {
     /// are compressed by convention, so a verifier can recover the signer's
     /// public key and address from the signature alone.
     fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> Result<String, TaskError> {
-        let secret_key = SecretKey::from_secret_bytes(*private_key_bytes)
+        let secret_key = EcdsaSecretKey::from_bytes(private_key_bytes)
             .expect("clear private key is a valid 32-byte secret");
         crate::backend_task::wallet::dash_signed_message(message, &secret_key, true)
     }
@@ -2204,6 +2204,7 @@ mod tests {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::secp256k1::SecretKey;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;

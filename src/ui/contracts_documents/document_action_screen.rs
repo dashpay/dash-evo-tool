@@ -1974,8 +1974,8 @@ impl DocumentActionScreen {
 /// The key to sign a document action with when the user has not picked one:
 /// a live AUTHENTICATION key this device can sign with, at a security level
 /// the document type accepts, within the contract and document type's scope.
-/// The least privileged accepted level is tried first, as for every document
-/// key ([`QualifiedIdentity::least_privileged_signing_key_now`]).
+/// Keys are ranked in upstream platform-wallet's order, as for every document
+/// key ([`QualifiedIdentity::signing_key_now`]).
 fn auto_selected_document_key(
     identity: &QualifiedIdentity,
     contract: Option<&QualifiedContract>,
@@ -1988,7 +1988,7 @@ fn auto_selected_document_key(
         document_type,
     );
     identity
-        .least_privileged_signing_key_now(KeyRequirements::new(
+        .signing_key_now(KeyRequirements::new(
             dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
             &levels,
             signing_scope(contract, document_type),
@@ -2101,11 +2101,11 @@ mod tests {
         assert_eq!(chosen.map(|key| key.id()), Some(1));
     }
 
-    /// Regression: automatic selection offered every accepted level at once,
-    /// so an unlimited CRITICAL key signed where an unlimited key at the level
-    /// the document type requires was held.
+    /// Automatic selection follows upstream platform-wallet's order: an
+    /// unlimited key at any accepted level beats a limited key, so a budgeted
+    /// HIGH key is not spent while an unlimited CRITICAL key is held.
     #[test]
-    fn auto_selection_takes_the_least_privileged_key() {
+    fn auto_selection_prefers_an_unlimited_key_at_any_accepted_level() {
         use dash_sdk::dpp::identity::SecurityLevel;
         let contract = dpns();
         let domain = owned_document_type(&contract, "domain");
@@ -2113,11 +2113,11 @@ mod tests {
         assert_eq!(required, SecurityLevel::HIGH, "precondition: a HIGH type");
         let identity = identity_holding(&[
             auth_key(1, SecurityLevel::CRITICAL, None),
-            auth_key(2, SecurityLevel::HIGH, None),
+            auth_key(2, SecurityLevel::HIGH, None).with_limits(Some(5_000), None),
         ]);
 
         let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
-        assert_eq!(chosen.map(|key| key.id()), Some(2));
+        assert_eq!(chosen.map(|key| key.id()), Some(1));
     }
 
     /// Regression: the unlock prompt looked for a DPNS signing key, so an

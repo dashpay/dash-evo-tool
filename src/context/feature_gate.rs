@@ -3,6 +3,7 @@ use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::{
     IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
 };
+use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
 /// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
@@ -18,6 +19,11 @@ const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
 /// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
 const KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION: u32 =
     IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION;
+
+/// Tokens that cannot be transferred (a version 1 token configuration) are
+/// accepted from protocol version 14. Upstream names no feature constant for
+/// them, so the protocol version they shipped in is used directly.
+const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -37,6 +43,9 @@ pub enum Capability {
     /// The connected platform accepts authentication keys with a budget or an
     /// expiry, and the transition that raises them.
     IdentityKeyLimits,
+    /// The connected platform accepts version 1 token configurations, which
+    /// can make a token non-transferable.
+    NonTransferableTokens,
 }
 
 /// Whether the protocol version the connected network has proven is one this
@@ -64,6 +73,10 @@ impl Capability {
             Capability::IdentityKeyLimits => {
                 known_protocol_version_at_least(ctx, KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION)
             }
+            Capability::NonTransferableTokens => known_protocol_version_at_least(
+                ctx,
+                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
+            ),
         }
     }
 }
@@ -162,6 +175,9 @@ pub enum FeatureGate {
     /// Adding a key with a budget or an expiry, and raising those limits.
     /// Offered only where the connected network accepts them.
     IdentityKeyLimits,
+    /// Creating a token that holders cannot transfer. Offered only where the
+    /// connected network accepts one.
+    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -179,6 +195,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
+            FeatureGate::NonTransferableTokens => {
+                &[Check::Capability(Capability::NonTransferableTokens)]
+            }
         }
     }
 
@@ -452,14 +471,21 @@ mod tests {
     /// the network's version is known, whatever the role.
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
+        // One entry per protocol version 14 gate this build offers.
+        let gates = [
+            FeatureGate::IdentityKeyLimits,
+            FeatureGate::NonTransferableTokens,
+        ];
         for role in ROLES {
-            let (_tmp, ctx) = ctx_with_role(role);
-            let gate = FeatureGate::IdentityKeyLimits;
-            assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-            prove_protocol_version(&ctx, 13);
-            assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-            prove_protocol_version(&ctx, 14);
-            assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+            for gate in gates {
+                // A proven version only rises, so each gate gets a fresh context.
+                let (_tmp, ctx) = ctx_with_role(role);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
+                prove_protocol_version(&ctx, 13);
+                assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
+                prove_protocol_version(&ctx, 14);
+                assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
+            }
         }
     }
 
@@ -470,7 +496,11 @@ mod tests {
     fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
         use dash_sdk::dpp::version::LATEST_VERSION;
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        let capabilities = [Capability::ShieldedProtocol, Capability::IdentityKeyLimits];
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::IdentityKeyLimits,
+            Capability::NonTransferableTokens,
+        ];
 
         prove_protocol_version(&ctx, LATEST_VERSION);
         for capability in capabilities {

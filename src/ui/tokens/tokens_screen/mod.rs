@@ -2448,6 +2448,10 @@ impl TokensScreen {
         self.show_token_creator_confirmation_popup = false;
         // The dialog caches its summary text; drop it so it is rebuilt from the new form.
         self.token_creator_confirmation_dialog = None;
+        // The "View JSON" popup shows the contract built from the old form.
+        self.show_json_popup = false;
+        self.json_popup_text.clear();
+        self.json_popup_opening_guard = ModalOpeningGuard::default();
 
         // Reset document schemas
         self.document_schemas_input = String::new();
@@ -4442,5 +4446,20 @@ mod tests {
             TokenCreatorStatus::NotStarted,
             "a late failure must not mark the new network's creator as failed"
         );
+    }
+
+    /// A network switch closes the "View JSON" popup: the contract it shows was
+    /// built for the previous network's form.
+    #[test]
+    fn network_switch_closes_the_contract_json_popup() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.open_data_contract_json_popup("{\"previous\": \"network\"}".to_owned());
+
+        screen.reset_for_network_switch();
+
+        assert!(!screen.show_json_popup);
+        assert!(screen.json_popup_text.is_empty());
     }
 }

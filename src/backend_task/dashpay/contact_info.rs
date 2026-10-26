@@ -583,6 +583,11 @@ pub(super) async fn contact_info_is_hidden(
 /// encryption keys cannot be derived, when an encoded field exceeds its v0 or
 /// contract limit, when the identity has no usable authentication key, or when
 /// the state transition is rejected.
+// TODO(upstream): publish through platform-wallet's
+// `DashPayView::set_contact_info_with_external_signer` once it preserves the
+// stored `acceptedAccounts` (it writes an empty list) and DET supplies a
+// `ContactCryptoProvider`; until then DET keeps its own write path and takes
+// the signing key from `QualifiedIdentity::dashpay_signing_key`.
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -633,7 +638,8 @@ pub async fn create_or_update_contact_info(
         ));
     }
 
-    let signing_key = contact_info_signing_key(&identity, &dashpay_contract)
+    let signing_key = identity
+        .dashpay_signing_key(&dashpay_contract, "contactInfo")
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Create document properties
@@ -766,15 +772,6 @@ pub async fn create_or_update_contact_info(
         identity: identity_id,
         contact_id: contact_user_id,
     })
-}
-
-/// The key to sign a contactInfo document with, of any key type: Platform
-/// accepts all of them for document transitions.
-fn contact_info_signing_key<'i>(
-    identity: &'i QualifiedIdentity,
-    dashpay_contract: &dash_sdk::platform::DataContract,
-) -> Option<&'i dash_sdk::platform::IdentityPublicKey> {
-    identity.document_action_signing_key(dashpay_contract, "contactInfo", None)
 }
 
 #[cfg(test)]
@@ -1277,20 +1274,5 @@ mod tests {
                 source: ContactInfoReadError::DeserializeFailed,
             })
         ));
-    }
-
-    /// Regression: the contactInfo key choice admitted MEDIUM keys, which the
-    /// document type refuses, and preferred unlimited keys, so an unlimited
-    /// MEDIUM key beat a held limited HIGH key and the save was refused.
-    #[test]
-    fn a_contact_info_is_signed_with_a_key_its_document_type_accepts() {
-        use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
-        use dash_sdk::dpp::identity::SecurityLevel;
-
-        let limited_high = auth_key(1, SecurityLevel::HIGH).with_limits(Some(5_000), None);
-        let identity = identity_holding(&[limited_high, auth_key(2, SecurityLevel::MEDIUM)]);
-
-        let chosen = contact_info_signing_key(&identity, &dashpay_contract());
-        assert_eq!(chosen.map(|key| key.id()), Some(1));
     }
 }

@@ -138,6 +138,9 @@ pub fn key_can_sign_documents(
 /// Unlike [`key_can_sign_documents`], an expired key is allowed: the key chooser
 /// offers it with a warning, and whether it has expired is Platform's call by
 /// network time, not this device's clock.
+// TODO(upstream): call platform-wallet's public explicit-key validation once it
+// exists (`resolve_authentication_signing_key` is private) and route the
+// registration through `register_name_with_signer`.
 pub fn chosen_key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,

@@ -574,6 +574,16 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 /// compatible with blobs `to_bytes` already wrote.
 const IDENTITY_BLOB_DECODE_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB
 
+/// The key types a DashPay document (contactRequest, contactInfo, profile) is
+/// signed with: ECDSA keys, as upstream platform-wallet's DashPay writes
+/// require. `ECDSA_HASH160` is taken too, as dashpay/platform#5546 adds it
+/// upstream; DET accepted it before, so dropping it would strand identities
+/// whose only document key is a hash160 key.
+// TODO(upstream): take the key types from platform-wallet's public DashPay
+// key selector once it exists, instead of restating them here.
+pub const DASHPAY_SIGNING_KEY_TYPES: &[KeyType] =
+    &[KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160];
+
 /// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
 /// Pulled into its own function (rather than inlined at the one call site) so
 /// the decode-limit regression test below exercises the *exact* configuration
@@ -1158,16 +1168,14 @@ impl QualifiedIdentity {
     /// The key to sign document transitions on `document_type` with, within
     /// `scope`: a live AUTHENTICATION key at a level the type accepts
     /// ([`document_security_levels`]) whose contract bounds permit `scope`,
-    /// unlimited keys first (see [`crate::model::identity_key_usability`]).
-    /// The level the type requires is preferred; a stronger key signs only
-    /// when no key at that level qualifies.
+    /// in upstream platform-wallet's order (see [`Self::signing_key_now`]).
     pub fn document_signing_key(
         &self,
         scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
     ) -> Option<&IdentityPublicKey> {
         let levels = document_security_levels(*document_type);
-        self.least_privileged_signing_key_now(KeyRequirements::new(
+        self.signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
             &levels,
             scope,
@@ -1176,41 +1184,57 @@ impl QualifiedIdentity {
 
     /// The key to sign an action on document type `document_type_name` of
     /// `contract` with: a live AUTHENTICATION key at a level the type accepts
-    /// ([`document_security_levels`]), of one of `key_types` when given, whose
-    /// bounds permit that document type. The least privileged level is tried
-    /// first, as in [`Self::document_signing_key`]. `None` when the contract
-    /// has no such type or no key qualifies.
+    /// ([`document_security_levels`]), of one of `key_types`, whose bounds
+    /// permit that document type, in upstream platform-wallet's order (see
+    /// [`Self::signing_key_now`]). `None` when the contract has no such type
+    /// or no key qualifies.
     pub fn document_action_signing_key(
         &self,
         contract: &DataContract,
         document_type_name: &str,
-        key_types: Option<&[KeyType]>,
+        key_types: &[KeyType],
     ) -> Option<&IdentityPublicKey> {
         let document_type = contract.document_type_for_name(document_type_name).ok()?;
         let levels = document_security_levels(document_type);
-        let mut requirements = KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &levels,
-            SigningScope::Document {
-                contract_id: contract.id(),
-                document_type_name,
-            },
-        );
-        if let Some(key_types) = key_types {
-            requirements = requirements.with_key_types(key_types);
-        }
-        self.least_privileged_signing_key_now(requirements)
+        self.signing_key_now(
+            KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                &levels,
+                SigningScope::Document {
+                    contract_id: contract.id(),
+                    document_type_name,
+                },
+            )
+            .with_key_types(key_types),
+        )
+    }
+
+    /// The key to sign a `document_type_name` DashPay document with: a
+    /// [`Self::document_action_signing_key`] of one of
+    /// [`DASHPAY_SIGNING_KEY_TYPES`].
+    pub fn dashpay_signing_key(
+        &self,
+        dashpay_contract: &DataContract,
+        document_type_name: &str,
+    ) -> Option<&IdentityPublicKey> {
+        self.document_action_signing_key(
+            dashpay_contract,
+            document_type_name,
+            DASHPAY_SIGNING_KEY_TYPES,
+        )
     }
 
     /// The ENCRYPTION key whose wallet seeds DashPay auto-accept proofs
-    /// (DIP-15): the first MEDIUM ECDSA_SECP256K1 one.
+    /// (DIP-15): the first enabled ECDSA_SECP256K1 one, at any security level
+    /// (lowest key id first).
+    // TODO(upstream): call platform-wallet's `select_own_encryption_key` once
+    // it is public; this mirrors its policy until then.
     pub fn auto_accept_proof_key(&self) -> Option<&IdentityPublicKey> {
-        self.identity.get_first_public_key_matching(
-            Purpose::ENCRYPTION,
-            std::collections::HashSet::from([SecurityLevel::MEDIUM]),
-            std::collections::HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
-        )
+        self.identity.public_keys().values().find(|key| {
+            key.purpose() == Purpose::ENCRYPTION
+                && key.key_type() == KeyType::ECDSA_SECP256K1
+                && !key.is_disabled()
+        })
     }
 
     /// The key as the identity holds it now for `snapshot`, a copy taken
@@ -1225,29 +1249,12 @@ impl QualifiedIdentity {
             .unwrap_or(snapshot)
     }
 
-    /// The key to sign with for `requirements` now, least privileged first:
-    /// each accepted security level is tried from the weakest up, so a
-    /// stronger key signs only when no key at a weaker accepted level
-    /// qualifies. Within a level, [`Self::signing_key_now`] decides (unlimited
-    /// keys first).
-    pub fn least_privileged_signing_key_now(
-        &self,
-        requirements: KeyRequirements<'_>,
-    ) -> Option<&IdentityPublicKey> {
-        let mut levels = requirements.security_levels.to_vec();
-        levels.sort_by_key(|level| std::cmp::Reverse(*level as u8));
-        levels.dedup();
-        levels.iter().find_map(|level| {
-            self.signing_key_now(KeyRequirements {
-                security_levels: std::slice::from_ref(level),
-                ..requirements
-            })
-        })
-    }
-
     /// The key to sign with for `requirements` now: the automatic choice of
     /// [`select_identity_signing_key`] among the keys this device holds the
-    /// private half of.
+    /// private half of. Upstream platform-wallet's order: every qualifying
+    /// unlimited key at any accepted level before any limited one, then key
+    /// id order, so a budgeted application key is spent only when no
+    /// unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
         select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
             self.can_sign_with(key)
@@ -3396,21 +3403,141 @@ mod protocol_v14_compat_tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    /// Regression: the document action selector offered every accepted level
-    /// at once, so an unlimited CRITICAL key signed DashPay documents although
-    /// an unlimited HIGH key, the level the type requires, was held. Both
-    /// document selectors take the least privileged key that qualifies.
+    /// Upstream platform-wallet's `usable_authentication_key` is the reference
+    /// order: every unlimited key at any accepted level comes before any
+    /// limited key, then key id order. A delegated (budgeted) HIGH key is not
+    /// spent while an unlimited CRITICAL key is held.
     #[test]
-    fn a_document_action_takes_the_least_privileged_key() {
+    fn a_document_action_prefers_an_unlimited_key_at_any_accepted_level() {
         use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
         let contract = dashpay_contract();
         let identity = identity_holding(&[
             auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::HIGH).with_limits(Some(5_000), None),
+        ]);
+        assert_eq!(
+            identity
+                .dashpay_signing_key(&contract, "contactRequest")
+                .map(|key| key.id()),
+            Some(1),
+            "the unlimited CRITICAL key, not the budgeted HIGH key"
+        );
+
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
             auth_key(2, SecurityLevel::HIGH),
         ]);
+        assert_eq!(
+            identity
+                .dashpay_signing_key(&contract, "contactRequest")
+                .map(|key| key.id()),
+            Some(1),
+            "key id order among unlimited keys, whatever their level"
+        );
+    }
 
-        let chosen = identity.document_action_signing_key(&contract, "contactRequest", None);
-        assert_eq!(chosen.map(|key| key.id()), Some(2));
+    /// Regression: the contactRequest and contactInfo key choices admitted
+    /// MEDIUM keys, which the document types refuse, so an unlimited MEDIUM
+    /// key beat a held limited HIGH key and the write was refused.
+    #[test]
+    fn a_dashpay_document_is_signed_with_a_key_its_document_type_accepts() {
+        use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
+        let limited_high = auth_key(1, SecurityLevel::HIGH).with_limits(Some(5_000), None);
+        let identity = identity_holding(&[limited_high, auth_key(2, SecurityLevel::MEDIUM)]);
+        for name in ["contactRequest", "contactInfo"] {
+            assert_eq!(
+                identity
+                    .dashpay_signing_key(&dashpay_contract(), name)
+                    .map(|key| key.id()),
+                Some(1),
+                "{name}"
+            );
+        }
+    }
+
+    /// DashPay documents are signed with an ECDSA key, as upstream
+    /// platform-wallet's DashPay writes require; a BLS or EdDSA key is
+    /// skipped even at an accepted level.
+    #[test]
+    fn a_dashpay_document_is_signed_with_an_ecdsa_key() {
+        use crate::context::test_support::{auth_key, dashpay_contract, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+
+        let typed = |id: KeyID, key_type: KeyType, len: usize| -> IdentityPublicKey {
+            IdentityPublicKeyV0 {
+                id,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type,
+                read_only: false,
+                data: vec![2; len].into(),
+                disabled_at: None,
+            }
+            .into()
+        };
+        let contract = dashpay_contract();
+        let identity = identity_holding(&[
+            typed(1, KeyType::BLS12_381, 48),
+            typed(2, KeyType::EDDSA_25519_HASH160, 20),
+            auth_key(3, SecurityLevel::HIGH),
+        ]);
+        for name in ["contactRequest", "contactInfo"] {
+            assert_eq!(
+                identity
+                    .dashpay_signing_key(&contract, name)
+                    .map(|key| key.id()),
+                Some(3),
+                "{name}"
+            );
+        }
+
+        let identity = identity_holding(&[typed(1, KeyType::ECDSA_HASH160, 20)]);
+        assert_eq!(
+            identity
+                .dashpay_signing_key(&contract, "contactRequest")
+                .map(|key| key.id()),
+            Some(1),
+            "an ECDSA_HASH160 key signs like an ECDSA_SECP256K1 key"
+        );
+    }
+
+    /// The auto-accept proof key follows upstream platform-wallet's
+    /// `select_own_encryption_key`: the first enabled ECDSA_SECP256K1
+    /// ENCRYPTION key, at any security level.
+    #[test]
+    fn the_auto_accept_proof_key_is_the_first_enabled_ecdsa_encryption_key() {
+        use crate::context::test_support::identity_holding;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+
+        let encryption = |id: KeyID, level: SecurityLevel, disabled: bool| -> IdentityPublicKey {
+            IdentityPublicKeyV0 {
+                id,
+                purpose: Purpose::ENCRYPTION,
+                security_level: level,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: vec![2; 33].into(),
+                disabled_at: disabled.then_some(1),
+            }
+            .into()
+        };
+        let identity = identity_holding(&[encryption(3, SecurityLevel::HIGH, false)]);
+        assert_eq!(
+            identity.auto_accept_proof_key().map(|key| key.id()),
+            Some(3)
+        );
+
+        let identity = identity_holding(&[
+            encryption(1, SecurityLevel::MEDIUM, true),
+            encryption(2, SecurityLevel::HIGH, false),
+        ]);
+        assert_eq!(
+            identity.auto_accept_proof_key().map(|key| key.id()),
+            Some(2),
+            "a disabled key is skipped"
+        );
     }
 
     /// The bundled v0.9.3 profile: real identity rows written by DET v0.9.3.
@@ -3541,7 +3668,7 @@ mod protocol_v14_compat_tests {
             "the CRITICAL key, never the MASTER key"
         );
 
-        // A key at the required level is still preferred over a stronger one.
+        // Every accepted level is one tier: the lowest key id wins.
         let qi = identity_holding(&[
             auth_key(1, SecurityLevel::MASTER),
             auth_key(2, SecurityLevel::CRITICAL),
@@ -3549,8 +3676,8 @@ mod protocol_v14_compat_tests {
         ]);
         assert_eq!(
             qi.document_signing_key(scope, &preorder).map(|k| k.id()),
-            Some(3),
-            "the HIGH key the type asks for"
+            Some(2),
+            "key id order among accepted levels, as upstream orders them"
         );
     }
 

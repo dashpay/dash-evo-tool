@@ -716,7 +716,7 @@ pub async fn accept_contact_request(
     }
 
     let signing_key = identity
-        .document_action_signing_key(&app_context.dashpay_contract(), "contactRequest", None)
+        .dashpay_signing_key(&app_context.dashpay_contract(), "contactRequest")
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 

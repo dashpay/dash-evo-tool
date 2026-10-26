@@ -269,9 +269,9 @@ pub async fn verify_auto_accept_proof(
 
     // Derive expected pubkey from our seed and key index (timestamp)
     // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
-    let signing_key = our_identity
-        .auto_accept_proof_key()
-        .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
+    let signing_key = our_identity.auto_accept_proof_key().ok_or(
+        "No suitable key found. This operation requires an enabled ECDSA_SECP256K1 ENCRYPTION key.",
+    )?;
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.
     let wallet_seed = our_identity

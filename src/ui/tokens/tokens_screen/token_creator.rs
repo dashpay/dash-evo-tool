@@ -12,7 +12,7 @@ use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -350,6 +350,12 @@ impl TokensScreen {
                                     self.render_max_supply_input(ui);
                                     ui.end_row();
 
+                                    // Holders can send the token: shown here too, so a choice
+                                    // made in Advanced mode is never hidden.
+                                    ui.label("");
+                                    ui.vertical(|ui| self.transferable_row(ui));
+                                    ui.end_row();
+
                                     // Preset selector
                                     ui.vertical(|ui| {
                                         ui.add_space(15.0);
@@ -419,7 +425,8 @@ impl TokensScreen {
                             // Create Token button
                             let can_create = !self.token_names_input[0].0.trim().is_empty()
                                 && self.base_supply_amount.is_some()
-                                && self.selected_token_preset.is_some();
+                                && self.selected_token_preset.is_some()
+                                && self.creation_blocked_reason().is_none();
 
                             ui.horizontal(|ui| {
                                 if ComponentStyles::add_primary_button_enabled(
@@ -450,15 +457,17 @@ impl TokensScreen {
 
                             if !can_create {
                                 ui.add_space(5.0);
-                                let missing = if self.token_names_input[0].0.trim().is_empty() {
-                                    "token name"
+                                let hint = if self.token_names_input[0].0.trim().is_empty() {
+                                    "Enter a token name to continue.".to_string()
                                 } else if self.base_supply_amount.is_none() {
-                                    "initial supply"
+                                    "Enter an initial supply to continue.".to_string()
+                                } else if self.selected_token_preset.is_none() {
+                                    "Choose a preset to create the token.".to_string()
                                 } else {
-                                    "token preset"
+                                    self.creation_blocked_reason().unwrap_or_default()
                                 };
                                 ui.label(
-                                    RichText::new(format!("Please select a {missing}"))
+                                    RichText::new(hint)
                                         .color(egui::Color32::GRAY)
                                         .italics(),
                                 );
@@ -869,9 +878,17 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            if ComponentStyles::add_primary_button(ui, "Register Token Contract")
-                                .clicked()
-                            {
+                            let blocked_reason = self.creation_blocked_reason();
+                            let mut register = ComponentStyles::add_primary_button_enabled(
+                                ui,
+                                blocked_reason.is_none(),
+                                "Register Token Contract",
+                            );
+                            if let Some(reason) = &blocked_reason {
+                                register = register.disabled_tooltip(reason.clone());
+                                Self::render_blocked_reason(ui, reason);
+                            }
+                            if register.clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -1193,24 +1210,55 @@ impl TokensScreen {
         Ok(self.transferable_input)
     }
 
-    /// The "holders can send this token" option. Offered only where the
-    /// connected network accepts tokens that cannot be transferred.
-    fn transferable_row(&mut self, ui: &mut egui::Ui) {
+    /// The "holders can send this token" option, shown in Simple and Advanced
+    /// mode so the choice is never hidden. Turning transfers off needs a network
+    /// that accepts such tokens; a choice already made is kept (never silently
+    /// flipped back), but creating is blocked with the reason until the network
+    /// supports it or transfers are allowed again.
+    pub(super) fn transferable_row(&mut self, ui: &mut egui::Ui) {
         let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
-        if !available {
-            self.transferable_input = true;
-        }
+        // Allowing transfers again always works; only turning them off needs support.
+        let editable = available || !self.transferable_input;
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(available, |ui| {
+            ui.add_enabled_ui(editable, |ui| {
                 StyledCheckbox::new(
                     &mut self.transferable_input,
                     "Holders can send this token to other identities",
                 )
                 .show(ui)
-                .on_disabled_hover_text(TaskError::NonTransferableTokenNotSupported.to_string());
+                .disabled_tooltip(TaskError::NonTransferableTokenNotSupported.to_string());
             });
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
+        if let Some(reason) = self.creation_blocked_reason() {
+            Self::render_blocked_reason(ui, &reason);
+        }
+    }
+
+    /// Why the token cannot be created as configured, if a setting the
+    /// connected network does not accept was chosen. The backend refuses it too.
+    pub(super) fn creation_blocked_reason(&self) -> Option<String> {
+        self.parse_transferable().err()
+    }
+
+    /// The confirmation's sentence about whether holders can send the token.
+    pub(super) fn transferability_summary(transferable: bool) -> &'static str {
+        if transferable {
+            "Holders can send this token to other identities."
+        } else {
+            "Holders cannot send this token to other identities. This cannot be changed later."
+        }
+    }
+
+    /// A visible explanation next to a blocked control, so the reason does not
+    /// depend on hovering.
+    fn render_blocked_reason(ui: &mut Ui, reason: &str) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(reason)
+                .color(DashColors::muted_color(dark_mode))
+                .italics(),
+        );
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {
@@ -1441,15 +1489,21 @@ impl TokensScreen {
         });
         let name = &self.token_names_input[0].0;
         let cost = self.estimate_registration_cost() as f64 / 100_000_000_000.0;
+        // State what gets signed, not what the form shows now.
+        let transferability = Self::transferability_summary(
+            self.cached_build_args
+                .as_ref()
+                .map_or(self.transferable_input, |args| args.transferable),
+        );
         let confirmation_message = if is_danger_mode {
             format!(
-                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!",
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n{transferability}\n\nEstimated cost to register this token is {cost} Dash\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!",
                 base_supply = base_supply_display,
                 max_supply = max_supply_display,
             )
         } else {
             format!(
-                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash",
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n{transferability}\n\nEstimated cost to register this token is {cost} Dash",
                 base_supply = base_supply_display,
                 max_supply = max_supply_display,
             )

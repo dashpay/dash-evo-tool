@@ -26,9 +26,11 @@ use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use dash_evo_tool::model::user_role::UserRole;
+use dash_evo_tool::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use dash_evo_tool::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenInfo, TokensScreen, TokensSubscreen,
+    IdentityTokenBalance, IdentityTokenBasicInfo, IdentityTokenInfo, TokensScreen, TokensSubscreen,
 };
+use dash_evo_tool::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -429,6 +431,11 @@ impl TokenFixture {
     /// Shows `screen_type` as the only pushed screen.
     fn open(&mut self, screen_type: ScreenType) {
         let screen = screen_type.create_screen(&self.app_context);
+        self.show(screen);
+    }
+
+    /// Shows `screen` as the only pushed screen.
+    fn show(&mut self, screen: Screen) {
         let state = self.harness.state_mut();
         state.screen_stack.clear();
         state.screen_stack.push(screen);
@@ -639,6 +646,39 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
             assert!(
                 f.harness.state().screen_stack.is_empty(),
                 "{name}: the {back:?} breadcrumb must lead back to the root screen"
+            );
+        }
+
+        // Claim screens have no `ScreenType` factory; My Tokens builds them.
+        let basic = IdentityTokenBasicInfo {
+            token_id: info.token_id,
+            token_alias: info.token_alias.clone(),
+            identity_id: info.identity.identity.id(),
+            contract_id: f.balance.data_contract_id,
+            token_position: 0,
+        };
+        let claim_screens = [
+            (
+                "Claim",
+                Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    basic.clone(),
+                    info.data_contract.clone(),
+                    info.token_config.clone(),
+                    &f.app_context,
+                )),
+            ),
+            (
+                "View claims",
+                Screen::ViewTokenClaimsScreen(ViewTokenClaimsScreen::new(basic, &f.app_context)),
+            ),
+        ];
+        for (name, screen) in claim_screens {
+            f.show(screen);
+            assert_intact_layout(&f.harness, name, 360.0);
+            f.click_breadcrumb("Tokens");
+            assert!(
+                f.harness.state().screen_stack.is_empty(),
+                "{name}: the Tokens breadcrumb must lead back to the root screen"
             );
         }
 

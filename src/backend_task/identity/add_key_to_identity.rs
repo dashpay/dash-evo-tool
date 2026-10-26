@@ -753,7 +753,6 @@ mod tests {
             .get_resolve_with_seed(&placement, &wallets, &seed, Network::Testnet)
             .unwrap()
             .unwrap();
-
         let secret = SecretKey::from_secret_bytes(*bytes).unwrap();
         let message = Message::from_digest([1; 32]);
         let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret);
@@ -1942,7 +1941,7 @@ mod tests {
 
         // Not known yet (0), and mainnet's 13.
         for version in [0, 13] {
-            ctx.set_platform_protocol_version(version);
+            crate::context::test_support::prove_protocol_version(&ctx, version);
             let identity = crate::context::test_support::bare_user_identity(
                 Identifier::random(),
                 dash_sdk::dpp::dashcore::Network::Testnet,
@@ -2043,7 +2042,10 @@ mod tests {
     async fn a_key_with_a_zero_budget_is_refused_locally() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.set_platform_protocol_version(dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14,
+        );
         let sdk = dash_sdk::Sdk::new_mock();
         let identity = crate::context::test_support::bare_user_identity(
             Identifier::random(),

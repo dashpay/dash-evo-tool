@@ -1522,7 +1522,6 @@ mod tests {
             .expect("resolve master")
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
-
         let resolved_pub = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*stored.1)
             .expect("secret")
             .public_key();

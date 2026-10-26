@@ -28,7 +28,7 @@ pub(crate) const MASTERNODE_LIST_NOT_READY_DETAIL: &str =
 /// All system contracts are listed in `cached` — adding a new one is a single
 /// array edit. The array size is tied to [`SYSTEM_CONTRACT_COUNT`] so the
 /// compiler enforces completeness.
-fn resolve_data_contract(
+pub(crate) fn resolve_data_contract(
     app_ctx: &AppContext,
     data_contract_id: &Identifier,
     platform_version: &PlatformVersion,
@@ -58,9 +58,10 @@ fn resolve_data_contract(
         return Ok(Some(Arc::clone(contract)));
     }
 
-    // K/V fallback for user-added / non-system contracts
+    // K/V fallback for user-added / non-system contracts, decoded at the
+    // verifier's version too.
     let dc = app_ctx
-        .get_contract_by_id(data_contract_id)
+        .get_contract_by_id_at(data_contract_id, platform_version)
         .map_err(|e| ContextProviderError::Generic(e.to_string()))?;
 
     Ok(dc.map(|qc| Arc::new(qc.contract)))

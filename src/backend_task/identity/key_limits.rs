@@ -371,7 +371,7 @@ mod tests {
         let sdk = Sdk::new_mock();
 
         for version in PRE_V14_PROTOCOL_VERSIONS {
-            ctx.set_platform_protocol_version(version);
+            crate::context::test_support::prove_protocol_version(&ctx, version);
             let raise = KeyLimitsRaise {
                 key_id: 1,
                 seen_total_budget: Some(1),
@@ -398,7 +398,7 @@ mod tests {
         let sdk = Sdk::new_mock();
 
         for version in PRE_V14_PROTOCOL_VERSIONS {
-            ctx.set_platform_protocol_version(version);
+            crate::context::test_support::prove_protocol_version(&ctx, version);
             for key_ids in [vec![1, 2], vec![]] {
                 let result = ctx
                     .fetch_key_remaining_budgets(&sdk, Identifier::random(), key_ids)

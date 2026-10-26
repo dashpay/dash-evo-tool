@@ -2177,7 +2177,7 @@ mod tests {
     fn a_mistyped_expiry_is_reported_under_its_field() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        context.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&context, 14);
         let identity = crate::context::test_support::bare_user_identity(
             dash_sdk::platform::Identifier::new([0xA1; 32]),
             dash_sdk::dpp::dashcore::Network::Testnet,

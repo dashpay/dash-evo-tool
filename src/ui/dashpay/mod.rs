@@ -32,11 +32,7 @@ pub(crate) fn dashpay_action_wallet(
     app_context: &AppContext,
     document_type_name: &str,
 ) -> Option<std::sync::Arc<std::sync::RwLock<crate::model::wallet::Wallet>>> {
-    let key = identity.document_action_signing_key(
-        &app_context.dashpay_contract(),
-        document_type_name,
-        None,
-    );
+    let key = identity.dashpay_signing_key(&app_context.dashpay_contract(), document_type_name);
     crate::ui::identity::wallet_for_signing_key(identity, key)
 }
 

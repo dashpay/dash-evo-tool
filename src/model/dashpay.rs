@@ -6,6 +6,7 @@ use dash_sdk::platform::{Document, Identifier};
 use serde::{Deserialize, Serialize};
 
 use super::validation::{TextLengthError, validate_char_count};
+use crate::backend_task::error::TaskError;
 
 /// Independent reads used to populate an identity's contact lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -587,5 +588,225 @@ mod tests {
         assert!(validate_payment_memo(&"m".repeat(101)).is_err());
         assert!(validate_account_label(&"é".repeat(100)).is_ok());
         assert!(validate_account_label(&"l".repeat(101)).is_err());
+    }
+}
+
+/// A scanned DashPay contact QR code: DIP-15 `dash:?du=<username>&dapk=<key>`,
+/// read with upstream platform-wallet's codecs. The key is the QR owner's
+/// auto-accept key, a bearer credential that expires; it signs the
+/// auto-accept proof of a contact request sent to the owner.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContactQr {
+    username: String,
+    key_blob: zeroize::Zeroizing<Vec<u8>>,
+    expires_at: u32,
+}
+
+impl std::fmt::Debug for ContactQr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContactQr")
+            .field("username", &self.username)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ContactQr {
+    /// Reads `uri` as a contact QR code that is still valid at `now_secs`
+    /// (Unix seconds).
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::ContactQrInvalid`] when `uri` is not a DIP-15 contact QR
+    /// code, [`TaskError::ContactQrExpired`] when its key has expired.
+    pub fn parse(uri: &str, now_secs: u64) -> Result<Self, TaskError> {
+        use platform_wallet::wallet::identity::crypto::auto_accept::{
+            decode_auto_accept_key_blob, parse_dashpay_contact_uri,
+        };
+        let invalid = |source| TaskError::ContactQrInvalid {
+            source: std::sync::Arc::new(source),
+        };
+        let (username, key_blob) = parse_dashpay_contact_uri(uri.trim()).map_err(invalid)?;
+        let key_blob = zeroize::Zeroizing::new(key_blob);
+        let (_, expires_at) = decode_auto_accept_key_blob(&key_blob).map_err(invalid)?;
+        let qr = Self {
+            username,
+            key_blob,
+            expires_at,
+        };
+        qr.ensure_unexpired(now_secs)?;
+        Ok(qr)
+    }
+
+    /// Upstream's rule: a code is valid up to and including its expiry second.
+    fn ensure_unexpired(&self, now_secs: u64) -> Result<(), TaskError> {
+        if now_secs > u64::from(self.expires_at) {
+            return Err(TaskError::ContactQrExpired);
+        }
+        Ok(())
+    }
+
+    /// The QR owner's username, without the `.dash` suffix.
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// The owner's full DPNS name, `<username>.dash`.
+    pub fn dpns_name(&self) -> String {
+        format!("{}.dash", self.username)
+    }
+
+    /// When the code stops working, in Unix seconds.
+    pub fn expires_at(&self) -> u32 {
+        self.expires_at
+    }
+
+    /// The auto-accept proof for a contact request `sender` sends to the QR
+    /// owner `recipient` with `account_reference`, signed with the code's key
+    /// by upstream's `sign_auto_accept_proof`. The proof binds sender,
+    /// recipient and account reference, so it is useless for any other
+    /// request.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::ContactQrExpired`] when the code has expired at `now_secs`.
+    pub fn sign_proof(
+        &self,
+        sender: &Identifier,
+        recipient: &Identifier,
+        account_reference: u32,
+        now_secs: u64,
+    ) -> Result<Vec<u8>, TaskError> {
+        use platform_wallet::wallet::identity::crypto::auto_accept::{
+            decode_auto_accept_key_blob, sign_auto_accept_proof,
+        };
+        self.ensure_unexpired(now_secs)?;
+        let (key, expires_at) = decode_auto_accept_key_blob(&self.key_blob).map_err(|source| {
+            TaskError::ContactQrInvalid {
+                source: std::sync::Arc::new(source),
+            }
+        })?;
+        Ok(sign_auto_accept_proof(
+            &key,
+            sender,
+            recipient,
+            account_reference,
+            expires_at,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod contact_qr_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::key_wallet::wallet::Wallet;
+    use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    use platform_wallet::wallet::identity::crypto::auto_accept::{
+        derive_auto_accept_private_key, encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+        verify_auto_accept_proof,
+    };
+
+    const NETWORK: Network = Network::Testnet;
+    const EXPIRY: u32 = 1_900_000_000;
+
+    /// A wallet from a seed generated for this test only.
+    fn owner_wallet() -> Wallet {
+        Wallet::from_seed_bytes(
+            rand::random::<[u8; 64]>(),
+            NETWORK,
+            WalletAccountCreationOptions::None,
+        )
+        .expect("a test wallet")
+    }
+
+    /// The contact QR code `owner` would hand out, as upstream builds it.
+    fn owner_qr(owner: &Wallet) -> String {
+        let key = derive_auto_accept_private_key(owner, NETWORK, EXPIRY).expect("a key");
+        encode_dashpay_contact_uri("alice", &encode_auto_accept_key_blob(&key, EXPIRY))
+    }
+
+    /// Interop: a proof DET signs from an upstream-built QR code verifies with
+    /// upstream's verifier against the owner's wallet, and only for the
+    /// sender, recipient and account reference it was signed for.
+    #[test]
+    fn a_proof_from_an_upstream_qr_code_verifies_upstream() {
+        let owner = owner_wallet();
+        let qr = ContactQr::parse(&owner_qr(&owner), u64::from(EXPIRY) - 60).expect("valid");
+        assert_eq!(qr.username(), "alice");
+        assert_eq!(qr.dpns_name(), "alice.dash");
+        assert_eq!(qr.expires_at(), EXPIRY);
+
+        let sender = Identifier::new([1; 32]);
+        let recipient = Identifier::new([2; 32]);
+        let proof = qr
+            .sign_proof(&sender, &recipient, 7, u64::from(EXPIRY) - 60)
+            .expect("a proof");
+        let verifies = |sender: &Identifier, recipient: &Identifier, account: u32| {
+            verify_auto_accept_proof(&owner, NETWORK, &proof, sender, recipient, account)
+                .expect("verifiable")
+        };
+        assert!(verifies(&sender, &recipient, 7));
+        assert!(
+            !verifies(&Identifier::new([3; 32]), &recipient, 7),
+            "sender"
+        );
+        assert!(
+            !verifies(&sender, &Identifier::new([3; 32]), 7),
+            "recipient"
+        );
+        assert!(!verifies(&sender, &recipient, 8), "account reference");
+        assert!(
+            !verify_auto_accept_proof(&owner_wallet(), NETWORK, &proof, &sender, &recipient, 7)
+                .expect("verifiable"),
+            "another wallet's key"
+        );
+    }
+
+    /// An expired code is refused when read and again when signing.
+    #[test]
+    fn an_expired_code_is_refused() {
+        let uri = owner_qr(&owner_wallet());
+        assert!(matches!(
+            ContactQr::parse(&uri, u64::from(EXPIRY) + 1),
+            Err(TaskError::ContactQrExpired)
+        ));
+        let qr = ContactQr::parse(&uri, u64::from(EXPIRY)).expect("valid until its expiry");
+        assert!(matches!(
+            qr.sign_proof(
+                &Identifier::new([1; 32]),
+                &Identifier::new([2; 32]),
+                0,
+                u64::from(EXPIRY) + 1
+            ),
+            Err(TaskError::ContactQrExpired)
+        ));
+    }
+
+    /// Codes in DET's former `di=<identity>` format, and anything else that
+    /// is not a DIP-15 contact code, are refused as invalid.
+    #[test]
+    fn a_code_that_is_not_dip15_is_invalid() {
+        let former = "dash:?di=4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF&dapk=1";
+        for uri in [former, "dash:?du=alice", "bitcoin:?du=alice&dapk=1", ""] {
+            assert!(
+                matches!(
+                    ContactQr::parse(uri, 0),
+                    Err(TaskError::ContactQrInvalid { .. })
+                ),
+                "{uri}"
+            );
+        }
+    }
+
+    /// The key never shows in debug output.
+    #[test]
+    fn debug_output_hides_the_key() {
+        let qr = ContactQr::parse(&owner_qr(&owner_wallet()), 0).expect("valid");
+        let shown = format!("{qr:?}");
+        assert!(
+            shown.contains("alice") && !shown.contains("key_blob"),
+            "{shown}"
+        );
     }
 }

@@ -193,7 +193,8 @@ fn profile_screen_shows_only_the_selected_identitys_profile() {
             .insert(root, dash_evo_tool::ui::Screen::DashPayScreen(screen));
         harness.state_mut().selected_main_screen = root;
         harness.run_steps(5);
-        assert!(harness.query_by_label("Bob profile").is_some());
+        // The selector names Bob by his synced profile name too.
+        assert!(harness.query_all_by_label("Bob profile").next().is_some());
         assert!(
             harness.query_by_label("Alice profile").is_none(),
             "another identity's profile must not be displayed for Bob"

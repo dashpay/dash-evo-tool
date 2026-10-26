@@ -575,6 +575,10 @@ impl AppContext {
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
+        // No epoch ordering here: an older epoch can only come from a node
+        // behind the chain, and the SDK refuses a proved response more than
+        // `metadata_height_tolerance` blocks (1 by default) below the highest
+        // it has seen (`StaleNodeError::Height`), then bans that DAPI address.
         self.set_fee_multiplier_from(&epoch_info);
         Ok(epoch_info)
     }

@@ -130,8 +130,47 @@ impl AppContext {
                 let lease = lease;
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;
                 ctx.discover_unlocked_wallet_identities(&wallet).await;
+                ctx.refresh_unlocked_wallet_contact_details(&wallet).await;
                 drop(lease);
             });
+    }
+
+    /// Read the stored DashPay contact details of the just-unlocked wallet's
+    /// identities while its seed is available, so contacts show them without
+    /// a later password prompt. Best-effort: the details already held stay
+    /// on failure.
+    async fn refresh_unlocked_wallet_contact_details(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        if !backend.dashpay_network_ready() {
+            return;
+        }
+        let seed_hash = wallet.read_recover().seed_hash();
+        let identities = match self.load_local_qualified_identities_for_wallet(&seed_hash) {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    "Unlocked wallet's identities not listed for contact details"
+                );
+                return;
+            }
+        };
+        let sdk = self.sdk();
+        for identity in &identities {
+            if let Err(error) = crate::backend_task::dashpay::contact_info::refresh_contact_details(
+                self, &sdk, identity,
+            )
+            .await
+            {
+                tracing::debug!(?error, "Contact details not read after wallet unlock");
+            }
+        }
+        backend.refresh_dashpay_snapshots().await;
     }
 
     /// Wipe the session-cached seed when a wallet is locked.

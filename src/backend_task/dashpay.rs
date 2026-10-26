@@ -135,7 +135,12 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
     },
     /// Run a DashPay sync pass now, then republish the DashPay snapshots.
-    SyncNow,
+    /// With an identity, also read the contact details its `contactInfo`
+    /// documents hold with the wallet seed, which may ask for the wallet
+    /// password.
+    SyncNow {
+        identity: Option<QualifiedIdentity>,
+    },
     /// Republish the DashPay snapshots from platform-wallet's state, after
     /// looking up what it does not hold when a sync pass completed. The frame
     /// loop dispatches this; it never prompts and never fails.
@@ -365,7 +370,7 @@ impl AppContext {
                     errors: result.errors.len(),
                 })
             }
-            DashPayTask::SyncNow => sync::sync_now(self).await,
+            DashPayTask::SyncNow { identity } => sync::sync_now(self, sdk, identity).await,
             DashPayTask::RefreshSnapshots => sync::refresh(self, sdk).await,
             DashPayTask::GenerateAutoAcceptQrCode {
                 identity,
@@ -415,7 +420,7 @@ impl DashPayTask {
             | Self::SearchProfiles { .. }
             | Self::RegisterDashPayAddresses { .. }
             | Self::GenerateAutoAcceptQrCode { .. }
-            | Self::SyncNow
+            | Self::SyncNow { .. }
             | Self::RefreshSnapshots => false,
         }
     }

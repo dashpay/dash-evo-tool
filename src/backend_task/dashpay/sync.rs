@@ -9,6 +9,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::StoredProfile;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -47,13 +48,27 @@ pub(super) async fn refresh(
     })
 }
 
-/// Run a sync pass now, unless the network is not ready for one, then
-/// republish the snapshots.
+/// Run a sync pass now, unless the network is not ready for one, and read
+/// `identity`'s stored contact details, then republish the snapshots. A
+/// failed contact details read leaves the details already held in place.
 pub(super) async fn sync_now(
     app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: Option<QualifiedIdentity>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let backend = app_context.wallet_backend()?;
     backend.dashpay_sync_now().await;
+    if backend.dashpay_network_ready()
+        && let Some(identity) = identity
+        && identity.dashpay_wallet_seed_hash().is_some()
+        && let Err(error) =
+            super::contact_info::refresh_contact_details(app_context, sdk, &identity).await
+    {
+        tracing::debug!(
+            ?error,
+            "Stored contact details not read; showing the ones held"
+        );
+    }
     backend.refresh_dashpay_snapshots().await;
     Ok(BackendTaskSuccessResult::DashPaySynced)
 }

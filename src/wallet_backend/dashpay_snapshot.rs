@@ -303,20 +303,19 @@ impl WalletBackend {
             != pass
     }
 
-    /// Run one DashPay sync pass now. Skipped, returning `false`, until the
-    /// masternode list is synced: the pass verifies proofs, and sent earlier
-    /// it gets the queried nodes banned.
-    pub(crate) async fn dashpay_sync_now(&self) -> bool {
-        if !self.inner.coordinator_gate.has_fired() {
-            return false;
+    /// Whether DashPay reads may go to the network: the masternode list is
+    /// synced, so proofs verify. Sent earlier they get the queried nodes
+    /// banned.
+    pub(crate) fn dashpay_network_ready(&self) -> bool {
+        self.inner.coordinator_gate.has_fired()
+    }
+
+    /// Run one DashPay sync pass now, unless the network is not ready
+    /// ([`Self::dashpay_network_ready`]) or a pass is already running.
+    pub(crate) async fn dashpay_sync_now(&self) {
+        if self.dashpay_network_ready() {
+            self.inner.pwm.dashpay_sync().sync_now().await;
         }
-        self.inner
-            .pwm
-            .dashpay_sync()
-            .sync_now()
-            .await
-            .sync_unix_seconds
-            != 0
     }
 
     /// Rebuild every snapshot from platform-wallet's current state and this

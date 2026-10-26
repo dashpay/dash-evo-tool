@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
 use dash_sdk::dpp::dashcore::{Address, Network, PubkeyHash, ScriptBuf};
-use dash_sdk::dpp::key_wallet::account::AccountType;
+use dash_sdk::dpp::key_wallet::account::{AccountType, ManagedAccountTrait};
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::platform::Identifier;
 use platform_wallet::PlatformWalletError;
@@ -37,9 +37,9 @@ use crate::model::masternode_keys::{MasternodeKeyHashes, MasternodeWithdrawalRol
 use crate::model::qualified_identity::encrypted_key_storage::WalletDerivationPath;
 use crate::model::wallet::WalletSeedHash;
 
-/// How many voting-key indices are compared per wallet. Matches upstream's
-/// provider-key scan floor (`PROVIDER_KEY_WINDOW`, private there) and its
-/// owner-key scan.
+/// The fewest voting-key indices compared per wallet; a deeper voting pool is
+/// scanned in full. Matches upstream's owner-key scan floor
+/// (`PROVIDER_KEY_WINDOW`, private there).
 const VOTING_KEY_SCAN_WINDOW: u32 = 20;
 
 /// Where this device's wallets hold a masternode's keys. Each role is found
@@ -119,11 +119,19 @@ impl WalletBackend {
             let Some(wallet) = self.inner.pwm.get_wallet(&wallet_id).await else {
                 continue;
             };
-            let held = tokio::task::spawn_blocking(move || wallet_held_keys(&wallet, &hashes))
+            let held = match tokio::task::spawn_blocking(move || wallet_held_keys(&wallet, &hashes))
                 .await?
-                .map_err(|source| TaskError::WalletBackend {
-                    source: Arc::new(*source),
-                })?;
+            {
+                Ok(held) => held,
+                Err(error) => {
+                    tracing::warn!(
+                        ?seed_hash,
+                        ?error,
+                        "Could not look for masternode keys in this wallet; trying the next wallet"
+                    );
+                    continue;
+                }
+            };
             let at = |derivation_path| WalletDerivationPath {
                 wallet_seed_hash: seed_hash,
                 derivation_path,
@@ -245,7 +253,7 @@ fn find_voting_key(
     wallet: &PlatformWallet,
     voting: &[u8; 20],
 ) -> Result<Option<DerivationPath>, BoxedError> {
-    for index in 0..VOTING_KEY_SCAN_WINDOW {
+    for index in 0..voting_key_scan_bound(wallet) {
         let derived = match wallet.derive_provider_key_at_index(
             ProviderKeyKind::Voting,
             index,
@@ -262,6 +270,33 @@ fn find_voting_key(
         }
     }
     Ok(None)
+}
+
+/// How many voting-key indices to compare: the depth of the wallet's voting
+/// pool, never fewer than [`VOTING_KEY_SCAN_WINDOW`]. Blocking; the
+/// wallet-manager guard drops before any key is derived.
+fn voting_key_scan_bound(wallet: &PlatformWallet) -> u32 {
+    let manager = wallet.wallet_manager().blocking_read();
+    let highest_generated = manager
+        .get_wallet_info(&wallet.wallet_id())
+        .and_then(|info| info.core_wallet.accounts.provider_voting_keys.as_ref())
+        .and_then(|account| {
+            account
+                .managed_account_type()
+                .address_pools()
+                .iter()
+                .filter_map(|pool| pool.highest_generated)
+                .max()
+        });
+    scan_bound(highest_generated)
+}
+
+/// The indices `0..bound` to scan for a pool whose highest generated index is
+/// `highest_generated`.
+fn scan_bound(highest_generated: Option<u32>) -> u32 {
+    highest_generated
+        .map_or(VOTING_KEY_SCAN_WINDOW, |highest| highest.saturating_add(1))
+        .max(VOTING_KEY_SCAN_WINDOW)
 }
 
 /// A provider account's base path plus the non-hardened key `index` — how
@@ -377,6 +412,20 @@ mod tests {
         };
         let found = backend.find_masternode_wallet_keys(hashes).await.unwrap();
         assert_eq!(found, MasternodeWalletKeys::default());
+    }
+
+    /// A voting pool deeper than the scan floor is scanned in full; a shallow
+    /// or missing one still gets the floor.
+    #[test]
+    fn the_voting_scan_covers_the_whole_voting_pool() {
+        assert_eq!(scan_bound(None), VOTING_KEY_SCAN_WINDOW);
+        assert_eq!(scan_bound(Some(3)), VOTING_KEY_SCAN_WINDOW);
+        assert_eq!(
+            scan_bound(Some(VOTING_KEY_SCAN_WINDOW)),
+            VOTING_KEY_SCAN_WINDOW + 1
+        );
+        assert_eq!(scan_bound(Some(44)), 45);
+        assert_eq!(scan_bound(Some(u32::MAX)), u32::MAX);
     }
 
     #[test]

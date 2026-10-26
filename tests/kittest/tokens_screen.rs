@@ -97,3 +97,62 @@ fn token_creator_defaults_to_app_scoped_identity() {
         );
     });
 }
+
+/// Simple mode shows the "holders can send this token" choice, so a choice made
+/// in Advanced mode is never hidden, and the confirmation states it.
+#[test]
+fn simple_mode_shows_and_confirms_transferability() {
+    use crate::identity_home::{key, seed_identity};
+    use dash_evo_tool::ui::RootScreenType;
+    use dash_sdk::dpp::identity::Purpose;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
+        harness.set_size(egui::vec2(1280.0, 2400.0));
+        let app_context = harness.state().current_app_context().clone();
+        let auth_key = key(1, Purpose::AUTHENTICATION);
+        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("Holders can send this token to other identities")
+                .is_some(),
+            "Simple mode must show whether holders can send the token"
+        );
+
+        // Simple mode inputs, top to bottom: name, description, initial supply, max supply.
+        for (index, text) in [(0, "SendCoin"), (2, "1000")] {
+            harness
+                .query_all_by_role(Role::TextInput)
+                .nth(index)
+                .expect("token creator text input")
+                .focus();
+            harness.event(egui::Event::Text(text.to_owned()));
+            harness.run_steps(2);
+        }
+        harness.get_by_value("Select a preset...").click();
+        harness.run_steps(2);
+        harness
+            .get_by_label("All Allowed - All actions enabled")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Create Token")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_all_by_label_contains("Holders can send this token to other identities.")
+                .next()
+                .is_some(),
+            "the confirmation must state whether holders can send the token"
+        );
+    });
+}

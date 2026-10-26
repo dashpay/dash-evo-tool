@@ -1955,6 +1955,7 @@ As a masternode operator who registered my node from a wallet I loaded here, I w
 - When I load a node and leave a key field blank, the key is taken from any wallet on this device that holds it; a key I type always wins.
 - The app keeps only a reference to the wallet key, never a copy of the private key.
 - Nodes registered from another wallet still load with pasted keys, as before.
+- This applies to loading in the app. Loading through `det-cli` or MCP still needs a typed owner or payout key.
 
 ### MN-014: Revive a PoSe-banned node [Gap]
 **Persona:** Priya

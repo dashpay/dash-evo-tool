@@ -342,7 +342,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         assert!(ctx.wallet_backend().is_err(), "precondition");
 

@@ -564,9 +564,10 @@ fn build_withdrawals_result(
 
 impl AppContext {
     /// Fetches the current epoch — authenticated by proof — and adopts its
-    /// fee multiplier and protocol version. The only path by which the fee
-    /// multiplier cache takes a network value, and fee estimates follow it,
-    /// so it must never come from an unproven source.
+    /// fee multiplier. The only path by which the fee multiplier cache takes
+    /// a network value, and fee estimates follow it, so it must never come
+    /// from an unproven source. The verified response also ratchets the SDK's
+    /// protocol version.
     pub(crate) async fn refresh_current_epoch(
         &self,
         sdk: &Sdk,
@@ -583,14 +584,13 @@ impl AppContext {
         Ok(epoch_info)
     }
 
-    /// Adopts the fee multiplier and protocol version of a proved epoch read
-    /// on connection `generation` (see `AppContext::adopt_epoch`).
+    /// Adopts the fee multiplier of a proved epoch read on connection
+    /// `generation` (see `AppContext::adopt_epoch`).
     fn adopt_epoch_info(&self, generation: u64, epoch_info: &ExtendedEpochInfo) {
         self.adopt_epoch(
             generation,
             epoch_info.index(),
             epoch_info.fee_multiplier_permille(),
-            epoch_info.protocol_version(),
         );
     }
 
@@ -643,27 +643,18 @@ impl AppContext {
                             %error,
                             "Current epoch fetch failed; keeping the last known fee multiplier"
                         );
-                        // Without the epoch, the network's version is learned from
-                        // a proved DPNS fetch: the version of the responses the SDK
-                        // verified, never its local seed.
-                        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
-                        match DataContract::fetch(sdk, self.dpns_contract().id()).await {
-                            Ok(_) if on_current_sdk => {
-                                if let Some(version) = network_proved_protocol_version(sdk) {
-                                    self.raise_platform_protocol_version_on(generation, version);
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!(
+                        // Without the epoch, a proved DPNS fetch lets the SDK learn
+                        // the network's version from the response it verifies.
+                        if let Err(error) =
+                            DataContract::fetch(sdk, self.dpns_contract().id()).await
+                        {
+                            tracing::warn!(
                                 %error,
                                 "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
                                  the network's protocol version stays unconfirmed"
-                            ),
+                            );
                         }
-                        let confirmed = match self.platform_protocol_version() {
-                            0 => None,
-                            version => Some(version),
-                        };
+                        let confirmed = self.proven_protocol_version();
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(
                                 format_unavailable_current_epoch_info(
@@ -761,7 +752,7 @@ impl AppContext {
                             &withdrawal_docs,
                             total_credits.0,
                             self.network,
-                            self.connected_platform_version(),
+                            self.platform_version(),
                         )?;
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
@@ -1001,17 +992,6 @@ fn completed_withdrawal_statuses() -> Vec<Value> {
     ]
 }
 
-/// The protocol version `sdk` has seen in a response whose proof and quorum
-/// signature were verified, or `None` before any such response. Never the
-/// SDK's local seed: the SDK's own version starts at the network's upstream
-/// minimum and only rises, so a successful read does not prove it.
-fn network_proved_protocol_version(sdk: &Sdk) -> Option<u32> {
-    match sdk.query_settings().verified_protocol_version {
-        0 => None,
-        version => Some(version),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1071,13 +1051,15 @@ mod tests {
     /// fresh SDK has verified nothing, so nothing is proved.
     #[test]
     fn a_fresh_sdk_proves_no_protocol_version() {
-        let sdk = Sdk::new_mock();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(Sdk::new_mock()));
         assert_ne!(
-            sdk.protocol_version_number(),
+            ctx.sdk.load().protocol_version_number(),
             0,
             "precondition: a seeded SDK"
         );
-        assert_eq!(network_proved_protocol_version(&sdk), None);
+        assert_eq!(ctx.proven_protocol_version(), None);
     }
 
     /// The limit is whatever the network's own protocol version says it is,
@@ -1108,10 +1090,9 @@ mod tests {
         );
     }
 
-    /// A proved epoch sets both the fee multiplier cache and the protocol
-    /// version.
+    /// A proved epoch sets the fee multiplier cache.
     #[test]
-    fn a_proved_epoch_updates_the_fee_multiplier_and_protocol_version() {
+    fn a_proved_epoch_updates_the_fee_multiplier() {
         use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
@@ -1130,11 +1111,10 @@ mod tests {
         );
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-        assert_eq!(ctx.platform_protocol_version(), 14);
     }
 
     /// Epoch reads can finish out of order: an older epoch arriving after a
-    /// newer one must not put back its fee multiplier or protocol version.
+    /// newer one must not put back its fee multiplier.
     #[test]
     fn an_older_epoch_does_not_overwrite_a_newer_one() {
         use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
@@ -1154,36 +1134,34 @@ mod tests {
         ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_500, 14));
         ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(7, 1_000, 13));
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-        assert_eq!(ctx.platform_protocol_version(), 14);
 
-        // The same or a newer epoch is adopted; the protocol version never
-        // goes back.
+        // The same or a newer epoch is adopted.
         ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_600, 14));
         assert_eq!(ctx.fee_multiplier_permille(), 1_600);
         ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(9, 1_700, 13));
         assert_eq!(ctx.fee_multiplier_permille(), 1_700);
-        assert_eq!(ctx.platform_protocol_version(), 14);
     }
 
     /// Rebuilding the connection resets everything learned from the old one:
-    /// the protocol version goes back to unknown, the fee multiplier to the
-    /// default, and the next proved epoch is adopted whatever its index.
+    /// the new SDK has proven no protocol version, the fee multiplier goes
+    /// back to the default, and the next proved epoch is adopted whatever its
+    /// index.
     #[test]
     fn a_rebuilt_connection_starts_from_unknown_protocol_and_default_fees() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
+        crate::context::test_support::prove_protocol_version(&ctx, 14);
+        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500);
 
         ctx.replace_connection(Arc::new(Sdk::new_mock()));
 
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.proven_protocol_version(), None);
         assert_eq!(
             ctx.fee_multiplier_permille(),
             crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
         );
-        assert!(ctx.adopt_epoch(ctx.connection_generation(), 2, 1_100, 13));
+        assert!(ctx.adopt_epoch(ctx.connection_generation(), 2, 1_100));
         assert_eq!(ctx.fee_multiplier_permille(), 1_100);
-        assert_eq!(ctx.platform_protocol_version(), 13);
     }
 
     /// An epoch read that started on the old connection and finishes after
@@ -1197,8 +1175,7 @@ mod tests {
 
         ctx.replace_connection(Arc::new(Sdk::new_mock()));
 
-        assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500, 14));
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500));
         assert_eq!(
             ctx.fee_multiplier_permille(),
             crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
@@ -1270,23 +1247,35 @@ mod tests {
     }
 
     /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
-    /// not a network observation: caching it would open the shielded capability
-    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    /// not a network observation: treating it as proven would open the shielded
+    /// capability gate and stop the retry `mcp::resolve` makes while nothing is
+    /// proven. The report names the version as unconfirmed.
     #[tokio::test]
     async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let sdk = ctx.sdk.load_full();
         assert_ne!(
             sdk.protocol_version_number(),
             0,
             "precondition: the mock SDK seeds a local version of its own"
         );
 
-        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
             .await
             .expect("a failed epoch fetch degrades to a text result");
 
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.proven_protocol_version(), None);
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("a failed epoch fetch returns a text result");
+        };
+        assert!(
+            text.contains("has not confirmed one yet"),
+            "an unconfirmed version must be named as such, got: {text}"
+        );
     }
 }

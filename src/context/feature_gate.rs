@@ -28,6 +28,18 @@ pub enum Capability {
     ShieldedProtocol,
 }
 
+/// Whether the protocol version the connected network has proven is one this
+/// build defines and is at least `activation`.
+///
+/// Every capability reads the version through this, so it fails closed both
+/// before the network proves a version and for a version newer than any this
+/// build knows ([`AppContext::proven_platform_version`]): this build cannot
+/// tell what an unknown version's rules allow.
+fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
+    ctx.proven_platform_version()
+        .is_some_and(|version| version.protocol_version >= activation)
+}
+
 impl Capability {
     fn is_met(self, ctx: &AppContext) -> bool {
         match self {
@@ -35,10 +47,8 @@ impl Capability {
                 // A closed gate makes the capability unavailable on every network.
                 None => false,
                 // The version fetched from the connected network, not the hardcoded
-                // default — the capability is per-network. The boot value (0, "not
-                // fetched yet") is below any activation version, so a network whose
-                // version is not known yet reads as unmet rather than optimistic.
-                Some(activation) => ctx.platform_protocol_version() >= activation,
+                // default — the capability is per-network.
+                Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
         }
     }
@@ -173,7 +183,7 @@ impl FeatureGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::test_support::test_app_context;
+    use crate::context::test_support::{prove_protocol_version, test_app_context};
     use dash_sdk::dpp::version::PlatformVersion;
     use std::sync::Arc;
 
@@ -272,7 +282,7 @@ mod tests {
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
 
-        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
+        assert_eq!(ctx.proven_protocol_version(), None, "boot value");
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
             !FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -298,7 +308,7 @@ mod tests {
             // Every protocol version upstream defines — none of which the tab
             // gate depends on.
             for version in known_protocol_versions() {
-                ctx.set_platform_protocol_version(version);
+                prove_protocol_version(&ctx, version);
                 assert!(
                     FeatureGate::Shielded.is_available(&ctx),
                     "Shielded tab must be available on protocol v{version} for {role:?}"
@@ -314,7 +324,7 @@ mod tests {
         assert!(!versions.is_empty(), "the probe must find some versions");
 
         for version in versions {
-            ctx.set_platform_protocol_version(version);
+            prove_protocol_version(&ctx, version);
             assert_eq!(
                 Capability::ShieldedProtocol.is_met(&ctx),
                 version >= SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
@@ -327,7 +337,7 @@ mod tests {
     fn shielded_operations_are_available_at_activation_for_unlocked_roles() {
         for role in [UserRole::Power, UserRole::Developer] {
             let (_tmp, ctx) = ctx_with_role(role);
-            ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+            prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
             assert!(
                 FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -342,7 +352,7 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -350,7 +360,7 @@ mod tests {
     #[test]
     fn shielded_operations_are_unavailable_at_activation_for_everyday_user() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -361,21 +371,21 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Capability(Capability::ShieldedProtocol))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Experimental(ExperimentalFeature::Shielded))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             None
@@ -416,6 +426,33 @@ mod tests {
             assert!(
                 !FeatureGate::ShieldedOperations.is_available(&ctx),
                 "ShieldedOperations must stay closed for {role:?} while the capability is unmet"
+            );
+        }
+    }
+
+    /// A protocol version this build does not define closes every protocol
+    /// capability: nothing here knows that version's rules. The newest
+    /// version this build defines keeps them open.
+    #[test]
+    fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let capabilities = [Capability::ShieldedProtocol];
+
+        prove_protocol_version(&ctx, LATEST_VERSION);
+        for capability in capabilities {
+            assert!(
+                capability.is_met(&ctx),
+                "{capability:?} on protocol {LATEST_VERSION}"
+            );
+        }
+
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+        for capability in capabilities {
+            assert!(
+                !capability.is_met(&ctx),
+                "{capability:?} on unknown protocol {}",
+                LATEST_VERSION + 1
             );
         }
     }

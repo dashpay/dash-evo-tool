@@ -403,7 +403,7 @@ impl UsernamesCard {
         app_context: &Arc<AppContext>,
         identity: &QualifiedIdentity,
     ) -> Option<KeyHint> {
-        let required = dpns_signing_requirement(&app_context.dpns_contract);
+        let required = dpns_signing_requirement(&app_context.dpns_contract());
         let status = registration_key_status(identity, required);
         let identity_id = identity.identity.id();
         let key_missing = status.key_is_unusable_here();

@@ -34,8 +34,6 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
-use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
@@ -45,6 +43,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::secp256k1::SecretKey;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
@@ -543,9 +542,9 @@ impl ScreenLike for KeyInfoScreen {
                                 .num_columns(2)
                                 .spacing([10.0, 10.0])
                                 .show(ui, |ui| {
-                                    if let Ok(secret_key) = SecretKey::from_slice(clear) {
-                                        let private_key =
-                                            PrivateKey::new(secret_key, self.app_context.network);
+                                    if let Ok(private_key) =
+                                        PrivateKey::from_byte_array(clear, self.app_context.network)
+                                    {
                                         ui.label(
                                             RichText::new("Private Key (WIF):")
                                                 .strong()
@@ -600,8 +599,8 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.view_private_key_even_if_encrypted_or_in_wallet
                                 && self.selected_wallet.is_some()
                             {
-                                if let Some(private_key) = self.decrypted_private_key {
-                                    Self::render_decrypted_key_grid(ui, &private_key);
+                                if let Some(private_key) = &self.decrypted_private_key {
+                                    Self::render_decrypted_key_grid(ui, private_key);
                                 } else {
                                     Self::queue_key_display(
                                         &mut self.pending_key_display_request,
@@ -622,8 +621,8 @@ impl ScreenLike for KeyInfoScreen {
                                     self.view_private_key_even_if_encrypted_or_in_wallet = true;
                                     self.view_wallet_unlock = true;
                                 }
-                                if let Some(private_key) = self.decrypted_private_key {
-                                    Self::render_decrypted_key_grid(ui, &private_key);
+                                if let Some(private_key) = &self.decrypted_private_key {
+                                    Self::render_decrypted_key_grid(ui, private_key);
                                 } else {
                                     Self::queue_key_display(
                                         &mut self.pending_key_display_request,
@@ -661,8 +660,8 @@ impl ScreenLike for KeyInfoScreen {
                                 .color(text_primary),
                             );
                             ui.add_space(10.0);
-                            if let Some(private_key) = self.decrypted_private_key {
-                                Self::render_decrypted_key_grid(ui, &private_key);
+                            if let Some(private_key) = &self.decrypted_private_key {
+                                Self::render_decrypted_key_grid(ui, private_key);
                             } else if ui.button("View Private Key").clicked() {
                                 self.pending_identity_key_display = true;
                                 self.key_display_requested = true;
@@ -1109,7 +1108,7 @@ impl KeyInfoScreen {
                 return;
             }
             Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
-                Ok(key) => key.inner.secret_bytes(),
+                Ok(key) => *key.inner.to_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -1262,7 +1261,16 @@ impl KeyInfoScreen {
             // Keys that carry their own plaintext sign locally — no wallet seed
             // is involved, so there is nothing to fetch through the chokepoint.
             PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => {
-                self.signed_message = Some(Self::sign_ecdsa_local(bytes, &self.message_input));
+                match Self::sign_ecdsa_local(bytes, &self.message_input) {
+                    Ok(signature) => self.signed_message = Some(signature),
+                    Err(error) => {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            error.to_string(),
+                            MessageType::Error,
+                        );
+                    }
+                }
             }
             // Wallet-derived keys sign in the backend: the seed is fetched
             // just-in-time through the JIT chokepoint and only the public
@@ -1293,14 +1301,10 @@ impl KeyInfoScreen {
     /// `+4` for a compressed key) followed by the 64-byte signature. These keys
     /// are compressed by convention, so a verifier can recover the signer's
     /// public key and address from the signature alone.
-    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
-        let secp = Secp256k1::new();
-        let message_hash = signed_msg_hash(message);
-        let digest = Message::from_digest(*message_hash.as_byte_array());
-        let secret_key = SecretKey::from_byte_array(private_key_bytes)
+    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> Result<String, TaskError> {
+        let secret_key = SecretKey::from_secret_bytes(*private_key_bytes)
             .expect("clear private key is a valid 32-byte secret");
-        let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
-        MessageSignature::new(recoverable, true).to_base64()
+        crate::backend_task::wallet::dash_signed_message(message, &secret_key, true)
     }
 
     /// Render the WIF + hex of an already-derived private key. The key is
@@ -1325,7 +1329,7 @@ impl KeyInfoScreen {
                         .strong()
                         .color(ui.visuals().text_color()),
                 );
-                let private_key_hex = Secret::new(hex::encode(private_key.inner.secret_bytes()));
+                let private_key_hex = Secret::new(hex::encode(private_key.inner.to_bytes()));
                 ui.label(
                     RichText::new(private_key_hex.expose_secret()).color(ui.visuals().text_color()),
                 );
@@ -2284,10 +2288,10 @@ mod tests {
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
         let secret_bytes = [0x2A; 32];
-        let secp = Secp256k1::new();
-        let secret = SecretKey::from_byte_array(&secret_bytes).expect("a valid secret key");
-        let data = PrivateKey::new(secret, Network::Testnet)
-            .public_key(&secp)
+        let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
+        let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .public_key()
             .to_bytes();
         (
             IdentityPublicKey::V0(IdentityPublicKeyV0 {

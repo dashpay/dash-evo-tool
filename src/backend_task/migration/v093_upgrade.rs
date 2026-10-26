@@ -113,7 +113,7 @@ fn secrets() -> &'static TestSecrets {
 fn random_private_key() -> [u8; 32] {
     loop {
         let bytes = rand::random::<[u8; 32]>();
-        if dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&bytes).is_ok() {
+        if dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(bytes).is_ok() {
             return bytes;
         }
     }
@@ -132,13 +132,12 @@ const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 /// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::{
-        hashes::{Hash, hash160},
-        secp256k1::{PublicKey, Secp256k1, SecretKey},
-    };
+    use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
+    use dash_sdk::dpp::secp256k1::PublicKey;
     let public_hash = |key: &[u8; 32]| {
-        let key = SecretKey::from_slice(key).expect("generated valid key");
-        let public = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+        let key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*(key))
+            .expect("generated valid key");
+        let public = PublicKey::from_secret_key(&key);
         hex::encode(hash160::Hash::hash(&public.serialize()).to_byte_array())
     };
     let encoded = V093_MASTERNODE_BLOB_HEX
@@ -1642,12 +1641,11 @@ const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
 
 /// The P2PKH address of [`SKIPPED_SINGLE_KEY`] on mainnet.
 fn skipped_single_key_address() -> String {
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
     let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
     let public = PublicKey {
         compressed: true,
-        inner: key.inner.public_key(&Secp256k1::new()),
+        inner: key.inner.public_key(),
     };
     Address::p2pkh(&public, Network::Mainnet).to_string()
 }

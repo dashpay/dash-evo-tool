@@ -107,7 +107,7 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
     use dash_evo_tool::ui::RootScreenType;
     use dash_sdk::dpp::identity::Purpose;
     use egui::accesskit::Role;
-    use egui_kittest::kittest::{NodeT, Queryable};
+    use egui_kittest::kittest::Queryable;
 
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -156,11 +156,12 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
                 harness.query_by_value("All Allowed").is_some(),
                 "the chosen preset must survive {route}"
             );
+            // The hint below "Create Token" names whatever still blocks it.
             assert!(
-                !harness
-                    .get_by_role_and_label(Role::Button, "Create Token")
-                    .accesskit_node()
-                    .is_disabled(),
+                harness
+                    .query_all_by_label_contains("to continue.")
+                    .next()
+                    .is_none(),
                 "\"Create Token\" must stay enabled after {route}"
             );
         };
@@ -191,5 +192,98 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
             .click();
         harness.run_steps(3);
         assert_form_kept(&harness, "a subscreen-tab round trip");
+    });
+}
+
+/// Advanced mode's "Register Token Contract" is blocked, like Simple mode's
+/// "Create Token", until a preset (or individually chosen "Custom" rules) is picked.
+#[test]
+fn advanced_register_requires_a_preset_choice() {
+    use crate::identity_home::{key, seed_identity};
+    use dash_evo_tool::ui::RootScreenType;
+    use dash_sdk::dpp::identity::Purpose;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
+        let app_context = harness.state().current_app_context().clone();
+        let auth_key = key(1, Purpose::AUTHENTICATION);
+        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
+        harness.run_steps(5);
+
+        // Fill the required fields in Simple mode: name and initial supply.
+        for (index, text) in [(0, "GateCoin"), (2, "1000")] {
+            harness
+                .query_all_by_role(Role::TextInput)
+                .nth(index)
+                .expect("token creator text input")
+                .focus();
+            harness.event(egui::Event::Text(text.to_owned()));
+            harness.run_steps(2);
+        }
+        let toggle_advanced = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>| {
+            harness.get_by_label("Show Advanced Options").click();
+            harness.run_steps(3);
+        };
+        let click_register = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>| {
+            harness
+                .get_by_role_and_label(Role::Button, "Register Token Contract")
+                .click();
+            harness.run_steps(3);
+        };
+        const CONFIRMATION: &str = "Confirm Token Contract Registration";
+        // Room for the whole Advanced form, so its bottom buttons are on screen.
+        harness.set_size(egui::vec2(1280.0, 2400.0));
+        harness.run_steps(2);
+
+        toggle_advanced(&mut harness);
+        assert!(
+            harness
+                .query_by_label("Select a token preset to continue.")
+                .is_some(),
+            "the blocked button must say why"
+        );
+        click_register(&mut harness);
+        assert!(
+            harness.query_by_label(CONFIRMATION).is_none(),
+            "\"Register Token Contract\" must do nothing until a preset is chosen"
+        );
+
+        // Pick a preset in Simple mode, then return to Advanced mode.
+        toggle_advanced(&mut harness);
+        harness.get_by_value("Select a preset...").click();
+        harness.run_steps(2);
+        harness
+            .get_by_label("All Allowed - All actions enabled")
+            .click();
+        harness.run_steps(3);
+        toggle_advanced(&mut harness);
+        assert!(
+            harness
+                .query_by_label("Select a token preset to continue.")
+                .is_none()
+        );
+        // Advanced mode also asks for the plural name, right after the singular one.
+        let plural_index = harness
+            .query_all_by_role(Role::TextInput)
+            .position(|node| node.accesskit_node().value().as_deref() == Some("GateCoin"))
+            .expect("singular name input")
+            + 1;
+        harness
+            .query_all_by_role(Role::TextInput)
+            .nth(plural_index)
+            .expect("plural name input")
+            .focus();
+        harness.event(egui::Event::Text("GateCoins".to_owned()));
+        harness.run_steps(2);
+        click_register(&mut harness);
+        assert!(
+            harness.query_by_label(CONFIRMATION).is_some(),
+            "\"Register Token Contract\" must open the confirmation once a preset is chosen"
+        );
     });
 }

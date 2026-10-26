@@ -4146,6 +4146,10 @@ mod tests {
                 !screen.can_create_in_simple_mode(),
                 "a creator with no preset chosen must not allow creating"
             );
+            assert!(
+                !screen.preset_chosen(),
+                "Advanced mode must not register a token with no preset chosen"
+            );
             screen.change_to_preset(owner_preset(features));
             screen.reconcile_selected_preset();
 
@@ -4228,5 +4232,9 @@ mod tests {
         screen.reconcile_selected_preset();
         assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
         assert!(screen.can_create_in_simple_mode());
+        assert!(
+            screen.preset_chosen(),
+            "Custom rules may be registered in Advanced mode"
+        );
     }
 }

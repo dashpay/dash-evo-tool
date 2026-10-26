@@ -440,7 +440,7 @@ impl TokensScreen {
                                 } else if self.base_supply_amount.is_none() {
                                     "Enter an initial supply to continue."
                                 } else {
-                                    "Select a token preset to continue."
+                                    PRESET_REQUIRED_HINT
                                 };
                                 ui.label(
                                     RichText::new(hint)
@@ -833,8 +833,12 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            if ComponentStyles::add_primary_button(ui, "Register Token Contract")
-                                .clicked()
+                            if ComponentStyles::add_primary_button_enabled(
+                                ui,
+                                self.preset_chosen(),
+                                "Register Token Contract",
+                            )
+                            .clicked()
                             {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
@@ -886,6 +890,14 @@ impl TokensScreen {
                                 }
                             }
                         });
+                        if !self.preset_chosen() {
+                            ui.add_space(5.0);
+                            ui.label(
+                                RichText::new(PRESET_REQUIRED_HINT)
+                                    .color(egui::Color32::GRAY)
+                                    .italics(),
+                            );
+                        }
 
         // Reset the expanded states after processing
         if self.should_reset_collapsing_states {
@@ -1398,7 +1410,14 @@ impl TokensScreen {
     pub(super) fn can_create_in_simple_mode(&self) -> bool {
         !self.token_names_input[0].0.trim().is_empty()
             && self.base_supply_amount.is_some()
-            && self.selected_token_preset != TokenPresetSelection::Unselected
+            && self.preset_chosen()
+    }
+
+    /// Whether a preset or individually chosen ("Custom") rules were picked. Both
+    /// Simple and Advanced mode refuse to create a token before that, so nobody
+    /// registers the all-"no one" starting rules without choosing them.
+    pub(super) fn preset_chosen(&self) -> bool {
+        self.selected_token_preset != TokenPresetSelection::Unselected
     }
 
     /// The text the preset selector shows for the current selection.
@@ -1668,6 +1687,9 @@ impl TokensScreen {
         });
     }
 }
+
+/// Why token creation is blocked until a preset is chosen.
+const PRESET_REQUIRED_HINT: &str = "Select a token preset to continue.";
 
 /// Selector text for rules that are not exactly one preset's.
 const CUSTOM_PRESET_LABEL: &str = "Custom";

@@ -563,35 +563,29 @@ fn build_withdrawals_result(
 }
 
 impl AppContext {
-    /// Fetches the current epoch — authenticated by proof — and adopts its
-    /// fee multiplier and protocol version. The only path by which the fee
-    /// multiplier cache takes a network value, and fee estimates follow it,
-    /// so it must never come from an unproven source.
+    /// Fetches the current epoch — authenticated by proof — and sets its
+    /// fee multiplier. The only path by which the fee multiplier cache takes
+    /// a network value, and fee estimates follow it, so it must never come
+    /// from an unproven source. The verified response also ratchets the SDK's
+    /// protocol version.
     pub(crate) async fn refresh_current_epoch(
         &self,
         sdk: &Sdk,
     ) -> Result<ExtendedEpochInfo, Box<SdkError>> {
-        // Captured together before the read: a read on an SDK a rebuild has
-        // replaced, or begun before it, is never adopted.
-        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
         let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
             .await
             .map_err(Box::new)?;
-        if on_current_sdk {
-            self.adopt_epoch_info(generation, &epoch_info);
-        }
+        // No epoch ordering here: an older epoch can only come from a node
+        // behind the chain, and the SDK refuses a proved response more than
+        // `metadata_height_tolerance` blocks (1 by default) below the highest
+        // it has seen (`StaleNodeError::Height`), then bans that DAPI address.
+        self.set_fee_multiplier_from(&epoch_info);
         Ok(epoch_info)
     }
 
-    /// Adopts the fee multiplier and protocol version of a proved epoch read
-    /// on connection `generation` (see `AppContext::adopt_epoch`).
-    fn adopt_epoch_info(&self, generation: u64, epoch_info: &ExtendedEpochInfo) {
-        self.adopt_epoch(
-            generation,
-            epoch_info.index(),
-            epoch_info.fee_multiplier_permille(),
-            epoch_info.protocol_version(),
-        );
+    /// Sets the fee multiplier cache from a proved epoch.
+    fn set_fee_multiplier_from(&self, epoch_info: &ExtendedEpochInfo) {
+        self.set_fee_multiplier_permille(epoch_info.fee_multiplier_permille());
     }
 
     pub async fn run_platform_info_task(
@@ -643,28 +637,18 @@ impl AppContext {
                             %error,
                             "Current epoch fetch failed; keeping the last known fee multiplier"
                         );
-                        // Without the epoch, the network's version is learned from
-                        // the ratchet a proved DPNS fetch drives. Only a successful
-                        // fetch proves it came from the network, not the local seed.
-                        let (generation, on_current_sdk) = self.connection_snapshot_for(sdk);
-                        match DataContract::fetch(sdk, self.dpns_contract().id()).await {
-                            Ok(_) if on_current_sdk => {
-                                self.raise_platform_protocol_version_on(
-                                    generation,
-                                    sdk.protocol_version_number(),
-                                );
-                            }
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!(
+                        // Without the epoch, a proved DPNS fetch lets the SDK learn
+                        // the network's version from the response it verifies.
+                        if let Err(error) =
+                            DataContract::fetch(sdk, self.dpns_contract().id()).await
+                        {
+                            tracing::warn!(
                                 %error,
                                 "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
                                  the network's protocol version stays unconfirmed"
-                            ),
+                            );
                         }
-                        let confirmed = match self.platform_protocol_version() {
-                            0 => None,
-                            version => Some(version),
-                        };
+                        let confirmed = self.proven_protocol_version();
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(
                                 format_unavailable_current_epoch_info(
@@ -762,7 +746,7 @@ impl AppContext {
                             &withdrawal_docs,
                             total_credits.0,
                             self.network,
-                            self.connected_platform_version(),
+                            self.platform_version(),
                         )?;
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
@@ -789,11 +773,7 @@ impl AppContext {
                     where_clauses: vec![WhereClause {
                         field: "status".to_string(),
                         operator: WhereOperator::In,
-                        value: Value::Array(vec![
-                            Value::U8(WithdrawalStatus::COMPLETE as u8),
-                            Value::U8(WithdrawalStatus::EXPIRED as u8),
-                            Value::U8(WithdrawalStatus::FAILED as u8),
-                        ]),
+                        value: Value::Array(completed_withdrawal_statuses()),
                     }],
                     time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
@@ -878,11 +858,7 @@ impl AppContext {
                 let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
 
                 let statuses = if completed {
-                    vec![
-                        Value::U8(WithdrawalStatus::COMPLETE as u8),
-                        Value::U8(WithdrawalStatus::EXPIRED as u8),
-                        Value::U8(WithdrawalStatus::FAILED as u8),
-                    ]
+                    completed_withdrawal_statuses()
                 } else {
                     vec![
                         Value::U8(WithdrawalStatus::QUEUED as u8),
@@ -989,9 +965,96 @@ impl AppContext {
     }
 }
 
+/// The `status` values a finished withdrawal can carry, as the completed
+/// withdrawal queries send them.
+///
+/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
+/// schema of a protocol 13 network stops at `EXPIRED` (4). Sending it at
+/// protocol 13 is still correct and deliberate: a JSON-schema `enum` constrains
+/// documents being created, not query values. Nothing in the query path checks
+/// membership — the `status` property is typed as a plain integer, and
+/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
+/// converts to it. So the out-of-enum member encodes, matches nothing on a
+/// protocol 13 network (which cannot produce a failed withdrawal), and leaves
+/// `COMPLETE` and `EXPIRED` matching as usual, while the same query stays
+/// complete on protocol 14.
+fn completed_withdrawal_statuses() -> Vec<Value> {
+    vec![
+        Value::U8(WithdrawalStatus::COMPLETE as u8),
+        Value::U8(WithdrawalStatus::EXPIRED as u8),
+        Value::U8(WithdrawalStatus::FAILED as u8),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The completed-withdrawal filter keeps `FAILED` even though the protocol
+    /// 13 schema stops at `EXPIRED`: a schema `enum` constrains documents, not
+    /// query values, and every status encodes into the `status` property's key
+    /// representation at both schema versions.
+    #[test]
+    fn completed_withdrawal_filter_encodes_at_both_schema_versions() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::v13::PLATFORM_V13;
+
+        assert_eq!(
+            completed_withdrawal_statuses(),
+            vec![Value::U8(3), Value::U8(4), Value::U8(5)],
+            "COMPLETE, EXPIRED and FAILED, in that order"
+        );
+
+        let status_property = |version| {
+            let contract = load_system_data_contract(SystemDataContract::Withdrawals, version)
+                .expect("withdrawals contract");
+            contract
+                .document_type_cloned_for_name("withdrawal")
+                .expect("withdrawal document type")
+                .properties()
+                .get("status")
+                .expect("status property")
+                .clone()
+        };
+
+        // v1 (protocol 13) and v2 (protocol 14) differ only in the enum's last
+        // member, so the property type is identical.
+        let v13 = status_property(&PLATFORM_V13);
+        let latest = status_property(PlatformVersion::latest());
+        assert_eq!(
+            v13.property_type, latest.property_type,
+            "the status property type must not differ across schema versions"
+        );
+
+        // FAILED is outside the v1 enum, yet encodes for the query exactly like
+        // the statuses that are inside it.
+        for status in completed_withdrawal_statuses() {
+            assert!(
+                v13.property_type
+                    .encode_value_for_tree_keys(&status)
+                    .is_ok(),
+                "status {status:?} must encode against the protocol 13 schema"
+            );
+        }
+    }
+
+    /// Regression: the DPNS fallback confirmed the SDK's version, which starts
+    /// at the local seed (14 on devnet), as the network's proved version. A
+    /// fresh SDK has verified nothing, so nothing is proved.
+    #[test]
+    fn a_fresh_sdk_proves_no_protocol_version() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(Sdk::new_mock()));
+        assert_ne!(
+            ctx.sdk.load().protocol_version_number(),
+            0,
+            "precondition: a seeded SDK"
+        );
+        assert_eq!(ctx.proven_protocol_version(), None);
+    }
 
     /// The limit is whatever the network's own protocol version says it is,
     /// never a version fixed in this build: protocol 13 reports a flat 2000
@@ -1021,101 +1084,24 @@ mod tests {
         );
     }
 
-    /// A proved epoch sets both the fee multiplier cache and the protocol
-    /// version.
+    /// A proved epoch sets the fee multiplier cache.
     #[test]
-    fn a_proved_epoch_updates_the_fee_multiplier_and_protocol_version() {
+    fn a_proved_epoch_updates_the_fee_multiplier() {
         use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.set_fee_multiplier_permille(1000);
 
-        ctx.adopt_epoch_info(
-            ctx.connection_generation(),
-            &ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-                index: 7,
-                first_block_time: 0,
-                first_block_height: 0,
-                first_core_block_height: 0,
-                fee_multiplier_permille: 1_500,
-                protocol_version: 14,
-            }),
-        );
+        ctx.set_fee_multiplier_from(&ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 7,
+            first_block_time: 0,
+            first_block_height: 0,
+            first_core_block_height: 0,
+            fee_multiplier_permille: 1_500,
+            protocol_version: 14,
+        }));
 
         assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-        assert_eq!(ctx.platform_protocol_version(), 14);
-    }
-
-    /// Epoch reads can finish out of order: an older epoch arriving after a
-    /// newer one must not put back its fee multiplier or protocol version.
-    #[test]
-    fn an_older_epoch_does_not_overwrite_a_newer_one() {
-        use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
-        let epoch = |index, fee_multiplier_permille, protocol_version| {
-            ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-                index,
-                first_block_time: 0,
-                first_block_height: 0,
-                first_core_block_height: 0,
-                fee_multiplier_permille,
-                protocol_version,
-            })
-        };
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_500, 14));
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(7, 1_000, 13));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_500);
-        assert_eq!(ctx.platform_protocol_version(), 14);
-
-        // The same or a newer epoch is adopted; the protocol version never
-        // goes back.
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(8, 1_600, 14));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_600);
-        ctx.adopt_epoch_info(ctx.connection_generation(), &epoch(9, 1_700, 13));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_700);
-        assert_eq!(ctx.platform_protocol_version(), 14);
-    }
-
-    /// Rebuilding the connection resets everything learned from the old one:
-    /// the protocol version goes back to unknown, the fee multiplier to the
-    /// default, and the next proved epoch is adopted whatever its index.
-    #[test]
-    fn a_rebuilt_connection_starts_from_unknown_protocol_and_default_fees() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        ctx.adopt_epoch(ctx.connection_generation(), 8, 1_500, 14);
-
-        ctx.replace_connection(Arc::new(Sdk::new_mock()));
-
-        assert_eq!(ctx.platform_protocol_version(), 0);
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
-        assert!(ctx.adopt_epoch(ctx.connection_generation(), 2, 1_100, 13));
-        assert_eq!(ctx.fee_multiplier_permille(), 1_100);
-        assert_eq!(ctx.platform_protocol_version(), 13);
-    }
-
-    /// An epoch read that started on the old connection and finishes after
-    /// the rebuild is dropped, so it cannot be the new connection's first
-    /// adoption.
-    #[test]
-    fn an_epoch_read_from_before_a_rebuild_is_dropped() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let before_rebuild = ctx.connection_generation();
-
-        ctx.replace_connection(Arc::new(Sdk::new_mock()));
-
-        assert!(!ctx.adopt_epoch(before_rebuild, 9, 1_500, 14));
-        assert_eq!(ctx.platform_protocol_version(), 0);
-        assert_eq!(
-            ctx.fee_multiplier_permille(),
-            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
-        );
     }
 
     #[test]
@@ -1183,23 +1169,35 @@ mod tests {
     }
 
     /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
-    /// not a network observation: caching it would open the shielded capability
-    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    /// not a network observation: treating it as proven would open the shielded
+    /// capability gate and stop the retry `mcp::resolve` makes while nothing is
+    /// proven. The report names the version as unconfirmed.
     #[tokio::test]
     async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
-        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let sdk = ctx.sdk.load_full();
         assert_ne!(
             sdk.protocol_version_number(),
             0,
             "precondition: the mock SDK seeds a local version of its own"
         );
 
-        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
             .await
             .expect("a failed epoch fetch degrades to a text result");
 
-        assert_eq!(ctx.platform_protocol_version(), 0);
+        assert_eq!(ctx.proven_protocol_version(), None);
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("a failed epoch fetch returns a text result");
+        };
+        assert!(
+            text.contains("has not confirmed one yet"),
+            "an unconfirmed version must be named as such, got: {text}"
+        );
     }
 }

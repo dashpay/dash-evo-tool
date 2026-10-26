@@ -186,6 +186,28 @@ pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) 
     ctx.sdk.store(Arc::new(sdk));
 }
 
+/// Have `ctx`'s SDK learn `protocol_version` as it does from a response whose
+/// proof and quorum signature were verified. Only raises it, as the network
+/// does; an unknown version is recorded as proven, as upstream records it.
+pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    ctx.sdk
+        .load()
+        .verify_response_metadata(
+            "test",
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 1,
+                time_ms: now_ms,
+                protocol_version,
+                ..Default::default()
+            },
+        )
+        .expect("fresh proved metadata");
+}
+
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     let sdk = Sdk::new_mock();

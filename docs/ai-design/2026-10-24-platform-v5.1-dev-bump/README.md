@@ -9,50 +9,48 @@ It supersedes the open "Devnet protocol seed" item of
 
 ## Which protocol version DET builds for
 
-There are two version sources, and they can disagree while a network moves
-from 13 to 14:
+DET keeps no copy of the network's protocol version. Both values below come
+from the current SDK, and a rebuilt connection is a new SDK that starts from
+scratch:
 
 - **The SDK's version** (`AppContext::platform_version()`). It starts at
   upstream's per-network `dash_sdk::sdk::min_protocol_version` (13 on mainnet,
   testnet and regtest, 14 on devnet) and ratchets to what verified responses
-  report. Transitions are encoded at this version. The SDK is no longer pinned
-  to a fixed table: a pinned SDK cannot build any protocol 14 transition, and
-  cannot follow the versioned identity lookup below.
-- **The network's confirmed version** (`AppContext::platform_protocol_version()`).
-  It comes from a proved epoch read (or, when that fails, a proved DPNS fetch).
-  It is `0` until confirmed. Capabilities (`context/feature_gate.rs`) read only
-  this one, through `known_protocol_version`, so an unconfirmed network, or a
-  version this build does not define, never unlocks a protocol feature.
-  `connected_platform_version()` selects that version's tables for estimates,
-  such as the daily withdrawal limit.
+  report, never to a version this build does not define. Transitions are
+  encoded at this version, and its tables serve estimates such as the daily
+  withdrawal limit. The SDK is no longer pinned to a fixed table: a pinned SDK
+  cannot build any protocol 14 transition, and cannot follow the versioned
+  identity lookup below.
+- **The network's proven version** (`AppContext::proven_protocol_version()`),
+  the SDK's `verified_protocol_version`: the highest version seen in a
+  response whose proof and quorum signature were verified, or `None` before
+  any. It can be a version this build does not define.
+  `AppContext::proven_platform_version()` is `None` then, as it is before
+  anything is proven. Capabilities (`context/feature_gate.rs`) read only that,
+  so an unproven network, or an unknown version, never unlocks a protocol
+  feature. Network info shows the proven number, or says none is confirmed.
 
 ## System contracts
 
 `SystemContractsCache` serves the system contracts (DPNS, DashPay, withdrawals,
 token history, keyword search) at the SDK's version and reloads them when it
 changes. The context provider serves them at the version the proof verifier
-asks for (`verifier_version`), which can be newer than the SDK's. `try_get`
-fails rather than serving another version's contracts, so a proof is never
-checked against the wrong schema.
+passes in (`AppContext::system_contracts_at`), which can be newer than the
+SDK's. Each version keeps its own set, so the two lookups do not evict each
+other. `try_get` fails rather than serving another version's contracts, so a
+proof is never checked against the wrong schema.
 
 ## Connection state
 
-- **Epoch adoption.** A proved epoch sets the fee multiplier and raises the
-  protocol version (`AppContext::adopt_epoch`). Reads can finish out of order,
-  so an epoch older than the adopted one is ignored, and the protocol version
-  only moves up.
-- **Rebuilding the connection** (`replace_connection`, `rebuild_connection`)
-  bumps a generation counter, forgets the adopted epoch, and puts the protocol
-  version back to unknown and the fee multiplier to the default, under one
-  lock, before the new SDK is published. A read begun on the old connection is
-  dropped. Capabilities stay closed until the new connection proves its epoch.
-
-## Protocol 13 guards
-
-- `context/platform_version_guard.rs` compares the protocol 13 client tables
-  with a recorded snapshot, so an upstream change to them is reviewed.
-- `backend_task/protocol_13_transitions.rs` checks that transitions DET builds
-  on a protocol 13 network use encodings protocol 13 decodes.
+- **Fee multiplier.** A proved epoch read sets the fee multiplier, which feeds
+  fee estimates only. When the epoch cannot be read, the last known value is
+  kept and shown as such, never as a fresh network reading, and a proved DPNS
+  fetch still lets the SDK learn the network's version.
+- **Rebuilding the connection** (`rebuild_connection`) builds a new SDK over
+  the same network, so nothing about the chain changes. The new SDK has proven
+  no version, so capabilities stay closed until a proved response carries
+  one; the rebuild reads the epoch right away for that, and the read refreshes
+  the fee multiplier.
 
 ## Mainnet compatibility
 

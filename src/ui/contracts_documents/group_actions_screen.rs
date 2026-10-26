@@ -236,7 +236,7 @@ impl GroupActionsScreen {
                                 row.col(|ui| {
                                     if !Self::supports_token_event_action(token_event) {
                                         ui.add_enabled(false, egui::Button::new("Take Action"))
-                                            .on_hover_text("This action cannot be signed here. Use another token client.");
+                                            .on_hover_text("The app cannot sign this action yet.");
                                         return;
                                     }
                                     if ComponentStyles::add_primary_button(

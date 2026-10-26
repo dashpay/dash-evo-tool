@@ -164,10 +164,14 @@ pub fn is_auto_selectable(
 
 /// The security levels Platform accepts for a document action on
 /// `document_type`: CRITICAL up to and including the level the type requires,
-/// since a stronger key satisfies a weaker requirement. Never MASTER.
+/// since a stronger key satisfies a weaker requirement; exactly MASTER for a
+/// type that requires MASTER.
 // TODO(upstream): call dpp's accepted-levels helper for a requirement once it
 // is public (platform-wallet's `allowed_signing_security_levels` is private).
 pub fn document_security_levels(document_type: DocumentTypeRef<'_>) -> Vec<SecurityLevel> {
+    if document_type.security_level_requirement() == SecurityLevel::MASTER {
+        return vec![SecurityLevel::MASTER];
+    }
     let required = document_type.security_level_requirement() as u8;
     [
         SecurityLevel::CRITICAL,
@@ -279,6 +283,49 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
+
+    /// Review fix: a document type requiring MASTER accepted no level, as
+    /// MASTER sorts below CRITICAL. Platform accepts exactly MASTER for it,
+    /// as upstream platform-wallet's `allowed_signing_security_levels` does.
+    #[test]
+    fn a_master_document_type_accepts_only_master_keys() {
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::Identifier;
+
+        let version = PlatformVersion::get(14).expect("protocol 14");
+        let config = DataContractConfig::default_for_version(version).expect("config");
+        let document_type = DocumentType::try_from_schema(
+            Identifier::new([1; 32]),
+            1,
+            config.version(),
+            "vault",
+            platform_value!({
+                "type": "object",
+                "signatureSecurityLevelRequirement": 0_u32,
+                "properties": {"value": {"type": "string", "maxLength": 20_u32, "position": 0_u32}},
+                "additionalProperties": false,
+            }),
+            None,
+            &std::collections::BTreeMap::new(),
+            &config,
+            false,
+            &mut Vec::new(),
+            version,
+        )
+        .expect("a document type requiring MASTER");
+        assert_eq!(
+            document_type.security_level_requirement(),
+            SecurityLevel::MASTER
+        );
+        assert_eq!(
+            document_security_levels(document_type.as_ref()),
+            vec![SecurityLevel::MASTER]
+        );
+    }
 
     /// A HIGH document type accepts CRITICAL and HIGH keys, never MEDIUM.
     #[test]

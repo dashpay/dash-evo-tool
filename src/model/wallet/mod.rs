@@ -485,7 +485,6 @@ impl Wallet {
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
-
         let account_priv = master_priv.derive_priv(&bip44_path).map_err(|e| {
             WalletCreationError::KeyDerivation {
                 source: Box::new(e),
@@ -1341,7 +1340,6 @@ impl Wallet {
         app_context: &AppContext,
     ) -> Result<(), WalletError> {
         let coin_type = coin_type_for_network(network);
-
         for (change_flag, max) in [
             (false, BOOTSTRAP_BIP44_EXTERNAL_COUNT),
             (true, BOOTSTRAP_BIP44_CHANGE_COUNT),
@@ -1631,7 +1629,6 @@ impl Wallet {
             let private_key = extended_private_key.to_priv();
 
             // Create a P2PKH address for platform payment
-
             let public_key = private_key.public_key();
             let platform_address = Address::p2pkh(&public_key, network);
 
@@ -2012,7 +2009,6 @@ pub(crate) fn derive_platform_payment_account_xpub(
         ChildNumber::Hardened { index: account },
         ChildNumber::Hardened { index: key_class },
     ]);
-
     let master = ExtendedPrivKey::new_master(network, seed)?;
     let account_priv = master.derive_priv(&account_path)?;
     Ok(ExtendedPubKey::from_priv(&account_priv))
@@ -3111,7 +3107,6 @@ mod tests {
             .derive_priv_ecdsa_for_master_seed(&seed, network)
             .expect("reference derive")
             .to_priv();
-
         let address = Address::p2pkh(&reference.public_key(), network);
 
         let mut wallet = wallet;
@@ -3139,7 +3134,6 @@ mod tests {
             let reference_xprv = reference_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
                 .expect("reference derive");
-
             let reference = Address::p2pkh(&reference_xprv.to_priv().public_key(), network);
 
             let param = param_wallet
@@ -3783,7 +3777,6 @@ mod tests {
     /// for. Independent of the reconciliation path under test.
     fn platform_address_at(index: u32, network: Network) -> Address {
         let path = DerivationPath::platform_payment_path(network, 0, 0, index);
-
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
             .expect("derive platform key");
@@ -4010,7 +4003,6 @@ mod tests {
 
         let foreign_seed = [0x11u8; 64];
         let path = DerivationPath::platform_payment_path(network, 0, 0, 0);
-
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&foreign_seed, network)
             .expect("derive foreign key");

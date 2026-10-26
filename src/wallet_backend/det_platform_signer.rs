@@ -203,7 +203,6 @@ mod tests {
     use super::*;
     use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
     use dash_sdk::dpp::dashcore::Address;
-
     use zeroize::Zeroizing;
 
     /// Reference platform-address signing — reproduces exactly what the
@@ -242,7 +241,6 @@ mod tests {
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .expect("derive platform key");
-
         let address = Address::p2pkh(&xprv.to_priv().public_key(), network);
         let platform_address =
             PlatformAddress::try_from(address.clone()).expect("to platform address");
@@ -352,7 +350,6 @@ mod tests {
         let other_xprv = other_path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .unwrap();
-
         let other_address = Address::p2pkh(&other_xprv.to_priv().public_key(), network);
         let other_platform = PlatformAddress::try_from(other_address).unwrap();
 

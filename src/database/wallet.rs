@@ -554,7 +554,6 @@ impl From<WalletError> for rusqlite::Error {
 mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
-
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
 
@@ -568,7 +567,6 @@ mod tests {
 
     fn create_test_master_epk_bytes(network: Network) -> Vec<u8> {
         let seed = [7u8; 64];
-
         let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },

@@ -1588,6 +1588,9 @@ impl AppContext {
     }
 
     /// Owner of a legacy record without a stored wallet link.
+    // TODO(signing-key-wallet): switch to `wallet_for_signing_key` once #1117
+    // lands, so the owner is the wallet deriving a key the identity actually
+    // signs with, not the one behind its DPNS key.
     fn legacy_owner_wallet_hash(&self, qi: &QualifiedIdentity) -> Option<WalletSeedHash> {
         let wallet = crate::ui::identity::get_selected_wallet(qi, Some(self), None).ok()??;
         let hash = wallet.read().ok()?.seed_hash();

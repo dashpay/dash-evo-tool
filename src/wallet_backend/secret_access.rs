@@ -1744,15 +1744,12 @@ mod tests {
     /// import time, so this is how the legacy→Tier-2 lazy migration path stays
     /// covered.
     fn write_legacy_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
-        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey};
 
         let priv_key = PrivateKey::from_wif(&known_testnet_wif()).expect("wif");
         let raw: Zeroizing<[u8; 32]> = priv_key.inner.to_bytes();
 
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
         let pub_bytes = pub_key.inner.to_compressed().to_vec();
         let entry =

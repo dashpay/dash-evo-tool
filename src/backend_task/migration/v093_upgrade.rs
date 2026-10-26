@@ -1643,10 +1643,7 @@ const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
 fn skipped_single_key_address() -> String {
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
     let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
-    let public = PublicKey {
-        compressed: true,
-        inner: key.inner.public_key(),
-    };
+    let public = PublicKey::new(key.inner.public_key());
     Address::p2pkh(&public, Network::Mainnet).to_string()
 }
 

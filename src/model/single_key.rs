@@ -11,7 +11,7 @@
 
 use dash_sdk::dpp::dashcore::key::Error as KeyError;
 
-use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
 use serde::{Deserialize, Serialize};
 
 /// Validates a WIF-encoded private key and derives the P2PKH address.
@@ -23,10 +23,7 @@ use serde::{Deserialize, Serialize};
 pub fn validate_wif(wif: &str, network: Network) -> Result<String, KeyError> {
     let priv_key = PrivateKey::from_wif(wif)?;
 
-    let pub_key = PublicKey {
-        compressed: priv_key.compressed,
-        inner: priv_key.inner.public_key(),
-    };
+    let pub_key = priv_key.public_key();
     let address = Address::p2pkh(&pub_key, network);
     Ok(address.to_string())
 }

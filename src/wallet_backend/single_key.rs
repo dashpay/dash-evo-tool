@@ -257,10 +257,7 @@ impl<'a> SingleKeyView<'a> {
             return Err(TaskError::UncompressedWifUnsupported);
         }
 
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
@@ -877,13 +874,7 @@ fn parse_locked_address_and_pubkey(
             return None;
         }
     };
-    Some((
-        address,
-        PublicKey {
-            compressed: true,
-            inner: inner.into(),
-        },
-    ))
+    Some((address, PublicKey::new(inner)))
 }
 
 /// SHA-256 of `domain || material`, used as a stable per-entry BTreeMap handle
@@ -2547,10 +2538,7 @@ mod tests {
         // Pretend a pre-per-key-passphrase install wrote a raw 32-byte
         // payload under the canonical label, with a matching sidecar entry.
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, network).to_string();
         let label = label_for_address(&address);
         let raw = SecretBytes::from_slice(&priv_key.inner.to_bytes()[..]);
@@ -2991,10 +2979,7 @@ mod tests {
         assert!(view.list().is_empty(), "nothing indexed");
         let address = PrivateKey::from_wif(known_wif())
             .map(|key| {
-                let public = PublicKey {
-                    compressed: true,
-                    inner: key.inner.public_key(),
-                };
+                let public = PublicKey::new(key.inner.public_key());
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })
             .expect("address");
@@ -3026,10 +3011,7 @@ mod tests {
         assert!(view.list().is_empty(), "nothing indexed");
         let address = PrivateKey::from_wif(known_wif())
             .map(|key| {
-                let public = PublicKey {
-                    compressed: true,
-                    inner: key.inner.public_key(),
-                };
+                let public = PublicKey::new(key.inner.public_key());
                 Address::p2pkh(&public, Network::Testnet).to_string()
             })
             .expect("address");

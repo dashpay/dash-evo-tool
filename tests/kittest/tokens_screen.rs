@@ -20,17 +20,22 @@
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_contract::QualifiedContract;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_evo_tool::model::qualified_identity::{
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
 use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::tokens::tokens_screen::{IdentityTokenInfo, TokensScreen, TokensSubscreen};
-use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+use dash_evo_tool::ui::tokens::tokens_screen::{
+    IdentityTokenBalance, IdentityTokenInfo, TokensScreen, TokensSubscreen,
+};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -112,19 +117,27 @@ fn identity_with_critical_key(app_context: &Arc<AppContext>) -> QualifiedIdentit
     let mut identity =
         Identity::create_basic_identity(Identifier::from([0xC3; 32]), PlatformVersion::latest())
             .expect("basic identity");
-    identity.add_public_key(
-        IdentityPublicKeyV0 {
-            id: 0,
-            key_type: KeyType::ECDSA_HASH160,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::CRITICAL,
-            read_only: false,
-            data: BinaryData::new(vec![1; 20]),
-            disabled_at: None,
-            contract_bounds: None,
-        }
-        .into(),
-    );
+    let key: dash_sdk::platform::IdentityPublicKey = IdentityPublicKeyV0 {
+        id: 0,
+        key_type: KeyType::ECDSA_HASH160,
+        purpose: Purpose::AUTHENTICATION,
+        security_level: SecurityLevel::CRITICAL,
+        read_only: false,
+        data: BinaryData::new(vec![1; 20]),
+        disabled_at: None,
+        contract_bounds: None,
+    }
+    .into();
+    identity.add_public_key(key.clone());
+    // Placeholder key material: nothing here signs, but screens such as the
+    // Token Creator only offer identities that hold a private key.
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([7u8; 32]),
+        ),
+    )]));
     QualifiedIdentity {
         identity,
         associated_voter_identity: None,
@@ -132,7 +145,7 @@ fn identity_with_critical_key(app_context: &Arc<AppContext>) -> QualifiedIdentit
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some("token-action-layout".to_string()),
-        private_keys: KeyStorage::default(),
+        private_keys,
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -268,6 +281,345 @@ fn my_tokens_create_token_button_opens_token_creator() {
         assert!(
             screen.tokens_subscreen == TokensSubscreen::TokenCreator,
             "the visible tokens screen must show the Token Creator"
+        );
+    });
+}
+
+/// Name the smoke token carries in every locale-less lookup.
+const SMOKE_TOKEN: &str = "Smoketoken";
+
+/// Seeds a locally owned identity, a token contract it owns (so every
+/// owner-only action is authorised) and a positive balance, then returns the
+/// pieces the token screens are built from.
+fn seed_owned_token(
+    app_context: &Arc<AppContext>,
+) -> (
+    QualifiedIdentity,
+    dash_sdk::platform::DataContract,
+    Identifier,
+) {
+    use dash_evo_tool::model::qualified_contract::InsertTokensToo;
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
+        TokenConfigurationPreset, TokenConfigurationPresetFeatures,
+    };
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::{
+        TokenConfigurationLocalization, v0::TokenConfigurationLocalizationV0,
+    };
+    use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+
+    let identity = identity_with_critical_key(app_context);
+    app_context
+        .insert_local_qualified_identity(&identity, &None)
+        .expect("seed identity");
+
+    let token_config = TokenConfigurationPreset {
+        features: TokenConfigurationPresetFeatures::WithExtremeActions,
+        action_taker: AuthorizedActionTakers::ContractOwner,
+    }
+    .token_configuration_v0(
+        TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
+            localizations: BTreeMap::from([(
+                "en".to_string(),
+                TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
+                    should_capitalize: true,
+                    singular_form: SMOKE_TOKEN.to_string(),
+                    plural_form: format!("{SMOKE_TOKEN}s"),
+                }),
+            )]),
+            decimals: 8,
+        }),
+        100_000,
+        None,
+        true,
+        true,
+    );
+    let pv = PlatformVersion::latest();
+    let contract = dash_sdk::platform::DataContract::V1(DataContractV1 {
+        id: Identifier::from([0xE5; 32]),
+        version: 1,
+        owner_id: identity.identity.id(),
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(pv).expect("config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::from([(0, token_config.into())]),
+        keywords: vec![],
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    });
+    app_context
+        .insert_contract_if_not_exists(
+            &contract,
+            Some("smoke-contract"),
+            InsertTokensToo::AllTokensShouldBeAdded,
+        )
+        .expect("seed contract");
+    let token_id = contract.token_id(0).expect("token id");
+    app_context
+        .insert_token_identity_balance(&token_id, &identity.identity.id(), 1_000_000_000)
+        .expect("seed balance");
+    (identity, contract, token_id)
+}
+
+/// The token screens' fixtures, built once per test on a mounted app.
+struct TokenFixture {
+    harness: Harness<'static, dash_evo_tool::app::AppState>,
+    app_context: Arc<AppContext>,
+    info: IdentityTokenInfo,
+    balance: IdentityTokenBalance,
+}
+
+/// Mounts the app at the user's window size (Developer role, so every action
+/// is offered) with an owned, fully permissive token seeded.
+fn token_fixture() -> TokenFixture {
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+
+    let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+    harness.set_size(egui::vec2(1050.0, 700.0));
+    let app_context = harness.state().current_app_context().clone();
+    app_context.set_user_role(UserRole::Developer);
+    let (identity, contract, token_id) = seed_owned_token(&app_context);
+    let token_config = contract.tokens()[&0].clone();
+    let info = IdentityTokenInfo {
+        token_id,
+        token_alias: SMOKE_TOKEN.to_string(),
+        identity: identity.clone(),
+        data_contract: QualifiedContract {
+            contract: contract.clone(),
+            alias: Some("smoke-contract".into()),
+        },
+        token_config: token_config.clone(),
+        token_position: 0,
+    };
+    let balance = IdentityTokenBalance {
+        token_id,
+        token_alias: SMOKE_TOKEN.to_string(),
+        token_config,
+        identity_id: identity.identity.id(),
+        balance: 1_000_000_000,
+        estimated_unclaimed_rewards: None,
+        data_contract_id: contract.id(),
+        token_position: 0,
+    };
+    harness
+        .state_mut()
+        .active_root_screen_mut()
+        .refresh_on_arrival();
+    harness.run_steps(5);
+    TokenFixture {
+        harness,
+        app_context,
+        info,
+        balance,
+    }
+}
+
+impl TokenFixture {
+    /// Shows `screen_type` as the only pushed screen.
+    fn open(&mut self, screen_type: ScreenType) {
+        let screen = screen_type.create_screen(&self.app_context);
+        let state = self.harness.state_mut();
+        state.screen_stack.clear();
+        state.screen_stack.push(screen);
+        self.harness.run_steps(5);
+    }
+
+    /// Clicks the top panel's breadcrumb `label` (the left navigation repeats
+    /// some of these names lower down).
+    fn click_breadcrumb(&mut self, label: &str) {
+        self.harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, label)
+            .find(|node| node.rect().top() < 60.0)
+            .unwrap_or_else(|| panic!("no {label:?} breadcrumb"))
+            .click();
+        self.harness.run_steps(5);
+    }
+}
+
+/// Fails when the central panel shows a blank band (content pushed down, as
+/// in the Mint bug) or when two controls overlap.
+fn assert_intact_layout(
+    harness: &Harness<'static, dash_evo_tool::app::AppState>,
+    screen: &str,
+    content_left: f32,
+) {
+    use egui::accesskit::Role;
+    const MAX_GAP: f32 = 120.0;
+    let height = harness.ctx.content_rect().height();
+    let mut nodes: Vec<(egui::Rect, Role)> = harness
+        .query_all_by_label_contains("")
+        .map(|node| (node.rect(), node.accesskit_node().role()))
+        .filter(|(rect, _)| {
+            rect.left() >= content_left && rect.top() >= 100.0 && rect.bottom() <= height
+        })
+        .collect();
+    assert!(!nodes.is_empty(), "{screen}: the central panel is empty");
+    nodes.sort_by(|a, b| a.0.top().total_cmp(&b.0.top()));
+    let mut bottom = nodes[0].0.bottom();
+    for (rect, _) in &nodes[1..] {
+        let gap = rect.top() - bottom;
+        assert!(
+            gap <= MAX_GAP,
+            "{screen}: {gap}px blank band above the control at {rect:?}"
+        );
+        bottom = bottom.max(rect.bottom());
+    }
+    let controls: Vec<egui::Rect> = nodes
+        .iter()
+        .filter(|(_, role)| {
+            matches!(
+                role,
+                Role::Button | Role::CheckBox | Role::RadioButton | Role::ComboBox
+            )
+        })
+        .map(|(rect, _)| *rect)
+        .collect();
+    for (i, a) in controls.iter().enumerate() {
+        for b in &controls[i + 1..] {
+            let overlap = a.intersect(*b);
+            assert!(
+                overlap.width() <= 2.0 || overlap.height() <= 2.0,
+                "{screen}: controls overlap ({a:?} and {b:?})"
+            );
+        }
+    }
+}
+
+/// Every token screen opens without panicking at the user's window size,
+/// keeps its form together from the top, and its first breadcrumb leads back.
+#[test]
+fn token_screens_open_with_an_intact_layout_and_lead_back() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let info = f.info.clone();
+        let balance = f.balance.clone();
+
+        // (name, screen, first breadcrumb, central panel's left edge)
+        let pushed = [
+            ("Import Token", ScreenType::AddTokenById, "Tokens", 360.0),
+            (
+                "Transfer",
+                ScreenType::TransferTokensScreen(balance),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Mint",
+                ScreenType::MintTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Burn",
+                ScreenType::BurnTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Freeze",
+                ScreenType::FreezeTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Unfreeze",
+                ScreenType::UnfreezeTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Destroy",
+                ScreenType::DestroyFrozenFundsScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Pause",
+                ScreenType::PauseTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Resume",
+                ScreenType::ResumeTokensScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Update config",
+                ScreenType::UpdateTokenConfigScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Purchase",
+                ScreenType::PurchaseTokenScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Set price",
+                ScreenType::SetTokenPriceScreen(info.clone()),
+                "Tokens",
+                360.0,
+            ),
+            (
+                "Group actions",
+                ScreenType::GroupActions,
+                "Contracts",
+                160.0,
+            ),
+        ];
+        for (name, screen_type, back, content_left) in pushed {
+            f.open(screen_type);
+            assert_intact_layout(&f.harness, name, content_left);
+            f.click_breadcrumb(back);
+            assert!(
+                f.harness.state().screen_stack.is_empty(),
+                "{name}: the {back:?} breadcrumb must lead back to the root screen"
+            );
+        }
+
+        // Root views: My Tokens (with the token), its details, the More Info
+        // popup, Search and the Token Creator.
+        f.harness.state_mut().screen_stack.clear();
+        f.harness.run_steps(5);
+        assert_intact_layout(&f.harness, "My Tokens", 360.0);
+        f.harness.get_by_label(SMOKE_TOKEN).click();
+        f.harness.run_steps(5);
+        assert_intact_layout(&f.harness, "Token details", 360.0);
+        f.click_breadcrumb("Tokens");
+        f.harness.get_by_label("More Info").click();
+        f.harness.run_steps(5);
+        f.harness.get_by_label("Close").click();
+        f.harness.run_steps(5);
+        f.harness.get_by_label(SMOKE_TOKEN);
+
+        for (name, root) in [
+            ("Search Tokens", RootScreenType::RootScreenTokenSearch),
+            ("Token Creator", RootScreenType::RootScreenTokenCreator),
+        ] {
+            f.harness.get_by_label(name).click();
+            f.harness.run_steps(5);
+            assert_eq!(f.harness.state().selected_main_screen, root, "{name}");
+            assert_intact_layout(&f.harness, name, 360.0);
+        }
+        assert!(
+            f.harness.query_by_label("No Identities Loaded").is_none(),
+            "the Token Creator must offer the seeded identity, so its form renders"
         );
     });
 }

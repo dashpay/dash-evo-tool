@@ -315,20 +315,17 @@ impl AppContext {
         // let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
 
         if identity_type == IdentityType::User {
-            let input_private_keys = keys_input
-                .into_iter()
-                .filter_map(|key_string| {
-                    Some(
-                        verify_key_input(key_string, "User Key")
-                            .map_err(TaskError::from)
-                            .transpose()?
-                            .and_then(|sk| {
-                                PrivateKey::from_byte_array(&sk, self.network)
-                                    .map_err(|_| TaskError::InvalidPrivateKey)
-                            }),
-                    )
-                })
-                .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
+            // Reserved up front: a growing `Vec` moves its keys to a new
+            // buffer and frees the old one without wiping it.
+            let mut input_private_keys: Vec<PrivateKey> = Vec::with_capacity(keys_input.len());
+            for key_string in keys_input {
+                if let Some(sk) = verify_key_input(key_string, "User Key")? {
+                    input_private_keys.push(
+                        PrivateKey::from_byte_array(&sk, self.network)
+                            .map_err(|_| TaskError::InvalidPrivateKey)?,
+                    );
+                }
+            }
 
             #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (

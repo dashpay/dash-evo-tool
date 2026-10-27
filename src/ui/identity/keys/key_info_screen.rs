@@ -2663,4 +2663,41 @@ mod tests {
             .shutdown()
             .await;
     }
+
+    /// Pins the hex-or-WIF split of the Key Info paste: input that is valid
+    /// hex is decoded as hex, so a hex key of the wrong length says so rather
+    /// than being blamed on WIF, while anything else is tried as WIF.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paste_is_read_as_hex_when_it_is_hex_and_as_wif_otherwise() {
+        let (app_context, _dir) = offline_ctx().await;
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x5C, &[]);
+        let mut screen = KeyInfoScreen::new(stored, pasted, None, &app_context);
+
+        let not_32_bytes = "Private key not 32 bytes";
+        let not_hex_or_wif = "Invalid hex string or WIF for private key.";
+        for (input, expected) in [
+            // Valid hex, one byte short.
+            (hex::encode(&secret[..31]), not_32_bytes),
+            // Valid hex of a WIF key's length: still read as hex.
+            ("ab".repeat(26), not_32_bytes),
+            // Odd length and non-hex input fall through to WIF.
+            ("abc".to_owned(), not_hex_or_wif),
+            ("z".repeat(52), not_hex_or_wif),
+        ] {
+            MessageBanner::clear_all_global(app_context.egui_ctx());
+            screen.private_key_input.set_text(input.clone());
+            screen.validate_and_store_private_key();
+
+            let banner_texts =
+                crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+            assert_eq!(banner_texts, [expected], "input {input:?}");
+        }
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
 }

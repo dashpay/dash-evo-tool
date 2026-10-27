@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::key_input::decode_hex_secret;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -19,7 +20,7 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 use zxcvbn::zxcvbn;
 
 /// Shown under the recovery-phrase grid while the filled-in words are not a
@@ -215,20 +216,22 @@ impl ImportMnemonicScreen {
         // The single import path takes WIF only — normalise hex input to
         // WIF first so users can paste either shape while every import
         // still funnels through `AppContext::import_single_key_wif`.
+        // Every copy of the key, the WIF text included, is held in
+        // `Zeroizing`, so it is wiped when it is dropped.
         let wif = match PrivateKey::from_wif(input) {
-            Ok(_) => input.to_string(),
+            Ok(_) => Zeroizing::new(input.to_string()),
             Err(_) => {
-                let bytes =
-                    hex::decode(input).map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
+                let bytes = decode_hex_secret(input)
+                    .map_err(|_| ImportSaveError::PrivateKeyUnrecognized)?;
                 if bytes.len() != 32 {
                     return Err(ImportSaveError::PrivateKeyWrongLength {
                         byte_count: bytes.len(),
                     });
                 }
-                let mut buf = [0u8; 32];
+                let mut buf = Zeroizing::new([0u8; 32]);
                 buf.copy_from_slice(&bytes);
                 match PrivateKey::from_byte_array(&buf, self.app_context.network) {
-                    Ok(private_key) => private_key.to_wif(),
+                    Ok(private_key) => Zeroizing::new(private_key.to_wif()),
                     Err(error) => {
                         tracing::debug!(?error, "Imported hexadecimal private key was rejected");
                         return Err(ImportSaveError::PrivateKeyInvalid);
@@ -252,7 +255,7 @@ impl ImportMnemonicScreen {
 
     fn save_wallet(&mut self) -> Result<AppAction, ImportSaveError> {
         if let Some(mnemonic) = &self.seed_phrase {
-            let seed = mnemonic.to_seed("");
+            let seed = Zeroizing::new(mnemonic.to_seed(""));
 
             let password = if self.password_input.is_empty() {
                 None
@@ -264,7 +267,7 @@ impl ImportMnemonicScreen {
             // a blank name with the smallest unused "Wallet N", and rejects a
             // name another wallet already uses.
             let wallet = Wallet::new_from_seed(
-                seed,
+                *seed,
                 self.app_context.network,
                 Some(self.alias_input.text().to_owned()),
                 password.as_ref(),
@@ -739,5 +742,37 @@ impl ScreenLike for ImportMnemonicScreen {
 
         action |= pending_action;
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hex input keeps its outcomes: input that is neither WIF nor hex is
+    /// unrecognised, and valid hex of the wrong length names its byte count.
+    #[test]
+    fn hex_private_key_rejections_are_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+
+        screen.set_private_key_for_test(&"ab".repeat(31));
+        assert!(matches!(
+            screen.save_private_key_wallet(),
+            Err(ImportSaveError::PrivateKeyWrongLength { byte_count: 31 })
+        ));
+
+        for input in ["abc".to_owned(), "zz".repeat(32)] {
+            screen.set_private_key_for_test(&input);
+            assert!(
+                matches!(
+                    screen.save_private_key_wallet(),
+                    Err(ImportSaveError::PrivateKeyUnrecognized)
+                ),
+                "input {input:?}"
+            );
+        }
+        assert!(!screen.wallet_imported, "nothing was imported");
     }
 }

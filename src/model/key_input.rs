@@ -10,6 +10,7 @@
 use crate::model::secret::Secret;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// Why a raw private-key input failed format validation.
 ///
@@ -71,10 +72,55 @@ pub fn verify_key_input(
     }
 }
 
+/// Decode hex-encoded secret bytes into memory that is wiped on drop.
+///
+/// Accepts and rejects exactly the inputs [`hex::decode`] does, with the same
+/// error, but decodes straight into a [`Zeroizing`] buffer of the final size,
+/// so the decoded bytes, partly decoded ones included, leave no plain copy
+/// behind.
+///
+/// # Errors
+///
+/// Returns the [`hex::FromHexError`] `hex::decode` would: `OddLength` for an
+/// odd number of characters, otherwise `InvalidHexCharacter` for the first
+/// character that is not a hex digit.
+pub fn decode_hex_secret(input: &str) -> Result<Zeroizing<Vec<u8>>, hex::FromHexError> {
+    // Sized to `len / 2`, so `decode_to_slice` never reports a length
+    // mismatch: it checks for an odd length first, as `hex::decode` does.
+    let mut bytes = Zeroizing::new(vec![0u8; input.len() / 2]);
+    hex::decode_to_slice(input, bytes.as_mut_slice())?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dashcore_rpc::dashcore::Network;
+
+    /// `decode_hex_secret` accepts and rejects exactly what `hex::decode`
+    /// does, with the same bytes and the same error, so callers that switch
+    /// to it keep their behaviour and messages.
+    #[test]
+    fn decode_hex_secret_matches_hex_decode() {
+        for input in [
+            "",
+            "00",
+            "0aFf",
+            &"ab".repeat(32),
+            &"cd".repeat(33),
+            "abc",
+            "zz",
+            "0g",
+            &format!("{}x1", "a".repeat(62)),
+            "not hex at all",
+        ] {
+            assert_eq!(
+                decode_hex_secret(input).map(|bytes| bytes.to_vec()),
+                hex::decode(input),
+                "input {input:?}"
+            );
+        }
+    }
 
     #[test]
     fn empty_input_is_not_supplied() {

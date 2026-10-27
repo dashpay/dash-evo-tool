@@ -27,6 +27,7 @@ use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -112,6 +113,15 @@ impl TokensScreen {
                             "No"
                         },
                     );
+                    ui.end_row();
+
+                    ui.label("Once-per-identity Distribution:");
+                    match crate::model::token::once_per_identity_amount(config) {
+                        Some(amount) => ui.label(format!(
+                            "Every identity can claim {amount} base tokens once."
+                        )),
+                        None => ui.label("No"),
+                    };
                     ui.end_row();
 
                     ui.label("Token ID:");
@@ -697,13 +707,18 @@ impl TokensScreen {
                 }
             } else {
                 // Disabled, grayed-out Transfer button
+                let reason = if token_info.token_configuration.is_transferable() {
+                    "Transfer not available"
+                } else {
+                    "This token cannot be sent to other identities."
+                };
                 ui.add_enabled(
                     false,
                     egui::Button::new(
                         RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
                     ),
                 )
-                .disabled_tooltip("Transfer not available");
+                .disabled_tooltip(reason);
             }
         }
 
@@ -1116,7 +1131,7 @@ mod tests {
         let mut screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
         let token_id = Identifier::from([42; 32]);
         let config = TokenConfigurationV0::default_most_restrictive().into();
-        let contract = context.dpns_contract.as_ref().clone();
+        let contract = context.dpns_contract().as_ref().clone();
         screen.all_known_tokens.insert(
             token_id,
             TokenInfoWithDataContract {

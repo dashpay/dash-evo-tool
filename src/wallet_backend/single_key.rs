@@ -13,12 +13,11 @@
 
 use std::sync::Arc;
 
-#[cfg(test)]
-use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey;
-
-#[cfg(test)]
-use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSignature as Signature;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+#[cfg(test)]
+use dash_sdk::dpp::secp256k1::Message;
+#[cfg(test)]
+use dash_sdk::dpp::secp256k1::ecdsa::Signature;
 use platform_wallet_storage::secrets::{
     SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
@@ -256,7 +255,6 @@ impl<'a> SingleKeyView<'a> {
         if !priv_key.compressed {
             return Err(TaskError::UncompressedWifUnsupported);
         }
-
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
             inner: priv_key.inner.public_key(),
@@ -289,7 +287,7 @@ impl<'a> SingleKeyView<'a> {
                 };
                 // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
                 // on drop instead of lingering after the entry is built.
-                let raw = priv_key.inner.to_bytes();
+                let raw: Zeroizing<[u8; 32]> = priv_key.inner.to_bytes();
 
                 let pub_bytes = pub_key.inner.to_compressed().to_vec();
                 let password = passphrase
@@ -710,7 +708,6 @@ impl<'a> SingleKeyView<'a> {
                 return Ok(None);
             }
         };
-
         let public_key = priv_key.public_key();
         let address = Address::p2pkh(&public_key, meta.network);
 
@@ -865,9 +862,7 @@ fn parse_locked_address_and_pubkey(
         );
         return None;
     }
-    let inner = match dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaPublicKey::from_bytes(
-        public_key_bytes,
-    ) {
+    let inner = match dash_sdk::dpp::secp256k1::PublicKey::from_slice(public_key_bytes) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(
@@ -883,7 +878,7 @@ fn parse_locked_address_and_pubkey(
         address,
         PublicKey {
             compressed: true,
-            inner,
+            inner: inner.into(),
         },
     ))
 }
@@ -1029,10 +1024,10 @@ impl<'a> SingleKeyView<'a> {
 /// [`DetSigner`](crate::wallet_backend::det_signer::DetSigner).
 #[cfg(test)]
 fn sign_message_with_raw_key(bytes: &[u8; 32], msg: &[u8; 32]) -> Result<Signature, TaskError> {
-    let sk = EcdsaSecretKey::from_bytes(bytes).map_err(|_| TaskError::ImportedKeyNotFound)?;
-    sk.sign_recoverable(msg)
-        .signature()
-        .map_err(|_| TaskError::ImportedKeyNotFound)
+    let sk = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*bytes)
+        .map_err(|_| TaskError::ImportedKeyNotFound)?;
+    let message = Message::from_digest(*msg);
+    Ok(dash_sdk::dpp::secp256k1::ecdsa::sign(message, &sk))
 }
 
 #[cfg(test)]
@@ -1135,7 +1130,7 @@ mod tests {
 
     fn known_wif() -> &'static str {
         // Testnet WIF with deterministic, all-zero-except-last-byte key
-        // bytes. The fixed WIF represents scalar one with compressed public keys.
+        // bytes. Generated locally with `PrivateKey::new(SecretKey::from_secret_bytes([0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
         // and pinned here to keep tests offline + reproducible.
         "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
     }
@@ -1270,9 +1265,8 @@ mod tests {
         // the signer hit the imported-key path (not some other key the
         // backend might fall back to) without referencing BIP-32 at all.
         let priv_key = PrivateKey::from_wif(known_wif()).expect("wif");
-
-        let pk = priv_key.inner.public_key();
-        pk.verify(&msg, sig)
+        let pk = dash_sdk::dpp::secp256k1::PublicKey::from(priv_key.inner.public_key());
+        dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
             .expect("signature verifies against WIF-derived pubkey");
 
         // Forgetting the key removes both the index entry and the
@@ -1924,9 +1918,9 @@ mod tests {
             .expect("chokepoint signs after the right passphrase");
 
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-
-        let pk = priv_key.inner.public_key();
-        pk.verify(&msg, sig).expect("chokepoint signature verifies");
+        let pk = dash_sdk::dpp::secp256k1::PublicKey::from(priv_key.inner.public_key());
+        dash_sdk::dpp::secp256k1::ecdsa::verify(&sig, Message::from_digest(msg), &pk)
+            .expect("chokepoint signature verifies");
         assert_eq!(prompt.ask_count(), 2, "one wrong + one right passphrase");
     }
 
@@ -2102,8 +2096,11 @@ mod tests {
 
     /// A deterministic throwaway testnet WIF distinct per `byte`.
     fn wif_for_byte(byte: u8) -> String {
-        let secret = EcdsaSecretKey::from_bytes(&[byte; 32]).expect("valid scalar");
-        PrivateKey::new(secret, Network::Testnet).to_wif()
+        let secret = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([byte; 32])
+            .expect("valid scalar");
+        PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif()
     }
 
     fn transient_view<'a>(
@@ -2551,8 +2548,7 @@ mod tests {
         };
         let address = Address::p2pkh(&pub_key, network).to_string();
         let label = label_for_address(&address);
-        let key_bytes = priv_key.inner.to_bytes();
-        let raw = SecretBytes::from_slice(key_bytes.as_ref());
+        let raw = SecretBytes::from_slice(&priv_key.inner.to_bytes()[..]);
         store
             .set(&single_key_namespace_id(), &label, &raw)
             .expect("write legacy bytes");
@@ -2612,8 +2608,7 @@ mod tests {
             "raw, not a versioned envelope"
         );
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-        let key_bytes = priv_key.inner.to_bytes();
-        assert_eq!(raw.expose_secret(), &key_bytes[..]);
+        assert_eq!(raw.expose_secret(), &priv_key.inner.to_bytes()[..]);
 
         // Signs with no passphrase.
         view.sign_with(&imported.address, &[0x42u8; 32])
@@ -2916,8 +2911,10 @@ mod tests {
             )
             .expect("original password still works")
             .expect("secret retained");
-        let expected_key = PrivateKey::from_wif(known_wif()).unwrap().inner.to_bytes();
-        assert_eq!(raw.expose_secret(), &expected_key[..]);
+        assert_eq!(
+            raw.expose_secret(),
+            &PrivateKey::from_wif(known_wif()).unwrap().inner.to_bytes()[..]
+        );
         assert_eq!(view.hydrate_wallets().len(), 1);
         view.forget(&existing.address)
             .expect("forget repaired protected key");

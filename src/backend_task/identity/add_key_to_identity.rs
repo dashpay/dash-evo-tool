@@ -703,21 +703,13 @@ mod tests {
             .get_resolve_with_seed(&placement, &wallets, &seed, Network::Testnet)
             .unwrap()
             .unwrap();
-
         let secret = SecretKey::from_secret_bytes(*bytes).unwrap();
         let message = Message::from_digest([1; 32]);
         let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(message, &secret);
         dash_sdk::dpp::secp256k1::ecdsa::verify(
             &signature,
             message,
-            &dash_sdk::dpp::secp256k1::PublicKey::from_slice(
-                &cache
-                    .get(Network::Testnet, 0, 3)
-                    .unwrap()
-                    .inner
-                    .to_compressed(),
-            )
-            .unwrap(),
+            &cache.get(Network::Testnet, 0, 3).unwrap().inner.into(),
         )
         .unwrap();
     }

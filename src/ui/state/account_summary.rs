@@ -365,12 +365,13 @@ mod tests {
     /// valid address to stand in for a funded-but-unindexed chain address.
     fn addr_from_byte(b: u8) -> Address {
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+        use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
 
         let mut sk_bytes = [0u8; 32];
         sk_bytes[0] = if b == 0 { 1 } else { b };
-        let sk = SecretKey::from_bytes(&sk_bytes).expect("valid secret key");
-        let pubkey = PublicKey::from_slice(&sk.public_key().to_compressed()).expect("valid pubkey");
+        let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&sk).serialize())
+            .expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

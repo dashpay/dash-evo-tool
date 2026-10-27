@@ -443,12 +443,12 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 // If there's a mismatch (due to incorrect stored derivation path), regenerate the correct path
                 if identity_public_key.key_type() == KeyType::ECDSA_HASH160 {
                     use dash_sdk::dpp::dashcore::PublicKey;
-                    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+                    use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
                     use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
-                    if let Ok(secret_key) = SecretKey::from_bytes(&private_key) {
+                    if let Ok(secret_key) = EcdsaSecretKey::from_bytes(&private_key) {
                         let derived_pubkey = PublicKey::new(secret_key.public_key());
                         let pubkey_bytes = derived_pubkey.to_bytes();
                         let sha256_hash = sha256::Hash::hash(&pubkey_bytes);
@@ -981,7 +981,6 @@ impl QualifiedIdentity {
     ) -> Result<Option<BinaryData>, ProtocolError> {
         use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
-
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
 
         let (Some(secret_access), Some(seed_hash)) =
@@ -1003,7 +1002,6 @@ impl QualifiedIdentity {
                     let Some(seed) = plaintext.expose_hd_seed() else {
                         return Ok(None);
                     };
-
                     for identity_index in 0..10u32 {
                         let correct_path = DP::identity_authentication_path(
                             network,
@@ -1028,7 +1026,7 @@ impl QualifiedIdentity {
                                 "Using corrected derivation path for signing (found via scan)"
                             );
                             let signature =
-                                signer::sign(&data, &*extended_key.private_key.to_bytes())
+                                signer::sign(&data, extended_key.private_key.to_bytes().as_slice())
                                     .map_err(|_| TaskError::EncryptionError {
                                         detail:
                                             "Failed to sign with the recovered derivation path."

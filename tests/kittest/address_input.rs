@@ -38,8 +38,8 @@ fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
 
     let mut sk_bytes = [1u8; 32];
     sk_bytes[31] = seed.max(1);
-    let sk = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&sk_bytes)
-        .expect("valid secret key");
+    let sk =
+        dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
     let address = Address::p2pkh(&PublicKey::new(sk.public_key()), Network::Testnet);
 
     // m/44'/1'/0'/0/0 — a BIP-44 external receive path.

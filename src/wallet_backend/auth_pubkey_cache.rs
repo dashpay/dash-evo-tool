@@ -214,7 +214,7 @@ mod tests {
 
     use dash_sdk::dpp::dashcore::PublicKey;
     use dash_sdk::dpp::dashcore::base58;
-    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+    use dash_sdk::dpp::secp256k1::{PublicKey as Secp256k1PublicKey, SecretKey};
 
     use crate::wallet_backend::kv_test_support::InMemoryKv;
 
@@ -223,8 +223,8 @@ mod tests {
     }
 
     fn pubkey(seed: u8) -> PublicKey {
-        let sk = SecretKey::from_bytes(&[seed.max(1); 32]).expect("valid secret key");
-        PublicKey::new(sk.public_key())
+        let sk = SecretKey::from_secret_bytes([seed.max(1); 32]).expect("valid secret key");
+        PublicKey::new(Secp256k1PublicKey::from_secret_key(&sk))
     }
 
     /// AUTH-CACHE-VIEW-001 — a written cache round-trips through `get`

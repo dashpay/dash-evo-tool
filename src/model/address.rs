@@ -587,11 +587,12 @@ mod tests {
 
     #[test]
     fn detect_core_address() {
-        use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
         use dash_sdk::dashcore_rpc::dashcore::{PrivateKey, PublicKey};
+        use dash_sdk::dpp::secp256k1::SecretKey;
 
-        let sk = SecretKey::from_bytes(&[1u8; 32]).unwrap();
-        let privkey = PrivateKey::new(sk, Network::Testnet);
+        let sk = SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+        let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
         let addr = Address::p2pkh(&pubkey, Network::Testnet);
         assert_eq!(

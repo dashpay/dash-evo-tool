@@ -1,4 +1,8 @@
 //! Identity-side username ops: availability checks and own-request status.
+//!
+//! TODO(dpns-marketplace): selling, buying and transferring usernames through
+//! the platform-wallet marketplace are not offered yet. See
+//! https://github.com/dashpay/dash-evo-tool/issues/1103
 
 use std::collections::BTreeMap;
 
@@ -94,7 +98,7 @@ impl AppContext {
             integer_range_clauses: vec![],
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
+            data_contract: self.dpns_contract(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![
                 WhereClause {
@@ -128,7 +132,7 @@ impl AppContext {
     /// Convert a proved vote state into the pure snapshot the model decides on.
     fn contest_snapshot(&self, sdk: &Sdk, contenders: &Contenders) -> ContestSnapshot {
         let documents = self
-            .dpns_contract
+            .dpns_contract()
             .document_type_cloned_for_name("domain")
             .ok()
             .and_then(|document_type| {
@@ -444,7 +448,7 @@ mod tests {
             integer_range_clauses: vec![],
             sub_queries: vec![],
             select: SelectProjection::documents(),
-            data_contract: ctx.dpns_contract.clone(),
+            data_contract: ctx.dpns_contract(),
             document_type_name: "domain".into(),
             where_clauses: vec![WhereClause {
                 field: "records.identity".into(),
@@ -608,7 +612,7 @@ mod tests {
             .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
                 ContestedDocumentVotePollDriveQuery {
                     vote_poll: crate::model::dpns_voting::dpns_vote_poll(
-                        &ctx.dpns_contract,
+                        &ctx.dpns_contract(),
                         &normalize_dpns_label("Alice"),
                     )
                     .unwrap(),
@@ -802,7 +806,7 @@ mod tests {
             .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
                 ContestedDocumentVotePollDriveQuery {
                     vote_poll: crate::model::dpns_voting::dpns_vote_poll(
-                        &ctx.dpns_contract,
+                        &ctx.dpns_contract(),
                         "d1ssh",
                     )
                     .unwrap(),

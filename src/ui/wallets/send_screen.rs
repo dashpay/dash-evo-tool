@@ -6,7 +6,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::address::{AddressKind, ValidatedAddress};
+use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipient};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{
     AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
@@ -362,6 +362,8 @@ pub struct WalletSendScreen {
 
 /// Refusal of a top-up while another top-up of the same identity runs.
 const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
+/// Refusal of Core or Platform funds paying someone else's private address.
+const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into your own private balance. To pay this private address, choose Shielded Balance as the source.";
 
 /// Merge the confirmation dialog's action into the frame action. The dialog
 /// consumes the click and clears itself, so a confirmed send is one-shot: it
@@ -1023,6 +1025,30 @@ impl WalletSendScreen {
             .unwrap_or_default()
     }
 
+    /// Whether the shielded destination is the paying wallet's own private
+    /// balance — the only one Core and Platform funds can shield into.
+    ///
+    /// The empty address is the Shield flow's own-pool marker. A typed address
+    /// counts only when it decodes to the same bytes as the wallet's private
+    /// address; while that address is still unknown, nothing typed matches.
+    /// DET shows only the default address of Orchard account 0, so another
+    /// diversified address of the same wallet is treated as someone else's.
+    fn shielded_destination_is_own_pool(&self) -> bool {
+        let Some(ValidatedAddress::Shielded(address)) = &self.validated_destination else {
+            return false;
+        };
+        if address.is_empty() {
+            return true;
+        }
+        let Some(typed) = parse_shielded_recipient(address) else {
+            return false;
+        };
+        self.selected_wallet_seed_hash
+            .and_then(|seed_hash| self.app_context.shielded_receive_address(&seed_hash))
+            .and_then(|own| parse_shielded_recipient(&own))
+            .is_some_and(|own| own == typed)
+    }
+
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
         if !self.identity_constraint_holds() {
             return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
@@ -1056,6 +1082,19 @@ impl WalletSendScreen {
             .ok_or_else(|| "Please enter an amount".to_string())?;
         if amount.value() == 0 {
             return Err("Amount must be greater than 0".to_string());
+        }
+
+        // Core and Platform can only shield into the paying wallet's own
+        // private balance: the shield tasks carry no recipient and always
+        // deposit into the wallet's own pool. Letting someone else's private
+        // address through would keep the money while reporting success.
+        if matches!(
+            source,
+            SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_)
+        ) && destination.kind() == AddressKind::Shielded
+            && !self.shielded_destination_is_own_pool()
+        {
+            return Err(SHIELDED_NOT_OWN_POOL.to_string());
         }
 
         match (source, destination.kind()) {
@@ -5141,10 +5180,10 @@ mod tests {
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::AssetLockInputState;
-    use dash_sdk::dashcore_rpc::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
     use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+    use dash_sdk::dpp::secp256k1::SecretKey;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use std::cell::RefCell;
@@ -5158,8 +5197,10 @@ mod tests {
     }
 
     fn testnet_core_address(key_byte: u8) -> Address {
-        let secret_key = SecretKey::from_bytes(&[key_byte; 32]).expect("valid secret key");
-        let private_key = PrivateKey::new(secret_key, Network::Testnet);
+        let secret_key = SecretKey::from_secret_bytes([key_byte; 32]).expect("valid secret key");
+        let private_key =
+            PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+                .expect("valid secret key");
         let public_key = PublicKey::from_private_key(&private_key);
         Address::p2pkh(&public_key, Network::Testnet)
     }
@@ -7707,5 +7748,158 @@ mod tests {
                 .is_err(),
             "one duff more needs a funding above the ceiling and must be refused"
         );
+    }
+
+    /// A valid testnet private (Orchard) address derived from `seed_byte`.
+    fn testnet_shielded_address(seed_byte: u8) -> String {
+        let keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+            &[seed_byte; 64],
+            Network::Testnet,
+            0,
+        )
+        .expect("ZIP-32 derivation from a valid test seed");
+        crate::model::address::encode_shielded_address(
+            &keys.address_at(0).to_raw_address_bytes(),
+            Network::Testnet,
+        )
+        .expect("valid Orchard payload encodes")
+    }
+
+    /// A send screen whose wallet has `own_address` as its private address.
+    fn send_screen_with_own_shielded_address(
+        own_address: &str,
+    ) -> (WalletSendScreen, tempfile::TempDir) {
+        let (mut screen, temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen
+            .app_context
+            .shielded_addresses
+            .lock()
+            .expect("shielded address cache")
+            .insert(seed_hash, own_address.to_string());
+        screen.amount = Some(Amount::new_dash(0.01));
+        (screen, temp_dir)
+    }
+
+    fn non_shielded_sources() -> [SourceSelection; 2] {
+        [
+            SourceSelection::CoreWallet,
+            SourceSelection::PlatformAddresses(Vec::new()),
+        ]
+    }
+
+    /// Core and Platform funds can only be shielded into the paying wallet's
+    /// own pool: the backend ignores the typed address. Someone else's private
+    /// address must be refused before any task is built, or the sender would
+    /// keep the money while the app reports success.
+    #[test]
+    fn core_and_platform_refuse_someone_elses_private_address() {
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        for source in non_shielded_sources() {
+            screen.selected_source = Some(source.clone());
+            assert_eq!(
+                screen.validated_send_route().err().as_deref(),
+                Some(SHIELDED_NOT_OWN_POOL),
+                "{source:?} must not pay someone else's private address"
+            );
+            assert_eq!(
+                screen.validate_and_send().err().as_deref(),
+                Some(SHIELDED_NOT_OWN_POOL),
+                "{source:?} must not build a task for someone else's private address"
+            );
+        }
+    }
+
+    /// Before the wallet's private address is known, a typed private address
+    /// cannot be proven to be its own, so it is refused as well. The Shield
+    /// flow's own-pool marker needs no address and keeps working.
+    #[test]
+    fn core_refuses_a_private_address_while_its_own_is_unknown() {
+        let (mut screen, _dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        assert_eq!(
+            screen.app_context.shielded_receive_address(&seed_hash),
+            None,
+            "sanity: the wallet's private address is not known yet"
+        );
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        assert_eq!(
+            screen.validated_send_route().err().as_deref(),
+            Some(SHIELDED_NOT_OWN_POOL)
+        );
+
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        assert!(
+            matches!(
+                screen.validated_send_route(),
+                Ok(ValidatedSendRoute::CoreToShielded)
+            ),
+            "the Shield flow must not depend on the wallet's private address"
+        );
+    }
+
+    /// Shielding into the wallet's own pool keeps working, whether the Shield
+    /// flow's own-pool marker or the wallet's own address (in any accepted
+    /// spelling) is the destination.
+    #[test]
+    fn core_and_platform_still_shield_into_the_own_pool() {
+        let own = testnet_shielded_address(7);
+        let own_raw = parse_shielded_recipient(&own).expect("own parses");
+        let (mut screen, _dir) = send_screen_with_own_shielded_address(&own);
+
+        for destination in [
+            String::new(),
+            own.clone(),
+            own.to_uppercase(),
+            hex::encode(own_raw),
+        ] {
+            screen.validated_destination = Some(ValidatedAddress::Shielded(destination.clone()));
+            screen.selected_source = Some(SourceSelection::CoreWallet);
+            assert!(
+                matches!(
+                    screen.validated_send_route(),
+                    Ok(ValidatedSendRoute::CoreToShielded)
+                ),
+                "Core must shield into the own pool via {destination:?}"
+            );
+            screen.selected_source = Some(SourceSelection::PlatformAddresses(Vec::new()));
+            assert!(
+                matches!(
+                    screen.validated_send_route(),
+                    Ok(ValidatedSendRoute::PlatformToShielded(_))
+                ),
+                "Platform must shield into the own pool via {destination:?}"
+            );
+        }
+    }
+
+    /// The private balance can still pay someone else's private address.
+    #[test]
+    fn private_balance_still_pays_someone_elses_private_address() {
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen.selected_source = Some(SourceSelection::Shielded(seed_hash, 1_000_000_000));
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        assert!(matches!(
+            screen.validated_send_route(),
+            Ok(ValidatedSendRoute::ShieldedToShielded(sh)) if sh == seed_hash
+        ));
     }
 }

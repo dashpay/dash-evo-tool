@@ -18,6 +18,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing}
 use crate::ui::wallets::send_screen::IdentitySendMode;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use egui::{self, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ use std::sync::Arc;
 pub enum HomeOutcome {
     None,
     GoToContacts,
+    GoToContact(Identifier),
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
@@ -302,6 +304,13 @@ pub fn load_action(
     };
     state.reconcile_owner(&identity);
     contacts.reconcile_owner(&identity);
+    // Both loads reach proof-verifying reads: the contact lists directly, the
+    // payment history through the DashPay sync it runs first. Sent before the
+    // masternode list is synced they fail locally and get the queried nodes
+    // banned, so hold both until then.
+    if !app_context.connection_status().masternodes_ready() {
+        return AppAction::None;
+    }
     let action = super::contacts::load_action(&identity, contacts);
     if matches!(action, AppAction::None) {
         state.load_payments(&identity)
@@ -507,7 +516,7 @@ pub(super) fn card<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<IdentityHubTab> {
     match outcome {
         HomeOutcome::None => None,
-        HomeOutcome::GoToContacts => Some(IdentityHubTab::Contacts),
+        HomeOutcome::GoToContacts | HomeOutcome::GoToContact(_) => Some(IdentityHubTab::Contacts),
         HomeOutcome::GoToSettings | HomeOutcome::GoToUsernames | HomeOutcome::GoToAdvanced => {
             Some(IdentityHubTab::Settings)
         }

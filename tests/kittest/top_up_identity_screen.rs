@@ -501,7 +501,7 @@ fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTas
 fn prepare_top_up(harness: &mut App, identity: &QualifiedIdentity) -> Result<AppAction, String> {
     let core = Address::p2pkh(
         &PublicKey::new(
-            dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&[0x31; 32])
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([0x31; 32])
                 .expect("secret key")
                 .public_key(),
         ),

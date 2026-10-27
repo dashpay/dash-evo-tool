@@ -97,3 +97,16 @@ fn test_frame_batch_processing() {
         }
     });
 }
+
+/// `mount_app` drops its Tokio runtime before returning. A real frame after
+/// the two-second System-theme polling throttle must still be safe to drive.
+#[test]
+fn system_theme_frames_after_mount_need_no_tokio_runtime() {
+    with_isolated_data_dir(|| {
+        let mut harness =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        harness.run_steps(3);
+    });
+}

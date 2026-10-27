@@ -153,7 +153,7 @@ impl AppContext {
             return Err(TaskError::InvalidDpnsName { validation });
         }
 
-        let dpns_contract = self.dpns_contract.clone();
+        let dpns_contract = self.dpns_contract();
 
         let qualified_identity = input.qualified_identity;
 
@@ -191,7 +191,7 @@ impl AppContext {
                 .identity
                 .get_public_key_by_id(key_id)
                 .filter(|key| {
-                    key_can_sign_documents(key, dpns_signing_requirement(&self.dpns_contract))
+                    key_can_sign_documents(key, dpns_signing_requirement(&self.dpns_contract()))
                 }),
             None => qualified_identity.document_signing_key(&preorder_document_type),
         }
@@ -982,7 +982,7 @@ mod tests {
             .expect_fetch_many::<Identifier, ContenderWithSerializedDocument, _, Contenders>(
                 ContestedDocumentVotePollDriveQuery {
                     vote_poll: crate::model::dpns_voting::dpns_vote_poll(
-                        &ctx.dpns_contract,
+                        &ctx.dpns_contract(),
                         &normalize_dpns_label(label),
                     )
                     .expect("vote poll"),

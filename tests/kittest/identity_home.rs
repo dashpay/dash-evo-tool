@@ -105,6 +105,9 @@ type HomeHarnessState = (
 );
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
+    // The hub holds its proof-verifying reads until the masternode list is
+    // synced; these tests start on a synced network.
+    app_context.connection_status().set_masternodes_ready(true);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 900.0))
         .build_ui_state(
@@ -161,6 +164,30 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
         );
     harness.run();
     harness
+}
+
+#[test]
+fn home_contacts_are_not_reported_empty_before_the_load_answers() {
+    with_isolated_data_dir(|| {
+        let (_runtime, context) = fresh_app_context();
+        seed_identity(&context, vec![], vec![]);
+        let mut harness = mount_home(context);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("No contacts yet. Add someone by their username.")
+                .is_none(),
+            "an unanswered contact load is not an empty contact list"
+        );
+        harness.state_mut().4.record_contacts(vec![]);
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("No contacts yet. Add someone by their username.")
+                .is_some(),
+            "an authoritative empty answer may show the empty state"
+        );
+    });
 }
 
 /// The `(AppAction, HomeOutcome)` produced by the most recent render — the
@@ -429,6 +456,44 @@ fn home_profile_avatar_requests_its_image() {
                 if url == "https://example.com/avatar.png")),
             "Home must load the published profile photo"
         );
+    });
+}
+
+#[test]
+fn home_header_long_usernames_stay_above_balance_at_narrow_widths() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let name = "a".repeat(63);
+        super::identity_usernames::seed_username_identity(
+            &ctx,
+            0xB4,
+            "Alex",
+            &[&name, &"b".repeat(63), &"c".repeat(63)],
+            0,
+            true,
+        );
+        let mut harness = mount_home(ctx);
+        for width in [360.0, 520.0, 800.0] {
+            harness.set_size(egui::vec2(width, 900.0));
+            harness.run();
+            let names = harness.get_by_label_contains(&format!("@{name}")).rect();
+            let add = harness.get_by_label("Add username").rect();
+            let balance = harness.get_by_label("Identity balance").rect();
+            if width < 640.0 {
+                assert!(
+                    names.bottom() <= balance.top(),
+                    "names {names:?} overlap balance {balance:?}"
+                );
+                assert!(
+                    add.bottom() <= balance.top(),
+                    "add {add:?} overlaps balance {balance:?}"
+                );
+            } else {
+                assert!(!names.intersects(balance), "names overlap balance");
+                assert!(!add.intersects(balance), "add overlaps balance");
+            }
+            assert!(names.right() <= width, "names exceed viewport: {names:?}");
+        }
     });
 }
 
@@ -751,6 +816,7 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
                 nickname: Some("Bao".into()),
                 note: None,
                 is_hidden: false,
+                details_unreadable: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
@@ -770,10 +836,10 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             &mut harness,
             "the newly selected identity's contact load",
             |action| match action {
-                AppAction::BackendTasks(tasks, _) => Some(
+                AppAction::BackendTasksWithContexts(tasks, _) => Some(
                     tasks
                         .iter()
-                        .filter_map(|task| match task {
+                        .filter_map(|(task, _)| match task {
                             BackendTask::DashPayTask(task) => match &**task {
                                 DashPayTask::LoadContacts { identity }
                                 | DashPayTask::LoadContactRequests { identity } => {
@@ -794,10 +860,12 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             harness.query_by_label("Bao").is_none(),
             "one identity's contacts must never be shown under another"
         );
+        assert!(harness.query_by_label("Loading contacts…").is_some());
         assert!(
             harness
                 .query_by_label("No contacts yet. Add someone by their username.")
-                .is_some()
+                .is_none(),
+            "the new identity's list has not answered yet"
         );
 
         // The second identity's list arrives and holds the very request the
@@ -835,6 +903,7 @@ fn contact(byte: u8, name: &str) -> dash_evo_tool::backend_task::dashpay::Contac
         nickname: Some(name.into()),
         note: None,
         is_hidden: false,
+        details_unreadable: false,
         account_reference: 0,
         username: None,
         display_name: None,
@@ -945,6 +1014,7 @@ fn home_contact_preview_shows_the_first_six_contacts() {
                     nickname: Some((*name).into()),
                     note: None,
                     is_hidden: false,
+                    details_unreadable: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,

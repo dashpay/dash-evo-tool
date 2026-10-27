@@ -18,9 +18,9 @@ use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaRecSignature, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
+use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -35,20 +35,32 @@ use std::sync::Arc;
 /// (`27 + recId`, `+4` when `compressed`) followed by the 64-byte signature, so
 /// a verifier can recover the signer's public key from the signature alone.
 /// Shared by the wallet-key and identity-key message-signing tasks.
+///
+/// The recoverable signature is plain RFC 6979 (no low-R grinding), so the
+/// envelope bytes match every earlier build. [`EcdsaSecretKey`] marks every
+/// key compressed, so the envelope is rebuilt with the caller's flag.
+///
+/// # Errors
+///
+/// [`TaskError::WalletMessageSigningFailed`] if the signature cannot be put
+/// in the envelope; the detail is logged.
 pub(crate) fn dash_signed_message(
     message: &str,
-    secret_key: &SecretKey,
+    secret_key: &EcdsaSecretKey,
     compressed: bool,
-) -> String {
+) -> Result<String, TaskError> {
     let message_hash = signed_msg_hash(message);
-    use base64::Engine;
     let recoverable = secret_key.sign_recoverable(message_hash.as_byte_array());
-    let mut bytes = *recoverable.as_bytes();
-    // Core signs with compressed keys; the legacy envelope also represents uncompressed WIFs.
-    if !compressed {
-        bytes[0] -= 4;
-    }
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    let envelope = recoverable
+        .signature()
+        .and_then(|signature| {
+            EcdsaRecSignature::from_parts(signature, recoverable.recovery_id()?, compressed)
+        })
+        .map_err(|detail| {
+            tracing::warn!(error = %detail, "Sign-message envelope construction failed");
+            TaskError::WalletMessageSigningFailed
+        })?;
+    Ok(sign_message::to_base64(envelope))
 }
 
 impl AppContext {
@@ -105,10 +117,10 @@ impl AppContext {
     }
 
     /// Resolve the vault-backed identity key at `(identity_id, target,
-    /// key_id)` through the JIT chokepoint and hand its `SecretKey` to `f`.
-    /// The raw key zeroizes when the closure returns — only `f`'s result
-    /// crosses back to the caller. Shared by the identity-key sign and
-    /// display tasks.
+    /// key_id)` through the JIT chokepoint and lend it to `f` as an
+    /// [`EcdsaSecretKey`]. The raw key and the parsed key are both wiped when
+    /// the closure returns — only `f`'s result crosses back to the caller.
+    /// Shared by the identity-key sign and display tasks.
     ///
     /// The placement is the caller's word, and it addresses the vault label
     /// directly, so the bytes are matched against the public key the stored
@@ -137,7 +149,7 @@ impl AppContext {
         identity_id: Identifier,
         target: PrivateKeyTarget,
         key_id: KeyID,
-        f: impl FnOnce(SecretKey) -> Result<T, TaskError>,
+        f: impl FnOnce(&EcdsaSecretKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
         let identity = self
             .get_local_qualified_identity(&identity_id)?
@@ -187,7 +199,7 @@ impl AppContext {
                     .ok_or(TaskError::IdentityKeyMissing)?;
                 // Present-but-malformed key bytes are distinct from a
                 // genuinely absent key and from a signing/derivation failure.
-                let secret_key = SecretKey::from_bytes(key).map_err(|detail| {
+                let secret_key = EcdsaSecretKey::from_bytes(key).map_err(|detail| {
                     tracing::warn!(error = %detail, "Identity-key secret construction failed");
                     TaskError::IdentityKeyMalformed
                 })?;
@@ -203,7 +215,7 @@ impl AppContext {
                     );
                     return Err(TaskError::IdentityKeyMismatch);
                 }
-                f(secret_key)
+                f(&secret_key)
             })
             .await
     }
@@ -384,13 +396,13 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::dashcore::Network;
-
-    use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
+    use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
     use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::IdentityPublicKey;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -515,22 +527,48 @@ mod tests {
     /// hardcoded recovery header would fail ~50% of the time here. Both the
     /// wallet-key and identity-key signers call this one helper.
     fn assert_recovers(compressed: bool) {
-        let secret_key = SecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
-        let expected_pubkey = secret_key.public_key();
+        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
+        let expected_pubkey = PublicKey::from_secret_key(
+            &SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret"),
+        );
         let message = "Bilby was here";
 
-        let base64 = dash_signed_message(message, &secret_key, compressed);
-        let parsed =
-            dash_sdk::dpp::dashcore::sign_message::from_base64(&base64).expect("valid envelope");
-        assert_eq!(parsed.is_compressed().unwrap(), compressed);
+        let base64 = dash_signed_message(message, &secret_key, compressed).expect("signs");
+        let parsed = sign_message::from_base64(&base64).expect("valid envelope");
+        assert_eq!(parsed.is_compressed().expect("valid header"), compressed);
 
-        let recovered = dash_sdk::dpp::dashcore::sign_message::recover_pubkey(
-            &parsed,
-            signed_msg_hash(message),
-        )
-        .expect("recovers a public key");
-        assert_eq!(recovered.inner, expected_pubkey);
+        let recovered = sign_message::recover_pubkey(&parsed, signed_msg_hash(message))
+            .expect("recovers a public key");
+        assert_eq!(PublicKey::from(recovered.inner), expected_pubkey);
         assert_eq!(recovered.compressed, compressed);
+    }
+
+    /// The envelope keeps the layout the previous encoder produced: a header
+    /// byte `27 + recovery id` (`+ 4` when compressed), then the compact
+    /// `r || s` of the same deterministic signature. The reference signs with
+    /// the raw secp256k1 primitive, so this also proves the signature bytes
+    /// did not change when signing moved to `EcdsaSecretKey`.
+    #[test]
+    fn the_envelope_keeps_its_byte_layout() {
+        use dash_sdk::dpp::secp256k1::Message;
+        use dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature;
+        let message = "Bilby was here";
+        let reference_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
+        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
+        let digest = Message::from_digest(*signed_msg_hash(message).as_byte_array());
+        let (recovery_id, compact) =
+            RecoverableSignature::sign_ecdsa_recoverable(digest, &reference_key)
+                .serialize_compact();
+        for compressed in [false, true] {
+            let mut expected = [0u8; 65];
+            expected[0] = 27 + recovery_id.to_u8() + if compressed { 4 } else { 0 };
+            expected[1..].copy_from_slice(&compact);
+            let encoded = sign_message::from_base64(
+                &dash_signed_message(message, &secret_key, compressed).expect("signs"),
+            )
+            .expect("valid envelope");
+            assert_eq!(encoded.as_bytes(), &expected);
+        }
     }
 
     #[test]
@@ -541,45 +579,6 @@ mod tests {
     #[test]
     fn recovers_signer_pubkey_uncompressed() {
         assert_recovers(false);
-    }
-
-    #[test]
-    fn signed_message_preserves_legacy_envelope_bytes() {
-        use base64::Engine;
-        use dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature;
-        use dash_sdk::dpp::secp256k1::{Message, SecretKey as RawSecretKey};
-
-        let key = SecretKey::from_bytes(&[0x42u8; 32]).unwrap();
-        let raw_bytes = key.to_bytes();
-        let raw_key = RawSecretKey::from_secret_bytes(*raw_bytes).unwrap();
-        for message in [
-            "",
-            "Bilby was here",
-            "Dash message — Unicode",
-            "line one\nline two",
-        ] {
-            let hash = signed_msg_hash(message);
-            let raw = RecoverableSignature::sign_ecdsa_recoverable(
-                Message::from_digest(hash.to_byte_array()),
-                &raw_key,
-            );
-            let (recovery_id, compact) = raw.serialize_compact();
-            for compressed in [false, true] {
-                let mut expected = [0u8; 65];
-                expected[0] = 27 + recovery_id.to_u8() + if compressed { 4 } else { 0 };
-                expected[1..].copy_from_slice(&compact);
-                let actual = dash_signed_message(message, &key, compressed);
-                assert_eq!(
-                    actual,
-                    base64::engine::general_purpose::STANDARD.encode(expected)
-                );
-                let parsed = dash_sdk::dpp::dashcore::sign_message::from_base64(&actual).unwrap();
-                let recovered =
-                    dash_sdk::dpp::dashcore::sign_message::recover_pubkey(&parsed, hash).unwrap();
-                assert_eq!(recovered.inner, key.public_key());
-                assert_eq!(recovered.compressed, compressed);
-            }
-        }
     }
 
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;

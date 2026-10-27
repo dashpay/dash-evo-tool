@@ -155,7 +155,7 @@ impl<'a> DetPlatformSigner<'a> {
         let private_key = extended_private_key.to_priv();
 
         let signature =
-            dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_ref())
+            dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_slice())
                 .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
 
         Ok(signature.to_vec())
@@ -203,7 +203,6 @@ mod tests {
     use super::*;
     use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
     use dash_sdk::dpp::dashcore::Address;
-
     use zeroize::Zeroizing;
 
     /// Reference platform-address signing — reproduces exactly what the
@@ -224,7 +223,7 @@ mod tests {
             .derive_priv_ecdsa_for_master_seed(seed, network)
             .expect("derive")
             .to_priv();
-        dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_ref())
+        dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.to_bytes().as_slice())
             .expect("reference sign")
             .to_vec()
     }
@@ -242,7 +241,6 @@ mod tests {
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .expect("derive platform key");
-
         let address = Address::p2pkh(&xprv.to_priv().public_key(), network);
         let platform_address =
             PlatformAddress::try_from(address.clone()).expect("to platform address");
@@ -321,7 +319,7 @@ mod tests {
             let data = b"key-parity-vector";
             let reference_sig = dash_sdk::dpp::dashcore::signer::sign(
                 data,
-                reference_key.inner.to_bytes().as_ref(),
+                reference_key.inner.to_bytes().as_slice(),
             )
             .expect("reference sign")
             .to_vec();
@@ -352,7 +350,6 @@ mod tests {
         let other_xprv = other_path
             .derive_priv_ecdsa_for_master_seed(&*seed, network)
             .unwrap();
-
         let other_address = Address::p2pkh(&other_xprv.to_priv().public_key(), network);
         let other_platform = PlatformAddress::try_from(other_address).unwrap();
 

@@ -608,7 +608,7 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::MinimumPoolNotesForOutgoing(_)
             | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingControlGroup(_)
             | TokenConfigurationChangeItem::MinimumPoolNotesForOutgoingAdminGroup(_) => {
-                ui.label("This setting cannot be changed here. Use another token configuration editor.");
+                ui.label("The app cannot change this token setting yet. Choose another setting to update.");
             }
         }
         });

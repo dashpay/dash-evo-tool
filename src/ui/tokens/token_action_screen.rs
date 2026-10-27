@@ -466,9 +466,6 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return self.show_success_screen(ui);
             }
 
-            ui.heading(A::PAGE_HEADING);
-            ui.add_space(10.0);
-
             let identity = &self.common.identity_token_info.identity;
             let has_keys = if self
                 .common
@@ -484,6 +481,8 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             };
 
             if !has_keys {
+                ui.heading(A::PAGE_HEADING);
+                ui.add_space(10.0);
                 return self.render_no_keys(ui);
             }
 
@@ -499,6 +498,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     self.common.wallet_open_attempted = true;
                 }
                 if wallet_needs_unlock(wallet) {
+                    ui.heading(A::PAGE_HEADING);
                     ui.add_space(10.0);
                     ui.colored_label(
                         Color32::from_rgb(200, 150, 50),
@@ -514,8 +514,14 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
 
             let mut step = StepCounter::new();
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.common.show_advanced_options, "Advanced Options");
+            // The checkbox shares the heading's row. A bare right-to-left layout
+            // here would take all remaining height and centre the checkbox in it,
+            // pushing the whole form to the bottom of the panel.
+            ui.horizontal(|ui| {
+                ui.heading(A::PAGE_HEADING);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.common.show_advanced_options, "Advanced Options");
+                });
             });
             ui.add_space(10.0);
 

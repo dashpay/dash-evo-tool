@@ -1113,6 +1113,14 @@ mod tests {
         }
     }
 
+    /// A credit output script as long as the P2PKH one a real asset lock pays
+    /// to. The builder sizes the asset-lock payload, and so its fee, from the
+    /// actual credit outputs, so a shorter script would make the fee cheaper
+    /// than in production and let a larger amount build.
+    fn credit_output_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0; super::P2PKH_CREDIT_OUTPUT_SCRIPT_LEN])
+    }
+
     #[test]
     fn asset_lock_max_excludes_unconfirmed_funds_counted_by_snapshot() {
         const CONFIRMED_DUFFS: u64 = 1_000_000;
@@ -1177,7 +1185,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_output_script(),
                 }]),
             ))
             .add_funding(&mut dry_run_account, account)
@@ -1195,7 +1203,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount + 1,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_output_script(),
                 }]),
             ))
             .add_funding(&mut one_over_account, account)
@@ -1213,7 +1221,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: snapshot_balance.spendable(),
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_output_script(),
                 }]),
             ))
             .add_funding(&mut overshoot_account, account)
@@ -1296,7 +1304,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_output_script(),
                 }]),
             ))
             .add_funding(&mut dry_run_account, account)
@@ -1318,7 +1326,7 @@ mod tests {
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
                 AssetLockPayload::new(vec![TxOut {
                     value: max_amount + 1,
-                    script_pubkey: ScriptBuf::new(),
+                    script_pubkey: credit_output_script(),
                 }]),
             ))
             .add_funding(&mut one_over_account, account)

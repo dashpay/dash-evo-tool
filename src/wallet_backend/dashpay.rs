@@ -182,10 +182,7 @@ pub(crate) fn derive_contact_info_encryption_keys(
         .derive_priv(&[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?])
         .map_err(derive_err)?;
 
-    Ok((
-        Zeroizing::new(*key1.private_key.to_bytes()),
-        Zeroizing::new(*key2.private_key.to_bytes()),
-    ))
+    Ok((key1.private_key.to_bytes(), key2.private_key.to_bytes()))
 }
 
 // ---------------------------------------------------------------------------

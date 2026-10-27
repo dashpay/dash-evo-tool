@@ -94,8 +94,8 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use crate::wallet_backend::{DetKv, DetScope};
-    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dpp::dashcore::{Network, PrivateKey};
+    use dash_sdk::dpp::secp256k1::SecretKey;
     use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::{Condvar, Mutex};
     use std::time::Duration;
@@ -804,8 +804,10 @@ mod tests {
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
         // Mint a deterministic throwaway key rather than committing a WIF.
-        let sk = SecretKey::from_bytes(&[0x11u8; 32]).expect("valid scalar");
-        let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
+        let sk = SecretKey::from_secret_bytes([0x11u8; 32]).expect("valid scalar");
+        let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif();
         let (imported, display_wallet) = f
             .ctx
             .import_single_key_wif(
@@ -850,8 +852,10 @@ mod tests {
         use crate::model::wallet::alias::AliasSource;
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
-        let key = SecretKey::from_bytes(&[0x33; 32]).expect("valid scalar");
-        let wif = PrivateKey::new(key, Network::Testnet).to_wif();
+        let key = SecretKey::from_secret_bytes([0x33; 32]).expect("valid scalar");
+        let wif = PrivateKey::from_byte_array(key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif();
         let (first, retained) = f
             .ctx
             .import_single_key_wif(
@@ -902,8 +906,10 @@ mod tests {
     async fn rename_single_key_blank_alias_resets_to_default_name() {
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
-        let sk = SecretKey::from_bytes(&[0x22u8; 32]).expect("valid scalar");
-        let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
+        let sk = SecretKey::from_secret_bytes([0x22u8; 32]).expect("valid scalar");
+        let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
+            .to_wif();
         let address = backend
             .single_key()
             .import_wif(

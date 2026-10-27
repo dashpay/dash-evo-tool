@@ -647,7 +647,7 @@ pub fn build_identity_registration_with_seed(
     identity_index: u32,
     funding_amount: Duffs,
 ) -> Result<IdentityRegistrationInfo, TaskError> {
-    let dashpay_contract_id = app_context.dashpay_contract.id();
+    let dashpay_contract_id = app_context.dashpay_contract().id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
     let network = app_context.network;
 
@@ -1498,14 +1498,12 @@ mod tests {
             .expect("resolve master")
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
-
-        let resolved_pub =
-            dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&*stored.1)
-                .expect("secret")
-                .public_key();
+        let resolved_pub = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(*stored.1)
+            .expect("secret")
+            .public_key();
         assert_eq!(
             master.public_key.inner.to_compressed(),
-            resolved_pub.to_compressed(),
+            resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
         );
     }

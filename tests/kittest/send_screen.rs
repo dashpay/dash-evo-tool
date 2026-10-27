@@ -26,8 +26,7 @@ const ONE_DASH_CREDITS: u64 = CREDITS_PER_DUFF * 100_000_000;
 fn core_address() -> Address {
     let secret_key = loop {
         let bytes: [u8; 32] = rand::random();
-        if let Ok(key) = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(&bytes)
-        {
+        if let Ok(key) = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(bytes) {
             break key;
         }
     };

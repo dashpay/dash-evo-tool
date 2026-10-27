@@ -14,23 +14,48 @@ stored in table/index/trigger order. Refinery history uses its SipHasher13
 hash over migration name, i32 version and rendered SQL. Timestamps and the
 store-generation token are deterministic fixture values.
 
-The production bridge recognizes only the exact `67d4ef3` history and schema.
-It reconstructs the `e3cd7cf` V018 intermediate schema from the fixture,
-copies and verifies the recognized legacy rows, then opens that populated
-staging database with the current public `SqlitePersister::open`. This runs
-upstream migrations on the data rather than copying old rows into an already
-migrated empty database. The final schema and history must match an independent
-fresh current persister before publication; both fixtures remain historical
-recognition guards and must not be replaced with the latest schema.
+The production bridge compares the source history and schema in
+`67d4ef3.sql`, and the destination guard `033ecae.sql` described below,
+before translating data. No code reads `e3cd7cf.sql` any more: it is kept
+as the reference for the V001–V018 migration names and checksums. The
+destination itself is created by the current public `SqlitePersister::open`,
+not by the fixture SQL. Updating either schema revision requires reviewing
+and regenerating these guards.
+The current destination guard is `033ecae.sql`, captured from an empty database
+opened by `SqlitePersister::open` at Platform revision
+`033ecaee2f3badc8e04ff8be664062f33516e3e4`. The V001–V018 migration names and
+checksums match `e3cd7cf.sql`. V019 adds only the nullable `asset_locks.operation_id`
+column, its unique index and immutability trigger (checksum `1537039181339941563`).
+The snapshot contains no domain rows; history timestamps are normalized. The
+bridge copies existing asset-lock blobs unchanged and leaves the new column NULL.
+A different migration occupying version 19 is not an accepted source history.
+Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
+comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
+checksum, and so the snapshot, are unchanged.
+Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
+`063589bf0adbe1a8823a943cee95385b423b0e3f` and
+`575d961fe0c54bd7e01a3cf3823494e58c6c4fdb` leave the migrations untouched.
 
-At Platform `f7500221fa2020de16a7402d664d7abd2b8a78a2`, V019 adds nullable
-asset-lock operation IDs and V021 resets Core transactions, UTXOs and InstantLocks,
-rewinding each filter checkpoint to at most birth height minus one (minimum zero).
-There is no V020 migration. The bridge checks this reset and preservation of
-non-Core rows after upstream migration. The original backup retains the pre-reset
-Core data; the app rebuilds confirmed Core history through SPV. Unconfirmed
-transactions return only if relayed again. A different V019 migration history,
-such as the unmerged `c0425f7` accounting schema, is not recognized by this bridge.
+The production bridge recognizes only the exact `67d4ef3` history and schema.
+It creates the staging database from `033ecae.sql`, copies and verifies the
+recognized legacy rows, then opens that populated staging database with the
+current public `SqlitePersister::open`. Upstream migrations after V019 therefore
+run over the translated data instead of being skipped by copying old rows into an
+already migrated empty database. The final schema and history must match an
+independent fresh current persister before publication.
+
+At Platform `344e110a630a0ca8060e38299d777cee8d7232e3` (dashpay/platform#5528),
+V020 (`core_transaction_accounting`) drops mined Core history and rewinds each
+filter checkpoint to at most birth height minus one (minimum zero), so the next
+SPV start rescans it. It keeps unmined history as evidence a rescan cannot
+redeliver: unconfirmed transactions with their instant locks and coins, and
+spent coins. V021 (`asset_lock_conflict_evidence`) rebuilds `asset_locks` with a
+`conflicted` status and an `operation_revision` column, copying every row
+unchanged. After migration, the bridge requires every non-Core row unchanged,
+the checkpoint rewind, the kept unmined history unchanged (a load-time record
+repair is compared through its retained original), and no Core row the legacy
+profile did not hold. The original backup retains the full pre-rescan Core data.
+
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

@@ -1,36 +1,36 @@
 use crate::app::TaskResult;
-use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::dashpay::{DashPayTask, ContactData};
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::document::DocumentTask;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
-use crate::model::masternode_input::decode_identity_id;
 use crate::model::dpns_voting::{
     DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey, DpnsVoteOperationId, DpnsVoteTargetKey,
 };
-use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use crate::model::grovestark_prover::ProofDataOutput;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
-use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use contested_names::ScheduledDPNSVote;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function;
 use dash_sdk::dpp::group::group_action::GroupAction;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -38,15 +38,15 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
+use grovestark::GroveSTARKTask;
+use migration::MigrationTask;
+use shielded::ShieldedTask;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use migration::MigrationTask;
-use shielded::ShieldedTask;
 use tokens::TokenTask;
-use grovestark::GroveSTARKTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -217,6 +217,23 @@ pub(crate) fn dashpay_request_id(task: &BackendTask) -> Option<Identifier> {
     }
 }
 
+/// The owner and contact a direct contact details write acts on. The migration
+/// gate names them in its refusal so the Identity Hub releases only that
+/// write's guard.
+fn dashpay_contact_info_target(task: &BackendTask) -> Option<(Identifier, Identifier)> {
+    match task {
+        BackendTask::DashPayTask(task) => match task.as_ref() {
+            DashPayTask::UpdateContactInfo {
+                identity,
+                contact_id,
+                ..
+            } => Some((identity.identity.id(), *contact_id)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The identity-load record `task` was dispatched under, when its caller marked
 /// the load `Submitted` and is gating on it. `None` for every other task, and for
 /// a load whose caller gates on nothing.
@@ -332,6 +349,17 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A DashPay social-profile update for one identity.
     DashPayProfileUpdate(Identifier),
+    /// A direct contact-details write, including failures before its handler runs.
+    DashPayContactInfoUpdate {
+        identity_id: Identifier,
+        contact_id: Identifier,
+    },
+    /// A read of an identity's contacts or contact requests.
+    DashPayContactsLoad {
+        network: Network,
+        identity_id: Identifier,
+        kind: crate::model::dashpay::ContactsLoadKind,
+    },
     /// A top-up of one identity's balance.
     IdentityTopUp(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
@@ -516,6 +544,19 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn contacts_load(
+        &self,
+    ) -> Option<(Network, Identifier, crate::model::dashpay::ContactsLoadKind)> {
+        match self.operation() {
+            Self::DashPayContactsLoad {
+                network,
+                identity_id,
+                kind,
+            } => Some((*network, *identity_id, *kind)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_dpns_contest_refresh(&self) -> bool {
         matches!(self.operation(), Self::DpnsContestRefresh)
     }
@@ -526,6 +567,17 @@ impl BackendTaskContext {
 
     pub(crate) fn is_fetch_documents_page(&self) -> bool {
         matches!(self.operation(), Self::FetchDocumentsPage(_))
+    }
+
+    /// Identify the direct contact write through dispatch wrappers.
+    pub(crate) fn dashpay_contact_info_target(&self) -> Option<(Identifier, Identifier)> {
+        match self.operation() {
+            Self::DashPayContactInfoUpdate {
+                identity_id,
+                contact_id,
+            } => Some((*identity_id, *contact_id)),
+            _ => None,
+        }
     }
 
     pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
@@ -650,9 +702,27 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::DashPayTask(task) => match task.as_ref() {
+                DashPayTask::LoadContacts { identity } => Self::DashPayContactsLoad {
+                    network: identity.network,
+                    identity_id: identity.identity.id(),
+                    kind: crate::model::dashpay::ContactsLoadKind::Contacts,
+                },
+                DashPayTask::LoadContactRequests { identity } => Self::DashPayContactsLoad {
+                    network: identity.network,
+                    identity_id: identity.identity.id(),
+                    kind: crate::model::dashpay::ContactsLoadKind::Requests,
+                },
                 DashPayTask::UpdateProfile { identity, .. } => {
                     Self::DashPayProfileUpdate(identity.identity.id())
                 }
+                DashPayTask::UpdateContactInfo {
+                    identity,
+                    contact_id,
+                    ..
+                } => Self::DashPayContactInfoUpdate {
+                    identity_id: identity.identity.id(),
+                    contact_id: *contact_id,
+                },
                 _ => Self::Other,
             },
             BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
@@ -803,7 +873,7 @@ pub enum BackendTaskSuccessResult {
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
         TokenAmount,
-        IntervalEvaluationExplanation,
+        distribution_function::evaluate_interval::IntervalEvaluationExplanation,
     ),
     ContractsWithDescriptions(
         BTreeMap<Identifier, (Option<ContractDescriptionInfo>, Vec<TokenInfo>)>,
@@ -1026,6 +1096,8 @@ pub enum BackendTaskSuccessResult {
     SetTokenPrice(FeeResult),
     DestroyedFrozenFunds(FeeResult),
     ClaimedTokens(FeeResult),
+    /// The once-per-identity claim note of this pair was forgotten.
+    OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     /// A requested foreground refresh found the upstream balance sync already
@@ -1362,7 +1434,14 @@ impl AppContext {
             // other init error is a transient deferral the cold-boot bridge
             // retries.
             if is_terminal_storage_open_error(&e) {
-                return Err(e);
+                return Err(match dashpay_contact_info_target(&task) {
+                    Some((identity_id, contact_id)) => TaskError::DashPayContactInfoActionFailed {
+                        identity_id,
+                        contact_id,
+                        source: Box::new(e),
+                    },
+                    None => e,
+                });
             }
             tracing::warn!(error = %e, "Wallet backend initialization deferred");
         }
@@ -1379,11 +1458,19 @@ impl AppContext {
                 task = ?task,
                 "Short-circuiting wallet-touching task — migration in progress",
             );
-            // A guarded DashPay contact action carries its request ID so the
-            // Identity Hub releases only that request's in-flight guard, not every
-            // contact action's. Every other wallet-touching task names none and
-            // keeps the bare variant. Both surface the same user-facing banner —
-            // `DashPayContactRequestActionFailed` forwards its source's `Display`.
+            // A guarded DashPay contact action carries its request ID, and a
+            // contact details write its owner and contact, so the Identity Hub
+            // releases only that action's in-flight guard. Every other
+            // wallet-touching task names none and keeps the bare variant. All
+            // surface the same user-facing banner — both envelopes forward their
+            // source's `Display`.
+            if let Some((identity_id, contact_id)) = dashpay_contact_info_target(&task) {
+                return Err(TaskError::DashPayContactInfoActionFailed {
+                    identity_id,
+                    contact_id,
+                    source: Box::new(TaskError::WalletStorageNotReady),
+                });
+            }
             return match dashpay_request_id(&task) {
                 Some(request_id) => Err(TaskError::DashPayContactRequestActionFailed {
                     request_id,
@@ -1433,7 +1520,7 @@ impl AppContext {
                 Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
-                Arc::clone(self).reinit_core_client_and_sdk()?;
+                self.rebuild_connection().await?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {
@@ -2404,7 +2491,10 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        crate::context::test_support::prove_protocol_version(
+            &ctx,
+            SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+        );
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -2536,8 +2626,9 @@ mod tests {
 
     /// End-to-end: the migration gate wraps a rejected DashPay contact action in
     /// `DashPayContactRequestActionFailed` carrying its request ID (so the Hub
-    /// un-sticks only that row), while a non-contact wallet-touching task keeps
-    /// the bare `WalletStorageNotReady`.
+    /// un-sticks only that row), and a rejected contact details write in
+    /// `DashPayContactInfoActionFailed` naming its owner and contact, while a
+    /// non-contact wallet-touching task keeps the bare `WalletStorageNotReady`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn gate_rejection_wraps_a_contact_action_but_not_other_tasks() {
         use crate::backend_task::dashpay::DashPayTask;
@@ -2570,6 +2661,33 @@ mod tests {
                         && matches!(source.as_ref(), TaskError::WalletStorageNotReady)
             ),
             "a gate-rejected contact action must name its request: {contact_result:?}"
+        );
+
+        // A contact's details write names its owner and contact, so the hub
+        // releases only that write's guard.
+        let contact_id = Identifier::from([0x33; 32]);
+        let owner = qualified_identity(9);
+        let owner_id = owner.identity.id();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let note_result = ctx
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+                    identity: owner,
+                    contact_id,
+                    update: crate::model::dashpay::ContactInfoUpdate::note(None),
+                })),
+                SenderAsync::new(tx, ctx.egui_ctx().clone()),
+            )
+            .await;
+        assert!(
+            matches!(
+                &note_result,
+                Err(TaskError::DashPayContactInfoActionFailed { identity_id, contact_id: c, source })
+                    if *identity_id == owner_id
+                        && *c == contact_id
+                        && matches!(source.as_ref(), TaskError::WalletStorageNotReady)
+            ),
+            "a gate-rejected contact details write must name its owner and contact: {note_result:?}"
         );
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

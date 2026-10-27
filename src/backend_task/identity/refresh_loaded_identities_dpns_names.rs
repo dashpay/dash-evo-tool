@@ -100,7 +100,7 @@ impl AppContext {
             integer_range_clauses: vec![],
             sub_queries: Vec::new(),
             select: SelectProjection::documents(),
-            data_contract: self.dpns_contract.clone(),
+            data_contract: self.dpns_contract(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
                 field: "records.identity".to_string(),

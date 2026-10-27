@@ -103,11 +103,11 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     let new_private_key_bytes: [u8; 32] = rand::random();
     let new_public_key_data = {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        let secret_key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(
-            &new_private_key_bytes,
-        )
-        .expect("valid secret");
-        PrivateKey::new(secret_key, Network::Testnet)
+        let secret_key =
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
+                .expect("valid secret");
+        PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key")
             .public_key()
             .to_bytes()
     };

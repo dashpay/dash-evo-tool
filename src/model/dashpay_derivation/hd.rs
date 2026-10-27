@@ -249,8 +249,8 @@ mod tests {
 
         // Different timestamps should produce different keys
         assert_ne!(
-            *key1.private_key.to_bytes(),
-            *key2.private_key.to_bytes(),
+            key1.private_key.to_bytes(),
+            key2.private_key.to_bytes(),
             "Different timestamps should produce different keys"
         );
     }
@@ -294,7 +294,6 @@ mod tests {
         let master_seed = [2u8; 64];
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
-
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
 
         // Test version 0

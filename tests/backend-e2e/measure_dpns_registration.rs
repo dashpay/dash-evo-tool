@@ -172,6 +172,8 @@ async fn register_and_log(
     let (confirmed_tx, confirmed_rx) = tokio::sync::oneshot::channel::<()>();
     let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
     let input = SdkRegistrationInput {
+        // States the fund the app approves, as the app's task does: the vote
+        // fee for a contested name, nothing otherwise.
         contest_fund: Some(vote_fee),
         label: label.clone(),
         identity: identity.identity.clone(),

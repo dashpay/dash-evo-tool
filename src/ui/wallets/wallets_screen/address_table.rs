@@ -573,15 +573,14 @@ impl WalletsBalancesScreen {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::PublicKey;
-    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).
     fn addr(n: u8) -> Address {
         let mut sk_bytes = [1u8; 32];
         sk_bytes[31] = n.max(1);
-
-        let sk = SecretKey::from_bytes(&sk_bytes).unwrap();
+        let sk = SecretKey::from_secret_bytes(sk_bytes).unwrap();
         let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)
     }

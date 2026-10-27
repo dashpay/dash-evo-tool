@@ -131,12 +131,12 @@ fn find_wallet_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
     use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     const TEST_SEED: [u8; 64] = [7u8; 64];
 
@@ -145,8 +145,7 @@ mod tests {
     fn pubkey(n: u8) -> PublicKey {
         let mut sk_bytes = [3u8; 32];
         sk_bytes[31] = n.max(1);
-
-        let sk = SecretKey::from_bytes(&sk_bytes).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         PublicKey::new(sk.public_key())
     }
 

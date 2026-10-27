@@ -10,7 +10,6 @@
 //! (spending gated) until single-key moves onto the upstream wallet runtime.
 
 use dash_sdk::dpp::dashcore::key::Error as KeyError;
-
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +21,6 @@ use serde::{Deserialize, Serialize};
 /// task is the authoritative enforcement layer.
 pub fn validate_wif(wif: &str, network: Network) -> Result<String, KeyError> {
     let priv_key = PrivateKey::from_wif(wif)?;
-
     let pub_key = PublicKey {
         compressed: priv_key.compressed,
         inner: priv_key.inner.public_key(),

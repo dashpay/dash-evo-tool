@@ -32,6 +32,7 @@ use dash_sdk::dpp::state_transition::identity_create_transition::v0::IdentityCre
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
+use dash_sdk::dpp::version::fee::data_contract_registration::FeeDataContractRegistrationVersion;
 
 /// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
 pub fn document_create_contest_fund_cap(
@@ -724,6 +725,16 @@ impl PlatformFeeEstimator {
         self.estimate_document_replace_with_size(200)
     }
 
+    /// Conservative fee estimate for a contact-info write, including all preserved
+    /// accounts. The UI does not have their count, so use the contract payload limit.
+    pub fn estimate_contact_info_write(&self) -> u64 {
+        // encToUserId (32), key indexes (8), document ID, owner and revision (72).
+        const FIXED_DOCUMENT_BYTES: usize = 112;
+        self.estimate_document_create_with_size(
+            FIXED_DOCUMENT_BYTES + crate::model::dashpay::MAX_CONTACT_INFO_ENCRYPTED_BYTES,
+        )
+    }
+
     /// Estimate fee for document transfer.
     /// Transfer updates ownership, minimal storage change.
     pub fn estimate_document_transfer(&self) -> u64 {
@@ -922,6 +933,65 @@ pub fn contest_fee_credits(platform_version: &PlatformVersion) -> Credits {
         .fee_version
         .vote_resolution_fund_fees
         .contested_document_vote_resolution_fund_required_amount
+}
+
+/// The optional parts of a token contract built by the token creator, each of
+/// which adds its own registration fee.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenRegistrationFeatures {
+    pub perpetual_distribution: bool,
+    pub pre_programmed_distribution: bool,
+    pub once_per_identity_distribution: bool,
+    /// Contract keywords plus searchable token names; each costs one keyword fee.
+    pub search_keyword_count: usize,
+}
+
+/// Headroom the token creator adds to the registration fees for processing
+/// and storage (0.002 DASH).
+const TOKEN_REGISTRATION_HEADROOM_CREDITS: Credits = 200_000_000;
+
+/// Estimated cost of registering a single-token contract with `features`.
+///
+/// `fees` is the registration fee table of the protocol version the network
+/// confirmed: the once-per-identity fee exists only from protocol 14, and a
+/// table from another version would price the contract wrongly.
+pub fn estimate_token_contract_registration(
+    fees: &FeeDataContractRegistrationVersion,
+    features: TokenRegistrationFeatures,
+) -> Credits {
+    let TokenRegistrationFeatures {
+        perpetual_distribution,
+        pre_programmed_distribution,
+        once_per_identity_distribution,
+        search_keyword_count,
+    } = features;
+    let optional_fees = [
+        (
+            perpetual_distribution,
+            fees.token_uses_perpetual_distribution_fee,
+        ),
+        (
+            pre_programmed_distribution,
+            fees.token_uses_pre_programmed_distribution_fee,
+        ),
+        (
+            once_per_identity_distribution,
+            fees.token_uses_once_per_identity_distribution_fee,
+        ),
+    ];
+    optional_fees
+        .into_iter()
+        .filter_map(|(used, fee)| used.then_some(fee))
+        .fold(
+            fees.base_contract_registration_fee
+                .saturating_add(fees.token_registration_fee),
+            Credits::saturating_add,
+        )
+        .saturating_add(
+            fees.search_keyword_fee
+                .saturating_mul(search_keyword_count as u64),
+        )
+        .saturating_add(TOKEN_REGISTRATION_HEADROOM_CREDITS)
 }
 
 /// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
@@ -1353,6 +1423,70 @@ pub fn shield_from_balance_fee_headroom(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every optional token feature adds exactly its own fee from the given
+    /// table, on top of the base, token, keyword and headroom terms.
+    #[test]
+    fn token_contract_registration_adds_each_feature_fee_from_the_given_table() {
+        let fees = &PlatformVersion::latest()
+            .fee_version
+            .data_contract_registration;
+        assert!(
+            fees.token_uses_once_per_identity_distribution_fee > 0,
+            "the protocol 14 table prices the once-per-identity distribution"
+        );
+        let plain =
+            estimate_token_contract_registration(fees, TokenRegistrationFeatures::default());
+        assert_eq!(
+            plain,
+            fees.base_contract_registration_fee
+                + fees.token_registration_fee
+                + TOKEN_REGISTRATION_HEADROOM_CREDITS
+        );
+
+        let with = |features| estimate_token_contract_registration(fees, features) - plain;
+        assert_eq!(
+            with(TokenRegistrationFeatures {
+                perpetual_distribution: true,
+                ..Default::default()
+            }),
+            fees.token_uses_perpetual_distribution_fee
+        );
+        assert_eq!(
+            with(TokenRegistrationFeatures {
+                pre_programmed_distribution: true,
+                ..Default::default()
+            }),
+            fees.token_uses_pre_programmed_distribution_fee
+        );
+        assert_eq!(
+            with(TokenRegistrationFeatures {
+                once_per_identity_distribution: true,
+                ..Default::default()
+            }),
+            fees.token_uses_once_per_identity_distribution_fee
+        );
+        assert_eq!(
+            with(TokenRegistrationFeatures {
+                search_keyword_count: 3,
+                ..Default::default()
+            }),
+            3 * fees.search_keyword_fee
+        );
+    }
+
+    #[test]
+    fn contact_info_write_fee_covers_the_contract_limit_and_fee_multiplier() {
+        let estimator = PlatformFeeEstimator::new();
+        assert_eq!(
+            estimator.estimate_contact_info_write(),
+            estimator.estimate_document_create_with_size(112 + 2048),
+        );
+        assert_eq!(
+            PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(),
+            estimator.estimate_contact_info_write().saturating_mul(2),
+        );
+    }
 
     #[test]
     fn document_contest_cap_preserves_ordinary_creates_and_caps_contested_names() {
@@ -2134,10 +2268,11 @@ mod tests {
     fn any_core_address() -> Address {
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::dashcore::PublicKey;
-        use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
+        use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
 
-        let sk = SecretKey::from_bytes(&[1u8; 32]).expect("valid secret key");
-        let pubkey = PublicKey::from_slice(&sk.public_key().to_compressed()).expect("valid pubkey");
+        let sk = SecretKey::from_secret_bytes([1u8; 32]).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&sk).serialize())
+            .expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

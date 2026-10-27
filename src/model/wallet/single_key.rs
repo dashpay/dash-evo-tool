@@ -10,7 +10,6 @@
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit};
-
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -303,7 +302,7 @@ impl SingleKeyWallet {
         let private_key = PrivateKey::from_wif(wif).map_err(|e| e.to_string())?;
         let network = private_key.network;
         let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&private_key.inner.to_bytes()[..]);
+        key_bytes.copy_from_slice(&*private_key.inner.to_bytes());
         Self::new(key_bytes, network, password, alias)
     }
 
@@ -516,7 +515,6 @@ mod tests {
         // Through a SingleKeyWallet that holds the closed key.
         let priv_key =
             PrivateKey::from_byte_array(&secret, Network::Testnet).expect("valid key bytes");
-
         let public_key = priv_key.public_key();
         let address = Address::p2pkh(&public_key, Network::Testnet);
         let wallet = SingleKeyWallet {

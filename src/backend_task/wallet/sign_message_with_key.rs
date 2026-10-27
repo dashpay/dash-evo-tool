@@ -39,11 +39,11 @@ impl AppContext {
                 &derivation_path,
                 TaskError::WalletMessageSigningFailed,
                 |private_key| {
-                    Ok(dash_signed_message(
+                    dash_signed_message(
                         message.as_str(),
                         &private_key.inner,
                         private_key.compressed,
-                    ))
+                    )
                 },
             )
             .await?;

@@ -289,7 +289,7 @@ pub async fn send_contact_request_with_proof(
     }
 
     // Step 3: Check if a contact request already exists
-    let dashpay_contract = app_context.dashpay_contract.clone();
+    let dashpay_contract = app_context.dashpay_contract();
     let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
@@ -520,7 +520,11 @@ pub async fn send_contact_request_with_proof(
     let mut rng = StdRng::from_entropy();
     let entropy = Bytes32::random_with_rng(&mut rng);
 
-    // Generate deterministic document ID based on entropy
+    // Before protocol version 14 this entropy-only id is the document's id,
+    // which Platform recomputes from the entropy. From protocol version 14
+    // (`Document::document_id_depends_on_nonce`) the id also commits to the
+    // identity contract nonce, so this one is only a placeholder that building
+    // the create transition replaces. Read the id from the confirmed document.
     let document_id = Document::generate_document_id_v0(
         &dashpay_contract.id(),
         &identity.identity.id(),
@@ -839,6 +843,7 @@ trait RejectOps {
     fn lock_action(
         &self,
     ) -> impl Future<Output = Result<tokio::sync::OwnedMutexGuard<()>, TaskError>> + Send;
+    fn lock_contact_info(&self) -> impl Future<Output = tokio::sync::OwnedMutexGuard<()>> + Send;
     fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError>;
     fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError>;
     fn clear_phase(&self) -> Result<(), TaskError>;
@@ -849,6 +854,7 @@ trait RejectOps {
     fn update_contact_info(
         &self,
         update: ContactInfoUpdate,
+        write_guard: &tokio::sync::OwnedMutexGuard<()>,
     ) -> impl Future<Output = Result<(), TaskError>> + Send;
     fn mark_declined(&self) -> Result<(), TaskError>;
     fn request_id(&self) -> Identifier;
@@ -859,6 +865,7 @@ async fn reject_flow<O: RejectOps>(
     unreadable: UnreadableContactInfoPolicy,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
+    let contact_info_guard = ops.lock_contact_info().await;
     let phase = match ops.phase()? {
         Some(phase) => phase,
         None => {
@@ -869,7 +876,7 @@ async fn reject_flow<O: RejectOps>(
 
     if phase == ContactRequestActionPhase::HideIntent {
         if !ops.contact_is_hidden(unreadable).await? {
-            ops.update_contact_info(hidden_contact_update(true, unreadable))
+            ops.update_contact_info(hidden_contact_update(true, unreadable), &contact_info_guard)
                 .await?;
         }
         ops.set_phase(ContactRequestActionPhase::MarkerPending)?;
@@ -896,6 +903,13 @@ impl RejectOps for PlatformRejectOps<'_> {
             .wallet_backend()?
             .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
             .await)
+    }
+
+    async fn lock_contact_info(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.app_context
+            .contact_info_writes
+            .acquire(self.owner_id)
+            .await
     }
 
     fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
@@ -943,13 +957,18 @@ impl RejectOps for PlatformRejectOps<'_> {
         .await
     }
 
-    async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
-        super::contact_info::create_or_update_contact_info(
+    async fn update_contact_info(
+        &self,
+        update: ContactInfoUpdate,
+        write_guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), TaskError> {
+        super::contact_info::create_or_update_contact_info_locked(
             self.app_context,
             self.sdk,
             self.identity.clone(),
             self.from_identity_id,
             update,
+            write_guard,
         )
         .await
         .map(|_| ())
@@ -1013,6 +1032,7 @@ trait CancelOps {
     fn lock_action(
         &self,
     ) -> impl Future<Output = Result<tokio::sync::OwnedMutexGuard<()>, TaskError>> + Send;
+    fn lock_contact_info(&self) -> impl Future<Output = tokio::sync::OwnedMutexGuard<()>> + Send;
     fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError>;
     fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError>;
     fn clear_phase(&self) -> Result<(), TaskError>;
@@ -1030,6 +1050,7 @@ trait CancelOps {
     fn update_contact_info(
         &self,
         update: ContactInfoUpdate,
+        write_guard: &tokio::sync::OwnedMutexGuard<()>,
     ) -> impl Future<Output = Result<(), TaskError>> + Send;
 
     /// Record the withdrawal in the DET sidecar so the request stops being
@@ -1064,6 +1085,7 @@ async fn cancel_flow<O: CancelOps>(
     unreadable: UnreadableContactInfoPolicy,
 ) -> Result<CancelOutcome, TaskError> {
     let _action_guard = ops.lock_action().await?;
+    let contact_info_guard = ops.lock_contact_info().await;
     let mut phase = match ops.phase()? {
         Some(phase) => phase,
         None => {
@@ -1077,7 +1099,7 @@ async fn cancel_flow<O: CancelOps>(
 
     if phase == ContactRequestActionPhase::HideIntent {
         if !ops.contact_is_hidden(unreadable).await? {
-            ops.update_contact_info(hidden_contact_update(true, unreadable))
+            ops.update_contact_info(hidden_contact_update(true, unreadable), &contact_info_guard)
                 .await?;
         }
         ops.set_phase(ContactRequestActionPhase::HideCommitted)?;
@@ -1096,8 +1118,11 @@ async fn cancel_flow<O: CancelOps>(
 
     if phase == ContactRequestActionPhase::CorrectiveUnhideIntent {
         if ops.contact_is_hidden(unreadable).await? {
-            ops.update_contact_info(hidden_contact_update(false, unreadable))
-                .await?;
+            ops.update_contact_info(
+                hidden_contact_update(false, unreadable),
+                &contact_info_guard,
+            )
+            .await?;
         }
         ops.set_phase(ContactRequestActionPhase::CorrectiveUnhideComplete)?;
         phase = ContactRequestActionPhase::CorrectiveUnhideComplete;
@@ -1132,6 +1157,13 @@ impl CancelOps for PlatformCancelOps<'_> {
             .wallet_backend()?
             .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
             .await)
+    }
+
+    async fn lock_contact_info(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.app_context
+            .contact_info_writes
+            .acquire(self.owner_id)
+            .await
     }
 
     fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
@@ -1183,13 +1215,18 @@ impl CancelOps for PlatformCancelOps<'_> {
         Ok(!Document::fetch_many(self.sdk, query).await?.is_empty())
     }
 
-    async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
-        super::contact_info::create_or_update_contact_info(
+    async fn update_contact_info(
+        &self,
+        update: ContactInfoUpdate,
+        write_guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), TaskError> {
+        super::contact_info::create_or_update_contact_info_locked(
             self.app_context,
             self.sdk,
             self.identity.clone(),
             self.to_identity_id,
             update,
+            write_guard,
         )
         .await
         .map(|_| ())
@@ -1277,6 +1314,7 @@ pub async fn cancel_contact_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::dashpay::ContactInfoField;
     use dash_sdk::dpp::document::DocumentV0;
 
     fn id(byte: u8) -> Identifier {
@@ -1323,7 +1361,7 @@ mod tests {
             operator: WhereOperator::Equal,
             value: Value::Text(value.to_string()),
         };
-        let mut query = DocumentQuery::new(ctx.dpns_contract.clone(), "domain")
+        let mut query = DocumentQuery::new(ctx.dpns_contract(), "domain")
             .expect("domain query")
             .with_where(equals("normalizedParentDomainName", "dash"))
             .with_where(equals("normalizedLabel", normalized));
@@ -1544,6 +1582,7 @@ mod tests {
     #[derive(Default)]
     struct ScriptedOps {
         action_lock: Arc<tokio::sync::Mutex<()>>,
+        contact_info_lock: Arc<tokio::sync::Mutex<()>>,
         reciprocal: Mutex<VecDeque<Result<bool, TaskError>>>,
         /// Every contact-info update, in call order.
         contact_updates: Mutex<Vec<ContactInfoUpdate>>,
@@ -1578,7 +1617,10 @@ mod tests {
                 .lock()
                 .expect("not poisoned")
                 .iter()
-                .map(|update| update.display_hidden)
+                .map(|update| match update.display_hidden {
+                    ContactInfoField::Replace(hidden) => hidden,
+                    ContactInfoField::Preserve => panic!("expected an explicit visibility change"),
+                })
                 .collect()
         }
 
@@ -1594,6 +1636,10 @@ mod tests {
     impl CancelOps for ScriptedOps {
         async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
             Ok(self.action_lock.clone().lock_owned().await)
+        }
+
+        async fn lock_contact_info(&self) -> tokio::sync::OwnedMutexGuard<()> {
+            self.contact_info_lock.clone().lock_owned().await
         }
 
         fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
@@ -1627,7 +1673,11 @@ mod tests {
             Ok(hidden)
         }
 
-        async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
+        async fn update_contact_info(
+            &self,
+            update: ContactInfoUpdate,
+            _write_guard: &tokio::sync::OwnedMutexGuard<()>,
+        ) -> Result<(), TaskError> {
             if self.hide_fails {
                 return Err(TaskError::DocumentNotFound);
             }
@@ -1635,7 +1685,9 @@ mod tests {
                 .lock()
                 .expect("not poisoned")
                 .push(update.clone());
-            *self.contact_hidden.lock().expect("not poisoned") = update.display_hidden;
+            if let ContactInfoField::Replace(hidden) = update.display_hidden {
+                *self.contact_hidden.lock().expect("not poisoned") = hidden;
+            }
             Ok(())
         }
 
@@ -1656,7 +1708,7 @@ mod tests {
         assert_eq!(update.nickname, ContactInfoField::Preserve);
         assert_eq!(update.note, ContactInfoField::Preserve);
         assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
-        assert_eq!(update.display_hidden, hidden);
+        assert_eq!(update.display_hidden, ContactInfoField::Replace(hidden));
     }
 
     #[tokio::test]
@@ -1778,6 +1830,7 @@ mod tests {
     #[derive(Default)]
     struct ScriptedRejectOps {
         action_lock: Arc<tokio::sync::Mutex<()>>,
+        contact_info_lock: Arc<tokio::sync::Mutex<()>>,
         phase: Mutex<Option<ContactRequestActionPhase>>,
         hidden: Mutex<bool>,
         hidden_writes: Mutex<usize>,
@@ -1788,6 +1841,10 @@ mod tests {
     impl RejectOps for ScriptedRejectOps {
         async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
             Ok(self.action_lock.clone().lock_owned().await)
+        }
+
+        async fn lock_contact_info(&self) -> tokio::sync::OwnedMutexGuard<()> {
+            self.contact_info_lock.clone().lock_owned().await
         }
 
         fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
@@ -1813,8 +1870,12 @@ mod tests {
             Ok(hidden)
         }
 
-        async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
-            assert!(update.display_hidden);
+        async fn update_contact_info(
+            &self,
+            update: ContactInfoUpdate,
+            _write_guard: &tokio::sync::OwnedMutexGuard<()>,
+        ) -> Result<(), TaskError> {
+            assert_eq!(update.display_hidden, ContactInfoField::Replace(true));
             *self.hidden.lock().expect("not poisoned") = true;
             *self.hidden_writes.lock().expect("not poisoned") += 1;
             Ok(())
@@ -1833,6 +1894,62 @@ mod tests {
         fn request_id(&self) -> Identifier {
             id(7)
         }
+    }
+
+    #[tokio::test]
+    async fn contact_info_decline_waits_for_unhide_before_reading_visibility() {
+        let ops = ScriptedRejectOps {
+            hidden: Mutex::new(true),
+            ..Default::default()
+        };
+        let unhide = ops.contact_info_lock.clone().lock_owned().await;
+        let mut decline = Box::pin(reject_flow(&ops, UnreadableContactInfoPolicy::Abort));
+        assert!(futures::poll!(&mut decline).is_pending());
+        assert_eq!(
+            *ops.phase.lock().unwrap(),
+            None,
+            "wait before reading or deciding"
+        );
+        *ops.hidden.lock().unwrap() = false;
+        drop(unhide);
+        assert!(futures::poll!(&mut decline).is_pending());
+        let mut competing_write = Box::pin(ops.contact_info_lock.clone().lock_owned());
+        assert!(
+            futures::poll!(&mut competing_write).is_pending(),
+            "hold through the hide decision"
+        );
+        decline.await.expect("decline completes");
+        assert!(*ops.hidden.lock().unwrap());
+        assert_eq!(*ops.hidden_writes.lock().unwrap(), 1);
+        drop(competing_write.await);
+    }
+
+    #[tokio::test]
+    async fn contact_info_cancel_waits_for_unhide_before_reading_visibility() {
+        let ops = ScriptedOps {
+            contact_hidden: Mutex::new(true),
+            ..Default::default()
+        };
+        let unhide = ops.contact_info_lock.clone().lock_owned().await;
+        let mut cancel = Box::pin(cancel_flow(&ops, UnreadableContactInfoPolicy::Abort));
+        assert!(futures::poll!(&mut cancel).is_pending());
+        assert_eq!(
+            *ops.phase.lock().unwrap(),
+            None,
+            "wait before reading or deciding"
+        );
+        *ops.contact_hidden.lock().unwrap() = false;
+        drop(unhide);
+        assert!(futures::poll!(&mut cancel).is_pending());
+        let mut competing_write = Box::pin(ops.contact_info_lock.clone().lock_owned());
+        assert!(
+            futures::poll!(&mut competing_write).is_pending(),
+            "hold through the hide decision"
+        );
+        assert_eq!(cancel.await.unwrap(), CancelOutcome::Withdrawn);
+        assert!(*ops.contact_hidden.lock().unwrap());
+        assert_eq!(ops.hidden_writes(), vec![true]);
+        drop(competing_write.await);
     }
 
     #[tokio::test]

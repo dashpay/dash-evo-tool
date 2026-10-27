@@ -52,11 +52,11 @@ async fn step_broadcast_valid(
 
     let new_public_key_data = {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        let secret_key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(
-            &new_private_key_bytes,
-        )
-        .expect("invalid secret key bytes");
-        let pk = PrivateKey::new(secret_key, Network::Testnet);
+        let secret_key =
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
+                .expect("invalid secret key bytes");
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key");
         pk.public_key().to_bytes()
     };
 
@@ -212,11 +212,11 @@ async fn step_broadcast_invalid(
     let new_private_key_bytes: [u8; 32] = rand::random();
     let new_public_key_data = {
         use dash_sdk::dpp::dashcore::PrivateKey;
-        let secret_key = dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey::from_bytes(
-            &new_private_key_bytes,
-        )
-        .expect("invalid secret key bytes");
-        let pk = PrivateKey::new(secret_key, Network::Testnet);
+        let secret_key =
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(new_private_key_bytes)
+                .expect("invalid secret key bytes");
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key");
         pk.public_key().to_bytes()
     };
 

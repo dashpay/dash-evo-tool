@@ -62,7 +62,7 @@ impl ViewTokenClaimsScreen {
                 integer_range_clauses: vec![],
                 sub_queries: Vec::new(),
                 select: SelectProjection::documents(),
-                data_contract: app_context.token_history_contract.clone(),
+                data_contract: app_context.token_history_contract(),
                 document_type_name: "claim".to_string(),
                 where_clauses: vec![
                     WhereClause {

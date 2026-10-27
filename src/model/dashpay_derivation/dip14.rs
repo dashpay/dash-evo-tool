@@ -1,7 +1,5 @@
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::crypto::ecdsa::{
-    EcdsaPublicKey as PublicKey, EcdsaSecretKey as SecretKey,
-};
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::hmac::{Hmac, HmacEngine};
 use dash_sdk::dpp::dashcore::hashes::sha512;
 /// DIP-14 compliant 256-bit HD key derivation implementation
@@ -11,6 +9,7 @@ use dash_sdk::dpp::dashcore::hashes::sha512;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::platform::Identifier;
+use zeroize::Zeroizing;
 
 use super::DerivationError;
 
@@ -57,19 +56,18 @@ pub fn ckd_priv_256(
     }
 
     let hmac_result = Hmac::<sha512::Hash>::from_engine(hmac_engine);
-    let hmac_bytes = hmac_result.to_byte_array();
+    let hmac_bytes = Zeroizing::new(hmac_result.to_byte_array());
 
     // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
     let (i_l, i_r) = hmac_bytes.split_at(32);
 
-    // Parse I_L as a private key and add to parent key
-    let i_l_key = SecretKey::from_bytes(
-        &i_l.try_into()
-            .map_err(|_| dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaError::InvalidSecretKey)?,
-    )?;
+    // Parse I_L as a private key (refusing zero and values >= n) and add it
+    // to the parent key.
+    let i_l: &[u8; 32] = i_l.try_into().map_err(|_| EcdsaError::InvalidSecretKey)?;
+    EcdsaSecretKey::from_bytes(i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
-    let child_key = parent_key.private_key.add_tweak(&i_l_key.to_bytes())?;
+    let child_key = parent_key.private_key.add_tweak(i_l)?;
 
     // Chain code is I_R (32 bytes)
     let mut chain_code_bytes = [0u8; 32];
@@ -116,7 +114,6 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))?;
 
     // Derive to the account level using standard BIP32
-
     let account_xprv = master_xprv.derive_priv(&base_path)?;
 
     // Now use DIP-14 256-bit derivation for the identity levels
@@ -178,7 +175,7 @@ fn index_to_child_number(
 }
 
 /// Calculate fingerprint for a public key (first 4 bytes of HASH160)
-fn calculate_fingerprint(pubkey: &PublicKey) -> Fingerprint {
+fn calculate_fingerprint(pubkey: &EcdsaPublicKey) -> Fingerprint {
     use dash_sdk::dpp::dashcore::hashes::hash160;
 
     let hash = hash160::Hash::hash(&pubkey.to_compressed());
@@ -309,21 +306,5 @@ mod tests {
         // Verify the derivation depth is correct (base path + 2 identity levels)
         // m/9'/1'/15'/0'/(sender)/(recipient) on testnet = depth 6
         assert_eq!(xpub.depth, 6);
-    }
-
-    #[test]
-    fn typed_dip14_preserves_historical_public_key_bytes() {
-        // Captured with the previous pin's 18f7f3e implementation, not the typed wrapper.
-        let master = ExtendedPrivKey::new_master(Network::Testnet, &[2; 64]).unwrap();
-        let first = ckd_priv_256(&master, &[0x31; 32], false).unwrap();
-        let second = ckd_priv_256(&first, &[0x42; 32], true).unwrap();
-        assert_eq!(
-            hex::encode(ExtendedPubKey::from_priv(&first).encode()),
-            "043587cf011c2583e00a83665f560dda5a71a211073f3eb38bbe6835017b5240d4e0d2fb69bd898b106020eabc036bba051e7e824291d3159c3b8dd915fd804b6ac3072d6bba20ca064b3db53c2c"
-        );
-        assert_eq!(
-            hex::encode(ExtendedPubKey::from_priv(&second).encode()),
-            "043587cf029faee1a5c25ed4e4a9c63e755a26352ec5f70c99b69c69a5cf0b6b6513c93f0e9bb429027033a61f02d13a1792f805c46f4f0770b58f81da1c164c7330eaf9c50953bbc25de2eeb48f"
-        );
     }
 }

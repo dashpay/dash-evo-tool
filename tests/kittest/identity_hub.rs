@@ -54,7 +54,7 @@ fn identity_hub_screen_type_creates_hub_screen() {
     let _ = screen_type;
 }
 
-mod loads {
+pub(crate) mod loads {
     //! The hub's own data loads: each is dispatched once per arrival, so one
     //! that is lost on the way out or on the way back never comes again.
 
@@ -78,6 +78,9 @@ mod loads {
     type HubHarness = Harness<'static, (IdentityHubScreen, Vec<AppAction>)>;
 
     fn mount_hub(app_context: &Arc<AppContext>) -> HubHarness {
+        // The hub holds its proof-verifying reads until the masternode list is
+        // synced; these tests start on a synced network.
+        app_context.connection_status().set_masternodes_ready(true);
         Harness::builder()
             .with_size(egui::vec2(1280.0, 1000.0))
             .build_ui_state(
@@ -115,12 +118,12 @@ mod loads {
     }
 
     fn contacts_load(action: &AppAction) -> Option<()> {
-        let AppAction::BackendTasks(tasks, _) = action else {
+        let AppAction::BackendTasksWithContexts(tasks, _) = action else {
             return None;
         };
         tasks
             .iter()
-            .any(|task| {
+            .any(|(task, _)| {
                 matches!(task, BackendTask::DashPayTask(task)
                     if matches!(**task, DashPayTask::LoadContacts { .. }))
             })
@@ -275,15 +278,17 @@ mod loads {
             step_until(&mut hub, "the first payment history load", payments_load);
 
             let load = |action: &AppAction| match action {
-                AppAction::BackendTasks(tasks, _) => tasks.iter().find_map(|task| match task {
-                    BackendTask::DashPayTask(task) => match &**task {
-                        DashPayTask::LoadContacts { identity } => {
-                            Some(("contacts", identity.identity.id()))
-                        }
+                AppAction::BackendTasksWithContexts(tasks, _) => {
+                    tasks.iter().find_map(|(task, _)| match task {
+                        BackendTask::DashPayTask(task) => match &**task {
+                            DashPayTask::LoadContacts { identity } => {
+                                Some(("contacts", identity.identity.id()))
+                            }
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
-                }),
+                    })
+                }
                 AppAction::BackendTaskWithContext {
                     task: BackendTask::DashPayTask(task),
                     ..
@@ -376,6 +381,7 @@ mod loads {
             nickname: Some(name.into()),
             note: None,
             is_hidden: false,
+            details_unreadable: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -594,6 +600,24 @@ mod loads {
         results: Vec<(BackendTaskContext, BackendTaskSuccessResult)>,
     ) {
         use dash_evo_tool::app::TaskResult;
+        let results = results
+            .into_iter()
+            .map(|(context, result)| TaskResult::Success {
+                context,
+                result: Box::new(result),
+            })
+            .collect();
+        receive_task_results_behind_the_send_screen(runtime, app, hub, results);
+    }
+
+    /// Moves the hub into `app`, delivers `results` while the Send screen
+    /// covers it, then cancels Send and hands the hub back.
+    pub(crate) fn receive_task_results_behind_the_send_screen(
+        runtime: &tokio::runtime::Runtime,
+        app: &mut Harness<'static, dash_evo_tool::app::AppState>,
+        hub: &mut Harness<'static, (IdentityHubScreen, Vec<AppAction>)>,
+        results: Vec<dash_evo_tool::app::TaskResult>,
+    ) {
         use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
         use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 
@@ -608,20 +632,21 @@ mod loads {
         );
         state.selected_main_screen = RootScreenType::RootScreenIdentityHub;
         // The hub sent its own requests while it was the screen in view.
-        for (context, _) in &results {
-            state.test_record_visible_dispatch(context);
+        for result in &results {
+            if let dash_evo_tool::app::TaskResult::Success { context, .. }
+            | dash_evo_tool::app::TaskResult::Error { context, .. } = result
+            {
+                state.test_record_visible_dispatch(context);
+            }
         }
         state.screen_stack.push(
             ScreenType::IdentitySendScreen(identity, IdentitySendMode::Send)
                 .create_screen(&app_context),
         );
 
-        for (context, result) in results {
+        for result in results {
             runtime
-                .block_on(app.state().task_result_sender.send(TaskResult::Success {
-                    context,
-                    result: Box::new(result),
-                }))
+                .block_on(app.state().task_result_sender.send(result))
                 .expect("deliver the result");
         }
         // One frame drains the result queue before it renders.
@@ -701,6 +726,7 @@ mod loads {
                 nickname: Some(name.into()),
                 note: None,
                 is_hidden: false,
+                details_unreadable: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,

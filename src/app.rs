@@ -763,6 +763,58 @@ mod backend_task_join_tests {
         );
     }
 
+    /// A batch that stops part-way reports the failure under each dispatch
+    /// context it carries, so the screen waiting on that read is settled
+    /// instead of loading for good; the rest of the batch keeps its one
+    /// unattributed report.
+    #[tokio::test]
+    async fn panicking_batch_settles_each_dispatched_read() {
+        use crate::model::dashpay::ContactsLoadKind;
+        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
+                network: Network::Testnet,
+                identity_id: Identifier::from([0x45; 32]),
+                kind,
+            }),
+        };
+        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
+        let requests = read(u64::MAX, ContactsLoadKind::Requests);
+        for (contexts, expected) in [
+            (
+                vec![contacts.clone(), requests.clone()],
+                vec![contacts.clone(), requests.clone()],
+            ),
+            (
+                vec![contacts.clone(), BackendTaskContext::Other],
+                vec![contacts.clone(), BackendTaskContext::Unknown],
+            ),
+            (
+                vec![BackendTaskContext::Other, BackendTaskContext::Other],
+                vec![BackendTaskContext::Unknown],
+            ),
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+            let sender = SenderAsync::new(tx, egui::Context::default());
+            let join_handle = tokio::task::spawn_blocking(|| panic!("batch child panic"));
+
+            forward_backend_tasks_join_error(join_handle.await, sender, contexts).await;
+
+            let mut reported = Vec::new();
+            while let Ok(result) = rx.try_recv() {
+                let TaskResult::Error {
+                    context,
+                    error: TaskError::BackendTaskFailed { .. },
+                } = result
+                else {
+                    panic!("expected a typed backend task failure, got {result:?}");
+                };
+                reported.push(context);
+            }
+            assert_eq!(reported, expected);
+        }
+    }
+
     #[tokio::test]
     async fn panicking_scheduled_vote_sweep_clears_in_progress_guard() {
         let network = Network::Testnet;
@@ -799,6 +851,46 @@ mod backend_task_join_tests {
             in_progress.contains(&unrelated_network),
             "a terminal panic must not release another network's sweep guard"
         );
+    }
+
+    #[tokio::test]
+    async fn contact_info_join_failures_keep_the_dispatched_owner_and_contact() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::context::test_support::bare_user_identity;
+        use crate::model::dashpay::ContactInfoUpdate;
+        let owner = Identifier::from([0x42; 32]);
+        let contact = Identifier::from([0x43; 32]);
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+            identity: bare_user_identity(owner, Network::Testnet),
+            contact_id: contact,
+            update: ContactInfoUpdate::note(Some("Saved".into())),
+        }));
+        for cancel in [false, true] {
+            let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let handle = tokio::spawn(async move {
+                if cancel {
+                    std::future::pending::<()>().await;
+                }
+                panic!("contact-info task panic");
+            });
+            if cancel {
+                handle.abort();
+            }
+            forward_backend_task_join_error(
+                handle.await,
+                SenderAsync::new(tx, egui::Context::default()),
+                None,
+                context.clone(),
+            )
+            .await;
+            let result = rx.recv().await.expect("forwarded error");
+            assert!(matches!(result, TaskResult::Error {
+                context: received,
+                error: TaskError::DashPayContactInfoActionFailed { identity_id, contact_id, source },
+            } if received == context && identity_id == owner && contact_id == contact
+                && matches!(*source, TaskError::BackendTaskFailed { .. })));
+        }
     }
 
     #[tokio::test]
@@ -1201,15 +1293,49 @@ async fn forward_backend_task_join_error(
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
-        let error = match request_id {
-            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+        let error = match (context.dashpay_contact_info_target(), request_id) {
+            (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source: Box::new(stopped),
+            },
+            (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
                 request_id,
                 source: Box::new(stopped),
             },
-            None => stopped,
+            (None, None) => stopped,
         };
         if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
             tracing::error!(%error, "Failed to report a stopped backend task");
+        }
+    }
+}
+
+/// Report a task batch that stopped before returning its results. A batch runs
+/// its tasks in one join, so one panic loses every result. Each task sent under
+/// a dispatch context hears of the failure under that context, which settles
+/// the screen waiting on it; the batch's other tasks share one unattributed
+/// report, as a single stopped task does.
+async fn forward_backend_tasks_join_error(
+    join_result: Result<(), tokio::task::JoinError>,
+    sender: egui_mpsc::SenderAsync<TaskResult>,
+    contexts: Vec<BackendTaskContext>,
+) {
+    let Err(source) = join_result else {
+        return;
+    };
+    let source = crate::backend_task::error::BackendTaskJoinError::from(source);
+    let (dispatched, others): (Vec<_>, Vec<_>) = contexts
+        .into_iter()
+        .partition(|context| context.dispatch_id().is_some());
+    let unattributed =
+        (dispatched.is_empty() || !others.is_empty()).then_some(BackendTaskContext::Unknown);
+    for context in dispatched.into_iter().chain(unattributed) {
+        let error = TaskError::BackendTaskFailed {
+            source: source.clone(),
+        };
+        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
+            tracing::error!(%error, "Failed to report a stopped backend task batch");
         }
     }
 }
@@ -1238,7 +1364,7 @@ impl ThemeState {
             let now = Instant::now();
             if now.duration_since(self.last_checked) >= Duration::from_secs(2) {
                 self.last_checked = now;
-                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                if let Some(detected) = crate::ui::theme::poll_system_theme()
                     && detected != self.resolved
                 {
                     self.resolved = detected;
@@ -1258,6 +1384,7 @@ impl ThemeState {
         self.preference = new_theme;
         let mut detection_failed = false;
         self.resolved = if new_theme == ThemeMode::System {
+            // Keep this bounded synchronous probe to avoid a flash when switching to System.
             use crate::ui::theme::ThemeDetectionOutcome;
             match crate::ui::theme::try_detect_system_theme_detailed() {
                 ThemeDetectionOutcome::Detected(detected) => detected,
@@ -1274,10 +1401,64 @@ impl ThemeState {
         } else {
             new_theme
         };
-        self.last_checked = Instant::now();
+        if new_theme == ThemeMode::System {
+            self.last_checked = Instant::now();
+        }
         crate::ui::theme::apply_theme(ctx, self.resolved);
         self.last_applied = Some(self.resolved);
         detection_failed
+    }
+}
+
+#[cfg(test)]
+mod theme_state_tests {
+    use super::*;
+
+    #[test]
+    fn system_theme_poll_after_throttle_needs_no_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.last_checked = Instant::now() - Duration::from_secs(3);
+        let previous_check = state.last_checked;
+
+        state.poll_and_apply(&ctx);
+
+        assert!(
+            state.last_checked > previous_check,
+            "the poll must actually run"
+        );
+        assert_eq!(state.last_applied, Some(state.resolved));
+    }
+
+    #[test]
+    fn system_theme_poll_is_throttled() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::Light);
+        state.preference = ThemeMode::System;
+        let previous_check = state.last_checked;
+
+        assert!(state.poll_and_apply(&ctx));
+        assert_eq!(state.last_checked, previous_check);
+        assert_eq!(state.resolved, ThemeMode::Light);
+        assert!(
+            !state.poll_and_apply(&ctx),
+            "unchanged appearance is not reapplied"
+        );
+    }
+
+    #[test]
+    fn explicit_preference_is_not_overwritten_by_system_polling() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.last_checked = Instant::now() - Duration::from_secs(3);
+        let previous_check = state.last_checked;
+
+        assert!(!state.apply_new_preference(&ctx, ThemeMode::Dark));
+        assert!(!state.poll_and_apply(&ctx));
+        assert_eq!(state.resolved, ThemeMode::Dark);
+        assert_eq!(state.last_applied, Some(ThemeMode::Dark));
+        assert_eq!(state.last_checked, previous_check);
     }
 }
 
@@ -1409,6 +1590,8 @@ pub enum DesiredAppAction {
     None,
     Refresh,
     AddScreenType(Box<ScreenType>),
+    /// Switch to another root screen (e.g. a sibling sub-screen).
+    SetMainScreen(RootScreenType),
     BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
@@ -1422,6 +1605,9 @@ impl DesiredAppAction {
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
+            }
+            DesiredAppAction::SetMainScreen(root_screen_type) => {
+                AppAction::SetMainScreen(*root_screen_type)
             }
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask((**backend_task).clone())
@@ -1461,6 +1647,12 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// [`Self::BackendTasks`] with the context each task's result comes back
+    /// under, so a screen can tell one dispatch of a task from another.
+    BackendTasksWithContexts(
+        Vec<(BackendTask, BackendTaskContext)>,
+        BackendTasksExecutionMode,
+    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2381,34 +2573,68 @@ impl AppState {
         );
     }
 
-    /// Handle the backend tasks and send the results through the channel
-    fn handle_backend_tasks(&mut self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
+    /// Handle the backend tasks and send the results through the channel.
+    ///
+    /// Contact-list reads in a batch report to the screen that sent them, as a
+    /// task dispatched with its own context does: the hub asks for its lists
+    /// once per arrival, so a failure delivered to a screen covering it would
+    /// leave it waiting for good.
+    fn handle_backend_tasks(
+        &mut self,
+        tasks: Vec<BackendTask>,
+        mode: BackendTasksExecutionMode,
+        owner: Option<ScreenOwner>,
+    ) {
+        let network = self.current_app_context().network;
+        let tasks = tasks
+            .into_iter()
+            .map(|task| {
+                let context = BackendTaskContext::for_task_on(&task, network);
+                (task, context)
+            })
+            .collect();
+        self.run_backend_tasks(tasks, mode, owner);
+    }
+
+    /// Run `tasks` under their contexts; see [`Self::handle_backend_tasks`]. A
+    /// contact-list read that carries no dispatch of its own is given one.
+    fn run_backend_tasks(
+        &mut self,
+        tasks: Vec<(BackendTask, BackendTaskContext)>,
+        mode: BackendTasksExecutionMode,
+        owner: Option<ScreenOwner>,
+    ) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
-        let contexts = tasks
-            .iter()
-            .map(|task| {
-                self.prepare_backend_task_context(
-                    task,
-                    BackendTaskContext::for_task_on(task, app_context.network),
-                )
-            })
-            .collect::<Vec<_>>();
-        let watcher_context = tasks
-            .iter()
-            .zip(&contexts)
-            .find_map(|(task, context)| {
-                matches!(
-                    task,
-                    BackendTask::CoreTask(
-                        crate::backend_task::core::CoreTask::FullResyncWallet { .. }
-                    )
-                )
-                .then(|| context.clone())
-            })
-            .unwrap_or(BackendTaskContext::Unknown);
+        let network = app_context.network;
+        let mut prepared = Vec::with_capacity(tasks.len());
+        for (task, context) in tasks {
+            let context = match owner {
+                Some(owner) if context.contacts_load().is_some() => {
+                    let context = if context.dispatch_id().is_some() {
+                        context
+                    } else {
+                        BackendTaskContext::for_dispatch_on(&task, network)
+                    };
+                    self.request_owners.record(&context, owner);
+                    context
+                }
+                _ => context,
+            };
+            // A full rescan gets a dispatch of its own and arms the SPV block,
+            // so the join watcher below also reports a crash to its screen.
+            let context = self.prepare_backend_task_context(&task, context);
+            prepared.push((task, context));
+        }
+        let (tasks, contexts): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+        #[cfg(feature = "testing")]
+        if let Some(captured) = &mut self.captured_dispatches {
+            captured.extend(tasks.into_iter().zip(contexts));
+            return;
+        }
         let handle = tokio::runtime::Handle::current();
+        let watcher_contexts = contexts.clone();
 
         let _ = self.subtasks.spawn_blocking_sync(
             "backend_tasks_join_watcher",
@@ -2438,7 +2664,7 @@ impl AppState {
                 });
             },
             move |join_result| {
-                forward_backend_task_join_error(join_result, watcher_sender, None, watcher_context)
+                forward_backend_tasks_join_error(join_result, watcher_sender, watcher_contexts)
             },
         );
     }
@@ -2975,6 +3201,9 @@ impl AppState {
                 // answers that are not for what it shows.
                 BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
                 | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
+                // A contact details write the hub dispatched holds a guard and
+                // a pending task there until its outcome arrives.
+                BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
                 }
@@ -2988,12 +3217,13 @@ impl AppState {
         }
     }
 
-    /// Release the hub's contact-request guards on a failed request action,
-    /// which it dispatches without a dispatch context, when the error goes to
-    /// another screen.
+    /// Release the hub's contact-request and contact details guards on a
+    /// failed action, which it dispatches without a dispatch context, when the
+    /// error goes to another screen.
     fn route_identity_error_to_hidden_hub(
         &mut self,
         owner: Option<ScreenOwner>,
+        context: &BackendTaskContext,
         error: &TaskError,
     ) {
         if self.hub_takes_result(owner) {
@@ -3003,7 +3233,13 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
+            // A bare error names its contact details write only through the
+            // context; the hub releases that write's guard from it.
+            if context.dashpay_contact_info_target().is_some() {
+                hub.display_backend_task_error(context, error);
+            }
             hub.handle_contact_request_error(error);
+            hub.handle_contact_info_error(error);
         }
     }
 
@@ -3920,7 +4156,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_identity_error_to_hidden_hub(owner, &err);
+                    self.route_identity_error_to_hidden_hub(owner, &context, &err);
                     self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is
@@ -4336,7 +4572,10 @@ impl App for AppState {
                     self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode);
+                    self.handle_backend_tasks(tasks, mode, owner);
+                }
+                AppAction::BackendTasksWithContexts(tasks, mode) => {
+                    self.run_backend_tasks(tasks, mode, owner);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

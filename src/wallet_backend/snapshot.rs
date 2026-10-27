@@ -1149,7 +1149,6 @@ impl SnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::dashcore::crypto::ecdsa::EcdsaSecretKey as SecretKey;
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -1158,6 +1157,7 @@ mod tests {
     };
     use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
     use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+    use dash_sdk::dpp::secp256k1::SecretKey;
 
     fn seed(n: u8) -> WalletSeedHash {
         [n; 32]
@@ -2501,8 +2501,7 @@ mod tests {
     fn addr(n: u8) -> Address {
         let mut sk_bytes = [1u8; 32];
         sk_bytes[31] = n.max(1);
-
-        let sk = SecretKey::from_bytes(&sk_bytes).unwrap();
+        let sk = SecretKey::from_secret_bytes(sk_bytes).unwrap();
         let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)
     }

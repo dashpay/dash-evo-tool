@@ -3373,8 +3373,9 @@ pub enum TaskError {
     /// spent its coins first. Upstream binds the operation to that funding, so
     /// retrying it cannot build a replacement; a new transfer can start.
     ///
-    /// Populated by `map_shielded_op_error` from
-    /// `PlatformWalletError::AssetLockConflicted`.
+    /// Populated from `PlatformWalletError::AssetLockConflicted` by
+    /// `map_shielded_op_error` and the identity create, top-up and Platform
+    /// address funding mappers.
     #[error(
         "This transfer did not go through because its coins were spent by another payment. Check your balance, then start a new transfer."
     )]

@@ -3625,6 +3625,9 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
+        IdentityOpErrorKind::FundingConflicted => TaskError::AssetLockFundingConflicted {
+            source: Box::new(e),
+        },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
             // The orchestrator broadcasts its own funding transaction and
             // returns no id, so there is nothing to watch.
@@ -3665,6 +3668,9 @@ fn map_identity_top_up_error(
             source: Box::new(e),
         },
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::FundingConflicted => TaskError::AssetLockFundingConflicted {
             source: Box::new(e),
         },
         IdentityOpErrorKind::NotManaged => TaskError::IdentityNotManaged {
@@ -3743,6 +3749,9 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
+        IdentityOpErrorKind::FundingConflicted => TaskError::AssetLockFundingConflicted {
+            source: Box::new(e),
+        },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
             // The orchestrator broadcasts its own funding transaction and
             // returns no id, so there is nothing to watch.
@@ -3775,6 +3784,9 @@ enum IdentityOpErrorKind {
     /// already be on the network, so this is neither a rejection nor a finality
     /// timeout, and the caller must not re-submit (the next sync reconciles).
     ConfirmationUnknown,
+    /// The funding transaction lost a Core input conflict — another payment
+    /// spent its coins. Retrying the same funding cannot succeed.
+    FundingConflicted,
     /// Anything else — preconditions, wallet state, builder failures.
     Other,
 }
@@ -3790,6 +3802,9 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         P::Sdk(_) | P::TransactionBroadcast(_) | P::TokenOperationFailed { .. } => {
             IdentityOpErrorKind::Rejected
         }
+
+        // The funding lost a Core input conflict; a retry cannot rebuild it.
+        P::AssetLockConflicted(_) => IdentityOpErrorKind::FundingConflicted,
 
         // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
         P::FinalityTimeout(_)
@@ -3828,7 +3843,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockTransaction(_)
         | P::AssetLockNotTracked(_)
         | P::AssetLockAlreadyConsumed(_)
-        | P::AssetLockConflicted(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
@@ -4810,6 +4824,31 @@ mod tests {
             map_shielded_op_error(P::AssetLockConflicted(out_point)),
             TaskError::AssetLockFundingConflicted { .. }
         ));
+    }
+
+    /// A conflicted funding lock cannot be retried, so identity creation,
+    /// top-up and Platform address funding say so instead of "please retry".
+    #[test]
+    fn identity_funding_paths_route_a_conflicted_funding_lock() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use platform_wallet::error::PlatformWalletError as P;
+        let out_point = dash_sdk::dpp::dashcore::OutPoint::new(
+            dash_sdk::dpp::dashcore::Txid::from_byte_array([0x31; 32]),
+            0,
+        );
+        for mapped in [
+            map_identity_register_error(P::AssetLockConflicted(out_point)),
+            map_identity_top_up_error(
+                dash_sdk::platform::Identifier::from([1; 32]),
+                P::AssetLockConflicted(out_point),
+            ),
+            map_platform_address_fund_error(P::AssetLockConflicted(out_point)),
+        ] {
+            assert!(
+                matches!(mapped, TaskError::AssetLockFundingConflicted { .. }),
+                "unexpected mapping: {mapped:?}"
+            );
+        }
     }
 
     /// The not-bound / not-configured shielded preconditions map to their

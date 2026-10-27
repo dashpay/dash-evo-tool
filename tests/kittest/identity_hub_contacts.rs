@@ -171,6 +171,61 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
     });
 }
 
+/// Until the first contact-list load lands, the Active contacts section says
+/// it is loading. "You have no contacts yet." is a claim about the loaded
+/// list, so it must not show before there is one.
+#[test]
+fn active_contacts_say_loading_until_the_first_load_lands() {
+    use crate::identity_home::seed_identity;
+    use crate::support::{fresh_app_context, with_isolated_data_dir};
+    use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
+    use dash_evo_tool::ui::state::contacts_view::ContactsState;
+
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_identity(&app_context, vec![], vec![]);
+        let mut profiles = ProfileCache::default();
+        profiles.record_saved(
+            identity,
+            ProfileFields {
+                display_name: "Alex".into(),
+                ..Default::default()
+            },
+        );
+        let render_context = app_context.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(960.0, 720.0))
+            .build_ui_state(
+                move |ui, state: &mut (ContactsState, ProfileCache)| {
+                    let _ = contacts::render(
+                        ui,
+                        &render_context,
+                        render_context.resolve_selected_identity().as_ref(),
+                        &mut state.0,
+                        &mut state.1,
+                        &mut Default::default(),
+                        &mut Vec::new(),
+                    );
+                },
+                (ContactsState::default(), profiles),
+            );
+        harness.run();
+        assert!(
+            harness.query_by_label(contacts::CONTACTS_LOADING).is_some(),
+            "the section must say the contacts are loading"
+        );
+        assert!(
+            harness.query_by_label(contacts::NO_ACTIVE_EMPTY).is_none(),
+            "an unloaded list must not be reported as empty"
+        );
+
+        harness.state_mut().0.record_contacts(Vec::new());
+        harness.run();
+        assert!(harness.query_by_label(contacts::NO_ACTIVE_EMPTY).is_some());
+        assert!(harness.query_by_label(contacts::CONTACTS_LOADING).is_none());
+    });
+}
+
 /// The tab's load is asked for separately from rendering. A gated tab has
 /// nothing to load; a populated one loads its two lists once.
 #[test]

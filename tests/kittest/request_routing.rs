@@ -818,3 +818,98 @@ fn a_result_sent_before_a_network_switch_stays_off_the_new_network() {
         );
     });
 }
+
+fn token_creator(harness: &mut App) -> &mut dash_evo_tool::ui::tokens::tokens_screen::TokensScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenTokenCreator)
+    {
+        Some(Screen::TokensScreen(screen)) => screen,
+        _ => panic!("the Token Creator is open"),
+    }
+}
+
+/// Switch to the other of Testnet and Mainnet and wait until it is ready.
+fn switch_network(harness: &mut App) {
+    use dash_evo_tool::app::BootPhase;
+    use dash_sdk::dpp::dashcore::Network;
+    use std::time::{Duration, Instant};
+    let first = harness.state().current_app_context().network();
+    let second = if first == Network::Testnet {
+        Network::Mainnet
+    } else {
+        Network::Testnet
+    };
+    harness.state_mut().change_network(second);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while harness.state().current_app_context().network() != second
+        || harness.state().boot_phase() != BootPhase::Ready
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the switch did not finish in time"
+        );
+        harness.step();
+    }
+}
+
+/// A token registration sent on one network whose outcome arrives after a
+/// switch, while the Token Creator registers another token on the new
+/// network, leaves that registration alone: a success neither completes it
+/// nor raises a banner, and a failure neither ends its progress nor reaches
+/// its screen. The failure is still reported by a banner, as for a closed
+/// sender.
+#[test]
+fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alone() {
+    use dash_evo_tool::ui::components::message_banner::MessageBanner;
+    use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    for fails in [false, true] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+            let previous = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenTokenCreator;
+            harness.run_steps(3);
+            let ctx = harness.ctx.clone();
+            MessageBanner::clear_all_global(&ctx);
+            let current = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            harness.run_steps(3);
+
+            let late = if fails {
+                TaskResult::Error {
+                    context: previous,
+                    error: TaskError::TaskManagerShuttingDown,
+                }
+            } else {
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::RegisteredTokenContract),
+                }
+            };
+            deliver(&mut harness, late);
+
+            let creator = token_creator(&mut harness);
+            assert_eq!(
+                *creator.token_creator_status_for_test(),
+                TokenCreatorStatus::WaitingForResult,
+                "the new network's registration is still waiting (fails: {fails})"
+            );
+            assert!(
+                creator.registration_banner_live_for_test(),
+                "its progress banner stays (fails: {fails})"
+            );
+            let failure_reported = harness
+                .query_all_by_label_contains(&TaskError::TaskManagerShuttingDown.to_string())
+                .next()
+                .is_some();
+            assert_eq!(
+                failure_reported, fails,
+                "only the failure raises a banner, as for a closed sender"
+            );
+        });
+    }
+}

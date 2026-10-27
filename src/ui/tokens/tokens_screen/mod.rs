@@ -1420,6 +1420,32 @@ fn my_tokens(
 }
 
 impl TokensScreen {
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Starts a registration as the creator's confirmation does, without
+    /// building a contract, and returns a dispatch standing in for it.
+    pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
+        self.mark_token_registration_started();
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        BackendTaskContext::for_dispatch_on(&task, self.app_context.network)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Where the Token Creator's registration stands.
+    pub fn token_creator_status_for_test(&self) -> &TokenCreatorStatus {
+        &self.token_creator_status
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the registration's progress banner is still shown.
+    pub fn registration_banner_live_for_test(&self) -> bool {
+        self.operation_banner
+            .as_ref()
+            .is_some_and(|banner| banner.is_live())
+    }
+
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let identities = app_context
             .load_local_qualified_identities()

@@ -56,7 +56,7 @@ pub(super) fn assess_locks(
         .iter()
         .filter(|lock| {
             lock.funding_type == AssetLockFundingType::AssetLockAddressTopUp
-                && lock.status != AssetLockStatus::Consumed
+                && !lock.status.is_consumed()
         })
         .map(|lock| {
             let record = records.get(&lock.out_point.txid);
@@ -80,7 +80,9 @@ pub(super) fn assess_locks(
                 funding_amount: lock.amount,
                 core_fee: record.and_then(|tx| tx.fee),
                 block_time: record.and_then(|tx| (tx.timestamp != 0).then_some(tx.timestamp)),
-                stage: if !conflicts.is_empty() {
+                // Upstream marks a lock whose funding lost an input conflict
+                // even when the competing payment is not in local history.
+                stage: if !conflicts.is_empty() || lock.status == AssetLockStatus::Conflicted {
                     TransferStage::ConflictObserved
                 } else if lock.status == AssetLockStatus::RecoveredFromChain {
                     TransferStage::Recovered
@@ -184,9 +186,22 @@ mod tests {
     fn pending_transfers_exclude_consumed_and_other_funding_operations() {
         let mut consumed = lock();
         consumed.status = AssetLockStatus::Consumed;
+        let mut drained = lock();
+        drained.status = AssetLockStatus::DrainCompleted;
         let mut identity = lock();
         identity.funding_type = AssetLockFundingType::IdentityRegistration;
-        assert!(assess_locks(&[consumed, identity], &[]).is_empty());
+        assert!(assess_locks(&[consumed, drained, identity], &[]).is_empty());
+    }
+
+    /// Upstream records a lost input conflict on the lock itself, so the
+    /// transfer reports it even before the competing payment is in history.
+    #[test]
+    fn pending_transfers_report_a_conflict_upstream_recorded() {
+        let mut conflicted = lock();
+        conflicted.status = AssetLockStatus::Conflicted;
+        let assessed = assess_locks(&[conflicted], &[]);
+        assert_eq!(assessed[0].stage, TransferStage::ConflictObserved);
+        assert!(assessed[0].conflicts.is_empty());
     }
 
     #[test]

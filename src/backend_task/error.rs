@@ -1620,7 +1620,10 @@ pub enum TaskError {
         source: BackendTaskJoinError,
     },
 
-    /// A caught task panic; the payload can contain secrets and is not retained.
+    /// A caught task panic. The payload is kept out of this error, whose
+    /// `Debug` reaches the banner's details panel. The process panic hook in
+    /// `logging.rs` still logs the payload, as it does for every panic, so a
+    /// panic message must never contain secrets.
     #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
     BackendTaskPanicked,
 

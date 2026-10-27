@@ -164,6 +164,41 @@ fn layout_token_info(app_context: &Arc<AppContext>) -> IdentityTokenInfo {
     }
 }
 
+/// Registers a fresh wallet, links `identity` to it at index 0 and waits until
+/// the wallet backend has loaded the wallet, so token actions are available
+/// for the identity.
+fn hold_in_a_loaded_wallet(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) {
+    use dash_evo_tool::model::wallet::Wallet;
+    use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroize;
+
+    let mut seed: [u8; 64] = rand::random();
+    let wallet = Wallet::new_from_seed(seed, app_context.network(), Some("Tokens".into()), None)
+        .expect("wallet fixture");
+    let (seed_hash, _) = app_context
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register wallet fixture");
+    seed.zeroize();
+    app_context
+        .insert_local_qualified_identity(identity, &Some((seed_hash, 0)))
+        .expect("link the identity to the wallet");
+
+    // Upstream registration runs in the background and is slow offline.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !app_context
+        .token_action_availability(&identity.identity.id())
+        .expect("availability")
+        .is_available()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the wallet holding the identity did not load"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Mint, burn, freeze, unfreeze, destroy-frozen-funds, pause and resume share
 /// one screen scaffold. Its "Advanced Options" checkbox must sit on the page
 /// heading's row and the first form step must follow right below — not be
@@ -181,6 +216,9 @@ fn token_action_forms_start_right_under_the_heading() {
         // so no private key material is needed.
         app_context.set_user_role(UserRole::Developer);
         let info = layout_token_info(&app_context);
+        // Token actions go through the wallet holding the identity; without
+        // one, the scaffold shows why instead of the form under test.
+        hold_in_a_loaded_wallet(&app_context, &info.identity);
 
         let screens = [
             ("Mint Tokens", ScreenType::MintTokensScreen(info.clone())),

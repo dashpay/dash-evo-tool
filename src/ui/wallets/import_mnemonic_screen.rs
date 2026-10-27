@@ -775,4 +775,34 @@ mod tests {
         }
         assert!(!screen.wallet_imported, "nothing was imported");
     }
+
+    /// A 32-byte hex key is converted to WIF and imported: the imported key
+    /// is the one the hex names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_32_byte_hex_private_key_is_imported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let key_bytes = [0x2B; 32];
+        let expected_address = {
+            use dash_sdk::dpp::dashcore::{Address, PrivateKey};
+            let private_key = PrivateKey::from_byte_array(&key_bytes, app_context.network())
+                .expect("valid private key");
+            Address::p2pkh(&private_key.public_key(), app_context.network()).to_string()
+        };
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+
+        screen.set_private_key_for_test(&hex::encode(key_bytes));
+        assert!(screen.save_private_key_wallet().is_ok());
+
+        assert!(screen.wallet_imported, "the key was imported");
+        let backend = app_context.wallet_backend().expect("wired backend");
+        let addresses: Vec<String> = backend
+            .single_key()
+            .list()
+            .into_iter()
+            .map(|key| key.address)
+            .collect();
+        assert_eq!(addresses, [expected_address]);
+        backend.shutdown().await;
+    }
 }

@@ -14,7 +14,7 @@ use aes_gcm::{Aes256Gcm, KeyInit};
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use super::encryption::{EncryptionError, derive_password_key};
 
@@ -169,6 +169,22 @@ impl Drop for SingleKeyData {
         }
     }
 }
+
+/// Without a password, `encrypted_private_key` holds the raw key bytes, so it
+/// is wiped like the open key. The salt and nonce are not secret.
+impl Zeroize for ClosedSingleKey {
+    fn zeroize(&mut self) {
+        self.encrypted_private_key.zeroize();
+    }
+}
+
+impl Drop for ClosedSingleKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for ClosedSingleKey {}
 
 impl ClosedSingleKey {
     /// Compute the hash of a private key
@@ -480,6 +496,27 @@ mod tests {
 
         assert!(wallet.is_open());
         assert!(!wallet.address.to_string().is_empty());
+    }
+
+    /// The stored key bytes, raw when there is no password, are wiped by
+    /// `zeroize`, which `Drop` runs; the hash, salt and nonce are kept.
+    #[test]
+    fn closed_key_wipes_its_stored_key_bytes() {
+        fn wiped_on_drop<T: ZeroizeOnDrop>() {}
+        wiped_on_drop::<ClosedSingleKey>();
+
+        let mut closed = ClosedSingleKey {
+            key_hash: [1; 32],
+            encrypted_private_key: vec![0x2A; 32],
+            salt: vec![2; 16],
+            nonce: vec![3; 12],
+        };
+        closed.zeroize();
+
+        assert!(closed.encrypted_private_key.is_empty());
+        assert_eq!(closed.key_hash, [1; 32]);
+        assert_eq!(closed.salt, vec![2; 16]);
+        assert_eq!(closed.nonce, vec![3; 12]);
     }
 
     /// Bad hex keeps the messages it always had: `hex::decode`'s own error

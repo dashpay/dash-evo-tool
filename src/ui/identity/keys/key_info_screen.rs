@@ -2679,7 +2679,8 @@ mod tests {
         for (input, expected) in [
             // Valid hex, one byte short.
             (hex::encode(&secret[..31]), not_32_bytes),
-            // Valid hex of a WIF key's length: still read as hex.
+            // Valid hex of a WIF key's length. It is not a valid WIF either,
+            // so this does not prove hex is tried first; it pins the message.
             ("ab".repeat(26), not_32_bytes),
             // Odd length and non-hex input fall through to WIF.
             ("abc".to_owned(), not_hex_or_wif),

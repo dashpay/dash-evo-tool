@@ -1017,9 +1017,10 @@ fn a_manual_disconnect_holds_across_network_switches_until_connect() {
     });
 }
 
-/// A Disconnect pressed while a first-visit switch is still building the new
+/// A Disconnect handled while a first-visit switch is still building the new
 /// network's context is honored: the app arrives on the new network offline.
-/// Reachable from a failed connection, which leaves both controls enabled.
+/// The switch's blocking overlay covers the button, so the action is dispatched
+/// directly; what is under test is that the frame loop still takes it.
 #[test]
 fn a_disconnect_during_a_first_visit_switch_is_honored() {
     crate::support::with_isolated_data_dir(|| {
@@ -1034,10 +1035,9 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
         let outgoing_context = harness.state().current_app_context().clone();
         let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
         harness.state_mut().change_network(second);
-        // One frame first: the switch's progress banner shifts the layout, and
-        // a click simulated on that very frame misses the button.
-        harness.step();
-        harness.get_by_label("Disconnect").click();
+        harness
+            .state_mut()
+            .test_dispatch_action(dash_evo_tool::app::AppAction::StopSpv);
         poll_until(
             &mut harness,
             "the disconnect to finish while the switch is pending",
@@ -1059,6 +1059,139 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
         assert_chain_sync_stays_off(
             &mut harness,
             "on the destination after a disconnect during a pending switch",
+        );
+    });
+}
+
+/// While a first-visit switch builds the new network's context, a blocking
+/// progress overlay names the destination and takes every click: the outgoing
+/// network's Connect, still painted beneath, cannot start its chain sync. The
+/// overlay goes away once the switch lands.
+///
+/// The click is a real pointer press and release on Connect, so it has to get
+/// through the overlay's input claim exactly as a user's would.
+#[test]
+fn a_pending_switch_blocks_the_app_behind_a_progress_overlay() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+        offer_disconnect(&mut harness);
+        harness.get_by_label("Disconnect").click();
+        poll_until(&mut harness, "the manual disconnect to finish", |state| {
+            state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+        });
+        step_until_painted(&mut harness, "the Connect button to appear", |h| {
+            h.query_by_label("Connect").is_some()
+        });
+
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        let switching = match second {
+            Network::Mainnet => "Switching to Mainnet…",
+            _ => "Switching to Testnet…",
+        };
+        step_until_painted(&mut harness, "the switch's progress overlay", |h| {
+            h.query_by_label_contains(switching).is_some()
+        });
+
+        let connect = harness.get_by_label("Connect").rect().center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(connect),
+            egui::Event::PointerButton {
+                pos: connect,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos: connect,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        for _ in 0..25 {
+            harness.step();
+            let started = outgoing_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_started());
+            assert!(
+                !harness.state().test_spv_start_in_flight() && !started,
+                "Connect must not start chain sync on {first:?} while switching to {second:?}",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "precondition: the switch is still pending",
+        );
+        assert!(
+            harness.query_by_label_contains(switching).is_some(),
+            "the overlay stays up for as long as the switch is pending",
+        );
+
+        drop(pending_switch);
+        poll_until(&mut harness, "the pending switch to finish", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        step_until_painted(&mut harness, "the switch's overlay to go away", |h| {
+            h.query_by_label_contains(switching).is_none()
+        });
+        assert_chain_sync_stays_off(
+            &mut harness,
+            "on the destination: the Connect pressed during the switch was not taken",
+        );
+    });
+}
+
+/// Connect is refused while a switch is pending, even when it reaches the frame
+/// loop without a click. Accepting it would start chain sync on the network the
+/// user is leaving and lift their Disconnect, so the destination would then
+/// auto-start too.
+#[test]
+fn a_connect_during_a_pending_switch_is_refused() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+        offer_disconnect(&mut harness);
+        harness.get_by_label("Disconnect").click();
+        poll_until(&mut harness, "the manual disconnect to finish", |state| {
+            state.current_app_context().connection_status().spv_status() == SpvStatus::Stopped
+        });
+
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        harness
+            .state_mut()
+            .test_dispatch_action(dash_evo_tool::app::AppAction::StartSpv);
+        for _ in 0..25 {
+            harness.step();
+            let started = outgoing_context
+                .wallet_backend()
+                .is_ok_and(|backend| backend.is_started());
+            assert!(
+                !harness.state().test_spv_start_in_flight() && !started,
+                "Connect must not start chain sync on {first:?} while switching to {second:?}",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        drop(pending_switch);
+        poll_until(&mut harness, "the pending switch to finish", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        assert_chain_sync_stays_off(
+            &mut harness,
+            "on the destination: the refused Connect did not lift the Disconnect",
         );
     });
 }

@@ -28,7 +28,9 @@ use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
+use crate::ui::components::{
+    BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay,
+};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
@@ -1473,14 +1475,21 @@ pub struct AppState {
     /// recorded here instead, after the frame loop has done its bookkeeping.
     #[cfg(feature = "testing")]
     captured_dispatches: Option<Vec<(BackendTask, BackendTaskContext)>>,
+    /// Actions a kittest dispatched as if a control had returned them. The
+    /// frame loop handles them with the frame's own actions.
+    #[cfg(feature = "testing")]
+    test_actions: Vec<AppAction>,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Network whose context is being created asynchronously. While `Some`,
-    /// the UI shows a progress banner and ignores further switch requests.
+    /// the app is blocked behind [`Self::network_switch_overlay`] and ignores
+    /// further switch requests and Connect.
     network_switch_pending: Option<Network>,
-    /// Progress banner displayed while a network switch is in progress.
-    network_switch_banner: Option<BannerHandle>,
+    /// Blocking progress overlay naming the destination while a network switch
+    /// builds its context. The same overlay the storage-preparation gate raises
+    /// at startup, so the outgoing network's controls are out of reach.
+    network_switch_overlay: Option<OverlayHandle>,
     /// Whether boot must remain on the network chooser until the user confirms a network.
     network_selection_required: bool,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
@@ -2094,11 +2103,13 @@ impl AppState {
             request_owners: RequestOwners::default(),
             #[cfg(feature = "testing")]
             captured_dispatches: None,
+            #[cfg(feature = "testing")]
+            test_actions: Vec::new(),
             chosen_network,
             connection_status,
             network_contexts,
             network_switch_pending: None,
-            network_switch_banner: None,
+            network_switch_overlay: None,
             network_selection_required,
             task_result_sender,
             task_result_receiver,
@@ -2714,12 +2725,18 @@ impl AppState {
         // The task never starts chain sync for the GUI: that decision waits
         // for `finalize_network_switch`, so a Disconnect pressed while the
         // context is still being built is honored.
+        tracing::info!(from = ?self.chosen_network, to = ?network, "Network switch started");
         self.network_switch_pending = Some(network);
-        self.network_switch_banner = Some(MessageBanner::set_global(
-            self.current_app_context().egui_ctx(),
-            format!("Connecting to {network:?}..."),
-            MessageType::Info,
-        ));
+        // Blocks the whole app until the switch lands or fails: until then
+        // every screen still belongs to the outgoing network, and a Connect
+        // there would start its chain sync instead of the destination's.
+        let label = chooser_network_label(network);
+        let ctx = self.current_app_context().egui_ctx().clone();
+        self.network_switch_overlay.raise(
+            &ctx,
+            format!("Switching to {label}…"),
+            OverlayConfig::new(),
+        );
         self.handle_backend_task(BackendTask::SwitchNetwork {
             network,
             start_spv: false,
@@ -2761,6 +2778,12 @@ impl AppState {
         // preparation and leave the gate raised over nothing to poll.
         self.boot.reset_for_switch(network);
         let auto_start_spv = self.auto_start_spv_allowed();
+        tracing::info!(
+            ?network,
+            auto_start_spv,
+            manually_disconnected = self.spv_manually_disconnected,
+            "Network switch completed"
+        );
         if self.boot.is_prepared(network) {
             if auto_start_spv {
                 self.start_spv_for(BackendInitReason::NetworkSwitch);
@@ -2868,6 +2891,14 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_set_secret_prompt_active(&mut self, active: bool) {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
+    }
+
+    /// Test seam: hand `action` to the next frame as if a control had returned
+    /// it, so a kittest can drive an action whose button the frame does not
+    /// offer, e.g. while a blocking overlay covers it.
+    #[cfg(feature = "testing")]
+    pub fn test_dispatch_action(&mut self, action: AppAction) {
+        self.test_actions.push(action);
     }
 
     /// Test seam (Task 9 / F-SPV-A): arm a user-initiated SPV-sync block episode,
@@ -3970,7 +4001,7 @@ impl App for AppState {
                         } => {
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
-                            self.network_switch_banner.take_and_clear();
+                            self.network_switch_overlay.take_and_clear();
                             self.finalize_network_switch(network);
                         }
                         BackendTaskSuccessResult::NetworkContextRegistered { network, context } => {
@@ -4035,7 +4066,7 @@ impl App for AppState {
                         self.tell_owner_its_task_failed(route, &context, &err);
                     }
                     self.network_switch_pending = None;
-                    self.network_switch_banner.take_and_clear();
+                    self.network_switch_overlay.take_and_clear();
                     let current_context = self.current_app_context().clone();
                     if let Some(screen) = self
                         .main_screens
@@ -4462,6 +4493,8 @@ impl App for AppState {
         }
         self.drain_overlay_actions(ctx);
 
+        #[cfg(feature = "testing")]
+        actions.extend(self.test_actions.drain(..).map(|action| (None, action)));
         for (owner, action) in actions {
             if !network_selection_allows_action(self.network_selection_required, &action) {
                 tracing::debug!("Blocked an action until the user confirms a network");
@@ -4545,6 +4578,18 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
+                    // The screens still belong to the outgoing network until a
+                    // pending switch lands, so a Connect here would start the
+                    // wrong network's chain sync and lift the user's Disconnect.
+                    if let Some(pending) = self.network_switch_pending {
+                        tracing::info!(
+                            network = ?self.chosen_network,
+                            switching_to = ?pending,
+                            "Ignored Connect while a network switch is pending"
+                        );
+                        continue;
+                    }
+                    tracing::info!(network = ?self.chosen_network, "User pressed Connect");
                     // Arm the SPV-sync block for this user-initiated Connect (a
                     // fresh episode — re-arm the escape). The block conveys the
                     // "connecting" state, so no separate Info banner is set here
@@ -4555,6 +4600,11 @@ impl App for AppState {
                     self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
+                    tracing::info!(
+                        network = ?self.chosen_network,
+                        switching_to = ?self.network_switch_pending,
+                        "User asked to disconnect"
+                    );
                     self.spv_manually_disconnected = true;
                     // Overrule every start still on its way, on any network.
                     self.spv_manual_disconnects.fetch_add(1, Ordering::SeqCst);

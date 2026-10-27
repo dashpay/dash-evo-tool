@@ -264,7 +264,8 @@ where
 /// A save stores its details on this device before it publishes them; a
 /// sync in between would put the older published details back over them.
 /// A read does not wait for the save, which can sit behind a password prompt
-/// or a slow publish: it shows the details this device already holds.
+/// or a slow publish. Until the save lands, the read can show the details as
+/// they were before it; the contacts list reloads once it does.
 pub(super) async fn unless_saving<T>(
     writes: &crate::context::ContactInfoWrites,
     owner: Identifier,
@@ -478,10 +479,13 @@ pub async fn load_contacts(
 
     // Find mutual contacts (where both parties have sent requests to each other)
     let backend = app_context.wallet_backend().ok();
+    // As for the request lists: withdrawn and declined people are not
+    // contacts until the owner re-engages.
     let contacts = mutual_contacts(&incoming, &outgoing, |peer| {
-        backend
-            .as_ref()
-            .is_some_and(|backend| backend.dashpay_is_withdrawn(&identity_id, peer))
+        backend.as_ref().is_some_and(|backend| {
+            backend.dashpay_is_withdrawn(&identity_id, peer)
+                || backend.dashpay_is_declined(&identity_id, peer)
+        })
     });
 
     // platform-wallet's synced details first; a refresh failure leaves the

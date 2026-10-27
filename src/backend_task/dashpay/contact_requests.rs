@@ -127,8 +127,9 @@ pub async fn load_contact_requests(
 }
 
 /// Keep only the requests still waiting for an answer: drop the pairs that
-/// are contacts (both sides sent a request, unless the owner withdrew theirs —
-/// a reply to a withdrawn request is a new request to answer), then every
+/// are contacts (both sides sent a request, unless the owner withdrew theirs
+/// or declined the other's — a reply to a withdrawn request is a new request
+/// to answer), then every
 /// request the user resolved on this device; see [`retain_unresolved`].
 fn pending_requests(
     incoming: &mut Vec<(Identifier, Document)>,
@@ -136,7 +137,11 @@ fn pending_requests(
     is_declined: impl Fn(&Identifier) -> bool,
     is_withdrawn: impl Fn(&Identifier) -> bool,
 ) {
-    let contacts_established = super::contacts::mutual_contacts(incoming, outgoing, &is_withdrawn);
+    // A sender the owner declined is not a contact until the owner
+    // re-engages, which clears the decline.
+    let contacts_established = super::contacts::mutual_contacts(incoming, outgoing, |peer| {
+        is_withdrawn(peer) || is_declined(peer)
+    });
     // An outgoing document with an unreadable recipient is kept: it cannot be
     // attributed, and hiding a request the user may still be waiting on is
     // the worse failure.
@@ -694,6 +699,13 @@ pub async fn accept_contact_request(
     // Verify the request was addressed to us before acting on it, and get the
     // sender's identity (the owner of the incoming request).
     let from_identity_id = sender_of_received_request(&doc, &identity.identity.id())?;
+    // Accept, decline and cancel lock on the person too: a cancel of the
+    // owner's request to them must not record a withdrawal while this accept
+    // establishes the contact.
+    let _peer_guard = app_context
+        .wallet_backend()?
+        .dashpay_lock_contact_request_action(&owner_id, &from_identity_id)
+        .await;
 
     // Check if we already sent a contact request to this identity
     let mut existing_query = contact_request_query(app_context)?;
@@ -995,7 +1007,7 @@ impl RejectOps for PlatformRejectOps<'_> {
         Ok(self
             .app_context
             .wallet_backend()?
-            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.from_identity_id)
             .await)
     }
 
@@ -1121,7 +1133,7 @@ impl CancelOps for PlatformCancelOps<'_> {
         Ok(self
             .app_context
             .wallet_backend()?
-            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.to_identity_id)
             .await)
     }
 
@@ -1416,6 +1428,59 @@ mod tests {
             "id(3)'s reply waits for an answer; id(4) is a contact"
         );
         assert!(outgoing.is_empty(), "the withdrawn request is not listed");
+    }
+
+    /// A declined sender is not a contact until the owner re-engages, even
+    /// when the owner's own request to them is still on Platform: that sent
+    /// request stays listed, so sending it again can finish the update.
+    #[test]
+    fn a_declined_sender_with_a_sent_request_is_not_a_contact() {
+        let owner = id(9);
+        let mut incoming = vec![(id(10), request_doc(id(3), Some(owner)))];
+        let mut outgoing = vec![(id(12), request_doc(owner, Some(id(3))))];
+
+        pending_requests(
+            &mut incoming,
+            &mut outgoing,
+            |peer| *peer == id(3),
+            |_| false,
+        );
+
+        assert!(incoming.is_empty(), "the declined request stays declined");
+        assert_eq!(
+            outgoing.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![id(12)]
+        );
+    }
+
+    /// Actions on requests with the same person run one at a time, whichever
+    /// request they act on: a cancel must not record a withdrawal while an
+    /// accept of that person's request establishes the contact.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_actions_with_one_person_run_one_at_a_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let sdk = app_context.sdk();
+        let (owner, peer) = (id(1), id(2));
+        let cancel = PlatformCancelOps {
+            app_context: &app_context,
+            sdk: &sdk,
+            owner_id: owner,
+            to_identity_id: peer,
+            request_id: id(10),
+        };
+        let decline = PlatformRejectOps {
+            app_context: &app_context,
+            owner_id: owner,
+            from_identity_id: peer,
+            request_id: id(11),
+        };
+
+        let held = cancel.lock_action().await.expect("lock");
+        let mut waiting = Box::pin(decline.lock_action());
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(held);
+        drop(waiting.await.expect("lock"));
     }
 
     #[derive(Default)]

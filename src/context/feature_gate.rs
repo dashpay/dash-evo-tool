@@ -17,6 +17,11 @@ const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
 /// for it, so the protocol version it shipped in is used directly.
 const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
+/// Tokens that cannot be transferred (a version 1 token configuration) are
+/// accepted from protocol version 14. Upstream names no feature constant for
+/// them, so the protocol version they shipped in is used directly.
+const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
+
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
 /// network support this?", not "which role has the user selected?".
@@ -35,6 +40,9 @@ pub enum Capability {
     /// The connected platform accepts tokens with a once-per-identity
     /// distribution.
     OncePerIdentityDistribution,
+    /// The connected platform accepts version 1 token configurations, which
+    /// can make a token non-transferable.
+    NonTransferableTokens,
 }
 
 /// Whether the protocol version the connected network has proven is one this
@@ -42,11 +50,14 @@ pub enum Capability {
 ///
 /// Every capability reads the version through this, so it fails closed both
 /// before the network proves a version and for a version newer than any this
-/// build knows ([`AppContext::proven_platform_version`]): this build cannot
-/// tell what an unknown version's rules allow.
+/// build knows ([`dash_sdk::ProtocolVersionInfo::newer_protocol_available`]):
+/// this build cannot tell what an unknown version's rules allow.
 fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
-    ctx.proven_platform_version()
-        .is_some_and(|version| version.protocol_version >= activation)
+    let info = ctx.protocol_version_info();
+    !info.newer_protocol_available
+        && info
+            .verified_version
+            .is_some_and(|version| version >= activation)
 }
 
 impl Capability {
@@ -62,6 +73,10 @@ impl Capability {
             Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
                 ctx,
                 ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
+            ),
+            Capability::NonTransferableTokens => known_protocol_version_at_least(
+                ctx,
+                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
             ),
         }
     }
@@ -162,6 +177,9 @@ pub enum FeatureGate {
     /// where the connected network accepts it; claiming from an existing one
     /// needs no gate, since such a token can only exist on such a network.
     TokenOncePerIdentityDistribution,
+    /// Creating a token that holders cannot transfer. Offered only where the
+    /// connected network accepts one.
+    NonTransferableTokens,
 }
 
 impl FeatureGate {
@@ -180,6 +198,9 @@ impl FeatureGate {
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::TokenOncePerIdentityDistribution => {
                 &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
+            FeatureGate::NonTransferableTokens => {
+                &[Check::Capability(Capability::NonTransferableTokens)]
             }
         }
     }
@@ -302,7 +323,11 @@ mod tests {
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
 
-        assert_eq!(ctx.proven_protocol_version(), None, "boot value");
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
+            "boot value"
+        );
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
             !FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -455,7 +480,10 @@ mod tests {
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
         // One entry per protocol version 14 gate this build offers.
-        let gates = [FeatureGate::TokenOncePerIdentityDistribution];
+        let gates = [
+            FeatureGate::TokenOncePerIdentityDistribution,
+            FeatureGate::NonTransferableTokens,
+        ];
         for role in ROLES {
             for gate in gates {
                 // A proven version only rises, so each gate gets a fresh context.
@@ -479,6 +507,7 @@ mod tests {
         let capabilities = [
             Capability::ShieldedProtocol,
             Capability::OncePerIdentityDistribution,
+            Capability::NonTransferableTokens,
         ];
 
         prove_protocol_version(&ctx, LATEST_VERSION);

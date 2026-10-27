@@ -589,6 +589,14 @@ impl WalletBackend {
         self.inner.pwm.sdk()
     }
 
+    /// Whether upstream refused to save wallet sync data during this run.
+    /// Once set it stays set until the backend is rebuilt: the saved sync
+    /// height is held back and the missing range is scanned again on the next
+    /// start.
+    pub(crate) fn sync_fault_detected(&self) -> bool {
+        self.inner.pwm.sync_fault_detected()
+    }
+
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
     /// persisted wallet via [`Self::load_from_persistor_seedless`] (per
@@ -1482,7 +1490,7 @@ impl WalletBackend {
             &self.inner.wallet_database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
-        .map_err(&storage_error)?;
+        .map_err(storage_error)?;
         let mut skipped_rows = 0;
         let mut skipped_contexts = Vec::new();
         let txid_bytes = {
@@ -1495,10 +1503,10 @@ impl WalletBackend {
                     "SELECT CASE WHEN length(txid) = 32 THEN txid ELSE X'' END \
                      FROM core_transactions WHERE wallet_id = ?1 ORDER BY txid",
                 )
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let rows = statement
                 .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let mut txid_bytes = Vec::new();
             for (row_index, row) in rows.enumerate() {
                 match row {

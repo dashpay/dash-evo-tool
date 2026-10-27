@@ -854,6 +854,46 @@ mod backend_task_join_tests {
     }
 
     #[tokio::test]
+    async fn contact_info_join_failures_keep_the_dispatched_owner_and_contact() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::context::test_support::bare_user_identity;
+        use crate::model::dashpay::ContactInfoUpdate;
+        let owner = Identifier::from([0x42; 32]);
+        let contact = Identifier::from([0x43; 32]);
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+            identity: bare_user_identity(owner, Network::Testnet),
+            contact_id: contact,
+            update: ContactInfoUpdate::note(Some("Saved".into())),
+        }));
+        for cancel in [false, true] {
+            let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let handle = tokio::spawn(async move {
+                if cancel {
+                    std::future::pending::<()>().await;
+                }
+                panic!("contact-info task panic");
+            });
+            if cancel {
+                handle.abort();
+            }
+            forward_backend_task_join_error(
+                handle.await,
+                SenderAsync::new(tx, egui::Context::default()),
+                None,
+                context.clone(),
+            )
+            .await;
+            let result = rx.recv().await.expect("forwarded error");
+            assert!(matches!(result, TaskResult::Error {
+                context: received,
+                error: TaskError::DashPayContactInfoActionFailed { identity_id, contact_id, source },
+            } if received == context && identity_id == owner && contact_id == contact
+                && matches!(*source, TaskError::BackendTaskFailed { .. })));
+        }
+    }
+
+    #[tokio::test]
     async fn panicking_paid_contact_action_keeps_its_request_correlation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
@@ -1253,12 +1293,17 @@ async fn forward_backend_task_join_error(
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
-        let error = match request_id {
-            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+        let error = match (context.dashpay_contact_info_target(), request_id) {
+            (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source: Box::new(stopped),
+            },
+            (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
                 request_id,
                 source: Box::new(stopped),
             },
-            None => stopped,
+            (None, None) => stopped,
         };
         if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
             tracing::error!(%error, "Failed to report a stopped backend task");
@@ -1545,6 +1590,8 @@ pub enum DesiredAppAction {
     None,
     Refresh,
     AddScreenType(Box<ScreenType>),
+    /// Switch to another root screen (e.g. a sibling sub-screen).
+    SetMainScreen(RootScreenType),
     BackendTask(Box<BackendTask>),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     Custom(String),
@@ -1558,6 +1605,9 @@ impl DesiredAppAction {
             DesiredAppAction::Custom(message) => AppAction::Custom(message.clone()),
             DesiredAppAction::AddScreenType(screen_type) => {
                 AppAction::AddScreen(screen_type.create_screen(app_context))
+            }
+            DesiredAppAction::SetMainScreen(root_screen_type) => {
+                AppAction::SetMainScreen(*root_screen_type)
             }
             DesiredAppAction::BackendTask(backend_task) => {
                 AppAction::BackendTask((**backend_task).clone())
@@ -1597,6 +1647,12 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// [`Self::BackendTasks`] with the context each task's result comes back
+    /// under, so a screen can tell one dispatch of a task from another.
+    BackendTasksWithContexts(
+        Vec<(BackendTask, BackendTaskContext)>,
+        BackendTasksExecutionMode,
+    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2507,24 +2563,44 @@ impl AppState {
         mode: BackendTasksExecutionMode,
         owner: Option<ScreenOwner>,
     ) {
+        let network = self.current_app_context().network;
+        let tasks = tasks
+            .into_iter()
+            .map(|task| {
+                let context = BackendTaskContext::for_task_on(&task, network);
+                (task, context)
+            })
+            .collect();
+        self.run_backend_tasks(tasks, mode, owner);
+    }
+
+    /// Run `tasks` under their contexts; see [`Self::handle_backend_tasks`]. A
+    /// contact-list read that carries no dispatch of its own is given one.
+    fn run_backend_tasks(
+        &mut self,
+        tasks: Vec<(BackendTask, BackendTaskContext)>,
+        mode: BackendTasksExecutionMode,
+        owner: Option<ScreenOwner>,
+    ) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let network = app_context.network;
-        let contexts = tasks
-            .iter()
-            .map(|task| {
-                let context = BackendTaskContext::for_task_on(task, network);
-                match owner {
-                    Some(owner) if context.contacts_load().is_some() => {
-                        let context = BackendTaskContext::for_dispatch_on(task, network);
-                        self.request_owners.record(&context, owner);
+        let (tasks, contexts): (Vec<_>, Vec<_>) = tasks
+            .into_iter()
+            .map(|(task, context)| match owner {
+                Some(owner) if context.contacts_load().is_some() => {
+                    let context = if context.dispatch_id().is_some() {
                         context
-                    }
-                    _ => context,
+                    } else {
+                        BackendTaskContext::for_dispatch_on(&task, network)
+                    };
+                    self.request_owners.record(&context, owner);
+                    (task, context)
                 }
+                _ => (task, context),
             })
-            .collect::<Vec<_>>();
+            .unzip();
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.extend(tasks.into_iter().zip(contexts));
@@ -3087,6 +3163,9 @@ impl AppState {
                 // answers that are not for what it shows.
                 BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
                 | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
+                // A contact details write the hub dispatched holds a guard and
+                // a pending task there until its outcome arrives.
+                BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
                 BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
                     hub.is_waiting_for_avatar(url)
                 }
@@ -3100,12 +3179,13 @@ impl AppState {
         }
     }
 
-    /// Release the hub's contact-request guards on a failed request action,
-    /// which it dispatches without a dispatch context, when the error goes to
-    /// another screen.
+    /// Release the hub's contact-request and contact details guards on a
+    /// failed action, which it dispatches without a dispatch context, when the
+    /// error goes to another screen.
     fn route_identity_error_to_hidden_hub(
         &mut self,
         owner: Option<ScreenOwner>,
+        context: &BackendTaskContext,
         error: &TaskError,
     ) {
         if self.hub_takes_result(owner) {
@@ -3115,7 +3195,13 @@ impl AppState {
             .main_screens
             .get_mut(&RootScreenType::RootScreenIdentityHub)
         {
+            // A bare error names its contact details write only through the
+            // context; the hub releases that write's guard from it.
+            if context.dashpay_contact_info_target().is_some() {
+                hub.display_backend_task_error(context, error);
+            }
             hub.handle_contact_request_error(error);
+            hub.handle_contact_info_error(error);
         }
     }
 
@@ -4017,7 +4103,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
-                    self.route_identity_error_to_hidden_hub(owner, &err);
+                    self.route_identity_error_to_hidden_hub(owner, &context, &err);
                     self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is
@@ -4434,6 +4520,9 @@ impl App for AppState {
                 }
                 AppAction::BackendTasks(tasks, mode) => {
                     self.handle_backend_tasks(tasks, mode, owner);
+                }
+                AppAction::BackendTasksWithContexts(tasks, mode) => {
+                    self.run_backend_tasks(tasks, mode, owner);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);

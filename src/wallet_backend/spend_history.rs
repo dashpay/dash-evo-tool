@@ -55,7 +55,11 @@ impl WalletBackend {
         .map_err(sqlite_error)?;
         let mut query = connection
             .prepare(
-                "SELECT txid FROM core_transactions WHERE wallet_id = ?1 AND height IS NOT NULL",
+                // A height-only row (no record) carries no inputs, so it cannot
+                // contradict a live coin. Upstream V020 leaves one for every kept
+                // coin's mined funding, and recordless UTXOs write them at runtime.
+                "SELECT txid FROM core_transactions
+                 WHERE wallet_id = ?1 AND height IS NOT NULL AND record_blob IS NOT NULL",
             )
             .map_err(sqlite_error)?;
         let rows = query
@@ -248,5 +252,18 @@ mod tests {
             backend.validate_core_spend_history(&seed_hash).await,
             Err(TaskError::WalletSpendHistoryCheck { .. })
         ));
+        // A height-only row (no record) is what upstream V020 leaves for a kept
+        // coin's mined funding, and what a recordless UTXO writes at runtime.
+        // It names no inputs, so it cannot contradict a live coin.
+        conn.execute(
+            "UPDATE core_transactions SET record_blob=NULL WHERE wallet_id=?1",
+            [wallet_id.as_slice()],
+        )
+        .unwrap();
+        let height_only = backend.validate_core_spend_history(&seed_hash).await;
+        assert!(
+            height_only.is_ok(),
+            "a height-only row blocked funding: {height_only:?}"
+        );
     }
 }

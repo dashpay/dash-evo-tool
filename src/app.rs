@@ -2331,7 +2331,7 @@ impl App for AppState {
             // delivered there, in view or not. A closed sender's result reaches
             // no screen; undispatched results go to the screen in view.
             let route = self.take_result_route(&task_result);
-            if let ResultRoute::PreviousNetwork(sender) = route
+            if let ResultRoute::PreviousNetwork(Some(sender)) = route
                 && let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
                     &task_result
             {
@@ -2641,16 +2641,22 @@ impl App for AppState {
                 } => {
                     self.dpns_background.sweep_failed(&context, &err);
                     self.route_error_to_observers(route, &context, &err);
-                    self.visible_screen_mut()
-                        .display_backend_task_error(&context, &err);
-                    let handled = self.visible_screen_mut().display_task_error(&err);
+                    // A sweep of the previous network reaches no screen; the
+                    // banner alone reports it.
+                    if let Some(screen) = self.result_screen_mut(route) {
+                        screen.display_backend_task_error(&context, &err);
+                    }
+                    let handled = self
+                        .result_screen_mut(route)
+                        .is_some_and(|screen| screen.display_task_error(&err));
                     if !handled && !scheduled_vote_sweep_is_quiet(&err) {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         handle.disable_auto_dismiss();
                         handle.with_details(&err);
-                        self.visible_screen_mut()
-                            .display_message(&msg, MessageType::Error);
+                        if let Some(screen) = self.result_screen_mut(route) {
+                            screen.display_message(&msg, MessageType::Error);
+                        }
                     }
                 }
                 TaskResult::Error {

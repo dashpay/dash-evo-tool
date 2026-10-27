@@ -13,11 +13,13 @@
 //! reaches screens only while that network is active: one arriving after a
 //! switch to another network ([`ResultRoute::PreviousNetwork`]) reaches no
 //! screen and no observer, and banners report it as for a closed sender. A
-//! switch back before it arrives delivers it as usual.
+//! switch back before it arrives delivers it as usual. The app's own
+//! scheduled-vote sweeps are undispatched but name their network in their
+//! context, so they are held to the same rule.
 //!
-//! Known limitation: results without a dispatch id — undispatched app tasks
-//! and mid-task `Progress` updates — carry no network and still go to the
-//! screen in view.
+//! Known limitation: other results without a dispatch id — undispatched app
+//! tasks and mid-task `Progress` updates — carry no network and still go to
+//! the screen in view.
 //!
 //! Stacked screens have no identity of their own (`ScreenType` equality
 //! ignores its payload), so [`ScreenStack`] gives each pushed screen an id
@@ -52,10 +54,11 @@ pub enum ResultRoute {
     /// not another screen's to act on, so no screen takes it; banners report
     /// it instead.
     ClosedOwner,
-    /// The task was dispatched on a network that is no longer active. No
-    /// screen of the current network takes it, and banners report it as for
-    /// a closed sender.
-    PreviousNetwork(ScreenOwner),
+    /// The task ran on a network that is no longer active. No screen of the
+    /// current network takes it, and banners report it as for a closed
+    /// sender. Holds the screen that dispatched it, or `None` for a task the
+    /// app started itself.
+    PreviousNetwork(Option<ScreenOwner>),
     /// No sender is on record — an undispatched task — so the screen in view
     /// takes it.
     Visible,
@@ -93,8 +96,10 @@ mod delivery_tests {
         assert!(ResultRoute::Visible.delivers_to(root, root));
         assert!(ResultRoute::Owner(root).delivers_to(root, root));
         assert!(!ResultRoute::ClosedOwner.delivers_to(root, root));
-        assert!(!ResultRoute::PreviousNetwork(root).delivers_to(root, root));
-        assert!(ResultRoute::PreviousNetwork(root).sender_gone());
+        assert!(!ResultRoute::PreviousNetwork(Some(root)).delivers_to(root, root));
+        assert!(ResultRoute::PreviousNetwork(Some(root)).sender_gone());
+        assert!(!ResultRoute::PreviousNetwork(None).delivers_to(root, root));
+        assert_eq!(ResultRoute::PreviousNetwork(None).owner(), None);
     }
 }
 

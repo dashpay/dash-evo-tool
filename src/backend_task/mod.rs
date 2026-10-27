@@ -470,6 +470,16 @@ impl BackendTaskContext {
         }
     }
 
+    /// The network a scheduled-vote sweep runs on, or `None` for every other
+    /// operation. The app starts sweeps itself, undispatched, so this is the
+    /// only record of the network their outcome belongs to.
+    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+        match self {
+            Self::ScheduledVoteSweep { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     /// The network a payment broadcast was dispatched on, or `None` for every
     /// other operation.
     pub(crate) fn payment_broadcast_network(&self) -> Option<Network> {

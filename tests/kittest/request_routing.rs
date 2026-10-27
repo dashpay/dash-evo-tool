@@ -913,3 +913,68 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
         });
     }
 }
+
+/// A scheduled-vote sweep that ran on the previous network reaches no screen
+/// of the new one when it ends after a switch. The Token Creator, in view and
+/// registering a token on the new network, keeps its progress banner through
+/// the sweep's failure and its completion. The failure is still reported by
+/// a banner.
+#[test]
+fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() {
+    use dash_evo_tool::ui::components::message_banner::MessageBanner;
+    use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    for fails in [false, true] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+            let previous_network = harness.state().current_app_context().network();
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenTokenCreator;
+            harness.run_steps(3);
+            let ctx = harness.ctx.clone();
+            MessageBanner::clear_all_global(&ctx);
+            let current = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            harness.run_steps(3);
+
+            let context = BackendTaskContext::ScheduledVoteSweep {
+                network: previous_network,
+            };
+            let failure = || TaskError::ScheduledVoteSweepFailed {
+                network: previous_network,
+                source: Box::new(TaskError::TaskManagerShuttingDown),
+            };
+            let late = if fails {
+                TaskResult::Error {
+                    context,
+                    error: failure(),
+                }
+            } else {
+                TaskResult::Success {
+                    context,
+                    result: Box::new(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                        network: previous_network,
+                        preserve_eligibility_since_ms: None,
+                    }),
+                }
+            };
+            deliver(&mut harness, late);
+
+            let creator = token_creator(&mut harness);
+            assert_eq!(
+                *creator.token_creator_status_for_test(),
+                TokenCreatorStatus::WaitingForResult,
+                "the new network's registration is still waiting (fails: {fails})"
+            );
+            assert!(
+                creator.registration_banner_live_for_test(),
+                "its progress banner stays (fails: {fails})"
+            );
+            let failure_reported = harness
+                .query_all_by_label_contains(&failure().to_string())
+                .next()
+                .is_some();
+            assert_eq!(failure_reported, fails, "only the failure raises a banner");
+        });
+    }
+}

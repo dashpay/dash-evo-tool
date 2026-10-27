@@ -147,11 +147,16 @@ impl AppState {
         let active_network = self.current_app_context().network;
         match self.request_owners.take(context) {
             Some((owner, network)) if network != active_network => {
-                ResultRoute::PreviousNetwork(owner)
+                ResultRoute::PreviousNetwork(Some(owner))
             }
             Some((owner, _)) if self.has_screen(owner) => ResultRoute::Owner(owner),
             Some(_) => ResultRoute::ClosedOwner,
-            None => ResultRoute::Visible,
+            // The app's own sweep names its network: a late one is the
+            // previous network's, like a late dispatch.
+            None => match context.scheduled_vote_sweep_network() {
+                Some(network) if network != active_network => ResultRoute::PreviousNetwork(None),
+                _ => ResultRoute::Visible,
+            },
         }
     }
 

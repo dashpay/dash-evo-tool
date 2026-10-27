@@ -187,7 +187,7 @@ impl ContactDetailsScreen {
             } else {
                 Some(self.edit_note.clone())
             }),
-            display_hidden: self.edit_hidden,
+            display_hidden: ContactInfoField::Replace(self.edit_hidden),
             accepted_accounts: AcceptedAccounts::Preserve,
             unreadable: Default::default(),
         };
@@ -226,10 +226,17 @@ impl ContactDetailsScreen {
             ContactInfoField::Replace(value) => value,
         };
 
+        let hidden = match update.display_hidden {
+            ContactInfoField::Preserve => self
+                .contact_info
+                .as_ref()
+                .is_some_and(|info| info.is_hidden),
+            ContactInfoField::Replace(hidden) => hidden,
+        };
         if let Some(info) = &mut self.contact_info {
             info.nickname = nickname.clone();
             info.note = note.clone();
-            info.is_hidden = update.display_hidden;
+            info.is_hidden = hidden;
         }
 
         let identity_id = self.identity.identity.id();
@@ -239,7 +246,7 @@ impl ContactDetailsScreen {
             &self.contact_id,
             nickname.unwrap_or_default(),
             note.unwrap_or_default(),
-            update.display_hidden,
+            hidden,
         ) {
             tracing::warn!("DashPay private-info sidecar write failed after Platform save: {e:?}");
         }

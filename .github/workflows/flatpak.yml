@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - "**flatpak**"
+  # The Flatpak installs the Rust toolchain rust-toolchain.toml names, so a
+  # toolchain bump is built here before it reaches a weekly release.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - rust-toolchain.toml
+      - flatpak/**
+      - .github/workflows/flatpak.yml
   release:
     types:
       - published
@@ -26,6 +34,8 @@ permissions:
 jobs:
   build-flatpak:
     name: Build Flatpak (${{ matrix.arch }})
+    # Draft PRs run no automatic CI, as in the Tests and Clippy workflows.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     permissions:
       contents: write
     strategy:
@@ -38,7 +48,8 @@ jobs:
 
     runs-on: ${{ matrix.runs-on }}
     # Sized for a COLD build, not a cache hit. The Cargo cache key below is
-    # keyed on `Cargo.lock`, so every dependency bump starts both arches from
+    # keyed on `Cargo.lock` and `rust-toolchain.toml`, so every dependency or
+    # toolchain bump starts both arches from
     # a prefix-restore that still recompiles the whole upstream tree: ~16
     # minutes of `cargo build --release` on x86_64 before flatpak-builder even
     # starts exporting. A warm run finishes in well under half this budget;
@@ -122,10 +133,9 @@ jobs:
       - name: Install Flatpak SDK and runtime
         run: |
           sudo flatpak install -y --noninteractive flathub \
-            org.freedesktop.Platform//25.08 \
-            org.freedesktop.Sdk//25.08 \
-            org.freedesktop.Sdk.Extension.rust-stable//25.08 \
-            org.freedesktop.Sdk.Extension.llvm21//25.08
+            org.freedesktop.Platform//26.08 \
+            org.freedesktop.Sdk//26.08 \
+            org.freedesktop.Sdk.Extension.llvm22//26.08
           echo "=== Disk space after SDK install ==="
           df -h
 
@@ -138,14 +148,14 @@ jobs:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           # Ordered most to least specific. The middle entry is what makes a
           # partial save useful: an incomplete build saves under a run-suffixed
           # key (see "Save Cargo cache"), and this prefix picks up the most
           # recent one for THIS lockfile ahead of a complete cache built from a
           # different, older lockfile.
           restore-keys: |
-            cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             cargo-flatpak-${{ matrix.arch }}-
 
       - name: Bind-mount Cargo cache into Flatpak sandbox
@@ -231,7 +241,7 @@ jobs:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

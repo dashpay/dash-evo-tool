@@ -608,6 +608,15 @@ impl DPNSScreen {
         self.refreshing_status == RefreshingStatus::Refreshing
     }
 
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the contest refresh's progress banner is still shown.
+    pub fn contest_refresh_banner_live_for_test(&self) -> bool {
+        self.refresh_banner
+            .as_ref()
+            .is_some_and(|banner| banner.is_live())
+    }
+
     /// Whether `display_task_result` acts on `result`. `AppState` delivers
     /// such results even while the panel is hidden; a missed one would strand
     /// the panel in the state that result was meant to clear.

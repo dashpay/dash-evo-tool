@@ -992,24 +992,78 @@ fn votes_panel(
     }
 }
 
-/// A contest refresh that ran on the previous network reaches no screen of
-/// the new one: its mid-task "contests refreshed" result leaves the voting
-/// panel's own refresh on the new network running, whether the panel is in
-/// view or hidden behind another root screen. The same result for the
-/// active network still ends that refresh.
+/// A contest refresh the voting panel sent on the previous network ends
+/// with that network: when its result arrives after a switch, the panel's
+/// own refresh on the new network keeps running, whether the panel is in
+/// view or hidden behind another root screen. That refresh still ends on
+/// its own failure.
+#[test]
+fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the previous network's refresh leaves the new one running (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: current,
+                    error: TaskError::TaskManagerShuttingDown,
+                },
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the new refresh still ends on its own failure (in view: {in_view})"
+            );
+        });
+    }
+}
+
+/// A contest refresh the voting panel sent on the previous network reaches
+/// no screen of the new one. Neither its mid-task "contests refreshed"
+/// result nor its dispatch's final result ends the panel's own refresh on
+/// the new network, whether the panel is in view or hidden behind another
+/// root screen. The same mid-task result for the active network still ends
+/// that refresh.
 #[test]
 fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
     for in_view in [true, false] {
         in_app(|| {
             let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
             let previous_network = harness.state().current_app_context().network();
+            let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
 
             switch_network(&mut harness);
             let current_network = harness.state().current_app_context().network();
             harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
             harness.run_steps(3);
-            let refresh = votes_panel(&mut harness).begin_contest_refresh_for_test();
-            harness.state_mut().test_record_visible_dispatch(&refresh);
+            let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
             if !in_view {
                 harness.state_mut().selected_main_screen =
                     RootScreenType::RootScreenWalletsBalances;
@@ -1020,7 +1074,16 @@ fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
                 context: BackendTaskContext::Unknown,
                 result: Box::new(BackendTaskSuccessResult::RefreshedDpnsContests { network }),
             };
+            // The previous network's refresh ends as a refresh does: the
+            // mid-task result first, then the dispatch's final one.
             deliver(&mut harness, refreshed(previous_network));
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
             assert!(
                 votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
                 "the previous network's refresh leaves the new one running (in view: {in_view})"

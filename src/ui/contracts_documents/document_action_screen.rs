@@ -91,6 +91,9 @@ const UNEDITABLE_FIELD_NOTICE: &str = "The app cannot edit this field type yet."
 /// Why a document with a field type the editor cannot edit is not sent.
 const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the app cannot edit yet, so it cannot be created or changed here.";
 
+/// Why a document type left over from another contract is not built.
+const FOREIGN_DOCUMENT_TYPE_MESSAGE: &str = "This document type belongs to another contract. Select a document type from the selected contract and try again.";
+
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
     pub action_type: DocumentActionType,
@@ -1252,13 +1255,19 @@ impl DocumentActionScreen {
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
-        self.selected_contract
+        let contract = self
+            .selected_contract
             .as_ref()
             .ok_or("No contract selected")?;
         let doc_type = self
             .selected_document_type
             .as_ref()
             .ok_or("No document-type selected")?;
+        // The chooser keeps the type when the contract changes, and the
+        // document id commits to the type's contract, not the selected one.
+        if doc_type.data_contract_id() != contract.contract.id() {
+            return Err(FOREIGN_DOCUMENT_TYPE_MESSAGE.to_string());
+        }
         let qi = self
             .selected_identity
             .as_ref()
@@ -1938,6 +1947,41 @@ mod tests {
             platform_value!({"type": "object", "properties": {"value": property}, "additionalProperties": false}),
             None, &BTreeMap::new(), &config, false, &mut Vec::new(), version,
         ).unwrap()
+    }
+
+    /// The chooser keeps the document type when the contract changes. A type
+    /// from another contract must not be built: the document id would commit
+    /// to that contract while the transition targets the selected one.
+    #[test]
+    fn creating_refuses_a_document_type_from_another_contract() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let network = context.network;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        let dpns = load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+            .expect("dpns contract");
+        screen.selected_contract = Some(QualifiedContract {
+            contract: dpns,
+            alias: None,
+        });
+        // A type of contract [1; 32], not of the selected DPNS contract.
+        screen.selected_document_type = Some(editor_document_type(false));
+        screen.selected_identity = Some(
+            crate::context::test_support::user_identity_with_signing_key(
+                Identifier::new([9; 32]),
+                network,
+                false,
+            ),
+        );
+        screen.field_inputs.insert("value".into(), "text".into());
+
+        assert_eq!(
+            screen.try_build_document().unwrap_err(),
+            FOREIGN_DOCUMENT_TYPE_MESSAGE
+        );
     }
 
     #[test]

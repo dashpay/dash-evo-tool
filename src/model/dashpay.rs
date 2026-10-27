@@ -171,6 +171,13 @@ impl ContactInfoUpdate {
             || matches!(self.note, ContactInfoField::Preserve)
     }
 
+    /// Whether the update only unhides the contact.
+    pub fn unhides_only(&self) -> bool {
+        matches!(self.nickname, ContactInfoField::Preserve)
+            && matches!(self.note, ContactInfoField::Preserve)
+            && matches!(self.display_hidden, ContactInfoField::Replace(false))
+    }
+
     /// Replace only the fields that differ between `opened`, the details an
     /// editor started from, and `edited`, what the user left in it; every
     /// other field keeps the latest saved value.

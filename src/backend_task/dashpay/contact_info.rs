@@ -219,7 +219,7 @@ async fn save_contact_details<O: SaveOps>(
     // Unreadable saved details are not empty ones: a text field the update
     // keeps would be published as empty, and the saved one lost. Unhiding
     // replaces them on purpose, as the hidden list says.
-    if unreadable && update.keeps_text() && *update != ContactInfoUpdate::visibility(false) {
+    if unreadable && update.keeps_text() && !update.unhides_only() {
         return Err(TaskError::DashPayContactDetailsUnreadable);
     }
     let details = update.apply_to(current);

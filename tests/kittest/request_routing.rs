@@ -1096,11 +1096,19 @@ fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
                 votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
                 "the previous network's refresh leaves the new one running (in view: {in_view})"
             );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "the new refresh keeps its progress banner (in view: {in_view})"
+            );
 
             deliver(&mut harness, refreshed(current_network));
             assert!(
                 !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
                 "the active network's refresh still ends it (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and takes its progress banner down (in view: {in_view})"
             );
         });
     }

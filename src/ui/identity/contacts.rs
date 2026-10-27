@@ -83,7 +83,7 @@ pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 /// Shown under a hidden contact whose saved details could not be read: its
 /// hidden flag is unknown, so it stays hidden until the user unhides it.
 pub const UNREADABLE_DETAILS_NOTE: &str = "The details you saved for this contact could not be read, so it stays \
-     hidden. Unhide it to show it in your list again.";
+     hidden. Unhide it to show it in your list again; this clears the unreadable details.";
 
 /// Hidden-section caption. Only an explicit hide puts a contact here;
 /// declining or cancelling a request writes no contact details.
@@ -299,18 +299,19 @@ pub fn request_task(
     }
 }
 
-/// Backend task that makes a hidden contact visible again.
-///
-/// Unhiding is a `contactInfo` broadcast with `display_hidden` cleared — the
-/// same document the decline / cancel paths set it on. The whole document is
-/// rewritten, so everything unhiding has no opinion about rides along untouched:
-/// the nickname and note are carried over, and the accepted accounts are
-/// preserved rather than replaced with an empty list.
+/// Backend task that makes a hidden contact visible again, keeping its
+/// nickname and note. Details that could not be read cannot be kept: unhiding
+/// such a contact replaces them, as its note in the hidden list says.
 pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPayTask {
+    let update = if contact.details_unreadable {
+        ContactInfoUpdate::replace_all(None, None, false)
+    } else {
+        ContactInfoUpdate::visibility(false)
+    };
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update: ContactInfoUpdate::visibility(false),
+        update,
     }
 }
 
@@ -1519,6 +1520,25 @@ mod tests {
         assert_eq!(
             dispatch_note_save(&mut unselected, &identity),
             AppAction::None
+        );
+    }
+
+    /// Unhiding keeps a readable contact's nickname and note, and replaces
+    /// unreadable ones on purpose: the backend refuses to keep them.
+    #[test]
+    fn unhiding_replaces_only_unreadable_details() {
+        let unhide = |contact: &ContactData| match unhide_task(qualified_identity(id(1)), contact) {
+            DashPayTask::UpdateContactInfo { update, .. } => update,
+            other => panic!("expected UpdateContactInfo, got {other:?}"),
+        };
+        assert_eq!(unhide(&hidden_bao()), ContactInfoUpdate::visibility(false));
+        let unreadable = ContactData {
+            details_unreadable: true,
+            ..hidden_bao()
+        };
+        assert_eq!(
+            unhide(&unreadable),
+            ContactInfoUpdate::replace_all(None, None, false)
         );
     }
 

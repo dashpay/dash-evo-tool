@@ -131,8 +131,9 @@ pub(super) fn decrypt_private_data(
 /// The nickname, note and visibility the owner stored for each contact, read
 /// from every page of the owner's `contactInfo` documents.
 ///
-/// Pages follow the order the write lookup scans, and the first document for
-/// a contact wins, so the load shows the document a save rewrites.
+/// Documents come oldest first, the order the write lookup scans, and the
+/// newest document for a contact wins, so the load shows the document a save
+/// rewrites.
 pub(super) async fn load_contact_details<P, PF, D, DF>(
     query: DocumentQuery,
     fetch_page: P,
@@ -181,8 +182,6 @@ where
             );
             continue;
         };
-        // Documents come oldest first, so the newest replaces older ones: it
-        // is the one a save rewrites, and the rewrite keeps it the newest.
         // The DIP-15 codec platform-wallet writes with. A payload that is
         // present but cannot be opened is not "no details": its hidden flag
         // is unknown, so the contact stays hidden.
@@ -200,6 +199,8 @@ where
             ..Default::default()
         });
 
+        // Documents come oldest first, so the newest replaces older ones: it
+        // is the one a save rewrites, and the rewrite keeps it the newest.
         contact_info_map.insert(
             contact_id,
             ContactData {

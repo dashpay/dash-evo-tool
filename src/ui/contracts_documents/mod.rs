@@ -1,5 +1,4 @@
 pub mod add_contracts_screen;
-pub mod contract_fee_pots_screen;
 pub mod contracts_documents_screen;
 pub mod document_action_screen;
 pub mod group_actions_screen;

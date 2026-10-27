@@ -17,6 +17,7 @@ use dash_sdk::dpp::serialization::{
     PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
     PlatformSerializableWithPlatformVersion,
 };
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -65,26 +66,6 @@ fn untracked_token_prefix(token_id: &Identifier) -> String {
     format!(
         "{}{}:",
         TOKEN_UNTRACKED_PREFIX,
-        token_id.to_string(Encoding::Base58)
-    )
-}
-
-/// Key prefix for the once-per-identity claim hint of one token, filed under
-/// the claiming identity's [`DetScope::Identity`] scope (so it goes with the
-/// identity). The full key is `det:token_once_claimed:v1:<token_id_base58>`;
-/// the value is the time of the claim in milliseconds (the block time of the
-/// proved claim document, or the local clock when it carries none).
-///
-/// An advisory hint, not an authority: Platform offers no proved query for
-/// "has this identity claimed", so DET records only the claims it saw succeed
-/// (proof-backed), never a node's unproven "already claimed" refusal. The UI
-/// warns with it but still lets the user claim, and the user can dismiss it.
-const ONCE_PER_IDENTITY_CLAIM_PREFIX: &str = "det:token_once_claimed:v1:";
-
-fn once_per_identity_claim_key(token_id: &Identifier) -> String {
-    format!(
-        "{}{}",
-        ONCE_PER_IDENTITY_CLAIM_PREFIX,
         token_id.to_string(Encoding::Base58)
     )
 }
@@ -204,6 +185,14 @@ impl AppContext {
         &self,
         stored: StoredContract,
     ) -> std::result::Result<QualifiedContract, TaskError> {
+        Self::decode_stored_contract_at(stored, self.platform_version())
+    }
+
+    /// [`Self::decode_stored_contract`] at `platform_version`.
+    fn decode_stored_contract_at(
+        stored: StoredContract,
+        platform_version: &PlatformVersion,
+    ) -> std::result::Result<QualifiedContract, TaskError> {
         // DET wrote these bytes, but the untrusted decoder accepts every valid
         // stored contract under the same no-limit config and does not
         // pre-allocate from length prefixes, so a corrupt local entry fails
@@ -211,7 +200,7 @@ impl AppContext {
         let contract = DataContract::versioned_deserialize_untrusted(
             &stored.contract_bytes,
             false,
-            self.platform_version(),
+            platform_version,
         )
         .map_err(|source| TaskError::ContractEncoding {
             source: Box::new(source),
@@ -226,16 +215,26 @@ impl AppContext {
         &self,
         contract_id: &Identifier,
     ) -> std::result::Result<Option<QualifiedContract>, TaskError> {
+        self.get_contract_by_id_at(contract_id, self.platform_version())
+    }
+
+    /// [`Self::get_contract_by_id`], decoded at `platform_version`. The proof
+    /// verifier reads contracts at the version it verifies with, which can be
+    /// newer than the SDK's.
+    pub(crate) fn get_contract_by_id_at(
+        &self,
+        contract_id: &Identifier,
+        platform_version: &PlatformVersion,
+    ) -> std::result::Result<Option<QualifiedContract>, TaskError> {
         let backend = self.wallet_backend()?;
         let key = contract_key(contract_id);
         let stored: Option<StoredContract> = backend
             .kv()
             .get(DetScope::Global, &key)
             .map_err(contract_err)?;
-        match stored {
-            Some(stored) => Ok(Some(self.decode_stored_contract(stored)?)),
-            None => Ok(None),
-        }
+        stored
+            .map(|stored| Self::decode_stored_contract_at(stored, platform_version))
+            .transpose()
     }
 
     pub fn get_unqualified_contract_by_id(
@@ -443,37 +442,6 @@ impl AppContext {
             !(*t == pair.token_id && *i == pair.identity_id)
         })?;
         Ok(())
-    }
-
-    /// When `identity_id` took its once-per-identity claim of `token_id`, as
-    /// far as this device knows (see [`ONCE_PER_IDENTITY_CLAIM_PREFIX`]).
-    pub fn once_per_identity_claimed_at(
-        &self,
-        token_id: &Identifier,
-        identity_id: &Identifier,
-    ) -> std::result::Result<Option<u64>, TaskError> {
-        once_per_identity_claimed_at_in(&self.det_kv()?, token_id, identity_id)
-    }
-
-    /// Remember that `identity_id` took its once-per-identity claim of
-    /// `token_id` at `claimed_at_ms`. Idempotent.
-    pub fn record_once_per_identity_claim(
-        &self,
-        token_id: &Identifier,
-        identity_id: &Identifier,
-        claimed_at_ms: u64,
-    ) -> std::result::Result<(), TaskError> {
-        record_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id, claimed_at_ms)
-    }
-
-    /// Forget the once-per-identity claim hint of `identity_id` for
-    /// `token_id` (the user dismissed it). Idempotent.
-    pub fn clear_once_per_identity_claim(
-        &self,
-        token_id: &Identifier,
-        identity_id: &Identifier,
-    ) -> std::result::Result<(), TaskError> {
-        clear_once_per_identity_claim_in(&self.det_kv()?, token_id, identity_id)
     }
 
     /// Every identity-token pair the user stopped tracking.
@@ -808,49 +776,6 @@ fn parse_untracked_key(key: &str) -> Option<IdentityTokenIdentifier> {
     })
 }
 
-/// When `identity_id` took its once-per-identity claim of `token_id`, as
-/// recorded on this device.
-fn once_per_identity_claimed_at_in(
-    kv: &DetKv,
-    token_id: &Identifier,
-    identity_id: &Identifier,
-) -> std::result::Result<Option<u64>, TaskError> {
-    let identity = identity_id.to_buffer();
-    kv.get(
-        DetScope::Identity(&identity),
-        &once_per_identity_claim_key(token_id),
-    )
-    .map_err(token_err)
-}
-
-fn record_once_per_identity_claim_in(
-    kv: &DetKv,
-    token_id: &Identifier,
-    identity_id: &Identifier,
-    claimed_at_ms: u64,
-) -> std::result::Result<(), TaskError> {
-    let identity = identity_id.to_buffer();
-    kv.put(
-        DetScope::Identity(&identity),
-        &once_per_identity_claim_key(token_id),
-        &claimed_at_ms,
-    )
-    .map_err(token_err)
-}
-
-fn clear_once_per_identity_claim_in(
-    kv: &DetKv,
-    token_id: &Identifier,
-    identity_id: &Identifier,
-) -> std::result::Result<(), TaskError> {
-    let identity = identity_id.to_buffer();
-    kv.delete(
-        DetScope::Identity(&identity),
-        &once_per_identity_claim_key(token_id),
-    )
-    .map_err(token_err)
-}
-
 /// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
 /// independent of every other pair's marker.
 fn mark_untracked_in(
@@ -948,7 +873,6 @@ where
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::{InMemoryKv, StallingReadKv};
-    use dash_sdk::dpp::version::PlatformVersion;
     use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::{Arc, Mutex};
 
@@ -958,63 +882,6 @@ mod tests {
 
     fn ident(b: u8) -> Identifier {
         Identifier::from([b; 32])
-    }
-
-    /// The once-per-identity claim hint is per (identity, token) and holds
-    /// the claim time.
-    #[test]
-    fn once_per_identity_claim_hint_is_per_identity_and_token() {
-        let kv = empty_kv();
-        let (token, other_token) = (ident(1), ident(2));
-        let (identity, other_identity) = (ident(3), ident(4));
-
-        assert_eq!(
-            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
-            None
-        );
-        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
-        clear_once_per_identity_claim_in(&kv, &token, &identity).unwrap();
-        assert_eq!(
-            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
-            None,
-            "a dismissed hint is gone"
-        );
-        record_once_per_identity_claim_in(&kv, &token, &identity, 42).unwrap();
-        assert_eq!(
-            once_per_identity_claimed_at_in(&kv, &token, &identity).unwrap(),
-            Some(42)
-        );
-        assert_eq!(
-            once_per_identity_claimed_at_in(&kv, &other_token, &identity).unwrap(),
-            None
-        );
-        assert_eq!(
-            once_per_identity_claimed_at_in(&kv, &token, &other_identity).unwrap(),
-            None
-        );
-    }
-
-    /// Stored token configurations are bincode blobs; version 0 distribution
-    /// rules (every token before protocol version 14) keep decoding as version
-    /// 0, and version 1 rules (a once-per-identity distribution) round-trip.
-    #[test]
-    fn stored_token_configs_with_either_rules_version_round_trip() {
-        use crate::model::token::distribution_rules_with_once_per_identity;
-        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
-        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
-
-        let v0_config = TokenConfigurationV0::default_most_restrictive();
-        let TokenDistributionRules::V0(rules) = v0_config.distribution_rules.clone() else {
-            panic!("the default rules are version 0");
-        };
-        let mut v1_config = v0_config.clone();
-        v1_config.distribution_rules = distribution_rules_with_once_per_identity(rules, Some(7));
-
-        for config in [v0_config, v1_config] {
-            let config = TokenConfiguration::V0(config);
-            let bytes = bincode::encode_to_vec(&config, config::standard()).unwrap();
-            assert_eq!(decode_token_config(&bytes).unwrap(), config);
-        }
     }
 
     fn stored_token(alias: &str, contract: u8, position: u16) -> StoredToken {
@@ -1229,6 +1096,38 @@ mod tests {
         crate::context::test_support::set_sdk_protocol_version(&ctx, 14);
         let at_14 = ctx.decode_stored_contract(stored()).expect("decodes at 14");
         assert_eq!(at_14.contract, charging);
+    }
+
+    /// The proof verifier reads a saved user contract at the version it
+    /// verifies with, as it reads system contracts: a contract saved at
+    /// protocol 14 comes back in full when asked at 14 while the SDK still
+    /// sits at 13.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_proof_verifier_reads_a_saved_contract_at_the_version_it_asks_for() {
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        crate::context::test_support::set_sdk_protocol_version(&ctx, 13);
+        let v14 = PlatformVersion::get(14).expect("v14");
+        let charging = user_contract_at(v14, Some(platform_value!({"create": {"owner": 5_u64}})));
+        let stored = StoredContract {
+            contract_bytes: charging
+                .serialize_to_bytes_with_platform_version(v14)
+                .expect("encode"),
+            alias: None,
+        };
+        ctx.wallet_backend()
+            .expect("wired backend")
+            .kv()
+            .put(DetScope::Global, &contract_key(&charging.id()), &stored)
+            .expect("store the contract");
+
+        let resolved = crate::context_provider::resolve_data_contract(&ctx, &charging.id(), v14)
+            .expect("resolves")
+            .expect("the saved contract");
+
+        assert_eq!(*resolved, charging);
     }
 
     #[test]

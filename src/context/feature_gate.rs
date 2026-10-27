@@ -1,10 +1,7 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::{
-    CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION,
-    IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
-};
+use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
@@ -16,21 +13,10 @@ use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
-/// Authentication keys with a budget or an expiry, and the
-/// `IdentityKeyLimitsUpdate` transition that raises them, activate together at
-/// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
-const KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION: u32 =
-    IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION;
-
-/// Version 1 token distribution rules (the once-per-identity distribution)
-/// are accepted from protocol version 14. Upstream names no feature constant
-/// for it, so the protocol version it shipped in is used directly.
-const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
-
-/// The contract bounds validation version (upstream
-/// `validate_identity_public_key_contract_bounds`) from which AUTHENTICATION
-/// keys below MASTER may be bound to a contract or a document type.
-const CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION: u16 = 2;
+/// Tokens that cannot be transferred (a version 1 token configuration) are
+/// accepted from protocol version 14. Upstream names no feature constant for
+/// them, so the protocol version they shipped in is used directly.
+const NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -47,24 +33,27 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
-    /// The connected platform accepts authentication keys with a budget or an
-    /// expiry, and the transition that raises them.
-    IdentityKeyLimits,
-    /// The connected platform accepts tokens with a once-per-identity
-    /// distribution.
-    OncePerIdentityDistribution,
-    /// The connected platform keeps contract fee pots (filled by document
-    /// action fees) and accepts the transition that pays them out.
-    ContractFeePots,
-    /// The connected platform accepts AUTHENTICATION keys below MASTER bound
-    /// to a contract or a document type (contract bounds validation v2).
-    ContractBoundAuthenticationKeys,
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
     /// The connected platform accepts the transition that deletes an
     /// indexOnly document by its values.
     IndexOnlyDocumentDelete,
+}
+
+/// Whether the protocol version the connected network has proven is one this
+/// build defines and is at least `activation`.
+///
+/// Every capability reads the version through this, so it fails closed both
+/// before the network proves a version and for a version newer than any this
+/// build knows ([`dash_sdk::ProtocolVersionInfo::newer_protocol_available`]):
+/// this build cannot tell what an unknown version's rules allow.
+fn known_protocol_version_at_least(ctx: &AppContext, activation: u32) -> bool {
+    let info = ctx.protocol_version_info();
+    !info.newer_protocol_available
+        && info
+            .verified_version
+            .is_some_and(|version| version >= activation)
 }
 
 impl Capability {
@@ -74,54 +63,23 @@ impl Capability {
                 // A closed gate makes the capability unavailable on every network.
                 None => false,
                 // The version fetched from the connected network, not the hardcoded
-                // default — the capability is per-network. The boot value (0, "not
-                // fetched yet") is below any activation version, so a network whose
-                // version is not known yet reads as unmet rather than optimistic.
-                Some(activation) => ctx.platform_protocol_version() >= activation,
+                // default — the capability is per-network.
+                Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
-            // Same rule: the fetched version, where "not fetched yet" (0)
-            // reads as unmet.
-            Capability::IdentityKeyLimits => {
-                ctx.platform_protocol_version() >= KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION
-            }
-            Capability::OncePerIdentityDistribution => {
-                ctx.platform_protocol_version()
-                    >= ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION
-            }
-            Capability::ContractFeePots => {
-                ctx.platform_protocol_version() >= CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION
-            }
-            // Upstream names no feature constant; the validation version that
-            // admits bound authentication keys is the source of truth.
-            Capability::ContractBoundAuthenticationKeys => PlatformVersion::get_optional(
-                ctx.platform_protocol_version(),
-            )
-            .is_some_and(|version| {
-                version
-                    .drive_abci
-                    .validation_and_processing
-                    .state_transitions
-                    .common_validation_methods
-                    .validate_identity_public_key_contract_bounds
-                    >= CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION
-            }),
-            // Upstream names no feature constant either; the newest token
-            // configuration format the version decodes is the source of truth.
-            Capability::NonTransferableTokens => PlatformVersion::get_optional(
-                ctx.platform_protocol_version(),
-            )
-            .is_some_and(|version| {
-                version
-                    .dpp
-                    .contract_versions
-                    .token_versions
-                    .token_configuration_format
-                    .max_version
-                    >= 1
-            }),
+            Capability::NonTransferableTokens => known_protocol_version_at_least(
+                ctx,
+                NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
+            ),
+            // Upstream names no feature constant; the transition's
+            // serialization bounds exist exactly from the version that
+            // accepts it. Fails closed like every other capability.
             Capability::IndexOnlyDocumentDelete => {
-                PlatformVersion::get_optional(ctx.platform_protocol_version())
-                    .is_some_and(crate::model::index_only_document::index_only_delete_supported)
+                let info = ctx.protocol_version_info();
+                !info.newer_protocol_available
+                    && info
+                        .verified_version
+                        .and_then(PlatformVersion::get_optional)
+                        .is_some_and(crate::model::index_only_document::index_only_delete_supported)
             }
         }
     }
@@ -218,19 +176,6 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
-    /// Adding a key with a budget or an expiry, and raising those limits.
-    /// Offered only where the connected network accepts them.
-    IdentityKeyLimits,
-    /// Creating a token with a once-per-identity distribution. Offered only
-    /// where the connected network accepts it; claiming from an existing one
-    /// needs no gate, since such a token can only exist on such a network.
-    TokenOncePerIdentityDistribution,
-    /// Viewing and claiming the fee pots of a contract. Offered only where
-    /// the connected network keeps them.
-    ContractFeePots,
-    /// Adding an AUTHENTICATION key bound to a contract or a document type.
-    /// Offered only where the connected network accepts one.
-    ContractBoundAuthenticationKeys,
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
@@ -253,14 +198,6 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
-            FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
-            FeatureGate::TokenOncePerIdentityDistribution => {
-                &[Check::Capability(Capability::OncePerIdentityDistribution)]
-            }
-            FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
-            FeatureGate::ContractBoundAuthenticationKeys => &[Check::Capability(
-                Capability::ContractBoundAuthenticationKeys,
-            )],
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
             }
@@ -289,7 +226,7 @@ impl FeatureGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::test_support::test_app_context;
+    use crate::context::test_support::{prove_protocol_version, test_app_context};
     use dash_sdk::dpp::version::PlatformVersion;
     use std::sync::Arc;
 
@@ -388,7 +325,11 @@ mod tests {
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
 
-        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
+            "boot value"
+        );
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
             !FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -414,7 +355,7 @@ mod tests {
             // Every protocol version upstream defines — none of which the tab
             // gate depends on.
             for version in known_protocol_versions() {
-                ctx.set_platform_protocol_version(version);
+                prove_protocol_version(&ctx, version);
                 assert!(
                     FeatureGate::Shielded.is_available(&ctx),
                     "Shielded tab must be available on protocol v{version} for {role:?}"
@@ -430,7 +371,7 @@ mod tests {
         assert!(!versions.is_empty(), "the probe must find some versions");
 
         for version in versions {
-            ctx.set_platform_protocol_version(version);
+            prove_protocol_version(&ctx, version);
             assert_eq!(
                 Capability::ShieldedProtocol.is_met(&ctx),
                 version >= SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
@@ -443,7 +384,7 @@ mod tests {
     fn shielded_operations_are_available_at_activation_for_unlocked_roles() {
         for role in [UserRole::Power, UserRole::Developer] {
             let (_tmp, ctx) = ctx_with_role(role);
-            ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+            prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
             assert!(
                 FeatureGate::ShieldedOperations.is_available(&ctx),
@@ -458,7 +399,7 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -466,7 +407,7 @@ mod tests {
     #[test]
     fn shielded_operations_are_unavailable_at_activation_for_everyday_user() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
@@ -477,21 +418,21 @@ mod tests {
         let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
             .checked_sub(1)
             .expect("shielded activation must follow the boot protocol version");
-        ctx.set_platform_protocol_version(version);
+        prove_protocol_version(&ctx, version);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Capability(Capability::ShieldedProtocol))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             Some(Check::Experimental(ExperimentalFeature::Shielded))
         );
 
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        prove_protocol_version(&ctx, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert_eq!(
             FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
             None
@@ -540,23 +481,52 @@ mod tests {
     /// the network's version is known, whatever the role.
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
+        // One entry per protocol version 14 gate this build offers.
+        let gates = [
+            FeatureGate::NonTransferableTokens,
+            FeatureGate::IndexOnlyDocumentDelete,
+        ];
         for role in ROLES {
-            let (_tmp, ctx) = ctx_with_role(role);
-            for gate in [
-                FeatureGate::IdentityKeyLimits,
-                FeatureGate::TokenOncePerIdentityDistribution,
-                FeatureGate::ContractFeePots,
-                FeatureGate::ContractBoundAuthenticationKeys,
-                FeatureGate::NonTransferableTokens,
-                FeatureGate::IndexOnlyDocumentDelete,
-            ] {
+            for gate in gates {
+                // A proven version only rises, so each gate gets a fresh context.
+                let (_tmp, ctx) = ctx_with_role(role);
                 assert!(!gate.is_available(&ctx), "{gate:?} closed at boot");
-                ctx.set_platform_protocol_version(13);
+                prove_protocol_version(&ctx, 13);
                 assert!(!gate.is_available(&ctx), "{gate:?} closed on protocol 13");
-                ctx.set_platform_protocol_version(14);
+                prove_protocol_version(&ctx, 14);
                 assert!(gate.is_available(&ctx), "{gate:?} open on protocol 14");
-                ctx.set_platform_protocol_version(0);
             }
+        }
+    }
+
+    /// A protocol version this build does not define closes every protocol
+    /// capability: nothing here knows that version's rules. The newest
+    /// version this build defines keeps them open.
+    #[test]
+    fn an_unknown_future_protocol_version_closes_every_protocol_capability() {
+        use dash_sdk::dpp::version::LATEST_VERSION;
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let capabilities = [
+            Capability::ShieldedProtocol,
+            Capability::NonTransferableTokens,
+            Capability::IndexOnlyDocumentDelete,
+        ];
+
+        prove_protocol_version(&ctx, LATEST_VERSION);
+        for capability in capabilities {
+            assert!(
+                capability.is_met(&ctx),
+                "{capability:?} on protocol {LATEST_VERSION}"
+            );
+        }
+
+        prove_protocol_version(&ctx, LATEST_VERSION + 1);
+        for capability in capabilities {
+            assert!(
+                !capability.is_met(&ctx),
+                "{capability:?} on unknown protocol {}",
+                LATEST_VERSION + 1
+            );
         }
     }
 }

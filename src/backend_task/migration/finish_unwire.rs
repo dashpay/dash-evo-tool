@@ -518,7 +518,7 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
         return;
     }
 
-    if let Err(error) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+    if let Err(error) = app_context.rebuild_connection().await {
         tracing::warn!(
             target = "migration::finish_unwire",
             ?network,
@@ -3955,7 +3955,6 @@ mod tests {
         use crate::wallet_backend::single_key::{
             SingleKeyView, label_for_address, single_key_namespace_id,
         };
-
         use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 
         let dir = tempfile::tempdir().expect("tempdir");

@@ -17,8 +17,15 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV2Getters;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
+    AgreedFeeMultiplier, DocumentActionFeeAgreement,
+};
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::FeeMultiplier;
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
@@ -26,11 +33,15 @@ use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition:
     AddressFundingFromAssetLockTransition,
     calculate_address_funding_from_asset_lock_min_required_fee,
 };
+use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::v0::IdentityCreateTransitionV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::withdrawal::Pooling;
+use std::collections::BTreeMap;
 
 /// Keep contested document creation within the protocol's base fund, without auto-quoting a larger fund.
 pub fn document_create_contest_fund_cap(
@@ -53,19 +64,6 @@ pub fn document_create_contest_fund_cap(
 pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
     balance.saturating_sub(estimated_fee)
 }
-use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV2Getters;
-use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
-    AgreedFeeMultiplier, DocumentActionFeeAgreement,
-};
-use dash_sdk::dpp::prelude::FeeMultiplier;
-use dash_sdk::dpp::state_transition::{
-    StateTransitionEstimatedFeeValidation,
-    batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType,
-};
-use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::withdrawal::Pooling;
-use std::collections::BTreeMap;
 
 /// Maximum number of platform address inputs allowed per state transition.
 pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
@@ -1429,18 +1427,25 @@ pub fn document_action_fee_quote(
 }
 
 /// Why a document action cannot carry the fee agreement it was given.
+///
+/// The network refuses the same two cases
+/// (`TaskError::DocumentActionFeeNotAgreed`, `TaskError::DocumentActionFeeChanged`)
+/// with this same text. Either way the app's copy of the contract may be
+/// out of date. Loading a contract that is already stored keeps the stored
+/// copy, so the instruction is to remove it on the Contracts screen and load
+/// it again.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActionFeeAgreementError {
     /// The document type charges a fee for the action and no agreement was
     /// given: the user never confirmed it.
     #[error(
-        "This contract charges a fee for this action, and you have not confirmed it yet. Try again and confirm the contract fee when asked."
+        "This contract charges a fee for this action that you have not agreed to. On the Contracts screen, remove the contract and load it again to see its current fee, then try again and confirm the fee when asked."
     )]
     NotConfirmed,
     /// The agreement names another fee than the document type declares, so
     /// the contract changed after the user confirmed.
     #[error(
-        "The contract fee for this action changed after you confirmed it. Try again to see and confirm the current fee."
+        "The contract fee for this action changed after you confirmed it. On the Contracts screen, remove the contract and load it again to see its current fee, then try again."
     )]
     Outdated,
 }

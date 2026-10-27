@@ -25,10 +25,10 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGettersV0;
 use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::platform::{FetchMany, Identifier};
+use dash_sdk::query_types::ResourceVoteWithCount;
 use futures::{StreamExt, stream};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -994,12 +994,12 @@ impl AppContext {
                 start_at: Some((poll_id.to_buffer(), true)),
                 order_ascending: true,
             };
-            match ResourceVote::fetch_many(sdk, query).await {
+            match ResourceVoteWithCount::fetch_many(sdk, query).await {
                 Ok(votes) => {
                     let observed = votes
                         .get(&poll_id)
                         .and_then(Option::as_ref)
-                        .map(ResourceVoteGettersV0::resource_vote_choice);
+                        .map(|vote| vote.resource_vote.resource_vote_choice());
                     let status =
                         classify_reconciled_vote(observed, outcome.target.requested_choice)
                             .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
@@ -2033,7 +2033,7 @@ mod tests {
         context.seed_dpns_contest_for_test("alice", Some(now + 600_000), false);
         let mut sdk = Sdk::new_mock();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: reloaded.identity.id(),
                     offset: None,
@@ -2403,6 +2403,7 @@ mod tests {
         choice: Option<ResourceVoteChoice>,
     ) {
         use dash_sdk::dpp::voting::vote_polls::VotePoll;
+        use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
         use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
         use dash_sdk::query_types::ResourceVotesByIdentity;
 
@@ -2414,16 +2415,19 @@ mod tests {
                 );
                 (
                     key.vote_poll_id,
-                    Some(ResourceVote::V0(ResourceVoteV0 {
-                        vote_poll,
-                        resource_vote_choice,
-                    })),
+                    Some(ResourceVoteWithCount {
+                        resource_vote: ResourceVote::V0(ResourceVoteV0 {
+                            vote_poll,
+                            resource_vote_choice,
+                        }),
+                        vote_count: 1,
+                    }),
                 )
             })
             .into_iter()
             .collect();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: key.voter_id,
                     offset: None,
@@ -3005,7 +3009,7 @@ mod tests {
             .unwrap();
         let key = &operation.targets[0].target.key;
         let mut sdk = Sdk::new_mock();
-        sdk.mock().expect_fetch_many::<Identifier, ResourceVote, _, dash_sdk::query_types::ResourceVotesByIdentity>(
+        sdk.mock().expect_fetch_many::<Identifier, ResourceVoteWithCount, _, dash_sdk::query_types::ResourceVotesByIdentity>(
             ContestedResourceVotesGivenByIdentityQuery {
                 identity_id: key.voter_id,
                 offset: None,
@@ -3469,7 +3473,7 @@ mod tests {
         }
         let mut sdk = Sdk::new_mock();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: voters[0],
                     offset: None,
@@ -3533,7 +3537,7 @@ mod tests {
         context.seed_dpns_contest_for_test("alice", Some(1), false);
         let mut sdk = Sdk::new_mock();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: voter.identity.id(),
                     offset: None,

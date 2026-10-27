@@ -44,7 +44,6 @@ use crate::ui::wallets::send_screen::{IdentitySendMode, SendFlow, WalletSendScre
 use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
-use contracts_documents::contract_fee_pots_screen::ContractFeePotsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
@@ -249,7 +248,6 @@ pub enum ScreenType {
     PurchaseDocument,
     SetDocumentPrice,
     GroupActions,
-    ContractFeePots,
 
     // Token Screens
     TokenBalances,
@@ -480,9 +478,6 @@ impl ScreenType {
             ScreenType::GroupActions => {
                 Screen::GroupActionsScreen(GroupActionsScreen::new(app_context))
             }
-            ScreenType::ContractFeePots => {
-                Screen::ContractFeePotsScreen(ContractFeePotsScreen::new(app_context))
-            }
             // Token Screens
             ScreenType::TokenBalances => Screen::TokensScreen(Box::new(TokensScreen::new(
                 app_context,
@@ -618,7 +613,6 @@ pub enum Screen {
     UpdateDataContractScreen(UpdateDataContractScreen),
     DocumentActionScreen(DocumentActionScreen),
     GroupActionsScreen(GroupActionsScreen),
-    ContractFeePotsScreen(ContractFeePotsScreen),
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
@@ -808,7 +802,6 @@ impl Screen {
             UpdateDataContractScreen,
             DocumentActionScreen,
             GroupActionsScreen,
-            ContractFeePotsScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -1016,7 +1009,6 @@ impl Screen {
                 DocumentActionType::SetPrice => ScreenType::SetDocumentPrice,
             },
             Screen::GroupActionsScreen(_) => ScreenType::GroupActions,
-            Screen::ContractFeePotsScreen(_) => ScreenType::ContractFeePots,
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
@@ -1158,7 +1150,6 @@ macro_rules! delegate_to_screen {
             Screen::UpdateDataContractScreen($screen) => $call,
             Screen::DocumentActionScreen($screen) => $call,
             Screen::GroupActionsScreen($screen) => $call,
-            Screen::ContractFeePotsScreen($screen) => $call,
             Screen::WithdrawalScreen($screen) => $call,
             Screen::TopUpIdentityScreen($screen) => $call,
             Screen::TransferScreen($screen) => $call,

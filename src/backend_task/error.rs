@@ -2149,6 +2149,12 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token contract errors
     // ──────────────────────────────────────────────────────────────────────────
+    /// A token configuration change the app cannot make yet (the shielded
+    /// pool settings), refused by `validate_supported_change` in
+    /// `backend_task/tokens/update_token_config.rs` before anything is signed.
+    #[error("The app cannot change this token setting yet. Choose another setting to update.")]
+    TokenShieldedConfigurationUnsupported,
+
     /// A token at the expected position was not found in the contract.
     #[error(
         "Token at position {position} was not found in the contract. Please reload the contract and retry."
@@ -2465,6 +2471,37 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// The scanned text is not a DashPay contact QR code (DIP-15
+    /// `dash:?du=…&dapk=…`), as upstream platform-wallet's codecs read it.
+    #[error(
+        "This is not a DashPay contact QR code. Scan your contact's QR code again, or ask them for a new one."
+    )]
+    ContactQrInvalid {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The scanned contact QR code's auto-accept key has expired.
+    #[error("This contact QR code has expired. Ask your contact for a new one.")]
+    ContactQrExpired,
+
+    /// The identity has no wallet on this device whose recovery phrase can
+    /// derive its contact QR code's auto-accept key.
+    #[error(
+        "This identity's wallet is not on this device, so it cannot create a contact QR code. Import the wallet that created the identity and try again."
+    )]
+    ContactQrWalletMissing,
+
+    /// Upstream platform-wallet could not build the contact QR code, for
+    /// example because the identity has no username to put in it.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Deriving the per-contact encryption keys from the wallet's recovery
     /// phrase failed. The seam already proved the seed is present, so this is a
     /// derivation-math failure rather than a missing wallet.
@@ -2502,7 +2539,7 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Signing key limits and contract bounds (protocol version 14)
+    // Signing key refusals (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// The signing key's expiry time has passed.
     #[error(
@@ -2561,115 +2598,6 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// Key limits were requested that do not pass validation.
-    #[error(transparent)]
-    InvalidKeyLimits {
-        #[from]
-        source: crate::model::identity_key_limits::KeyLimitsError,
-    },
-
-    /// An identity this device holds is not on the network (e.g. it was
-    /// never registered, or the network was reset).
-    #[error(
-        "This identity could not be found on the network. Refresh the identity, then try again."
-    )]
-    IdentityMissingOnNetwork { identity_id: Identifier },
-
-    /// The key to change is not among the identity's keys on the network.
-    #[error(
-        "This key is no longer part of the identity on the network. Refresh the identity to see its current keys."
-    )]
-    IdentityKeyNotFound { key_id: KeyID },
-
-    /// Key limits were requested on a network whose protocol version does not
-    /// support them yet.
-    #[error(
-        "This network does not support spending limits or expiry for keys yet. Add the key without limits, or try again after the network upgrades."
-    )]
-    KeyLimitsNotSupported,
-
-    /// Remaining key budgets were requested from a network whose protocol
-    /// version does not track them yet.
-    #[error(
-        "This network does not track key spending limits yet. Try again after the network upgrades."
-    )]
-    KeyRemainingBudgetsNotSupported,
-
-    /// An authentication key bound to a contract was requested on a network
-    /// that does not accept one yet.
-    #[error(
-        "This network does not support limiting an authentication key to one contract yet. Add the key without contract bounds, or try again after the network upgrades."
-    )]
-    ContractBoundAuthenticationKeysNotSupported,
-
-    /// No key this device holds may sign a key limits update: that takes a
-    /// MASTER key, or a CRITICAL authentication key with no limits and no
-    /// contract bounds.
-    #[error(
-        "Changing key limits needs this identity's master key, or a critical key without limits. Import one of them on this device, then try again."
-    )]
-    NoKeyLimitsSigningKey,
-
-    /// Platform refused a key whose expiry is not in the future.
-    #[error(
-        "The key's expiry is already in the past, so the network refused the change. Choose a later expiry, then try again."
-    )]
-    KeyExpiryInPast {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// Platform refused a limits update that does not raise the stored limit,
-    /// typically because the key changed since it was loaded.
-    #[error(
-        "The key's limits have changed since they were loaded, so the new value would not raise them. Refresh the identity, then try again."
-    )]
-    KeyLimitNotRaised {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// Platform refused raising a limit the key does not have.
-    #[error(
-        "This key does not have that limit, and a limit can only be raised, not added. Refresh the identity to see the key's current limits."
-    )]
-    KeyLimitNotSet {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// A key with limits was used to sign a key limits update.
-    #[error(
-        "A key with its own spending limit or expiry cannot change key limits. Use the identity's master key instead, then try again."
-    )]
-    KeyLimitsSignerHasLimits {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// Platform refused limits on a key that may not carry them, a zero
-    /// budget, or a limits update that changes nothing.
-    #[error(
-        "The network refused these key limits. Only authentication keys below the master level can have them, and a spending limit must be above zero. Adjust the limits, then try again."
-    )]
-    KeyLimitsRefused {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// The key to change is disabled.
-    #[error("This key is disabled, so it cannot be used or changed. Choose a different key.")]
-    IdentityKeyDisabled {
-        key_id: KeyID,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
     // ──────────────────────────────────────────────────────────────────────────
     // Document action fees, moderation and gas sponsorship (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
@@ -2683,9 +2611,7 @@ pub enum TaskError {
 
     /// The document type charges an action fee and the transition carried no
     /// agreement to it.
-    #[error(
-        "This contract charges a fee for this action, and the request did not include your agreement to it. Try again and confirm the contract fee when asked."
-    )]
+    #[error("{}", crate::model::fee_estimation::ActionFeeAgreementError::NotConfirmed)]
     DocumentActionFeeNotAgreed {
         #[source]
         source_error: Box<SdkError>,
@@ -2693,9 +2619,7 @@ pub enum TaskError {
 
     /// The fee the transition agreed to differs from the one the document
     /// type declares, typically because the contract changed meanwhile.
-    #[error(
-        "The contract fee for this action is not the one you agreed to, because the contract changed. Reload the contract to see its current fee, then try again."
-    )]
+    #[error("{}", crate::model::fee_estimation::ActionFeeAgreementError::Outdated)]
     DocumentActionFeeChanged {
         #[source]
         source_error: Box<SdkError>,
@@ -2867,47 +2791,6 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Contract fee pots (protocol version 14)
-    // ──────────────────────────────────────────────────────────────────────────
-    /// The network does not keep contract fee pots yet.
-    #[error(
-        "This network does not support contract fees yet. Try again after the network upgrades."
-    )]
-    ContractFeePotsNotSupported,
-
-    /// The claiming identity has no key allowed to sign a fee claim.
-    #[error(
-        "Claiming contract fees needs a critical authentication key that is not limited to a contract. Add such a key to this identity, then try again."
-    )]
-    NoFeeClaimSigningKey,
-
-    /// The claiming identity is not a recipient of the pot.
-    #[error(
-        "Only the contract owner can claim the owner's fees, and only a moderator can claim the moderators' fees. Choose an identity that receives these fees, then try again."
-    )]
-    ContractFeeClaimNotAllowed {
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// The pot was already paid out in the current epoch.
-    #[error(
-        "These fees were already claimed in the current epoch. Fees can be claimed once per epoch, so try again in the next one."
-    )]
-    ContractFeesAlreadyClaimedThisEpoch {
-        epoch_index: u16,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// The pot holds nothing to pay out.
-    #[error("There are no fees to claim yet. Try again after users have paid fees to this contract.")]
-    ContractFeesNothingToClaim {
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Contract authoring (protocol version 14)
     // ──────────────────────────────────────────────────────────────────────────
     /// A replace changed a property the document type declares immutable.
@@ -2915,11 +2798,9 @@ pub enum TaskError {
         "One of the fields you changed cannot be changed after the document is created. Keep the original values of its fixed fields, then try again."
     )]
     DocumentImmutablePropertyChanged {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
+        // The node's names for the document type and the property stay in
+        // `source_error` only: unproven text, never copied into the variant.
         document_id: Identifier,
-        document_type_name: String,
-        property: String,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2930,11 +2811,9 @@ pub enum TaskError {
         "This contract refers to documents that can never be deleted as if they could be. Make that reference a permanent document reference, then try again."
     )]
     ReferencedDocumentTypeNotDeletable {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
+        // The node's names for the document type and the reference path stay
+        // in `source_error` only: unproven text, never copied into the variant.
         contract_id: Identifier,
-        document_type_name: String,
-        path: String,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2945,20 +2824,8 @@ pub enum TaskError {
         "A document type in this contract charges a fee for moderators, but the contract has no moderation. Remove the moderators' part of the fee, then try again."
     )]
     DocumentActionFeesWithoutModeration {
-        // Node-supplied and unproven: kept for `Debug` and logs only, never
-        // interpolated into the user-facing message.
-        document_type_name: String,
-        #[source]
-        source_error: Box<SdkError>,
-    },
-
-    /// A once-per-identity distribution amount is zero or above the maximum.
-    #[error(
-        "The amount each identity can claim must be between 1 and {max_amount}. Enter an amount in that range, then try again."
-    )]
-    InvalidOncePerIdentityDistributionAmount {
-        amount: u64,
-        max_amount: u64,
+        // The node's name for the document type stays in `source_error` only:
+        // unproven text, never copied into the variant.
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2980,19 +2847,9 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
-    #[error("Shielded token settings cannot be changed here yet. Use a supported token setting instead.")]
-    TokenShieldedConfigurationUnsupported,
-
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
-
-    /// A token with a once-per-identity distribution was requested on a
-    /// network that does not accept one yet.
-    #[error(
-        "This network does not support once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
-    )]
-    TokenOncePerIdentityNotSupported,
 
     /// The token creator asked for a token that cannot be transferred, on a
     /// network that does not accept one yet.
@@ -3000,20 +2857,6 @@ pub enum TaskError {
         "The connected network does not accept tokens that cannot be transferred yet. Allow transfers, or try again after the network upgrades."
     )]
     NonTransferableTokenNotSupported,
-
-    /// The identity already took its single claim of a token's
-    /// once-per-identity distribution, so Platform refused another one.
-    #[error(
-        "This identity has already claimed its share of this token. Each identity can claim it only once, so there is nothing more to claim."
-    )]
-    TokenOncePerIdentityAlreadyClaimed {
-        token_id: Identifier,
-        identity_id: Identifier,
-        /// Block time of the claim that was paid, in milliseconds.
-        claimed_at_ms: u64,
-        #[source]
-        source_error: Box<SdkError>,
-    },
 
     /// A token operation run by the wallet runtime failed for a reason the
     /// SDK error classification has no specific variant for. Built by
@@ -4776,20 +4619,6 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
-                    ConsensusError::StateError(
-                        StateError::TokenOncePerIdentityDistributionAlreadyClaimedError(e),
-                    ) => {
-                        let (token_id, identity_id, claimed_at_ms) =
-                            (e.token_id(), e.identity_id(), e.claimed_at_ms());
-                        Some(Box::new(move |source_error| {
-                            TaskError::TokenOncePerIdentityAlreadyClaimed {
-                                token_id,
-                                identity_id,
-                                claimed_at_ms,
-                                source_error,
-                            }
-                        }))
-                    }
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
@@ -4845,101 +4674,6 @@ impl From<SdkError> for TaskError {
                         let key_id = *e.public_key_id();
                         Some(Box::new(move |source_error| {
                             TaskError::SigningKeyContractBoundForNonBatch {
-                                key_id,
-                                source_error,
-                            }
-                        }))
-                    }
-                    ConsensusError::StateError(StateError::ContractFeeClaimNotAllowedError(_)) => {
-                        Some(Box::new(|source_error| {
-                            TaskError::ContractFeeClaimNotAllowed { source_error }
-                        }))
-                    }
-                    ConsensusError::StateError(
-                        StateError::ContractFeesAlreadyClaimedThisEpochError(e),
-                    ) => {
-                        let epoch_index = e.epoch_index();
-                        Some(Box::new(move |source_error| {
-                            TaskError::ContractFeesAlreadyClaimedThisEpoch {
-                                epoch_index,
-                                source_error,
-                            }
-                        }))
-                    }
-                    ConsensusError::StateError(StateError::ContractFeesNothingToClaimError(_)) => {
-                        Some(Box::new(|source_error| {
-                            TaskError::ContractFeesNothingToClaim { source_error }
-                        }))
-                    }
-                    ConsensusError::StateError(
-                        StateError::IdentityPublicKeyAlreadyExpiredError(e),
-                    ) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyExpiryInPast {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::StateError(
-                        StateError::IdentityPublicKeyLimitNotRaisedError(e),
-                    ) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitNotRaised {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::StateError(StateError::IdentityPublicKeyLimitNotSetError(
-                        e,
-                    )) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitNotSet {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::SignatureError(
-                        SignatureError::PublicKeyWithLimitsCannotUpdateKeyLimitsError(e),
-                    ) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| {
-                            TaskError::KeyLimitsSignerHasLimits {
-                                key_id,
-                                source_error,
-                            }
-                        }))
-                    }
-                    ConsensusError::BasicError(
-                        BasicError::IdentityPublicKeyLimitsNotAllowedError(e),
-                    ) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::BasicError(
-                        BasicError::InvalidIdentityPublicKeyBudgetError(e),
-                    ) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::BasicError(BasicError::IdentityKeyLimitsUpdateEmptyError(
-                        e,
-                    )) => {
-                        let key_id = e.public_key_id();
-                        Some(Box::new(move |source_error| TaskError::KeyLimitsRefused {
-                            key_id,
-                            source_error,
-                        }))
-                    }
-                    ConsensusError::StateError(StateError::IdentityPublicKeyIsDisabledError(e)) => {
-                        let key_id = e.public_key_index();
-                        Some(Box::new(move |source_error| {
-                            TaskError::IdentityKeyDisabled {
                                 key_id,
                                 source_error,
                             }
@@ -5068,16 +4802,10 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(
                         StateError::DocumentImmutablePropertyChangedError(e),
                     ) => {
-                        let (document_id, document_type_name, property) = (
-                            e.document_id(),
-                            e.document_type_name().to_owned(),
-                            e.property().to_owned(),
-                        );
+                        let document_id = e.document_id();
                         Some(Box::new(move |source_error| {
                             TaskError::DocumentImmutablePropertyChanged {
                                 document_id,
-                                document_type_name,
-                                property,
                                 source_error,
                             }
                         }))
@@ -5085,43 +4813,19 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(
                         StateError::ReferencedDocumentTypeNotDeletableError(e),
                     ) => {
-                        let (contract_id, document_type_name, path) = (
-                            *e.contract_id(),
-                            e.document_type_name().to_owned(),
-                            e.path().to_owned(),
-                        );
+                        let contract_id = *e.contract_id();
                         Some(Box::new(move |source_error| {
                             TaskError::ReferencedDocumentTypeNotDeletable {
                                 contract_id,
-                                document_type_name,
-                                path,
                                 source_error,
                             }
                         }))
                     }
                     ConsensusError::BasicError(
-                        BasicError::DocumentActionFeesWithoutModerationError(e),
-                    ) => {
-                        let document_type_name = e.document_type_name().to_owned();
-                        Some(Box::new(move |source_error| {
-                            TaskError::DocumentActionFeesWithoutModeration {
-                                document_type_name,
-                                source_error,
-                            }
-                        }))
-                    }
-                    ConsensusError::BasicError(
-                        BasicError::InvalidTokenOncePerIdentityDistributionAmountError(e),
-                    ) => {
-                        let (amount, max_amount) = (e.amount(), e.max_amount());
-                        Some(Box::new(move |source_error| {
-                            TaskError::InvalidOncePerIdentityDistributionAmount {
-                                amount,
-                                max_amount,
-                                source_error,
-                            }
-                        }))
-                    }
+                        BasicError::DocumentActionFeesWithoutModerationError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DocumentActionFeesWithoutModeration { source_error }
+                    })),
                     ConsensusError::BasicError(
                         BasicError::PreProgrammedDistributionAmountOverLimitError(e),
                     ) => {
@@ -7553,26 +7257,41 @@ mod tests {
         })
     }
 
-    /// Every protocol-version-14 consensus rejection DET flows can hit maps to
-    /// its own variant, keeps the SDK error as its source, and reads as
-    /// complete sentences free of protocol jargon.
+    /// A missing or outdated fee agreement reads the same whether this app or
+    /// the network refuses it, so the user gets one instruction for each.
+    #[test]
+    fn fee_agreement_refusals_read_the_same_locally_and_from_the_network() {
+        use crate::model::fee_estimation::ActionFeeAgreementError;
+        let source = || Box::new(SdkError::Generic("refused".to_string()));
+        assert_eq!(
+            TaskError::DocumentActionFeeNotAgreed {
+                source_error: source()
+            }
+            .to_string(),
+            ActionFeeAgreementError::NotConfirmed.to_string()
+        );
+        assert_eq!(
+            TaskError::DocumentActionFeeChanged {
+                source_error: source()
+            }
+            .to_string(),
+            ActionFeeAgreementError::Outdated.to_string()
+        );
+    }
+
+    /// The protocol-version-14 refusals of signing keys and of contract and
+    /// document authoring map to their own variants, keep the SDK error as
+    /// their source, and read as complete sentences free of protocol jargon.
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
-        use dash_sdk::dpp::consensus::basic::identity::{
-            IdentityKeyLimitsUpdateEmptyError, IdentityPublicKeyLimitsNotAllowedError,
-            InvalidIdentityPublicKeyBudgetError,
-        };
-        use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
-        use dash_sdk::dpp::consensus::signature::PublicKeyWithLimitsCannotUpdateKeyLimitsError;
         use dash_sdk::dpp::consensus::signature::{
             ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
             PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
         };
         use dash_sdk::dpp::consensus::state::contract_moderation::{
-            ContractFeeClaimNotAllowedError, ContractFeesAlreadyClaimedThisEpochError,
-            ContractFeesNothingToClaimError, ContractUserBannedError, ContractUserSuspendedError,
+            ContractUserBannedError, ContractUserSuspendedError,
         };
         use dash_sdk::dpp::consensus::state::document::{
             document_action_fee_agreement_mismatch_error::DocumentActionFeeAgreementMismatchError,
@@ -7581,27 +7300,17 @@ mod tests {
             document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_expired_error::IdentityPublicKeyAlreadyExpiredError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_is_disabled_error::IdentityPublicKeyIsDisabledError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_raised_error::IdentityPublicKeyLimitNotRaisedError;
-        use dash_sdk::dpp::consensus::state::identity::identity_public_key_limit_not_set_error::{
-            IdentityPublicKeyLimitNotSetError, KeyLimit,
-        };
-        use dash_sdk::dpp::consensus::state::identity::{
-            gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError,
-            identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError,
-        };
+        use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
-        use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
         use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::{
             AgreedFeeMultiplier, DocumentActionFeeAgreement,
         };
         use dash_sdk::dpp::data_contract::document_type::action_fees::{
             ActionFeePricing, DocumentActionFee,
         };
-        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
         use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
@@ -7754,10 +7463,7 @@ mod tests {
                     "title".to_string(),
                 )
                 .into(),
-                |e| {
-                    matches!(e, TaskError::DocumentImmutablePropertyChanged { property, .. }
-                        if property == "title")
-                },
+                |e| matches!(e, TaskError::DocumentImmutablePropertyChanged { .. }),
             ),
             (
                 ReferencedDocumentTypeNotDeletableError::new(
@@ -7773,19 +7479,6 @@ mod tests {
                 |e| matches!(e, TaskError::DocumentActionFeesWithoutModeration { .. }),
             ),
             (
-                InvalidTokenOncePerIdentityDistributionAmountError::new(0, 100).into(),
-                |e| {
-                    matches!(
-                        e,
-                        TaskError::InvalidOncePerIdentityDistributionAmount {
-                            amount: 0,
-                            max_amount: 100,
-                            ..
-                        }
-                    )
-                },
-            ),
-            (
                 PreProgrammedDistributionAmountOverLimitError::new(1, 1_758_140_722_000).into(),
                 |e| {
                     matches!(
@@ -7799,80 +7492,7 @@ mod tests {
             ),
         ];
 
-        let key_limit_cases: Vec<(ConsensusError, Expectation)> = vec![
-            (
-                IdentityPublicKeyAlreadyExpiredError::new(8, 1, 2).into(),
-                |e| matches!(e, TaskError::KeyExpiryInPast { key_id: 8, .. }),
-            ),
-            (
-                IdentityPublicKeyLimitNotRaisedError::new(8, KeyLimit::Budget, 2, 1).into(),
-                |e| matches!(e, TaskError::KeyLimitNotRaised { key_id: 8, .. }),
-            ),
-            (
-                IdentityPublicKeyLimitNotSetError::new(8, KeyLimit::Expiry).into(),
-                |e| matches!(e, TaskError::KeyLimitNotSet { key_id: 8, .. }),
-            ),
-            (
-                PublicKeyWithLimitsCannotUpdateKeyLimitsError::new(9).into(),
-                |e| matches!(e, TaskError::KeyLimitsSignerHasLimits { key_id: 9, .. }),
-            ),
-            (
-                IdentityPublicKeyLimitsNotAllowedError::new(
-                    8,
-                    Purpose::TRANSFER,
-                    SecurityLevel::CRITICAL,
-                )
-                .into(),
-                |e| matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. }),
-            ),
-            (InvalidIdentityPublicKeyBudgetError::new(8).into(), |e| {
-                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
-            }),
-            (IdentityKeyLimitsUpdateEmptyError::new(8).into(), |e| {
-                matches!(e, TaskError::KeyLimitsRefused { key_id: 8, .. })
-            }),
-            (IdentityPublicKeyIsDisabledError::new(8).into(), |e| {
-                matches!(e, TaskError::IdentityKeyDisabled { key_id: 8, .. })
-            }),
-        ];
-
-        let contract_id = Identifier::random();
-        let fee_pot_cases: Vec<(ConsensusError, Expectation)> = vec![
-            (
-                ContractFeeClaimNotAllowedError::new(
-                    contract_id,
-                    ContractFeePot::Owner,
-                    Identifier::random(),
-                )
-                .into(),
-                |e| matches!(e, TaskError::ContractFeeClaimNotAllowed { .. }),
-            ),
-            (
-                ContractFeesAlreadyClaimedThisEpochError::new(
-                    contract_id,
-                    ContractFeePot::Owner,
-                    9,
-                )
-                .into(),
-                |e| {
-                    matches!(
-                        e,
-                        TaskError::ContractFeesAlreadyClaimedThisEpoch { epoch_index: 9, .. }
-                    )
-                },
-            ),
-            (
-                ContractFeesNothingToClaimError::new(contract_id, ContractFeePot::Moderators)
-                    .into(),
-                |e| matches!(e, TaskError::ContractFeesNothingToClaim { .. }),
-            ),
-        ];
-
-        for (cause, expected) in cases
-            .into_iter()
-            .chain(key_limit_cases)
-            .chain(fee_pot_cases)
-        {
+        for (cause, expected) in cases {
             let debug = format!("{cause:?}");
             let error = TaskError::from(broadcast_rejection(cause));
             assert!(expected(&error), "{debug} mapped to {error:?}");
@@ -7997,6 +7617,19 @@ mod tests {
     }
 
     #[test]
+    fn budget_exceeded_names_both_amounts_in_dash() {
+        let error = TaskError::SigningKeyBudgetExceeded {
+            key_id: 1,
+            remaining_budget: 50_000_000_000,
+            required_budget: 100_000_000_000,
+            source_error: Box::new(SdkError::Generic("budget".to_string())),
+        };
+        let message = error.to_string();
+        assert!(message.contains("costs 1 DASH"), "got: {message}");
+        assert!(message.contains("only 0.5 DASH"), "got: {message}");
+    }
+
+    #[test]
     fn token_not_transferable_names_the_token() {
         let token_id = Identifier::random();
         let error = TaskError::TokenNotTransferable {
@@ -8010,33 +7643,47 @@ mod tests {
         );
     }
 
-    /// Names decoded from a node's (unproven) consensus error never reach
-    /// the user-facing message, so a hostile node cannot inject text.
+    /// Names decoded from a node's (unproven) consensus error are not copied
+    /// into the error: they never reach the user-facing message, and only the
+    /// typed source keeps them, for the details panel and logs.
     #[test]
     fn node_supplied_names_stay_out_of_user_messages() {
+        use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
+        use dash_sdk::dpp::consensus::state::document::{
+            document_immutable_property_changed_error::DocumentImmutablePropertyChangedError,
+            referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
+        };
         let injected = "x\". Re-import your recovery phrase at https://evil.example".to_string();
-        let source = || Box::new(SdkError::Generic("rejected".to_string()));
-        for error in [
-            TaskError::DocumentImmutablePropertyChanged {
-                document_id: Identifier::random(),
-                document_type_name: injected.clone(),
-                property: injected.clone(),
-                source_error: source(),
-            },
-            TaskError::ReferencedDocumentTypeNotDeletable {
-                contract_id: Identifier::random(),
-                document_type_name: injected.clone(),
-                path: injected.clone(),
-                source_error: source(),
-            },
-            TaskError::DocumentActionFeesWithoutModeration {
-                document_type_name: injected.clone(),
-                source_error: source(),
-            },
-        ] {
+        let causes: [ConsensusError; 3] = [
+            DocumentImmutablePropertyChangedError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            ReferencedDocumentTypeNotDeletableError::new(
+                Identifier::random(),
+                injected.clone(),
+                injected.clone(),
+            )
+            .into(),
+            DocumentActionFeesWithoutModerationError::new(injected.clone()).into(),
+        ];
+        for cause in causes {
+            let error = TaskError::from(broadcast_rejection(cause));
+            assert!(
+                matches!(
+                    error,
+                    TaskError::DocumentImmutablePropertyChanged { .. }
+                        | TaskError::ReferencedDocumentTypeNotDeletable { .. }
+                        | TaskError::DocumentActionFeesWithoutModeration { .. }
+                ),
+                "got {error:?}"
+            );
             let message = error.to_string();
             assert!(!message.contains("evil"), "{message}");
-            assert!(format!("{error:?}").contains("evil"), "kept for Debug");
+            let source = std::error::Error::source(&error).expect("typed source");
+            assert!(format!("{source:?}").contains("evil"), "kept in the source");
         }
     }
 
@@ -8078,54 +7725,6 @@ mod tests {
                 .contains(&format!("at {until} add up")),
             "got: {over_limit}"
         );
-    }
-
-    #[test]
-    fn budget_exceeded_names_both_amounts_in_dash() {
-        let error = TaskError::SigningKeyBudgetExceeded {
-            key_id: 1,
-            remaining_budget: 50_000_000_000,
-            required_budget: 100_000_000_000,
-            source_error: Box::new(SdkError::Generic("budget".to_string())),
-        };
-        let message = error.to_string();
-        assert!(message.contains("costs 1 DASH"), "got: {message}");
-        assert!(message.contains("only 0.5 DASH"), "got: {message}");
-    }
-
-    /// A second claim of a once-per-identity distribution maps to its own
-    /// variant carrying the ids, so the claim flow can remember the claim.
-    #[test]
-    fn once_per_identity_already_claimed_maps_to_its_variant() {
-        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
-        let (token_id, identity_id) = (Identifier::random(), Identifier::random());
-        let consensus =
-            ConsensusError::from(TokenOncePerIdentityDistributionAlreadyClaimedError::new(
-                token_id,
-                identity_id,
-                1_758_140_722_000,
-            ));
-        let sdk_err = SdkError::StateTransitionBroadcastError(
-            dash_sdk::error::StateTransitionBroadcastError {
-                code: 40722,
-                message: "already claimed".to_string(),
-                cause: Some(consensus),
-            },
-        );
-        match TaskError::from(sdk_err) {
-            TaskError::TokenOncePerIdentityAlreadyClaimed {
-                token_id: t,
-                identity_id: i,
-                claimed_at_ms,
-                ..
-            } => {
-                assert_eq!(
-                    (t, i, claimed_at_ms),
-                    (token_id, identity_id, 1_758_140_722_000)
-                );
-            }
-            other => panic!("got {other:?}"),
-        }
     }
 
     /// An unclassified SDK failure behind a wallet-runtime token operation

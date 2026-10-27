@@ -57,10 +57,7 @@ use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
-use dash_sdk::dpp::{
-    state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType,
-    tokens::token_amount_on_contract_token::DocumentActionTokenCost,
-};
+use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
 use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
@@ -80,8 +77,8 @@ pub enum DocumentActionType {
 }
 
 impl DocumentActionType {
-    /// The document transition this action broadcasts, as action fees and
-    /// token costs are declared per transition type.
+    /// The document transition this action broadcasts, as action fees are
+    /// declared per transition type.
     fn transition_action(&self) -> DocumentTransitionActionType {
         match self {
             DocumentActionType::Create => DocumentTransitionActionType::Create,
@@ -113,6 +110,12 @@ pub enum BroadcastStatus {
     Broadcasting,
     Broadcasted,
 }
+
+/// Shown in place of a field whose type the document editor cannot edit yet.
+const UNEDITABLE_FIELD_NOTICE: &str = "The app cannot edit this field type yet.";
+
+/// Why a document with a field type the editor cannot edit is not sent.
+const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the app cannot edit yet, so it cannot be created or changed here.";
 
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
@@ -166,9 +169,6 @@ pub struct DocumentActionScreen {
     // Banner for in-progress operations
     refresh_banner: Option<BannerHandle>,
 
-    /// Whether to pay a document type's optional token cost. Off, the action
-    /// carries no token payment and its gas is paid in credits instead.
-    pay_optional_token_cost: bool,
     /// The confirmation of a document action fee or of an indexOnly delete,
     /// open while the user decides.
     action_fee_confirmation: Option<PendingActionFeeConfirmation>,
@@ -260,7 +260,6 @@ impl DocumentActionScreen {
             index_only_values_input: String::new(),
             completed_fee_result: None,
             refresh_banner: None,
-            pay_optional_token_cost: true,
             action_fee_confirmation: None,
             agreed_action_fee: None,
         }
@@ -331,9 +330,6 @@ impl DocumentActionScreen {
         ui.add_space(10.0);
     }
 
-    /// The contract or document type changed: what was fetched for the old
-    /// one no longer applies, and the key is picked again for the new scope
-    /// (a key bound to the old contract or type cannot sign in the new one).
     /// The wallet holding the key the action is signed with, for the unlock
     /// prompt.
     fn signing_wallet(&self) -> Option<Arc<RwLock<Wallet>>> {
@@ -341,6 +337,9 @@ impl DocumentActionScreen {
         wallet_for_signing_key(identity, self.selected_key.as_ref())
     }
 
+    /// The contract or document type changed: what was fetched for the old
+    /// one no longer applies, and the key is picked again for the new scope
+    /// (a key bound to the old contract or type cannot sign in the new one).
     fn signing_scope_changed(&mut self) {
         self.no_documents_found = false;
         self.fetched_documents.clear();
@@ -1032,9 +1031,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::TypedArray(_) => {
-                            ui.label(
-                                "This field cannot be edited here. Use another document editor.",
-                            );
+                            ui.label(UNEDITABLE_FIELD_NOTICE);
                         }
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
@@ -1113,35 +1110,7 @@ impl DocumentActionScreen {
                 ))
                 .color(Color32::DARK_RED),
             );
-            // Protocol version 14: an optional token cost may be left out, the
-            // action then paying its gas in credits with no sponsorship.
-            if token_creation_cost.optional {
-                ui.checkbox(
-                    &mut self.pay_optional_token_cost,
-                    "Pay the token cost",
-                )
-                .on_hover_text(
-                    "Paying the token cost is optional for this action. Without it, you pay the network fee yourself in credits.",
-                );
-            }
-        } else {
-            self.pay_optional_token_cost = true;
         }
-    }
-
-    /// The token payment for `cost`, or `None` when there is no cost or the
-    /// user chose not to pay an optional one.
-    fn token_payment_for(&self, cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
-        cost.filter(|cost| !cost.optional || self.pay_optional_token_cost)
-            .map(|cost| {
-                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                    payment_token_contract_id: cost.contract_id,
-                    token_contract_position: cost.token_contract_position,
-                    gas_fees_paid_by: cost.gas_fees_paid_by,
-                    minimum_token_cost: None,
-                    maximum_token_cost: Some(cost.token_amount),
-                })
-            })
     }
 
     /// The action fee the selected document type charges for this action at
@@ -1354,7 +1323,18 @@ impl DocumentActionScreen {
                 };
 
                 let token_payment_info =
-                    self.token_payment_for(doc_type.document_creation_token_cost());
+                    doc_type
+                        .document_creation_token_cost()
+                        .map(|token_creation_cost| {
+                            TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                payment_token_contract_id: token_creation_cost.contract_id,
+                                token_contract_position: token_creation_cost
+                                    .token_contract_position,
+                                gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                minimum_token_cost: None,
+                                maximum_token_cost: Some(token_creation_cost.token_amount),
+                            })
+                        });
 
                 BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
                     action_fee_agreement: self.agreed_action_fee,
@@ -1390,7 +1370,18 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
+        let token_payment_info =
+            doc_type
+                .document_deletion_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1421,7 +1412,19 @@ impl DocumentActionScreen {
         let Some((doc_type, contract, identity, key)) = self.require_selections() else {
             return BackendTask::None;
         };
-        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
+        // Charged as the delete by id is.
+        let token_payment_info =
+            doc_type
+                .document_deletion_token_cost()
+                .map(|token_deletion_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_deletion_cost.contract_id,
+                        token_contract_position: token_deletion_cost.token_contract_position,
+                        gas_fees_paid_by: token_deletion_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_deletion_cost.token_amount),
+                    })
+                });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteIndexOnlyDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1443,7 +1446,18 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info = self.token_payment_for(doc_type.document_purchase_token_cost());
+        let token_payment_info =
+            doc_type
+                .document_purchase_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1467,7 +1481,18 @@ impl DocumentActionScreen {
                     };
 
                     let token_payment_info =
-                        self.token_payment_for(doc_type.document_replacement_token_cost());
+                        doc_type
+                            .document_replacement_token_cost()
+                            .map(|token_creation_cost| {
+                                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                                    payment_token_contract_id: token_creation_cost.contract_id,
+                                    token_contract_position: token_creation_cost
+                                        .token_contract_position,
+                                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                                    minimum_token_cost: None,
+                                    maximum_token_cost: Some(token_creation_cost.token_amount),
+                                })
+                            });
 
                     BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                         action_fee_agreement: self.agreed_action_fee,
@@ -1495,7 +1520,17 @@ impl DocumentActionScreen {
             };
 
             let token_payment_info =
-                self.token_payment_for(doc_type.document_replacement_token_cost());
+                doc_type
+                    .document_replacement_token_cost()
+                    .map(|token_creation_cost| {
+                        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                            payment_token_contract_id: token_creation_cost.contract_id,
+                            token_contract_position: token_creation_cost.token_contract_position,
+                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                            minimum_token_cost: None,
+                            maximum_token_cost: Some(token_creation_cost.token_amount),
+                        })
+                    });
 
             BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                 action_fee_agreement: self.agreed_action_fee,
@@ -1519,7 +1554,17 @@ impl DocumentActionScreen {
         };
 
         let token_payment_info =
-            self.token_payment_for(doc_type.document_update_price_token_cost());
+            doc_type
+                .document_update_price_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
             action_fee_agreement: self.agreed_action_fee,
@@ -1543,7 +1588,18 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info = self.token_payment_for(doc_type.document_transfer_token_cost());
+        let token_payment_info =
+            doc_type
+                .document_transfer_token_cost()
+                .map(|token_creation_cost| {
+                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                        payment_token_contract_id: token_creation_cost.contract_id,
+                        token_contract_position: token_creation_cost.token_contract_position,
+                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
+                        minimum_token_cost: None,
+                        maximum_token_cost: Some(token_creation_cost.token_amount),
+                    })
+                });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1572,7 +1628,7 @@ impl DocumentActionScreen {
             .ok_or("No identity selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1693,9 +1749,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
@@ -1767,7 +1823,7 @@ impl DocumentActionScreen {
             .ok_or("No document-type selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err("This document contains fields that cannot be edited here. Use another document editor.".to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
         }
 
         for (prop, schema) in doc_type.properties() {
@@ -1888,9 +1944,9 @@ impl DocumentActionScreen {
                     Value::U64(ts)
                 }
                 DocumentPropertyType::TypedArray(_) => {
-                    return Err(format!(
-                        "Field {name} cannot be edited here. Use another document editor."
-                    ));
+                    // Unreachable while `supports_field_editor` refuses the
+                    // document first; kept so a typed array is never encoded.
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
@@ -2269,18 +2325,17 @@ impl DocumentActionScreen {
     }
 }
 
-/// The contract-bounds scope of a document action on `document_type` of
-/// `contract`. Before a contract is chosen nothing is known about the target,
-/// so only keys that can sign anywhere (unbound keys) qualify.
 /// The key to sign a document action with when the user has not picked one:
 /// a live AUTHENTICATION key this device can sign with, at a security level
 /// the document type accepts, within the contract and document type's scope.
+/// Keys are ranked in upstream platform-wallet's order, as for every document
+/// key ([`QualifiedIdentity::signing_key_now`]).
 fn auto_selected_document_key(
     identity: &QualifiedIdentity,
     contract: Option<&QualifiedContract>,
     document_type: Option<&DocumentType>,
 ) -> Option<IdentityPublicKey> {
-    // The levels the document type accepts (never MASTER), so the preference
+    // The levels the document type accepts, so the preference
     // for unlimited keys only ever chooses among keys Platform accepts.
     let levels = crate::ui::helpers::compute_allowed_security_levels(
         TransactionType::DocumentAction,
@@ -2295,6 +2350,9 @@ fn auto_selected_document_key(
         .cloned()
 }
 
+/// The contract-bounds scope of a document action on `document_type` of
+/// `contract`. Before a contract is chosen nothing is known about the target,
+/// so only keys that can sign anywhere (unbound keys) qualify.
 fn signing_scope<'a>(
     contract: Option<&QualifiedContract>,
     document_type: Option<&'a DocumentType>,
@@ -2408,6 +2466,8 @@ mod tests {
 
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 
+    use crate::context::test_support::identity_holding;
+
     /// An AUTHENTICATION key at `level`, optionally bound to `bounds`.
     fn auth_key(
         id: u32,
@@ -2416,62 +2476,11 @@ mod tests {
             dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
         >,
     ) -> IdentityPublicKey {
-        dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-            id,
-            purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
-            security_level: level,
-            contract_bounds: bounds,
-            key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: vec![2; 33].into(),
-            disabled_at: None,
+        let key = crate::context::test_support::auth_key(id, level);
+        match bounds {
+            Some(bounds) => crate::context::test_support::bound_to(key, bounds),
+            None => key,
         }
-        .into()
-    }
-
-    /// A user identity holding the private half of each of `keys`.
-    fn identity_holding(keys: &[IdentityPublicKey]) -> QualifiedIdentity {
-        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
-        use dash_sdk::dpp::version::PlatformVersion;
-
-        let mut identity =
-            Identity::create_basic_identity(Identifier::new([0xD0; 32]), PlatformVersion::latest())
-                .expect("basic identity");
-        identity.set_public_keys(keys.iter().map(|key| (key.id(), key.clone())).collect());
-        let mut qi = QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
-        for key in keys {
-            qi.private_keys
-                .insert_non_encrypted(
-                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
-                    (
-                        QualifiedIdentityPublicKey {
-                            identity_public_key: key.clone(),
-                            in_wallet_at_derivation_path: None,
-                        },
-                        [key.id() as u8; 32],
-                    ),
-                )
-                .expect("a free slot");
-        }
-        qi
     }
 
     /// The DPNS contract, whose document types require a HIGH key.
@@ -2514,6 +2523,25 @@ mod tests {
         let limited = auth_key(1, required, None).with_limits(Some(5_000), None);
         let weaker_unlimited = auth_key(2, SecurityLevel::MEDIUM, None);
         let identity = identity_holding(&[limited, weaker_unlimited]);
+
+        let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
+        assert_eq!(chosen.map(|key| key.id()), Some(1));
+    }
+
+    /// Automatic selection follows upstream platform-wallet's order: an
+    /// unlimited key at any accepted level beats a limited key, so a budgeted
+    /// HIGH key is not spent while an unlimited CRITICAL key is held.
+    #[test]
+    fn auto_selection_prefers_an_unlimited_key_at_any_accepted_level() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let required = domain.security_level_requirement();
+        assert_eq!(required, SecurityLevel::HIGH, "precondition: a HIGH type");
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL, None),
+            auth_key(2, SecurityLevel::HIGH, None).with_limits(Some(5_000), None),
+        ]);
 
         let chosen = auto_selected_document_key(&identity, Some(&contract), Some(&domain));
         assert_eq!(chosen.map(|key| key.id()), Some(1));
@@ -2804,7 +2832,7 @@ mod tests {
     ) -> (tempfile::TempDir, DocumentActionScreen) {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        context.set_platform_protocol_version(protocol_version);
+        crate::context::test_support::prove_protocol_version(&context, protocol_version);
         let contract = QualifiedContract {
             contract: crate::model::index_only_document::test_fixtures::index_only_contract(),
             alias: None,
@@ -2924,7 +2952,7 @@ mod tests {
     fn a_stored_document_type_is_still_deleted_by_id() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::test_app_context(dir.path());
-        context.set_platform_protocol_version(14);
+        crate::context::test_support::prove_protocol_version(&context, 14);
         let contract = dpns();
         let domain = owned_document_type(&contract, "domain");
         let key = auth_key(1, domain.security_level_requirement(), None);
@@ -2941,7 +2969,7 @@ mod tests {
         assert!(matches!(*task, DocumentTask::DeleteDocument { .. }));
     }
 
-    /// Action fees and token costs are declared per transition, so every
+    /// Action fees are declared per transition, so every
     /// screen action must name the transition it broadcasts.
     #[test]
     fn every_action_maps_to_its_document_transition() {

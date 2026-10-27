@@ -186,6 +186,28 @@ pub(crate) fn set_sdk_protocol_version(ctx: &AppContext, protocol_version: u32) 
     ctx.sdk.store(Arc::new(sdk));
 }
 
+/// Have `ctx`'s SDK learn `protocol_version` as it does from a response whose
+/// proof and quorum signature were verified. Only raises it, as the network
+/// does; an unknown version is recorded as proven, as upstream records it.
+pub(crate) fn prove_protocol_version(ctx: &AppContext, protocol_version: u32) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    ctx.sdk
+        .load()
+        .verify_response_metadata(
+            "test",
+            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
+                height: 1,
+                time_ms: now_ms,
+                protocol_version,
+                ..Default::default()
+            },
+        )
+        .expect("fresh proved metadata");
+}
+
 /// A mock SDK that reads data contracts through `ctx`, as the app's own SDK does.
 pub(crate) fn mock_sdk_for(ctx: &AppContext) -> Sdk {
     let sdk = Sdk::new_mock();
@@ -253,6 +275,18 @@ pub(crate) fn auth_key(
     .into()
 }
 
+/// `key`, a version 0 key such as [`auth_key`] builds, bound to `bounds`.
+pub(crate) fn bound_to(
+    key: dash_sdk::platform::IdentityPublicKey,
+    bounds: dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
+) -> dash_sdk::platform::IdentityPublicKey {
+    let dash_sdk::platform::IdentityPublicKey::V0(mut v0) = key else {
+        panic!("bound_to takes a version 0 key");
+    };
+    v0.contract_bounds = Some(bounds);
+    v0.into()
+}
+
 /// A testnet user identity publishing `keys` and holding the private half of
 /// each.
 pub(crate) fn identity_holding(
@@ -304,13 +338,10 @@ pub(crate) fn identity_with_bound_wallet_key(
 ) {
     let wallet = crate::model::wallet::test_support::open_wallet();
     let seed_hash = wallet.seed_hash();
-    let mut key = auth_key(1, dash_sdk::dpp::identity::SecurityLevel::HIGH);
-    {
-        let dash_sdk::platform::IdentityPublicKey::V0(v0) = &mut key else {
-            unreachable!("auth_key builds a version 0 key");
-        };
-        v0.contract_bounds = Some(bounds);
-    }
+    let key = bound_to(
+        auth_key(1, dash_sdk::dpp::identity::SecurityLevel::HIGH),
+        bounds,
+    );
     use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     let mut identity = bare_user_identity(Identifier::new([0xD1; 32]), Network::Testnet);

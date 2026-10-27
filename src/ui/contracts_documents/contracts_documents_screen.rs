@@ -4,7 +4,6 @@ use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::index_only_document::is_index_only;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::Component;
@@ -122,7 +121,7 @@ pub enum DocumentDisplayMode {
 impl DocumentQueryScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let dpns_contract = QualifiedContract {
-            contract: app_context.dpns_contract().as_ref().clone(),
+            contract: Arc::clone(&app_context.dpns_contract()).as_ref().clone(),
             alias: Some("dpns".to_string()),
         };
 
@@ -624,7 +623,9 @@ impl ScreenLike for DocumentQueryScreen {
 
         // Reset the selected contract and document type
         let dpns_contract = QualifiedContract {
-            contract: self.app_context.dpns_contract().as_ref().clone(),
+            contract: Arc::clone(&self.app_context.dpns_contract())
+                .as_ref()
+                .clone(),
             alias: Some("dpns".to_string()),
         };
         self.selected_data_contract = dpns_contract.clone();
@@ -737,19 +738,13 @@ impl ScreenLike for DocumentQueryScreen {
             "Group Actions",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
-        let fee_pots_button = FeatureGate::ContractFeePots
-            .is_available(&self.app_context)
-            .then_some((
-                "Fee Pots",
-                DesiredAppAction::AddScreenType(Box::new(ScreenType::ContractFeePots)),
-            ));
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel_with_global_nav(
                 ui,
                 &self.app_context,
                 subdued_everyday_spec("Contracts", RootScreenType::RootScreenDocumentQuery),
-                [
+                vec![
                     load_contract_button,
                     register_contract_button,
                     update_contract_button,
@@ -759,10 +754,7 @@ impl ScreenLike for DocumentQueryScreen {
                     transfer_document_button,
                     purchase_document_button,
                     set_document_price_button,
-                ]
-                .into_iter()
-                .chain(fee_pots_button)
-                .collect(),
+                ],
             );
         } else {
             action |= add_top_panel_with_global_nav(
@@ -780,10 +772,7 @@ impl ScreenLike for DocumentQueryScreen {
                     purchase_document_button,
                     set_document_price_button,
                     group_actions_button,
-                ]
-                .into_iter()
-                .chain(fee_pots_button)
-                .collect(),
+                ],
             );
         }
 
@@ -870,8 +859,6 @@ impl ScreenLike for DocumentQueryScreen {
     }
 }
 
-/// Convert a `Document` to a `serde_json::Value`, then filter out unselected fields,
-/// then serialize the result to JSON/YAML.
 /// The notice shown above the results of an indexOnly document type, whose
 /// rows are rebuilt from the network's indexes.
 fn index_only_results_notice(document_type: &DocumentType) -> Option<&'static str> {
@@ -880,6 +867,8 @@ fn index_only_results_notice(document_type: &DocumentType) -> Option<&'static st
     )
 }
 
+/// Convert a `Document` to a `serde_json::Value`, then filter out unselected fields,
+/// then serialize the result to JSON/YAML.
 fn doc_to_filtered_string(
     doc: &Document,
     selected_fields: &std::collections::HashMap<String, bool>,

@@ -23,6 +23,7 @@
 pub mod auth_pubkey_cache;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod auth_pubkey_cache;
+mod auto_accept;
 mod avatar_cache;
 mod contact_profile_cache;
 mod coordinator_gate;
@@ -1488,7 +1489,7 @@ impl WalletBackend {
             &self.inner.wallet_database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
-        .map_err(&storage_error)?;
+        .map_err(storage_error)?;
         let mut skipped_rows = 0;
         let mut skipped_contexts = Vec::new();
         let txid_bytes = {
@@ -1501,10 +1502,10 @@ impl WalletBackend {
                     "SELECT CASE WHEN length(txid) = 32 THEN txid ELSE X'' END \
                      FROM core_transactions WHERE wallet_id = ?1 ORDER BY txid",
                 )
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let rows = statement
                 .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
-                .map_err(&storage_error)?;
+                .map_err(storage_error)?;
             let mut txid_bytes = Vec::new();
             for (row_index, row) in rows.enumerate() {
                 match row {

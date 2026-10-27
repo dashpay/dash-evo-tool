@@ -3,20 +3,11 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
-use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_limits::{
-    KeyLimitsError, contract_bounds_allowed, limits_allowed, new_key_limits,
-    parse_key_validity_days,
-};
-use crate::model::identity_key_usability::now_ms;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
-use crate::ui::components::amount_input::AmountInput;
-use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
@@ -32,8 +23,6 @@ use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -141,15 +130,6 @@ pub struct AddKeyScreen {
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
-    /// Give the key a spending limit (protocol version 14 key limits).
-    enable_budget: bool,
-    budget_input: Option<AmountInput>,
-    budget: Option<Amount>,
-    /// Give the key an expiry, this many days from now.
-    enable_expiry: bool,
-    validity_days_input: String,
-    /// Why the number of days is not valid, shown under the field.
-    validity_days_error: Option<String>,
 }
 
 impl AddKeyScreen {
@@ -190,12 +170,6 @@ impl AddKeyScreen {
             enable_contract_bounds: false,
             completed_fee_result: None,
             refresh_banner: None,
-            enable_budget: false,
-            budget_input: None,
-            budget: None,
-            enable_expiry: false,
-            validity_days_input: String::new(),
-            validity_days_error: None,
         }
     }
 
@@ -246,12 +220,6 @@ impl AddKeyScreen {
             enable_contract_bounds: true,
             completed_fee_result: None,
             refresh_banner: None,
-            enable_budget: false,
-            budget_input: None,
-            budget: None,
-            enable_expiry: false,
-            validity_days_input: String::new(),
-            validity_days_error: None,
         }
     }
 
@@ -302,12 +270,6 @@ impl AddKeyScreen {
             enable_contract_bounds: true,
             completed_fee_result: None,
             refresh_banner: None,
-            enable_budget: false,
-            budget_input: None,
-            budget: None,
-            enable_expiry: false,
-            validity_days_input: String::new(),
-            validity_days_error: None,
         }
     }
 
@@ -341,29 +303,6 @@ impl AddKeyScreen {
             None
         };
 
-        // A mistyped number of days is a note under its field, not an error
-        // for the whole screen.
-        if self.limits_offered()
-            && self.enable_expiry
-            && let Err(error) = parse_key_validity_days(&self.validity_days_input)
-        {
-            self.validity_days_error = Some(error.to_string());
-            return app_action;
-        }
-
-        let limits = match self.requested_limits() {
-            Ok(limits) => limits,
-            Err(error) => {
-                self.add_key_status = AddKeyStatus::Error;
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    error.to_string(),
-                    MessageType::Error,
-                );
-                return app_action;
-            }
-        };
-
         if self.derivation.derived() {
             let Some(index) = self.derivation.submit() else {
                 return app_action;
@@ -382,8 +321,7 @@ impl AddKeyScreen {
                 IdentityTask::AddDerivedKeyToIdentity {
                     identity: self.identity.clone(),
                     key: QualifiedIdentityPublicKey::from(
-                        dash_sdk::platform::IdentityPublicKey::from(new_key)
-                            .with_limits(limits.0, limits.1),
+                        dash_sdk::platform::IdentityPublicKey::from(new_key),
                     ),
                     index,
                     expected_key_id: self.derivation.expected_key_id(),
@@ -436,13 +374,8 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let identity_public_key = match limits {
-                            (None, None) => IdentityPublicKey::from(new_key),
-                            (total_budget, expires_at) => IdentityPublicKey::from(new_key)
-                                .with_limits(total_budget, expires_at),
-                        };
                         let new_qualified_key = QualifiedIdentityPublicKey {
-                            identity_public_key,
+                            identity_public_key: new_key.into(),
                             in_wallet_at_derivation_path: None,
                         };
                         self.submitted_private_key
@@ -482,104 +415,6 @@ impl AddKeyScreen {
             }
         }
         app_action
-    }
-
-    fn limits_offered(&self) -> bool {
-        limits_allowed(self.purpose, self.security_level)
-    }
-
-    fn requested_limits(&self) -> Result<(Option<Credits>, Option<u64>), KeyLimitsError> {
-        if !self.limits_offered() {
-            return Ok((None, None));
-        }
-        let total_budget = if self.enable_budget {
-            Some(self.budget.as_ref().map(Amount::value).unwrap_or(0))
-        } else {
-            None
-        };
-        let validity_days = if self.enable_expiry {
-            Some(parse_key_validity_days(&self.validity_days_input)?)
-        } else {
-            None
-        };
-        new_key_limits(
-            self.purpose,
-            self.security_level,
-            total_budget,
-            validity_days,
-            now_ms(),
-        )
-    }
-
-    fn render_limits_rows(&mut self, ui: &mut Ui) {
-        if !self.limits_offered() {
-            return;
-        }
-        let available = FeatureGate::IdentityKeyLimits.is_available(&self.app_context);
-        let unavailable_hint =
-            "Key limits need a network that supports them. Connect to such a network to use them.";
-
-        ui.label("Spending Limit:");
-        ui.horizontal(|ui| {
-            let checkbox = ui.add_enabled(
-                available,
-                egui::Checkbox::new(&mut self.enable_budget, ""),
-            );
-            if available {
-                checkbox.on_hover_text(
-                    "The most this key can ever spend in total. Once used up, the key can no longer sign.",
-                );
-            } else {
-                checkbox.on_disabled_hover_text(unavailable_hint);
-            }
-            if available && self.enable_budget {
-                let input = self.budget_input.get_or_insert_with(|| {
-                    AmountInput::new(Amount::new_dash(0.0)).with_hint_text("0.1")
-                });
-                let response = input.show(ui);
-                response.inner.update(&mut self.budget);
-            }
-        });
-        ui.end_row();
-
-        ui.label("Expires After (days):");
-        ui.horizontal(|ui| {
-            let checkbox =
-                ui.add_enabled(available, egui::Checkbox::new(&mut self.enable_expiry, ""));
-            if available {
-                checkbox.on_hover_text("After this many days the key can no longer sign.");
-            } else {
-                checkbox.on_disabled_hover_text(unavailable_hint);
-            }
-            if available && self.enable_expiry {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.validity_days_input)
-                        .hint_text("30")
-                        .desired_width(80.0),
-                );
-                if response.changed() {
-                    self.validity_days_error = None;
-                }
-                if response.lost_focus() {
-                    self.validity_days_error = parse_key_validity_days(&self.validity_days_input)
-                        .err()
-                        .map(|error| error.to_string());
-                }
-            }
-        });
-        ui.end_row();
-        if let Some(error) = &self.validity_days_error
-            && self.enable_expiry
-        {
-            ui.label("");
-            ui.colored_label(DashColors::VALIDATION_WARNING, error);
-            ui.end_row();
-        }
-
-        if !available {
-            self.enable_budget = false;
-            self.enable_expiry = false;
-        }
     }
 
     fn show_key_source(&mut self, ui: &mut Ui) {
@@ -704,14 +539,19 @@ impl AddKeyScreen {
         }
     }
 
+    /// Dispatches `task` as this screen's add, bound to a fresh dispatch
+    /// context that alone settles it.
     fn dispatch_add(&mut self, task: BackendTask) -> AppAction {
         self.add_dispatch.dispatch(task)
     }
 
+    /// Whether `context` is this screen's in-flight add; takes it, so each
+    /// dispatch settles the add once.
     fn take_own_add(&mut self, context: &BackendTaskContext) -> bool {
         self.add_dispatch.settle(context).is_some()
     }
 
+    /// Why the Add Key button is disabled, or `None` when it is enabled.
     fn add_blocked_reason(&self) -> Option<&'static str> {
         if self.add_key_status == AddKeyStatus::WaitingForResult {
             return Some("The key is being added. Wait for it to finish.");
@@ -743,11 +583,14 @@ impl AddKeyScreen {
         }
     }
 
+    /// Reload the identity from local storage and recompute the chooser.
     fn reload_identity(&mut self) {
         self.load_identity();
         self.derivation.reload(&self.app_context, &self.identity);
     }
 
+    /// Reload the identity from local storage; keeps the current copy when it
+    /// is not stored here.
     fn load_identity(&mut self) {
         match self
             .app_context
@@ -1070,8 +913,6 @@ impl ScreenLike for AddKeyScreen {
                 }
             }
 
-            let bound_authentication_supported =
-                FeatureGate::ContractBoundAuthenticationKeys.is_available(&self.app_context);
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
                 .spacing([10.0, 10.0])
@@ -1084,15 +925,7 @@ impl ScreenLike for AddKeyScreen {
                         .selected_text(format!("{purpose:?}", purpose = self.purpose))
                         .show_ui(ui, |ui| {
                             if self.enable_contract_bounds {
-                                // A bound key is an ENCRYPTION or DECRYPTION key, or,
-                                // where the network admits it, an AUTHENTICATION key.
-                                if bound_authentication_supported {
-                                    ui.selectable_value(
-                                        &mut self.purpose,
-                                        Purpose::AUTHENTICATION,
-                                        "AUTHENTICATION",
-                                    );
-                                }
+                                // When contract bounds are enabled, only allow ENCRYPTION and DECRYPTION
                                 ui.selectable_value(
                                     &mut self.purpose,
                                     Purpose::ENCRYPTION,
@@ -1162,10 +995,8 @@ impl ScreenLike for AddKeyScreen {
                                 security_level = self.security_level
                             ))
                             .show_ui(ui, |ui| {
-                                if self.enable_contract_bounds
-                                    && self.purpose != Purpose::AUTHENTICATION
-                                {
-                                    // A bound ENCRYPTION or DECRYPTION key is MEDIUM
+                                if self.enable_contract_bounds {
+                                    // When contract bounds are enabled, only allow MEDIUM
                                     ui.selectable_value(
                                         &mut self.security_level,
                                         SecurityLevel::MEDIUM,
@@ -1258,7 +1089,6 @@ impl ScreenLike for AddKeyScreen {
                     }
                     ui.end_row();
 
-                    self.render_limits_rows(ui);
                     self.show_key_source(ui);
 
                     // Contract Bounds Toggle
@@ -1266,16 +1096,8 @@ impl ScreenLike for AddKeyScreen {
                     let prev_contract_bounds = self.enable_contract_bounds;
                     ui.checkbox(&mut self.enable_contract_bounds, "");
 
-                    // If contract bounds was just enabled, keep the key only if it
-                    // may be bound; otherwise switch to a bound ENCRYPTION key.
-                    if self.enable_contract_bounds
-                        && !prev_contract_bounds
-                        && !contract_bounds_allowed(
-                            self.purpose,
-                            self.security_level,
-                            bound_authentication_supported,
-                        )
-                    {
+                    // If contract bounds was just enabled, set required values
+                    if self.enable_contract_bounds && !prev_contract_bounds {
                         self.purpose = Purpose::ENCRYPTION;
                         self.security_level = SecurityLevel::MEDIUM;
                     }
@@ -2164,56 +1986,6 @@ mod derived_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Regression: a mistyped number of days surfaced as a global error banner
-    /// that put the whole screen into its error state, instead of a note
-    /// under the field like the app's other form fields.
-    #[test]
-    fn a_mistyped_expiry_is_reported_under_its_field() {
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::test_app_context(dir.path());
-        context.set_platform_protocol_version(14);
-        let identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity(
-                dash_sdk::platform::Identifier::new([0xA1; 32]),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: Default::default(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        };
-        let mut screen = AddKeyScreen::new(identity, &context);
-        screen.purpose = Purpose::AUTHENTICATION;
-        screen.security_level = SecurityLevel::HIGH;
-        screen.enable_expiry = true;
-        screen.validity_days_input = "thirty".to_string();
-
-        let action = screen.validate_and_add_key();
-        assert!(matches!(action, AppAction::None));
-        assert!(
-            !matches!(screen.add_key_status, AddKeyStatus::Error),
-            "a typo must not put the screen into its error state"
-        );
-        assert_eq!(
-            screen.validity_days_error.as_deref(),
-            Some(KeyLimitsError::DaysNotANumber.to_string().as_str())
-        );
-    }
 
     /// SEC-104: both "on the network, not saved here" outcomes switch the
     /// screen to keeping the private key on hand; the derived-key ones switch

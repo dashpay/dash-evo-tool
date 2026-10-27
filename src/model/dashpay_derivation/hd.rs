@@ -1,16 +1,10 @@
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::hashes::{Hash, HashEngine};
-use dash_sdk::dpp::key_wallet::bip32::{
-    ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
-};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPubKey};
 use dash_sdk::platform::Identifier;
-use std::str::FromStr;
 
 use super::DerivationError;
 use super::dip14::derive_dashpay_incoming_xpub_dip14;
-
-/// DashPay auto-accept proof feature index - use the constant from dip9 if available
-const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 
 /// Derive the DashPay incoming funds extended public key for a contact relationship
 /// Path: m/9'/coin'/15'/account'/(sender_id)/(recipient_id)
@@ -75,30 +69,6 @@ pub fn generate_contact_xpub_data(
     Ok((parent_fingerprint, chain_code, public_key_bytes))
 }
 
-/// Derive auto-accept proof key according to DIP-0015
-/// Path: m/9'/coin'/16'/timestamp'
-pub fn derive_auto_accept_key(
-    master_seed: &[u8],
-    network: Network,
-    timestamp: u32,
-) -> Result<ExtendedPrivKey, DerivationError> {
-    use crate::model::wallet::coin_type_for_network;
-
-    // Create extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)?;
-
-    // Build derivation path: m/9'/coin'/16'/timestamp'
-    let coin_type = coin_type_for_network(network);
-    let path = DerivationPath::from_str(&format!(
-        "m/9'/{coin_type}'/{DASHPAY_AUTO_ACCEPT_FEATURE}'/{timestamp}'"
-    ))?;
-
-    // Derive the key
-    let auto_accept_key = master_xprv.derive_priv(&path)?;
-
-    Ok(auto_accept_key)
-}
-
 /// Calculate account reference as specified in DIP-0015
 pub fn calculate_account_reference(
     sender_secret_key: &[u8],
@@ -132,6 +102,8 @@ pub fn calculate_account_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+    use std::str::FromStr;
 
     #[test]
     fn test_dashpay_derivation_path() {
@@ -222,40 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_accept_key_derivation() {
-        // Test auto-accept key derivation
-        let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
-        let timestamp = 1700000000u32;
-
-        let key = derive_auto_accept_key(&master_seed, network, timestamp)
-            .expect("Should derive auto-accept key");
-
-        // Verify the key was derived correctly
-        assert_eq!(key.network, network);
-        assert_eq!(key.depth, 4); // m/9'/1'/16'/timestamp' on testnet = depth 4
-    }
-
-    #[test]
-    fn test_auto_accept_key_different_timestamps() {
-        // Different timestamps should produce different keys
-        let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
-
-        let key1 =
-            derive_auto_accept_key(&master_seed, network, 1700000000).expect("Should derive key 1");
-        let key2 =
-            derive_auto_accept_key(&master_seed, network, 1700000001).expect("Should derive key 2");
-
-        // Different timestamps should produce different keys
-        assert_ne!(
-            key1.private_key.to_bytes(),
-            key2.private_key.to_bytes(),
-            "Different timestamps should produce different keys"
-        );
-    }
-
-    #[test]
     fn test_generate_contact_xpub_data() {
         // Test generating contact xpub data
         let network = Network::Testnet;
@@ -294,7 +232,6 @@ mod tests {
         let master_seed = [2u8; 64];
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
-
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
 
         // Test version 0

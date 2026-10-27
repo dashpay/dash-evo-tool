@@ -716,9 +716,8 @@ mod tests {
     async fn load_node_without_votes(context: &Arc<AppContext>, sdk: &mut Sdk) -> Identifier {
         use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
         use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
-        use dash_sdk::query_types::ResourceVotesByIdentity;
+        use dash_sdk::query_types::{ResourceVoteWithCount, ResourceVotesByIdentity};
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(8);
         context
@@ -754,7 +753,7 @@ mod tests {
             .expect("load the node");
         let node_id = node.identity.id();
         sdk.mock()
-            .expect_fetch_many::<Identifier, ResourceVote, _, ResourceVotesByIdentity>(
+            .expect_fetch_many::<Identifier, ResourceVoteWithCount, _, ResourceVotesByIdentity>(
                 ContestedResourceVotesGivenByIdentityQuery {
                     identity_id: node_id,
                     offset: None,

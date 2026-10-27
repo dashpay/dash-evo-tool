@@ -116,24 +116,50 @@ impl SeenMarkAttempts {
     }
 }
 
-/// Whether `key` may sign documents that require `required` security: an enabled
-/// authentication key at least as strong as required, and never a master key.
+/// Whether `key` may sign documents that require `required` security: an enabled,
+/// unexpired authentication key at least as strong as required, and never a master
+/// key. The rule for choosing a key automatically.
 pub fn key_can_sign_documents(
+    key: &dash_sdk::platform::IdentityPublicKey,
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> bool {
+    chosen_key_can_sign_documents(key, required)
+        && super::identity_key_usability::is_auto_selectable(
+            key,
+            dpns_signing_scope(),
+            super::identity_key_usability::now_ms(),
+        )
+}
+
+/// Whether the user may sign documents that require `required` security with
+/// `key` they chose: an enabled authentication key at least as strong as
+/// required, never a master key, and not bound to another contract.
+///
+/// Unlike [`key_can_sign_documents`], an expired key is allowed: the key chooser
+/// offers it with a warning, and whether it has expired is Platform's call by
+/// network time, not this device's clock.
+// TODO(upstream): call platform-wallet's public explicit-key validation once it
+// exists (`resolve_authentication_signing_key` is private) and route the
+// registration through `register_name_with_signer`.
+pub fn chosen_key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> bool {
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     key.purpose() == Purpose::AUTHENTICATION
-        && super::identity_key_usability::is_auto_selectable(
-            key,
-            super::identity_key_usability::SigningScope::ContractWide {
-                contract_id: dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS.id(),
-            },
-            super::identity_key_usability::now_ms(),
-        )
+        && !key.is_disabled()
+        && super::identity_key_usability::bounds_permit(key.contract_bounds(), dpns_signing_scope())
+            == Some(true)
         && key.security_level() != SecurityLevel::MASTER
         && key.security_level() <= required
+}
+
+/// The scope a username registration signs in: the DPNS contract.
+fn dpns_signing_scope() -> super::identity_key_usability::SigningScope<'static> {
+    super::identity_key_usability::SigningScope::ContractWide {
+        contract_id: dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS.id(),
+    }
 }
 
 /// The weakest key security level that may sign both DPNS documents a registration
@@ -1180,6 +1206,43 @@ mod tests {
             &key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
             high
         ));
+    }
+
+    /// A key the user picked stays usable after it expires: the chooser offers
+    /// it with a warning, and Platform decides by network time. Automatic
+    /// choice still skips it. The other rules hold for both.
+    #[test]
+    fn a_chosen_key_is_not_refused_for_its_expiry() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        let key = |purpose, level| {
+            let mut key = dash_sdk::platform::IdentityPublicKey::random_key(
+                1,
+                Some(1),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            );
+            key.set_purpose(purpose);
+            key.set_security_level(level);
+            key.with_limits(None, Some(1))
+        };
+        let high = SecurityLevel::HIGH;
+        let expired = key(Purpose::AUTHENTICATION, high);
+        assert!(!key_can_sign_documents(&expired, high));
+        assert!(chosen_key_can_sign_documents(&expired, high));
+
+        for refused in [
+            key(Purpose::AUTHENTICATION, SecurityLevel::MEDIUM),
+            key(Purpose::AUTHENTICATION, SecurityLevel::MASTER),
+            key(Purpose::TRANSFER, SecurityLevel::CRITICAL),
+        ] {
+            assert!(
+                !chosen_key_can_sign_documents(&refused, high),
+                "{refused:?}"
+            );
+        }
+        let mut disabled = key(Purpose::AUTHENTICATION, high);
+        disabled.set_disabled_at(1);
+        assert!(!chosen_key_can_sign_documents(&disabled, high));
     }
 
     /// A testnet identity publishing `published` keys and holding `held` of them.

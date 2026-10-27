@@ -35,10 +35,10 @@
 
 use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::key_wallet::signer::{ExtendedPubKeySigner, Signer, SignerMethod};
-use dash_sdk::dpp::secp256k1::{self, Message, PublicKey, ecdsa};
+use dash_sdk::dpp::secp256k1::ecdsa;
 use zeroize::Zeroizing;
 
 use crate::wallet_backend::secret_access::SecretPlaintext;
@@ -51,20 +51,13 @@ pub enum DetSignerError {
     /// Derivation from the held seed failed.
     #[error("just-in-time signer key derivation failed")]
     Derive(#[source] dash_sdk::dpp::key_wallet::bip32::Error),
-    /// secp256k1 sign / digest construction failed.
+    /// The held single key is not a valid secp256k1 secret key.
     #[error("just-in-time signer secp256k1 operation failed")]
-    Sign(#[source] secp256k1::Error),
+    Sign(#[source] EcdsaError),
     /// The held secret is the wrong kind for the requested operation
     /// (e.g. a single-key plaintext asked for path-based HD signing).
     #[error("just-in-time signer received the wrong secret kind for this operation")]
     WrongSecretKind,
-}
-
-/// Hash a 32-byte digest into an ECDSA-ready [`Message`], surfacing the
-/// upstream digest-length error as a typed signer error rather than
-/// panicking.
-fn message_from_digest(digest: [u8; 32]) -> Result<Message, DetSignerError> {
-    Ok(Message::from_digest(digest))
 }
 
 /// JIT [`Signer`] backed by a **borrowed** held secret.
@@ -121,32 +114,21 @@ impl<'a> DetSigner<'a> {
         }
     }
 
-    /// Derive the secp256k1 secret at `path` from the held HD seed. Errors
-    /// with [`DetSignerError::WrongSecretKind`] if the held secret is a
-    /// single key (no derivation tree).
-    ///
-    /// Signing stays on the secp256k1 primitive (plain RFC 6979 nonce), so
-    /// signatures are byte-identical to earlier builds; the newer
-    /// `EcdsaSecretKey::sign` grinds for a low R and would change them.
-    fn derive_secret(&self, path: &DerivationPath) -> Result<secp256k1::SecretKey, DetSignerError> {
-        let scalar = self.derive_xprv(path)?.private_key.to_bytes();
-        secp256k1::SecretKey::from_secret_bytes(*scalar).map_err(DetSignerError::Sign)
-    }
-
     /// Sign `msg` (a 32-byte digest) with the held **single key** directly,
     /// no derivation. Errors if the held secret is an HD seed. Used by the
     /// JIT single-key signing chokepoint
     /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)).
+    ///
+    /// The signature is low-S with a low R ground as Dash Core grinds it (see
+    /// [`EcdsaSecretKey::sign`]); the key erases itself when it drops.
     pub(crate) fn sign_single_key_ecdsa(
         &self,
         msg: &[u8; 32],
     ) -> Result<ecdsa::Signature, DetSignerError> {
         match &self.secret {
             HeldSecret::SingleKey(key) => {
-                let sk = secp256k1::SecretKey::from_secret_bytes(***key)
-                    .map_err(DetSignerError::Sign)?;
-                let message = message_from_digest(*msg)?;
-                Ok(dash_sdk::dpp::secp256k1::ecdsa::sign(message, &sk))
+                let secret = EcdsaSecretKey::from_bytes(key).map_err(DetSignerError::Sign)?;
+                Ok(secret.sign(msg).into())
             }
             HeldSecret::HdSeed(_) => Err(DetSignerError::WrongSecretKind),
         }
@@ -179,17 +161,16 @@ impl Signer for DetSigner<'_> {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(EcdsaSignature, EcdsaPublicKey), Self::Error> {
-        let secret = self.derive_secret(path)?;
-
-        let msg = message_from_digest(sighash)?;
-        let signature = dash_sdk::dpp::secp256k1::ecdsa::sign(msg, &secret);
-        let public_key = PublicKey::from_secret_key(&secret);
-        Ok((signature.into(), public_key.into()))
+        // Sign with the derived key itself, which erases itself on drop, so no
+        // copy of the scalar is made. `EcdsaSecretKey::sign` is low-S and
+        // grinds a low R as Dash Core does.
+        let xprv = self.derive_xprv(path)?;
+        let secret = &xprv.private_key;
+        Ok((secret.sign(&sighash), secret.public_key()))
     }
 
     async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, Self::Error> {
-        let secret = self.derive_secret(path)?;
-        Ok(PublicKey::from_secret_key(&secret).into())
+        Ok(self.derive_xprv(path)?.private_key.public_key())
     }
 }
 
@@ -222,6 +203,7 @@ mod tests {
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::single_key::open_secret_store;
     use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+    use dash_sdk::dpp::secp256k1::{self, Message, PublicKey};
     use std::sync::Arc;
 
     const SENTINEL_PASSPHRASE: &str = "correct-horse-battery-staple-SENTINEL";
@@ -312,9 +294,11 @@ mod tests {
 
         for network in [Network::Testnet, Network::Mainnet] {
             // Independent reference: derive the key directly from the seed at
-            // the path, then sign + recover the public key with the same
-            // secp256k1 primitive `DetSigner` uses internally.
-
+            // the path, then sign + recover the public key with the raw
+            // secp256k1 primitive. The signer signs through
+            // `EcdsaSecretKey::sign`, which grinds a low R as Dash Core does,
+            // so the reference is secp256k1's own low-R signer; plain RFC 6979
+            // `ecdsa::sign` differs in about half of all signatures.
             let reference_sk = secp256k1::SecretKey::from_secret_bytes(
                 *path
                     .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
@@ -324,10 +308,8 @@ mod tests {
             )
             .expect("valid scalar");
             let reference_msg = Message::from_digest(sighash);
-            let reference_sig = EcdsaSignature::from(dash_sdk::dpp::secp256k1::ecdsa::sign(
-                reference_msg,
-                &reference_sk,
-            ));
+            let reference_sig =
+                EcdsaSignature::from(secp256k1::ecdsa::sign_low_r(reference_msg, &reference_sk));
             let reference_pk = EcdsaPublicKey::from(PublicKey::from_secret_key(&reference_sk));
 
             // The JIT signer over the same seed, held open through the
@@ -354,6 +336,56 @@ mod tests {
         }
     }
 
+    /// FUND-SAFETY: every HD signature the signer hands to a Core transaction
+    /// verifies against the key it reports, and is in the standard form Dash
+    /// Core relays: low S (a high S is non-standard) and a low R ground the
+    /// way Dash Core grinds it, so the DER encoding never exceeds 70 bytes.
+    /// R lands low half the time on its own, so a single digest proves
+    /// nothing; this signs many.
+    #[tokio::test]
+    async fn hd_signer_signatures_are_valid_and_standard() {
+        let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
+        let held = Zeroizing::new(PARITY_SEED);
+        let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), Network::Testnet);
+
+        for i in 0..32u8 {
+            let sighash = [i; 32];
+            let (signature, public_key) = signer.sign_ecdsa(&path, sighash).await.expect("sign");
+            assert_signature_is_valid_and_standard(&sighash, signature, public_key, i);
+        }
+    }
+
+    /// Check `signature` over `digest` against `public_key`, and that it has the
+    /// low-S, low-R form Dash Core relays.
+    fn assert_signature_is_valid_and_standard(
+        digest: &[u8; 32],
+        signature: EcdsaSignature,
+        public_key: EcdsaPublicKey,
+        case: u8,
+    ) {
+        let raw = ecdsa::Signature::from(signature);
+        let mut normalized = raw;
+        normalized.normalize_s();
+        assert_eq!(normalized, raw, "high S for case {case}");
+        assert!(
+            ecdsa::verify(
+                &raw,
+                Message::from_digest(*digest),
+                &PublicKey::from(public_key)
+            )
+            .is_ok(),
+            "signature does not verify for case {case}"
+        );
+        assert!(
+            signature.to_bytes()[0] < 0x80,
+            "R is not low for case {case}"
+        );
+        assert!(
+            raw.serialize_der().len() <= 70,
+            "DER signature is longer than 70 bytes for case {case}"
+        );
+    }
+
     /// FUND-SAFETY PARITY: `DetSigner::extended_public_key` (the BIP-32 xpub
     /// export callers use to non-hardened-derive descendant payment addresses
     /// without a re-prompt) must reproduce, byte-for-byte, an independent
@@ -369,7 +401,6 @@ mod tests {
         for network in [Network::Testnet, Network::Mainnet] {
             // Independent reference: derive the xprv straight from the seed at
             // the path, then convert to the xpub with the same primitive.
-
             let reference_xprv = path
                 .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
                 .expect("reference derive");
@@ -412,7 +443,6 @@ mod tests {
     #[test]
     fn hd_derivation_matches_pinned_vector() {
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
-
         let pk = path
             .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, Network::Testnet)
             .expect("derive")
@@ -468,8 +498,14 @@ mod tests {
 
         sa.with_secret_session(&scope, async |session| {
             let signer = DetSigner::from_held(session.plaintext(), Network::Testnet);
-            // Raw single-key sign succeeds.
-            signer.sign_single_key_ecdsa(&msg).expect("raw sign");
+            // Raw single-key sign succeeds, with a valid, standard signature.
+            let signature = signer.sign_single_key_ecdsa(&msg).expect("raw sign");
+            assert_signature_is_valid_and_standard(
+                &msg,
+                signature.into(),
+                PublicKey::from_secret_key(&sk).into(),
+                0,
+            );
             // Path-based HD surface rejects a single-key secret.
             let err = signer.sign_ecdsa(&path, msg).await.expect_err("wrong kind");
             assert!(matches!(err, DetSignerError::WrongSecretKind));

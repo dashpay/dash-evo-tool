@@ -42,7 +42,7 @@ Test locations:
 
 Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
 
-Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.98), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
+Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.99), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
 
 ### Local vs CI — avoid duplicate test runs
 
@@ -128,7 +128,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 2. **Structure**: *What happened* + *what to do*. Every message must include a concrete action the user can take themselves: retry, wait, try a different approach. Never redirect to "contact support" — users must be able to self-resolve.
 3. **Tone**: Calm, direct, brief. Not apologetic ("Sorry!"), not alarming ("Something went wrong!"), not vague ("An error occurred").
 4. **Technical details**: Never in the message itself — no raw error strings, stack traces, SDK internals, or error codes. Attach via `BannerHandle::with_details(e)` — the `Debug` repr goes to the collapsible details panel and logs. Never refer users to "details" or "details panel" — these are not visible in basic mode. Exception: Base58 identifiers (see rule 6) are not technical details — they are user-meaningful handles.
-5. **Reference implementation**: `impl From<SdkError> for TaskError` in `src/backend_task/error.rs` demonstrates the pattern for SDK errors. New `TaskError` variants should follow the same style.
+5. **Reference implementation**: `sdk_error_user_message()` in `src/backend_task/error.rs` demonstrates the pattern for SDK errors. New `TaskError` variants should follow the same style.
 6. **Base58 IDs are allowed in messages**: Contract IDs, identity IDs, document IDs, and similar Base58-encoded identifiers may appear in user-facing messages when they help the user identify which object is involved (e.g., *"This key conflicts with an existing key bound to contract `Abc123…`."*). They are not jargon — they are opaque-but-copyable handles the user can look up.
 7. **Use dedicated `TaskError` variants**: Every error should get a dedicated `TaskError` variant with a `#[source]` field that preserves the error chain, enables structural matching, and keeps `Display` / `Debug` separation explicit. For `#[source]` fields in SDK-originated error variants, use `Box<SdkError>` — convert upstream types (e.g. `ProtocolError`) via `SdkError::Protocol(e)`. Use the concrete domain type directly for non-SDK errors (e.g. `rusqlite::Error`). Omit `#[source]` entirely when the upstream error carries no useful diagnostic information (e.g. a channel `SendError`). **Never store user-facing strings in error variants** — error variants must not contain `String` fields that hold messages for the user. The `#[error("...")]` attribute on the variant provides the user-facing message; `String` fields (regardless of name) break this separation. Instead, create a dedicated variant with typed `#[source]` fields, or a fieldless variant if no upstream error exists. When encountering existing variants that store stringified errors, replace them with properly typed variants as part of the change.
 
@@ -261,7 +261,7 @@ What each verifies:
 - `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
-- Rust edition 2024, minimum rust-version 1.98
+- Rust edition 2024, minimum rust-version 1.99
 
 ### Configuration
 

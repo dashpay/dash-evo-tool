@@ -1566,19 +1566,24 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Stored owner, falling back for legacy records to the loaded wallet that
-    /// derives one of the identity's keys, whatever the key is bound to.
+    /// Stored owner, falling back for legacy records to the wallet of the
+    /// identity's username signing key, then to the loaded wallet that derives
+    /// any of its keys, whatever the key is bound to.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
             return Some(hash);
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = qi
-            .identity
-            .public_keys()
-            .values()
-            .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))?;
+        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                qi.identity
+                    .public_keys()
+                    .values()
+                    .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))
+            })?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }
@@ -2576,5 +2581,41 @@ mod tests {
             ctx.owning_wallet_hash(identity.identity.id()),
             Some(seed_hash)
         );
+    }
+
+    /// Review fix: an unlinked identity whose keys come from two wallets was
+    /// owned by the wallet of its lowest key id, no longer by the wallet of
+    /// its DPNS signing key as before, so Add Identity could preselect the
+    /// other wallet. The signing-key wallet comes first again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlinked_identity_is_owned_by_its_signing_key_wallet_first() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        // Key 1, bound to DashPay, from wallet A; key 2, the DPNS signing
+        // key, from wallet B.
+        let (mut identity, wallet_a) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let wallet_b = crate::model::wallet::test_support::open_wallet_on([7; 64]);
+        let hash_a = wallet_a.read().expect("wallet").seed_hash();
+        let hash_b = wallet_b.seed_hash();
+        assert_ne!(hash_a, hash_b);
+        let mut keys = identity.identity.public_keys().clone();
+        keys.insert(2, auth_key(2, SecurityLevel::HIGH));
+        identity.identity.set_public_keys(keys);
+        hold_as_wallet_reference(&mut identity, 2, hash_b);
+        ctx.wallet_context().insert_test_wallet(hash_a, wallet_a);
+        ctx.wallet_context()
+            .insert_test_wallet(hash_b, Arc::new(std::sync::RwLock::new(wallet_b)));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        assert_eq!(ctx.owning_wallet_hash(identity.identity.id()), Some(hash_b));
     }
 }

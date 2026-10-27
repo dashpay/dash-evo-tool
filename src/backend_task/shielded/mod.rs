@@ -35,6 +35,10 @@ pub enum ShieldedTask {
     /// balance ("Max"). The amount is known only once the funding is built.
     ShieldMaxFromCore { seed_hash: WalletSeedHash },
 
+    /// Quote what a Max transfer from the Core wallet would move, so the user
+    /// confirms the drain's own figures. Reads the wallet only.
+    QuoteShieldMaxFromCore { seed_hash: WalletSeedHash },
+
     /// Finish the wallet's unsettled Max transfer from the Core wallet.
     FinishShieldMaxFromCore { seed_hash: WalletSeedHash },
 
@@ -165,6 +169,9 @@ impl AppContext {
 
             ShieldedTask::ShieldMaxFromCore { seed_hash } => {
                 self.shield_max_from_core(backend, seed_hash).await
+            }
+            ShieldedTask::QuoteShieldMaxFromCore { seed_hash } => {
+                self.quote_shield_max_from_core(backend, seed_hash).await
             }
             ShieldedTask::FinishShieldMaxFromCore { seed_hash } => {
                 self.finish_shield_max_from_core(backend, seed_hash).await

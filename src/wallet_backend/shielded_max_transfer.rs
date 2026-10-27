@@ -114,6 +114,19 @@ impl<'a> ShieldedMaxTransferRecords<'a> {
     }
 }
 
+/// Test seam: store a record the current schema cannot read, as a newer
+/// build or a damaged store would leave it.
+#[cfg(test)]
+pub(crate) fn plant_unreadable_record(kv: &DetKv, network: Network, seed_hash: &WalletSeedHash) {
+    let key = crate::wallet_backend::sidecar::sidecar_key(network, KEY_INFIX, seed_hash);
+    kv.put(
+        crate::wallet_backend::DetScope::Wallet(seed_hash),
+        &key,
+        &0u8,
+    )
+    .unwrap();
+}
+
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
     map_kv_storage_error(e, |source| TaskError::KvSidecarStorage {
         sidecar: "shielded_max_transfer",

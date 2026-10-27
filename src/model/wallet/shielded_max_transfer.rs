@@ -17,6 +17,19 @@ pub struct PendingShieldedMaxTransfer {
     pub operation_id: [u8; 16],
 }
 
+/// What a Max transfer is expected to move, quoted before the user confirms
+/// it. The drain pools every Core funding account, so these figures, not the
+/// form's estimate, are what the confirmation shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShieldedMaxTransferQuote {
+    /// The Core balance the transfer spends, in duffs.
+    pub balance_duffs: u64,
+    /// The network and shielding fees taken from that balance, in credits.
+    pub fee_credits: u64,
+    /// What the shielded balance is expected to grow by, in credits.
+    pub recipient_credits: u64,
+}
+
 /// Where a Max transfer stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldedMaxTransferState {

@@ -13,14 +13,30 @@ use platform_wallet::wallet::shielded::{WalletDrainPreview, WalletDrainPreviewSt
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::fee_estimation::shield_max_minimum_lock_duffs;
+use crate::model::fee_estimation::shield_max_fee_credits;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded_max_transfer::{
-    PendingShieldedMaxTransfer, ShieldedMaxTransferState,
+    PendingShieldedMaxTransfer, ShieldedMaxTransferQuote, ShieldedMaxTransferState,
 };
-use crate::wallet_backend::{MaxTransferAttempt, MaxTransferClaim, WalletBackend};
+use crate::wallet_backend::{
+    MaxTransferAttempt, MaxTransferClaim, MaxTransferOperation, WalletBackend,
+};
 
 impl AppContext {
+    /// What a Max transfer would move right now, for the user to confirm.
+    /// Reads the wallet only; reserves, signs and broadcasts nothing.
+    pub(super) async fn quote_shield_max_from_core(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let preview = backend.shielded_max_transfer_preview(&seed_hash).await?;
+        Ok(BackendTaskSuccessResult::ShieldedMaxTransferQuote {
+            seed_hash,
+            quote: max_transfer_quote(&preview)?,
+        })
+    }
+
     /// Start a Max transfer for `seed_hash`, unless one is still unsettled.
     pub(super) async fn shield_max_from_core(
         self: &Arc<Self>,
@@ -31,21 +47,42 @@ impl AppContext {
         if records.pending(self.network(), &seed_hash)?.is_some() {
             return Err(TaskError::ShieldedMaxTransferAlreadyPending);
         }
+        // Refuses a wallet that cannot pay the fees before anything is stored.
         let preview = backend.shielded_max_transfer_preview(&seed_hash).await?;
-        let minimum_lock_duffs = max_transfer_minimum_lock(&preview)?;
+        max_transfer_quote(&preview)?;
+        let (record, transfer) = self.begin_max_transfer(backend, &seed_hash).await?;
+        self.run_max_transfer(backend, seed_hash, record, transfer)
+            .await
+    }
 
+    /// Register a new drain with the wallet, then store its id.
+    ///
+    /// The order matters: from the moment the id is stored, a status read
+    /// must see the drain as running, or it would report the transfer as
+    /// never started and drop the id of a drain about to move the balance.
+    /// The registration is held until the drain's outcome is read.
+    async fn begin_max_transfer(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<(PendingShieldedMaxTransfer, MaxTransferOperation), TaskError> {
         let record = PendingShieldedMaxTransfer {
             operation_id: rand::random(),
         };
+        let transfer = backend
+            .register_max_transfer(seed_hash, record.operation_id)
+            .await?;
         // Stored before the transfer starts: from here on a crash, a restart
         // or a lost reply still leaves the id to look the transfer up by.
-        if let MaxTransferClaim::AlreadyPending(_) =
-            records.claim(self.network(), &seed_hash, record)?
+        match backend
+            .shielded_max_transfer_records()
+            .claim(self.network(), seed_hash, record)?
         {
-            return Err(TaskError::ShieldedMaxTransferAlreadyPending);
+            MaxTransferClaim::Claimed => Ok((record, transfer)),
+            MaxTransferClaim::AlreadyPending(_) => {
+                Err(TaskError::ShieldedMaxTransferAlreadyPending)
+            }
         }
-        self.run_max_transfer(backend, seed_hash, record, minimum_lock_duffs)
-            .await
     }
 
     /// Finish the wallet's unsettled Max transfer with its stored id.
@@ -61,19 +98,10 @@ impl AppContext {
                 state: None,
             });
         };
-        // The floor only matters if no lock was built yet; a resumed drain
-        // keeps the lock it already has, so the preview's status (which no
-        // longer counts the locked coins) is irrelevant and only its pool fee
-        // is used. Without a fee there is no safe floor, so nothing is tried.
-        let pool_fee_credits = backend
-            .shielded_max_transfer_preview(&seed_hash)
-            .await
-            .map_err(|error| TaskError::ShieldedMaxTransferUnfinished {
-                source: Box::new(error),
-            })?
-            .pool_fee_credits;
-        let minimum_lock_duffs = shield_max_minimum_lock_duffs(pool_fee_credits);
-        self.run_max_transfer(backend, seed_hash, record, minimum_lock_duffs)
+        let transfer = backend
+            .register_max_transfer(&seed_hash, record.operation_id)
+            .await?;
+        self.run_max_transfer(backend, seed_hash, record, transfer)
             .await
     }
 
@@ -111,11 +139,10 @@ impl AppContext {
         backend: &WalletBackend,
         seed_hash: WalletSeedHash,
         record: PendingShieldedMaxTransfer,
-        minimum_lock_duffs: u64,
+        transfer: MaxTransferOperation,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let MaxTransferAttempt { state, result } = backend
-            .shield_max_from_core(&seed_hash, record.operation_id, minimum_lock_duffs)
-            .await;
+        let MaxTransferAttempt { state, result } =
+            backend.shield_max_from_core(&seed_hash, transfer).await;
         let state = match state {
             Some(state) => state,
             // Only a durable read can show that nothing was sent; when even
@@ -155,12 +182,24 @@ impl AppContext {
     }
 }
 
-/// The floor for the funding lock of a new Max transfer, or why the wallet
-/// cannot make one.
-fn max_transfer_minimum_lock(preview: &WalletDrainPreview) -> Result<u64, TaskError> {
+/// What a Max transfer would move, or why the wallet cannot make one. The
+/// lock floor itself is upstream's: it drops a drain too small to pay the
+/// shielding fee before broadcasting anything.
+fn max_transfer_quote(preview: &WalletDrainPreview) -> Result<ShieldedMaxTransferQuote, TaskError> {
     match preview.status {
         WalletDrainPreviewStatus::Ready => {
-            Ok(shield_max_minimum_lock_duffs(preview.pool_fee_credits))
+            // Upstream reports Ready only with both estimates present.
+            let (Some(network_fee_duffs), Some(recipient_credits)) = (
+                preview.estimated_l1_fee_duffs,
+                preview.estimated_recipient_credits,
+            ) else {
+                return Err(TaskError::WalletStateInconsistent);
+            };
+            Ok(ShieldedMaxTransferQuote {
+                balance_duffs: preview.candidate_balance_duffs,
+                fee_credits: shield_max_fee_credits(network_fee_duffs, preview.pool_fee_credits),
+                recipient_credits,
+            })
         }
         WalletDrainPreviewStatus::InsufficientFunds => Err(TaskError::ShieldedMaxInsufficientFunds),
         WalletDrainPreviewStatus::InputLimitMayBeExceeded => {
@@ -211,6 +250,167 @@ mod tests {
 
     const SEED: WalletSeedHash = [0x2C; 32];
 
+    /// A registered wallet on a fresh offline context.
+    async fn registered_wallet(
+        tmp: &std::path::Path,
+    ) -> (Arc<AppContext>, Arc<WalletBackend>, WalletSeedHash) {
+        use crate::{app::TaskResult, utils::egui_mpsc::SenderAsync};
+        let ctx = crate::context::test_support::test_app_context(tmp);
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        ctx.ensure_wallet_backend(SenderAsync::new(sender, ctx.egui_ctx().clone()))
+            .await
+            .unwrap();
+        let backend = ctx.wallet_backend().unwrap();
+        let seed = [0x2D; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            None,
+            None,
+        )
+        .unwrap();
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .unwrap();
+        (ctx, backend, seed_hash)
+    }
+
+    fn stored(
+        ctx: &AppContext,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+    ) -> Option<PendingShieldedMaxTransfer> {
+        backend
+            .shielded_max_transfer_records()
+            .pending(ctx.network(), seed_hash)
+            .unwrap()
+    }
+
+    /// The Shielded tab reads the status on arrival. A read between storing
+    /// the id and starting the drain must not take the transfer for one that
+    /// never started: that would drop the id of a drain about to run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_status_read_before_the_drain_starts_keeps_the_transfer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+        let (record, _transfer) = ctx.begin_max_transfer(&backend, &seed_hash).await.unwrap();
+
+        let status = ctx
+            .shield_max_from_core_status(&backend, seed_hash)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(
+                status,
+                BackendTaskSuccessResult::ShieldedMaxTransferStatus {
+                    state: Some(ShieldedMaxTransferState::Pending),
+                    ..
+                }
+            ),
+            "unexpected status: {status:?}"
+        );
+        assert_eq!(stored(&ctx, &backend, &seed_hash), Some(record));
+    }
+
+    /// A transfer whose drain ended without building a lock settles as not
+    /// sent, and its id goes, so the wallet can start a new one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transfer_that_never_ran_settles_as_not_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+        let (_record, transfer) = ctx.begin_max_transfer(&backend, &seed_hash).await.unwrap();
+        drop(transfer);
+
+        let status = ctx
+            .shield_max_from_core_status(&backend, seed_hash)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(
+                status,
+                BackendTaskSuccessResult::ShieldedMaxTransferStatus {
+                    state: Some(ShieldedMaxTransferState::NotSent),
+                    ..
+                }
+            ),
+            "unexpected status: {status:?}"
+        );
+        assert_eq!(stored(&ctx, &backend, &seed_hash), None);
+    }
+
+    /// A stored transfer refuses a second one before the wallet is read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_transfer_waits_for_the_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+        let (record, _transfer) = ctx.begin_max_transfer(&backend, &seed_hash).await.unwrap();
+
+        assert!(matches!(
+            ctx.shield_max_from_core(&backend, seed_hash).await,
+            Err(TaskError::ShieldedMaxTransferAlreadyPending)
+        ));
+        assert!(matches!(
+            ctx.begin_max_transfer(&backend, &seed_hash).await,
+            Err(TaskError::ShieldedMaxTransferAlreadyPending)
+        ));
+        assert_eq!(stored(&ctx, &backend, &seed_hash), Some(record));
+    }
+
+    /// Without a stored transfer, neither a status read nor Finish touches
+    /// the wallet: both report that there is no transfer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn without_a_stored_transfer_there_is_nothing_to_finish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+
+        for result in [
+            ctx.finish_shield_max_from_core(&backend, seed_hash).await,
+            ctx.shield_max_from_core_status(&backend, seed_hash).await,
+        ] {
+            assert!(
+                matches!(
+                    result,
+                    Ok(BackendTaskSuccessResult::ShieldedMaxTransferStatus { state: None, .. })
+                ),
+                "unexpected result: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_stored_or_unreadable_transfer_counts_as_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+        assert!(!ctx.has_pending_shielded_max_transfer(&seed_hash));
+
+        let record = PendingShieldedMaxTransfer {
+            operation_id: [7; 16],
+        };
+        let records = backend.shielded_max_transfer_records();
+        assert_eq!(
+            records.claim(ctx.network(), &seed_hash, record).unwrap(),
+            MaxTransferClaim::Claimed
+        );
+        assert!(ctx.has_pending_shielded_max_transfer(&seed_hash));
+
+        records
+            .release(ctx.network(), &seed_hash, record.operation_id)
+            .unwrap();
+        assert!(!ctx.has_pending_shielded_max_transfer(&seed_hash));
+
+        // Unreadable counts as stored: the status read that follows reports
+        // the failure instead of hiding a transfer.
+        crate::wallet_backend::plant_unreadable_max_transfer_record(
+            &ctx.app_kv(),
+            ctx.network(),
+            &seed_hash,
+        );
+        assert!(ctx.has_pending_shielded_max_transfer(&seed_hash));
+    }
     fn preview(status: WalletDrainPreviewStatus) -> WalletDrainPreview {
         WalletDrainPreview {
             status,
@@ -223,21 +423,35 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_wallet_gets_a_lock_floor_above_the_pool_fee() {
+    fn a_ready_wallet_is_quoted_its_balance_fees_and_shielded_amount() {
         assert_eq!(
-            max_transfer_minimum_lock(&preview(WalletDrainPreviewStatus::Ready)).unwrap(),
-            12_346
+            max_transfer_quote(&preview(WalletDrainPreviewStatus::Ready)).unwrap(),
+            ShieldedMaxTransferQuote {
+                balance_duffs: 300_000,
+                fee_credits: 12_745_678,
+                recipient_credits: 1,
+            }
         );
+    }
+
+    #[test]
+    fn a_ready_preview_without_estimates_is_not_quoted() {
+        let mut incomplete = preview(WalletDrainPreviewStatus::Ready);
+        incomplete.estimated_recipient_credits = None;
+        assert!(matches!(
+            max_transfer_quote(&incomplete),
+            Err(TaskError::WalletStateInconsistent)
+        ));
     }
 
     #[test]
     fn a_wallet_that_cannot_drain_gets_a_typed_refusal() {
         assert!(matches!(
-            max_transfer_minimum_lock(&preview(WalletDrainPreviewStatus::InsufficientFunds)),
+            max_transfer_quote(&preview(WalletDrainPreviewStatus::InsufficientFunds)),
             Err(TaskError::ShieldedMaxInsufficientFunds)
         ));
         assert!(matches!(
-            max_transfer_minimum_lock(&preview(WalletDrainPreviewStatus::InputLimitMayBeExceeded)),
+            max_transfer_quote(&preview(WalletDrainPreviewStatus::InputLimitMayBeExceeded)),
             Err(TaskError::ShieldedMaxTooManyCoins)
         ));
     }

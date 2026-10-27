@@ -1258,6 +1258,12 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
+    /// What a "Max" transfer from the Core wallet would move, for the user to
+    /// confirm.
+    ShieldedMaxTransferQuote {
+        seed_hash: WalletSeedHash,
+        quote: crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferQuote,
+    },
     /// Where the wallet's "Max" transfer from the Core wallet stands; `None`
     /// when the wallet has none.
     ShieldedMaxTransferStatus {

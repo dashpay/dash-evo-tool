@@ -399,13 +399,36 @@ impl WalletBackend {
         Ok(max_transfer_state(snapshot.state))
     }
 
+    /// Make the Max transfer `operation_id` visible to status readers as a
+    /// running drain, until the returned handle is dropped.
+    ///
+    /// Taken before the transfer's id is stored and held until its outcome is
+    /// read: in between, a status read sees the drain as pending rather than
+    /// "not sent", and so never releases the id of a drain about to run.
+    pub(crate) async fn register_max_transfer(
+        &self,
+        seed_hash: &WalletSeedHash,
+        operation_id: [u8; 16],
+    ) -> Result<MaxTransferOperation, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let operation = Arc::new(
+            platform_wallet::wallet::asset_lock::AssetLockOperationContext::new(operation_id),
+        );
+        let registration = wallet.register_wallet_drain_operation(Arc::clone(&operation));
+        Ok(MaxTransferOperation {
+            wallet,
+            operation,
+            registration,
+        })
+    }
+
     /// Move the whole Core balance, minus fees, to this wallet's own shielded
-    /// address as the upstream wallet drain `operation_id`.
+    /// address as the registered upstream wallet drain `transfer`.
     ///
     /// Running it again with the same id finishes that transfer: upstream
     /// resumes the drain's own funding lock and never builds a second one.
-    /// A drain smaller than `minimum_lock_duffs` is abandoned before anything
-    /// is broadcast.
+    /// Upstream also owns the lock floor: a drain too small to pay the pool
+    /// fee is abandoned before anything is broadcast.
     ///
     /// The outcome comes with the state the drain was left in. A state of
     /// `None` means it is unknown: the drain either never reached upstream or
@@ -413,80 +436,68 @@ impl WalletBackend {
     pub(crate) async fn shield_max_from_core(
         &self,
         seed_hash: &WalletSeedHash,
-        operation_id: [u8; 16],
-        minimum_lock_duffs: u64,
+        transfer: MaxTransferOperation,
     ) -> MaxTransferAttempt {
-        use platform_wallet::wallet::asset_lock::{
-            AssetLockFunding, AssetLockOperationContext, AssetLockOperationState,
-        };
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
+        let MaxTransferOperation {
+            wallet,
+            operation,
+            registration,
+        } = transfer;
         let prepared = async {
             let coordinator = self.shielded_coordinator_arc().await?;
-            let wallet = self.resolve_wallet(seed_hash).await?;
             let raw = wallet
                 .shielded_default_address(0)
                 .await
                 .ok_or(TaskError::ShieldedNotBound)?;
             let recipient = dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&raw)
                 .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
-            Ok::<_, TaskError>((coordinator, wallet, recipient))
+            Ok::<_, TaskError>((coordinator, recipient))
         }
         .await;
-        let (coordinator, wallet, recipient) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return MaxTransferAttempt {
-                    state: None,
-                    result: Err(error),
-                };
+        let result = match prepared {
+            Err(error) => Err(error),
+            Ok((coordinator, recipient)) => {
+                let scope = Self::hd_scope(seed_hash);
+                self.inner
+                    .secret_access
+                    .with_secret_session(&scope, async |session| {
+                        let asset_lock_signer =
+                            DetSigner::from_held(session.plaintext(), self.inner.network);
+                        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+                        wallet
+                            .shielded_fund_from_asset_lock(
+                                &coordinator,
+                                AssetLockFunding::DrainWalletBalance {
+                                    account_index: MAX_TRANSFER_CORE_ACCOUNT,
+                                    // Upstream sets the floor from the pool fee.
+                                    minimum_lock_duffs: None,
+                                    operation: Arc::clone(&operation),
+                                },
+                                vec![(recipient, None)],
+                                &asset_lock_signer,
+                                &prover,
+                                None,
+                                0,
+                                None,
+                                // User-facing funding: wait indefinitely for the
+                                // ChainLock (the broadcast lock is pending, never failed).
+                                None,
+                            )
+                            .await
+                            .map_err(map_shielded_op_error)
+                    })
+                    .await
             }
         };
-
-        let operation = Arc::new(AssetLockOperationContext::new(operation_id));
-        // Keeps the operation visible to status readers while it runs. It is
-        // dropped before the outcome is read, so a pre-build return no longer
+        // Dropped before the outcome is read, so a pre-build return no longer
         // masks the durable answer of a follow-up status read.
-        let registration = wallet.register_wallet_drain_operation(Arc::clone(&operation));
-        let scope = Self::hd_scope(seed_hash);
-        let result = self
-            .inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let asset_lock_signer =
-                    DetSigner::from_held(session.plaintext(), self.inner.network);
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
-                    .shielded_fund_from_asset_lock(
-                        &coordinator,
-                        AssetLockFunding::DrainWalletBalance {
-                            account_index: MAX_TRANSFER_CORE_ACCOUNT,
-                            minimum_lock_duffs: Some(minimum_lock_duffs),
-                            operation: Arc::clone(&operation),
-                        },
-                        vec![(recipient, None)],
-                        &asset_lock_signer,
-                        &prover,
-                        None,
-                        0,
-                        None,
-                        // User-facing funding: wait indefinitely for the
-                        // ChainLock (the broadcast lock is pending, never failed).
-                        None,
-                    )
-                    .await
-                    .map_err(map_shielded_op_error)
-            })
-            .await;
         drop(registration);
 
         let snapshot = operation.snapshot();
-        // Pending is the context's initial state, so Pending without a lock
-        // says nothing about whether one was built.
-        let state = match (&result, snapshot.state, snapshot.out_point) {
-            (Ok(()), _, _) => Some(ShieldedMaxTransferState::Finished),
-            (Err(_), AssetLockOperationState::Pending, None) => None,
-            (Err(_), state, _) => Some(max_transfer_state(state)),
-        };
+        let state =
+            drain_attempt_state(result.is_ok(), snapshot.state, snapshot.out_point.is_some());
         MaxTransferAttempt { state, result }
     }
 
@@ -537,9 +548,35 @@ impl WalletBackend {
     }
 }
 
-/// The Core account whose funds a Max transfer moves. Upstream pools it with
-/// every DashPay contact-receiving account; CoinJoin funds stay out.
+/// The Core account a Max transfer is built for. Upstream pools it with the
+/// BIP32 account and every DashPay contact-receiving account
+/// (`ASSET_LOCK_FUNDING_SOURCES`); CoinJoin funds stay out.
 const MAX_TRANSFER_CORE_ACCOUNT: u32 = 0;
+
+/// A Max transfer's drain, registered with its wallet by
+/// [`WalletBackend::register_max_transfer`]. Dropping it ends the
+/// registration.
+pub(crate) struct MaxTransferOperation {
+    wallet: Arc<platform_wallet::PlatformWallet>,
+    operation: Arc<platform_wallet::wallet::asset_lock::AssetLockOperationContext>,
+    registration: platform_wallet::wallet::asset_lock::AssetLockOperationRegistration,
+}
+
+/// The state a drain run left behind. Pending is the operation's initial
+/// state, so Pending without a lock says nothing about whether one was built:
+/// that is `None`, for a status read to settle.
+fn drain_attempt_state(
+    succeeded: bool,
+    state: platform_wallet::wallet::asset_lock::AssetLockOperationState,
+    has_lock: bool,
+) -> Option<ShieldedMaxTransferState> {
+    use platform_wallet::wallet::asset_lock::AssetLockOperationState as Upstream;
+    match (succeeded, state, has_lock) {
+        (true, _, _) => Some(ShieldedMaxTransferState::Finished),
+        (false, Upstream::Pending, false) => None,
+        (false, state, _) => Some(max_transfer_state(state)),
+    }
+}
 
 /// What [`WalletBackend::shield_max_from_core`] left behind.
 #[derive(Debug)]
@@ -566,6 +603,36 @@ fn max_transfer_state(
 mod tests {
     use super::*;
     use zeroize::Zeroizing;
+
+    #[test]
+    fn a_drain_run_reports_what_it_knows_and_defers_the_rest() {
+        use platform_wallet::wallet::asset_lock::AssetLockOperationState as Upstream;
+        for state in [
+            Upstream::NotSent,
+            Upstream::Pending,
+            Upstream::Completed,
+            Upstream::Conflicted,
+        ] {
+            assert_eq!(
+                drain_attempt_state(true, state, false),
+                Some(ShieldedMaxTransferState::Finished)
+            );
+        }
+        // A failed run that never built a lock: only a status read can tell.
+        assert_eq!(drain_attempt_state(false, Upstream::Pending, false), None);
+        assert_eq!(
+            drain_attempt_state(false, Upstream::Pending, true),
+            Some(ShieldedMaxTransferState::Pending)
+        );
+        assert_eq!(
+            drain_attempt_state(false, Upstream::NotSent, false),
+            Some(ShieldedMaxTransferState::NotSent)
+        );
+        assert_eq!(
+            drain_attempt_state(false, Upstream::Conflicted, true),
+            Some(ShieldedMaxTransferState::Conflicted)
+        );
+    }
 
     #[test]
     fn max_transfer_state_maps_every_upstream_state() {

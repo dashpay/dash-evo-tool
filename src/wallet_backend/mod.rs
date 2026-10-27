@@ -110,7 +110,9 @@ pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
 pub use payments::AssetLockMaxAmountQuote;
-pub(crate) use shielded::MaxTransferAttempt;
+pub(crate) use shielded::{MaxTransferAttempt, MaxTransferOperation};
+#[cfg(test)]
+pub(crate) use shielded_max_transfer::plant_unreadable_record as plant_unreadable_max_transfer_record;
 pub(crate) use shielded_max_transfer::{MaxTransferClaim, ShieldedMaxTransferRecords};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;

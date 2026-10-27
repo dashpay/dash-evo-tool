@@ -244,7 +244,7 @@ jobs:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}${{ job.status != 'success' && format('-partial-{0}-{1}', github.run_id, github.run_attempt) || '' }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

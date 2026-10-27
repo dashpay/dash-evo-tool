@@ -1379,6 +1379,14 @@ As a user acting on a document whose contract charges a fee, I want to see that 
 - If network fees rise past that tolerance, the network refuses the action; the app updates the fee, and trying again shows the new amount to confirm.
 - If the contract changes its fee after confirmation, nothing is sent, and the user is told to remove the contract on the Contracts screen and load it again to see and confirm its current fee.
 
+### DOC-011: Skip an optional token cost [Implemented]
+**Persona:** Alex, Priya
+
+As a user, when a document action's token cost is optional, I want to choose not to pay it, so that I can pay the network fee in credits instead.
+
+- A "Pay the token cost" option appears only when the token cost is optional.
+- Without it, the action carries no token payment and its network fee is paid from the identity's credits.
+
 ### DOC-013: Delete an entry of an indexOnly document type [Implemented]
 **Persona:** Jordan
 

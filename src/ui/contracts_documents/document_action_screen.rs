@@ -54,6 +54,7 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
@@ -174,11 +175,33 @@ pub struct DocumentActionScreen {
     action_fee_confirmation: Option<PendingActionFeeConfirmation>,
     /// The action fee agreement the next built action carries.
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
+    /// Whether to pay a document type's optional token cost. Off, the action
+    /// carries no token payment and its gas is paid in credits instead.
+    pay_optional_token_cost: bool,
 }
 
 /// Shown when the selected identity holds no key this device can sign the
 /// chosen document action with.
 const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+
+/// The token payment a document action carries for `cost`: none without a
+/// cost, and none for an optional cost the user chose not to pay
+/// (`pay_optional`).
+fn token_payment(
+    cost: Option<DocumentActionTokenCost>,
+    pay_optional: bool,
+) -> Option<TokenPaymentInfo> {
+    cost.filter(|cost| !cost.optional || pay_optional)
+        .map(|cost| {
+            TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                payment_token_contract_id: cost.contract_id,
+                token_contract_position: cost.token_contract_position,
+                gas_fees_paid_by: cost.gas_fees_paid_by,
+                minimum_token_cost: None,
+                maximum_token_cost: Some(cost.token_amount),
+            })
+        })
+}
 
 /// Shown for an action other than a delete on an indexOnly document type.
 const INDEX_ONLY_READ_ONLY_NOTICE: &str = "Entries of this document type are rebuilt from the network's indexes and are read-only: they cannot be edited, replaced, transferred or sold. To remove an entry, use Delete Document.";
@@ -262,6 +285,7 @@ impl DocumentActionScreen {
             refresh_banner: None,
             action_fee_confirmation: None,
             agreed_action_fee: None,
+            pay_optional_token_cost: true,
         }
     }
 
@@ -1110,6 +1134,16 @@ impl DocumentActionScreen {
                 ))
                 .color(Color32::DARK_RED),
             );
+            // Protocol version 14: an optional token cost may be left out, the
+            // action then paying its gas in credits with no sponsorship.
+            if token_creation_cost.optional {
+                ui.checkbox(&mut self.pay_optional_token_cost, "Pay the token cost")
+                    .on_hover_text(
+                        "Paying the token cost is optional for this action. Without it, you pay the network fee yourself in credits.",
+                    );
+            }
+        } else {
+            self.pay_optional_token_cost = true;
         }
     }
 
@@ -1122,6 +1156,12 @@ impl DocumentActionScreen {
             self.action_type.transition_action(),
             self.app_context.fee_multiplier_permille(),
         )
+    }
+
+    /// The token payment for `cost`, or `None` when there is no cost or the
+    /// user chose not to pay an optional one.
+    fn token_payment_for(&self, cost: Option<DocumentActionTokenCost>) -> Option<TokenPaymentInfo> {
+        token_payment(cost, self.pay_optional_token_cost)
     }
 
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
@@ -1323,18 +1363,7 @@ impl DocumentActionScreen {
                 };
 
                 let token_payment_info =
-                    doc_type
-                        .document_creation_token_cost()
-                        .map(|token_creation_cost| {
-                            TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                                payment_token_contract_id: token_creation_cost.contract_id,
-                                token_contract_position: token_creation_cost
-                                    .token_contract_position,
-                                gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                                minimum_token_cost: None,
-                                maximum_token_cost: Some(token_creation_cost.token_amount),
-                            })
-                        });
+                    self.token_payment_for(doc_type.document_creation_token_cost());
 
                 BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
                     action_fee_agreement: self.agreed_action_fee,
@@ -1370,18 +1399,7 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_deletion_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1412,19 +1430,8 @@ impl DocumentActionScreen {
         let Some((doc_type, contract, identity, key)) = self.require_selections() else {
             return BackendTask::None;
         };
-        // Charged as the delete by id is.
-        let token_payment_info =
-            doc_type
-                .document_deletion_token_cost()
-                .map(|token_deletion_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_deletion_cost.contract_id,
-                        token_contract_position: token_deletion_cost.token_contract_position,
-                        gas_fees_paid_by: token_deletion_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_deletion_cost.token_amount),
-                    })
-                });
+        // Charged as the delete by id is, optional cost choice included.
+        let token_payment_info = self.token_payment_for(doc_type.document_deletion_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteIndexOnlyDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1446,18 +1453,7 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_purchase_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_purchase_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -1481,18 +1477,7 @@ impl DocumentActionScreen {
                     };
 
                     let token_payment_info =
-                        doc_type
-                            .document_replacement_token_cost()
-                            .map(|token_creation_cost| {
-                                TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                                    payment_token_contract_id: token_creation_cost.contract_id,
-                                    token_contract_position: token_creation_cost
-                                        .token_contract_position,
-                                    gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                                    minimum_token_cost: None,
-                                    maximum_token_cost: Some(token_creation_cost.token_amount),
-                                })
-                            });
+                        self.token_payment_for(doc_type.document_replacement_token_cost());
 
                     BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                         action_fee_agreement: self.agreed_action_fee,
@@ -1520,17 +1505,7 @@ impl DocumentActionScreen {
             };
 
             let token_payment_info =
-                doc_type
-                    .document_replacement_token_cost()
-                    .map(|token_creation_cost| {
-                        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                            payment_token_contract_id: token_creation_cost.contract_id,
-                            token_contract_position: token_creation_cost.token_contract_position,
-                            gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                            minimum_token_cost: None,
-                            maximum_token_cost: Some(token_creation_cost.token_amount),
-                        })
-                    });
+                self.token_payment_for(doc_type.document_replacement_token_cost());
 
             BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                 action_fee_agreement: self.agreed_action_fee,
@@ -1554,17 +1529,7 @@ impl DocumentActionScreen {
         };
 
         let token_payment_info =
-            doc_type
-                .document_update_price_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+            self.token_payment_for(doc_type.document_update_price_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
             action_fee_agreement: self.agreed_action_fee,
@@ -1588,18 +1553,7 @@ impl DocumentActionScreen {
             return BackendTask::None;
         };
 
-        let token_payment_info =
-            doc_type
-                .document_transfer_token_cost()
-                .map(|token_creation_cost| {
-                    TokenPaymentInfo::V0(TokenPaymentInfoV0 {
-                        payment_token_contract_id: token_creation_cost.contract_id,
-                        token_contract_position: token_creation_cost.token_contract_position,
-                        gas_fees_paid_by: token_creation_cost.gas_fees_paid_by,
-                        minimum_token_cost: None,
-                        maximum_token_cost: Some(token_creation_cost.token_amount),
-                    })
-                });
+        let token_payment_info = self.token_payment_for(doc_type.document_transfer_token_cost());
 
         BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
             action_fee_agreement: self.agreed_action_fee,
@@ -2911,6 +2865,52 @@ mod tests {
         );
     }
 
+    /// An indexOnly delete honours "Pay the token cost" like every other
+    /// action: an optional deletion cost the user chose not to pay is not
+    /// carried, and a kept one is.
+    #[test]
+    fn an_index_only_delete_skips_an_optional_token_cost_the_user_declined() {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Setters;
+        let (_dir, mut screen) = index_only_screen(DocumentActionType::Delete, 14);
+        let cost = DocumentActionTokenCost {
+            token_contract_position: 0,
+            token_amount: 5,
+            optional: true,
+            ..Default::default()
+        };
+        screen
+            .selected_document_type
+            .as_mut()
+            .expect("a selected type")
+            .set_document_deletion_token_cost(Some(cost));
+        screen.select_index_only_entry(like_entry());
+
+        let token_payment = |screen: &mut DocumentActionScreen| {
+            let BackendTask::DocumentTask(task) = screen.create_document_action() else {
+                panic!("a document task");
+            };
+            let DocumentTask::DeleteIndexOnlyDocument {
+                token_payment_info, ..
+            } = *task
+            else {
+                panic!("a delete by values");
+            };
+            token_payment_info
+        };
+
+        screen.pay_optional_token_cost = false;
+        assert_eq!(
+            token_payment(&mut screen),
+            None,
+            "the declined cost is not paid"
+        );
+        screen.pay_optional_token_cost = true;
+        assert_eq!(
+            token_payment(&mut screen),
+            super::token_payment(Some(cost), true)
+        );
+    }
+
     /// Values edited into a delete Platform would refuse are not sent.
     #[test]
     fn edited_values_are_checked_before_the_delete_is_offered() {
@@ -2984,5 +2984,35 @@ mod tests {
         ] {
             assert_eq!(action.transition_action(), expected);
         }
+    }
+
+    /// A required token cost is always paid; an optional one only while the
+    /// user keeps "Pay the token cost" on, and otherwise the action carries
+    /// no token payment at all.
+    #[test]
+    fn an_optional_token_cost_is_paid_only_when_the_user_chooses_to() {
+        let required = DocumentActionTokenCost {
+            token_contract_position: 2,
+            token_amount: 40,
+            ..Default::default()
+        };
+        let optional = DocumentActionTokenCost {
+            optional: true,
+            ..required
+        };
+        let paid = |cost: DocumentActionTokenCost| {
+            Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                payment_token_contract_id: cost.contract_id,
+                token_contract_position: 2,
+                gas_fees_paid_by: cost.gas_fees_paid_by,
+                minimum_token_cost: None,
+                maximum_token_cost: Some(40),
+            }))
+        };
+
+        assert_eq!(token_payment(None, true), None);
+        assert_eq!(token_payment(Some(required), false), paid(required));
+        assert_eq!(token_payment(Some(optional), true), paid(optional));
+        assert_eq!(token_payment(Some(optional), false), None);
     }
 }

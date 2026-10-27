@@ -49,8 +49,11 @@ impl ContactInfoPrivateData {
 
     /// The plaintext floor platform-wallet pads to with zero bytes, so that
     /// IV (16) + AES-CBC ciphertext reaches the contract's 48-byte minimum.
-    /// Older versions of this client padded to 16 bytes, starting with a zero.
     const MIN_PLAINTEXT_SIZE: usize = 17;
+
+    /// The plaintext size older versions of this client (up to
+    /// v1.0.0-weekly.20261020) padded to: a `0x00` sentinel, then random bytes.
+    const LEGACY_PLAINTEXT_SIZE: usize = 16;
 
     /// Encode for encryption with platform-wallet's DIP-15 codec, so every
     /// client that uses it reads what this one writes.
@@ -74,24 +77,38 @@ impl ContactInfoPrivateData {
         })
     }
 
-    /// Parse the plaintext produced by [`serialize`](Self::serialize).
+    /// Parse the plaintext produced by [`serialize`](Self::serialize), or by
+    /// an older version of this client.
     ///
     /// Returns `None` for a truncated or non-canonical v0 payload, invalid
-    /// UTF-8, or an unsupported version. The only accepted trailing bytes are
-    /// zero padding up to [`Self::MIN_PLAINTEXT_SIZE`].
+    /// UTF-8, or an unsupported version, and for trailing bytes that are not
+    /// padding (see [`Self::is_padding`]).
     /// Stricter than platform-wallet's reader: a write must never drop fields
     /// it cannot read.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
+        Self::parse(bytes, LengthPrefix::CompactSize)
+            .or_else(|| Self::parse(bytes, LengthPrefix::SingleByte))
+    }
+
+    fn parse(bytes: &[u8], prefix: LengthPrefix) -> Option<Self> {
         let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
         if version != 0 {
             return None;
         }
         let mut pos = 4;
+        // Whether a single-byte length took a value CompactSize reserves.
+        let mut reserved_length = false;
 
-        // A Bitcoin CompactSize length, in its shortest encoding only.
-        let take_compact_size = |pos: &mut usize| -> Option<usize> {
+        let mut take_length = |pos: &mut usize| -> Option<usize> {
+            let first = *bytes.get(*pos)?;
+            if prefix == LengthPrefix::SingleByte {
+                reserved_length |= first >= 0xFD;
+                *pos += 1;
+                return Some(first.into());
+            }
+            // A Bitcoin CompactSize length, in its shortest encoding only.
             let field = |width: usize| bytes.get(*pos + 1..*pos + 1 + width);
-            let (value, width): (u64, usize) = match *bytes.get(*pos)? {
+            let (value, width): (u64, usize) = match first {
                 0xFD => (u16::from_le_bytes(field(2)?.try_into().ok()?).into(), 3),
                 0xFE => (u32::from_le_bytes(field(4)?.try_into().ok()?).into(), 5),
                 0xFF => (u64::from_le_bytes(field(8)?.try_into().ok()?), 9),
@@ -109,8 +126,8 @@ impl ContactInfoPrivateData {
             *pos += width;
             usize::try_from(value).ok()
         };
-        let take_string = |pos: &mut usize| -> Option<Option<String>> {
-            let len = take_compact_size(pos)?;
+        let mut take_string = |pos: &mut usize| -> Option<Option<String>> {
+            let len = take_length(pos)?;
             let raw = bytes.get(*pos..pos.checked_add(len)?)?;
             *pos += len;
             if len == 0 {
@@ -129,7 +146,7 @@ impl ContactInfoPrivateData {
         };
         pos += 1;
 
-        let count = take_compact_size(&mut pos)?;
+        let count = take_length(&mut pos)?;
         let accepted_accounts = (0..count)
             .map(|_| {
                 let raw = bytes.get(pos..pos + 4)?;
@@ -138,10 +155,12 @@ impl ContactInfoPrivateData {
             })
             .collect::<Option<Vec<u32>>>()?;
 
-        if pos < bytes.len()
-            && (bytes.len() > Self::MIN_PLAINTEXT_SIZE
-                || bytes[pos..].iter().any(|byte| *byte != 0))
-        {
+        // Every payload without a reserved length reads the same both ways,
+        // so the fallback adds nothing for it.
+        if prefix == LengthPrefix::SingleByte && !reserved_length {
+            return None;
+        }
+        if !Self::is_padding(bytes, pos) {
             return None;
         }
 
@@ -153,6 +172,52 @@ impl ContactInfoPrivateData {
             accepted_accounts,
         })
     }
+
+    /// Whether `bytes[end..]`, after the last v0 field, is padding a known
+    /// writer adds: none, platform-wallet's zeros up to
+    /// [`Self::MIN_PLAINTEXT_SIZE`], or this client's former `0x00` sentinel
+    /// and random bytes up to exactly [`Self::LEGACY_PLAINTEXT_SIZE`].
+    fn is_padding(bytes: &[u8], end: usize) -> bool {
+        match bytes[end..].split_first() {
+            None => true,
+            Some((0, _)) if bytes.len() == Self::LEGACY_PLAINTEXT_SIZE => true,
+            Some(_) => {
+                bytes.len() <= Self::MIN_PLAINTEXT_SIZE && bytes[end..].iter().all(|b| *b == 0)
+            }
+        }
+    }
+}
+
+/// How a payload encodes string lengths and the account count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LengthPrefix {
+    /// DIP-15 Bitcoin CompactSize, in its shortest encoding.
+    CompactSize,
+    /// One byte, which older versions of this client wrote for lengths up to
+    /// 255. It differs from CompactSize only for 253 to 255, the CompactSize
+    /// prefix markers, so it is tried only when CompactSize fails and only
+    /// accepted when such a length is present. A text read both ways would
+    /// need a control character as its second byte, which text fields do
+    /// not produce.
+    SingleByte,
+}
+
+/// Decode a decrypted `privateData` payload for display.
+///
+/// platform-wallet's tolerant reader comes first, so newer minor versions
+/// still show. This client's reader then covers the long nicknames and notes
+/// older versions of this client wrote, which platform-wallet misreads.
+pub(super) fn decode_contact_info_details(plaintext: &[u8]) -> Option<UpstreamPrivateData> {
+    platform_wallet::wallet::identity::crypto::decode_private_data(plaintext)
+        .ok()
+        .or_else(|| {
+            ContactInfoPrivateData::deserialize(plaintext).map(|data| UpstreamPrivateData {
+                alias_name: data.alias_name,
+                note: data.note,
+                display_hidden: data.display_hidden,
+                accepted_accounts: data.accepted_accounts,
+            })
+        })
 }
 
 /// Apply an explicit whole-document update to the payload already on Platform.
@@ -1438,12 +1503,17 @@ mod tests {
         assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
     }
 
+    /// Only the 16-byte layout older versions of this client wrote may hold
+    /// random bytes after the `0x00` sentinel. Padding of any other length
+    /// must be all zeros.
     #[test]
     fn contact_info_padding_rejects_nonzero_bytes_after_the_sentinel() {
         let canonical = ContactInfoPrivateData::new()
             .serialize()
             .expect("serialize");
-        for length in [16, ContactInfoPrivateData::MIN_PLAINTEXT_SIZE] {
+        for length in (9..=ContactInfoPrivateData::MIN_PLAINTEXT_SIZE)
+            .filter(|length| *length != ContactInfoPrivateData::LEGACY_PLAINTEXT_SIZE)
+        {
             assert!(ContactInfoPrivateData::deserialize(&canonical[..length]).is_some());
             for offset in 9..length {
                 let mut malformed = canonical[..length].to_vec();
@@ -1454,6 +1524,192 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Byte-exact copy of the serializer older versions of this client used
+    /// (v1.0.0-weekly.20261020 and earlier, back to #810): single-byte
+    /// lengths, and a payload under 16 bytes padded with `0x00` and then
+    /// random bytes up to 16. `fill` stands in for the random bytes.
+    fn legacy_det_plaintext(data: &ContactInfoPrivateData, fill: u8) -> Vec<u8> {
+        let mut bytes = data.version.to_le_bytes().to_vec();
+        for text in [&data.alias_name, &data.note] {
+            let text = text.as_deref().unwrap_or_default().as_bytes();
+            bytes.push(u8::try_from(text.len()).expect("the old writer capped at 255"));
+            bytes.extend_from_slice(text);
+        }
+        bytes.push(u8::from(data.display_hidden));
+        bytes.push(u8::try_from(data.accepted_accounts.len()).expect("at most 255"));
+        for account in &data.accepted_accounts {
+            bytes.extend_from_slice(&account.to_le_bytes());
+        }
+        if bytes.len() < ContactInfoPrivateData::LEGACY_PLAINTEXT_SIZE {
+            bytes.push(0x00);
+            bytes.resize(ContactInfoPrivateData::LEGACY_PLAINTEXT_SIZE, fill);
+        }
+        bytes
+    }
+
+    fn legacy_contact(
+        alias_name: Option<&str>,
+        note: Option<&str>,
+        display_hidden: bool,
+        accepted_accounts: Vec<u32>,
+    ) -> ContactInfoPrivateData {
+        ContactInfoPrivateData {
+            version: 0,
+            alias_name: alias_name.map(str::to_owned),
+            note: note.map(str::to_owned),
+            display_hidden,
+            accepted_accounts,
+        }
+    }
+
+    fn assert_same_details(parsed: &ContactInfoPrivateData, expected: &ContactInfoPrivateData) {
+        assert_eq!(parsed.alias_name, expected.alias_name);
+        assert_eq!(parsed.note, expected.note);
+        assert_eq!(parsed.display_hidden, expected.display_hidden);
+        assert_eq!(parsed.accepted_accounts, expected.accepted_accounts);
+    }
+
+    /// Details an older version of this client saved for a hidden contact, or
+    /// with a short nickname or note, are padded with random bytes. A save
+    /// must read them, not report them unreadable and offer to wipe them.
+    #[test]
+    fn a_save_reads_details_padded_by_older_versions() {
+        let contacts = [
+            legacy_contact(None, None, true, Vec::new()),
+            legacy_contact(Some("Bob"), None, false, Vec::new()),
+            legacy_contact(None, Some("hi"), true, Vec::new()),
+            legacy_contact(Some("Al"), None, true, vec![0]),
+            legacy_contact(Some("Bao"), Some("Met"), false, Vec::new()),
+        ];
+        for expected in &contacts {
+            for fill in [0x01, 0x5A, 0xFF] {
+                let plaintext = legacy_det_plaintext(expected, fill);
+                assert_eq!(
+                    plaintext.len(),
+                    ContactInfoPrivateData::LEGACY_PLAINTEXT_SIZE
+                );
+                let stored = contact_info_document(Some(Value::Bytes(
+                    encrypt_private_data(&plaintext, &KEY).expect("encrypt"),
+                )));
+
+                let parsed = read_contact_info_private_data(
+                    Some(&stored),
+                    &KEY,
+                    UnreadableContactInfoPolicy::Abort,
+                )
+                .unwrap_or_else(|error| panic!("{expected:?} padded with {fill:#x}: {error:?}"));
+                assert_same_details(&parsed, expected);
+
+                let unhidden = apply_contact_info_update(
+                    ContactInfoUpdate::visibility(false),
+                    Some(&stored),
+                    &KEY,
+                )
+                .expect("unhiding keeps the saved details");
+                assert!(!unhidden.display_hidden);
+                assert_eq!(unhidden.alias_name, expected.alias_name);
+                assert_eq!(unhidden.note, expected.note);
+                assert_eq!(unhidden.accepted_accounts, expected.accepted_accounts);
+            }
+        }
+    }
+
+    /// Older versions of this client wrote every length as one byte, up to
+    /// 255. In CompactSize, 253 to 255 are prefix markers instead.
+    #[test]
+    fn a_save_reads_long_details_written_with_single_byte_lengths() {
+        for len in [253, 254, 255] {
+            let text = "x".repeat(len);
+            for expected in [
+                legacy_contact(Some(&text), None, false, vec![2]),
+                legacy_contact(None, Some(&text), true, Vec::new()),
+                legacy_contact(Some(&text), Some(&text), true, vec![0, 3]),
+            ] {
+                let parsed =
+                    ContactInfoPrivateData::deserialize(&legacy_det_plaintext(&expected, 0xAA))
+                        .unwrap_or_else(|| panic!("{len}-byte details must stay readable"));
+                assert_same_details(&parsed, &expected);
+            }
+        }
+    }
+
+    /// The contact list reads the same older layouts a save reads, so such a
+    /// contact is shown with its details instead of hidden as unreadable.
+    #[test]
+    fn the_contact_list_reads_details_written_by_older_versions() {
+        let long = "y".repeat(254);
+        for expected in [
+            legacy_contact(None, None, true, Vec::new()),
+            legacy_contact(Some("Bob"), Some("hi"), false, Vec::new()),
+            legacy_contact(Some(&long), Some("Met"), false, vec![1]),
+        ] {
+            let shown = decode_contact_info_details(&legacy_det_plaintext(&expected, 0xC3))
+                .unwrap_or_else(|| panic!("{expected:?} must be shown"));
+            assert_eq!(shown.alias_name, expected.alias_name);
+            assert_eq!(shown.note, expected.note);
+            assert_eq!(shown.display_hidden, expected.display_hidden);
+            assert_eq!(shown.accepted_accounts, expected.accepted_accounts);
+        }
+    }
+
+    /// Tolerating the older layouts must not let corrupt payloads through.
+    #[test]
+    fn legacy_layouts_do_not_hide_corruption() {
+        let hidden = legacy_contact(None, None, true, Vec::new());
+        let legacy = legacy_det_plaintext(&hidden, 0x5A);
+
+        let mut no_sentinel = legacy.clone();
+        no_sentinel[8] = 0x5A;
+        assert!(ContactInfoPrivateData::deserialize(&no_sentinel).is_none());
+
+        for length in (10..legacy.len()).chain([legacy.len() + 1]) {
+            let mut resized = legacy.clone();
+            resized.resize(length, 0x5A);
+            assert!(
+                ContactInfoPrivateData::deserialize(&resized).is_none(),
+                "random padding over {length} bytes is not a layout any client wrote"
+            );
+        }
+
+        // A single-byte length that runs past the end of the payload.
+        let mut overrun = legacy_det_plaintext(
+            &legacy_contact(Some(&"x".repeat(253)), None, false, Vec::new()),
+            0,
+        );
+        overrun.truncate(overrun.len() - 1);
+        assert!(ContactInfoPrivateData::deserialize(&overrun).is_none());
+        assert!(decode_contact_info_details(&overrun).is_none());
+
+        // Single-byte lengths still need valid text and no trailing data.
+        let long = legacy_det_plaintext(
+            &legacy_contact(Some(&"x".repeat(253)), None, false, Vec::new()),
+            0,
+        );
+        let mut invalid_utf8 = long.clone();
+        invalid_utf8[5] = 0xFF;
+        let mut extended = long.clone();
+        extended.push(0);
+        for corrupt in [invalid_utf8, extended] {
+            assert!(ContactInfoPrivateData::deserialize(&corrupt).is_none());
+            assert!(decode_contact_info_details(&corrupt).is_none());
+        }
+    }
+
+    /// The single-byte fallback only applies to a length CompactSize reserves;
+    /// a malformed CompactSize prefix is not reinterpreted as a short length.
+    #[test]
+    fn single_byte_lengths_apply_only_to_reserved_values() {
+        // A non-shortest CompactSize: 0xFD then 5, for 5 bytes of text.
+        let mut bytes = vec![0, 0, 0, 0, 0xFD, 5, 0];
+        bytes.extend_from_slice(b"hello");
+        bytes.extend_from_slice(&[0, 0, 0]);
+        assert!(ContactInfoPrivateData::deserialize(&bytes).is_none());
+
+        // A truncated payload without reserved lengths stays rejected.
+        let short = legacy_det_plaintext(&legacy_contact(Some("Bob"), None, false, vec![1]), 0);
+        assert!(ContactInfoPrivateData::deserialize(&short[..short.len() - 2]).is_none());
     }
 
     #[test]

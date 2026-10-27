@@ -4046,4 +4046,49 @@ mod tests {
             "Holders cannot send this token to other identities. This cannot be changed later."
         );
     }
+
+    fn confirmation(
+        transferable: bool,
+        once_per_identity_amount: Option<TokenAmount>,
+        marketplace_locked: bool,
+    ) -> String {
+        TokensScreen::registration_confirmation_message(
+            "QAWk1027",
+            "0",
+            "None",
+            TokensScreen::transferability_summary(transferable),
+            once_per_identity_amount,
+            0.402,
+            marketplace_locked,
+        )
+    }
+
+    /// Regression: the confirmation did not mention the once-per-identity
+    /// distribution the user is about to sign.
+    #[test]
+    fn confirmation_names_the_once_per_identity_distribution() {
+        assert!(
+            confirmation(false, Some(5), true)
+                .contains("Each identity can claim 5 base tokens of this token, once.")
+        );
+        assert!(!confirmation(false, None, true).contains("Each identity can claim"));
+    }
+
+    /// Regression: a transferable token's confirmation carried a "NotTradeable"
+    /// warning that read as if holders could not send it. The warning is about
+    /// the marketplace only and says so in plain words.
+    #[test]
+    fn marketplace_warning_does_not_read_as_a_sending_restriction() {
+        let locked = confirmation(true, None, true);
+        assert!(locked.contains("Holders can send this token to other identities."));
+        assert!(locked.contains(
+            "WARNING: This token can never be offered for sale on the token marketplace. This cannot be changed later."
+        ));
+        assert!(!locked.contains("NotTradeable"));
+        assert!(!locked.contains("tradeable"));
+
+        let unlocked = confirmation(true, None, false);
+        assert!(!unlocked.contains("WARNING"));
+        assert!(!unlocked.contains("marketplace"));
+    }
 }

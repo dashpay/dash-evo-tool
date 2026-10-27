@@ -19,7 +19,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::{ContactInfoUpdate, ProfileSnapshot};
+use dash_evo_tool::model::dashpay::{ContactDetails, ContactInfoUpdate, ProfileSnapshot};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -694,13 +694,30 @@ async fn step_update_contact_info(
     }
 
     let identity_b_id = identity_b.identity.id();
+    // A save replaces only details it was opened from, so read them first.
+    let opened = match run_task(
+        &ctx.app_context,
+        BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactDetails {
+            identity: identity_b.clone(),
+            contact_id,
+        })),
+    )
+    .await
+    .expect("Step 5: LoadContactDetails should succeed")
+    {
+        BackendTaskSuccessResult::DashPayContactDetails { details, .. } => details,
+        other => panic!("Step 5: expected DashPayContactDetails, got: {other:?}"),
+    };
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
         identity: identity_b,
         contact_id,
-        update: ContactInfoUpdate::replace_all(
-            Some("Test Nickname".into()),
-            Some("E2E note".into()),
-            false,
+        update: ContactInfoUpdate::edits(
+            &opened,
+            ContactDetails {
+                nickname: Some("Test Nickname".into()),
+                note: Some("E2E note".into()),
+                hidden: false,
+            },
         ),
     }));
 

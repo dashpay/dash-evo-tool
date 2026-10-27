@@ -2660,7 +2660,10 @@ mod tests {
                 BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
                     identity: owner,
                     contact_id,
-                    update: crate::model::dashpay::ContactInfoUpdate::note(None),
+                    update: crate::model::dashpay::ContactInfoUpdate::note(
+                        &crate::model::dashpay::ContactDetails::default(),
+                        None,
+                    ),
                 })),
                 SenderAsync::new(tx, ctx.egui_ctx().clone()),
             )

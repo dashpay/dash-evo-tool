@@ -586,9 +586,10 @@ fn foreign_write_context(hub: &HubHarness) -> BackendTaskContext {
         DashPayTask::UpdateContactInfo {
             identity: app_context.resolve_selected_identity().expect("identity"),
             contact_id: Identifier::from(CONTACT),
-            update: dash_evo_tool::model::dashpay::ContactInfoUpdate::note(Some(
-                "from the other screen".into(),
-            )),
+            update: dash_evo_tool::model::dashpay::ContactInfoUpdate::note(
+                &dash_evo_tool::model::dashpay::ContactDetails::default(),
+                Some("from the other screen".into()),
+            ),
         },
     )))
 }

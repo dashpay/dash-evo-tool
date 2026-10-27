@@ -433,12 +433,16 @@ impl IdentityHubScreen {
         if let TaskError::DashPayContactInfoActionFailed {
             identity_id,
             contact_id,
-            ..
+            source,
         } = error
         {
             let network = self.contact_info_write_network(identity_id, contact_id);
             self.contacts_state
                 .release_contact_info_write(network, identity_id, contact_id);
+            // The details changed since the user saw them: show the latest.
+            if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.contacts_state.invalidate();
+            }
         }
         if let Some(key) = contact_info_error_key(error) {
             self.forget_contact_info_task(&key);
@@ -2431,8 +2435,14 @@ mod tests {
     fn a_saved_note_and_an_unhide_report_differently() {
         use crate::model::dashpay::ContactInfoUpdate;
 
-        let note = contact_info_task(ContactInfoUpdate::note(Some("Bao".into())));
-        let unhide = contact_info_task(ContactInfoUpdate::visibility(false));
+        let note = contact_info_task(ContactInfoUpdate::note(
+            &crate::model::dashpay::ContactDetails::default(),
+            Some("Bao".into()),
+        ));
+        let unhide = contact_info_task(ContactInfoUpdate::visibility(
+            &crate::model::dashpay::ContactDetails::default(),
+            false,
+        ));
         assert!(is_note_save(&note));
         assert!(!is_note_save(&unhide));
         assert_eq!(
@@ -2524,7 +2534,10 @@ mod tests {
                 DashPayTask::UpdateContactInfo {
                     identity: hub_identity(owner),
                     contact_id: contact,
-                    update: ContactInfoUpdate::note(Some("Bao".into())),
+                    update: ContactInfoUpdate::note(
+                        &crate::model::dashpay::ContactDetails::default(),
+                        Some("Bao".into()),
+                    ),
                 },
             )));
             screen.capture_contact_info_update(&action);
@@ -2643,7 +2656,10 @@ mod tests {
             DashPayTask::UpdateContactInfo {
                 identity: identity.clone(),
                 contact_id: contact,
-                update: ContactInfoUpdate::note(Some("Bao".into())),
+                update: ContactInfoUpdate::note(
+                    &crate::model::dashpay::ContactDetails::default(),
+                    Some("Bao".into()),
+                ),
             },
         )));
         screen.capture_contact_info_update(&action);
@@ -2686,6 +2702,24 @@ mod tests {
                 .map(|draft| draft.clone()),
             Some("Bao".into())
         );
+    }
+
+    /// A save refused because the contact's details changed reloads the
+    /// list, so the next edit starts from the latest details.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_save_over_changed_details_reloads_the_contacts() {
+        let (_temp_dir, app_context) = wired_test_context().await;
+        let mut screen = IdentityHubScreen::new(&app_context);
+        assert!(screen.contacts_state.claim_reads().is_some());
+        assert!(!screen.contacts_state.load_is_due());
+
+        screen.handle_contact_info_error(&TaskError::DashPayContactInfoActionFailed {
+            identity_id: id(1),
+            contact_id: id(2),
+            source: Box::new(TaskError::DashPayContactDetailsChanged),
+        });
+
+        assert!(screen.contacts_state.load_is_due());
     }
 
     /// A list whose saved details were not read pauses saving; a newer list
@@ -2937,7 +2971,10 @@ mod tests {
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
             identity: identity.clone(),
             contact_id: contact,
-            update: ContactInfoUpdate::note(Some("Mine".into())),
+            update: ContactInfoUpdate::note(
+                &crate::model::dashpay::ContactDetails::default(),
+                Some("Mine".into()),
+            ),
         }));
         let action = AppAction::BackendTask(task.clone());
         screen.capture_contact_info_update(&action);

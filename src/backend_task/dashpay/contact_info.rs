@@ -190,7 +190,11 @@ async fn save_contact_details<O: SaveOps>(
     ops: &O,
     update: &ContactInfoUpdate,
 ) -> Result<bool, TaskError> {
-    let details = update.apply_to(ops.current().await?);
+    let current = ops.current().await?;
+    if update.changed_since_opened(&current) {
+        return Err(TaskError::DashPayContactDetailsChanged);
+    }
+    let details = update.apply_to(current);
 
     validate_contact_note(details.note.as_deref().unwrap_or_default())?;
     // The bound platform-wallet enforces, checked before it saves anything.
@@ -456,10 +460,44 @@ mod tests {
     async fn an_unreadable_baseline_writes_nothing() {
         let ops = ScriptedSave::new(Err(TaskError::SecretPromptCancelled), false);
 
-        let result = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into()))).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into())),
+        )
+        .await;
 
         assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
         assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// A save replaces only values the user saw: a note typed over a note
+    /// that changed since, or that was never read, is refused, and nothing
+    /// is written. Fields the update keeps may change freely.
+    #[tokio::test]
+    async fn a_save_over_details_that_changed_writes_nothing() {
+        let saved = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Real".into()),
+            hidden: false,
+        };
+        let ops = ScriptedSave::new(Ok(saved.clone()), false);
+        let unseen = ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into()));
+
+        let result = save_contact_details(&ops, &unseen).await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
+
+        let opened = ContactDetails {
+            nickname: None,
+            ..saved.clone()
+        };
+        let ops = ScriptedSave::new(Ok(saved), false);
+        let seen = ContactInfoUpdate::note(&opened, Some("n".into()));
+        assert!(save_contact_details(&ops, &seen).await.is_ok());
     }
 
     /// A published save whose synced record fails is not reported as saved:
@@ -470,8 +508,11 @@ mod tests {
         let ops = ScriptedSave::new(Ok(ContactDetails::default()), true)
             .with_outcome(ContactInfoPublishOutcome::Published);
 
-        let result =
-            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -486,8 +527,11 @@ mod tests {
     async fn a_failed_synced_record_of_a_deferred_save_claims_no_publish() {
         let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
 
-        let result =
-            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+        )
+        .await;
 
         let Err(error) = result else {
             panic!("a failed synced record fails the save");
@@ -508,9 +552,12 @@ mod tests {
         };
         let ops = ScriptedSave::new(Ok(current.clone()), false);
 
-        let published = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into())))
-            .await
-            .expect("saved");
+        let published = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into())),
+        )
+        .await
+        .expect("saved");
 
         assert!(!published, "deferred until two contacts");
         assert_eq!(

@@ -863,7 +863,10 @@ mod backend_task_join_tests {
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
             identity: bare_user_identity(owner, Network::Testnet),
             contact_id: contact,
-            update: ContactInfoUpdate::note(Some("Saved".into())),
+            update: ContactInfoUpdate::note(
+                &crate::model::dashpay::ContactDetails::default(),
+                Some("Saved".into()),
+            ),
         }));
         for cancel in [false, true] {
             let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);

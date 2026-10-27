@@ -430,7 +430,7 @@ pub(super) fn mutual_contacts(
 }
 
 impl ContactData {
-    pub(super) fn details(&self) -> ContactDetails {
+    pub fn details(&self) -> ContactDetails {
         ContactDetails {
             nickname: self.nickname.clone(),
             note: self.note.clone(),

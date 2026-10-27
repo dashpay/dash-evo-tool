@@ -131,29 +131,38 @@ pub struct ContactInfoUpdate {
     pub note: ContactInfoField<Option<String>>,
     /// Visibility update intent.
     pub display_hidden: ContactInfoField<bool>,
+    /// The details the user saw when choosing this update. A save refuses
+    /// when a field it replaces holds another value by then: it would
+    /// overwrite a value the user never saw.
+    pub opened: ContactDetails,
 }
 
 impl ContactInfoUpdate {
-    /// Change visibility while preserving every unrelated contact detail.
-    pub fn visibility(display_hidden: bool) -> Self {
+    /// Change visibility from `opened`, the details shown, while preserving
+    /// every unrelated contact detail.
+    pub fn visibility(opened: &ContactDetails, display_hidden: bool) -> Self {
         Self {
             nickname: ContactInfoField::Preserve,
             note: ContactInfoField::Preserve,
             display_hidden: ContactInfoField::Replace(display_hidden),
+            opened: opened.clone(),
         }
     }
 
-    /// Replace only the private note, preserving the latest stored contact details.
-    pub fn note(note: Option<String>) -> Self {
+    /// Replace only the private note shown in `opened`, preserving the latest
+    /// stored contact details.
+    pub fn note(opened: &ContactDetails, note: Option<String>) -> Self {
         Self {
             note: ContactInfoField::Replace(note),
             display_hidden: ContactInfoField::Preserve,
-            ..Self::visibility(false)
+            ..Self::visibility(opened, false)
         }
     }
 
-    /// Replace every editable field with caller-owned values.
+    /// Replace every editable field, over details that held `opened`.
+    #[cfg(test)]
     pub fn replace_all(
+        opened: &ContactDetails,
         nickname: Option<String>,
         note: Option<String>,
         display_hidden: bool,
@@ -162,7 +171,19 @@ impl ContactInfoUpdate {
             nickname: ContactInfoField::Replace(nickname),
             note: ContactInfoField::Replace(note),
             display_hidden: ContactInfoField::Replace(display_hidden),
+            opened: opened.clone(),
         }
+    }
+
+    /// Whether a field this update replaces holds another value in `current`
+    /// than in the details the user saw.
+    pub fn changed_since_opened(&self, current: &ContactDetails) -> bool {
+        fn moved<T: PartialEq>(field: &ContactInfoField<T>, opened: &T, current: &T) -> bool {
+            matches!(field, ContactInfoField::Replace(_)) && opened != current
+        }
+        moved(&self.nickname, &self.opened.nickname, &current.nickname)
+            || moved(&self.note, &self.opened.note, &current.note)
+            || moved(&self.display_hidden, &self.opened.hidden, &current.hidden)
     }
 
     /// Replace only the fields that differ between `opened`, the details an
@@ -184,6 +205,7 @@ impl ContactInfoUpdate {
             nickname: field(&opened.nickname, edited.nickname),
             note: field(&opened.note, edited.note),
             display_hidden: field(&opened.hidden, edited.hidden),
+            opened: opened.clone(),
         }
     }
 
@@ -535,7 +557,8 @@ mod tests {
 
     #[test]
     fn a_note_update_replaces_only_the_note() {
-        let update = ContactInfoUpdate::note(Some("Met at the meetup".into()));
+        let update =
+            ContactInfoUpdate::note(&ContactDetails::default(), Some("Met at the meetup".into()));
         assert_eq!(
             update.note,
             ContactInfoField::Replace(Some("Met at the meetup".into()))
@@ -543,7 +566,7 @@ mod tests {
         assert_eq!(update.nickname, ContactInfoField::Preserve);
         assert_eq!(update.display_hidden, ContactInfoField::Preserve);
 
-        let cleared = ContactInfoUpdate::note(None);
+        let cleared = ContactInfoUpdate::note(&ContactDetails::default(), None);
         assert_eq!(cleared.note, ContactInfoField::Replace(None));
         assert_eq!(cleared.display_hidden, ContactInfoField::Preserve);
     }
@@ -557,21 +580,24 @@ mod tests {
             hidden: true,
         };
         assert_eq!(
-            ContactInfoUpdate::note(Some("new".into())).apply_to(current.clone()),
+            ContactInfoUpdate::note(&ContactDetails::default(), Some("new".into()))
+                .apply_to(current.clone()),
             ContactDetails {
                 note: Some("new".into()),
                 ..current.clone()
             }
         );
         assert_eq!(
-            ContactInfoUpdate::visibility(false).apply_to(current.clone()),
+            ContactInfoUpdate::visibility(&ContactDetails::default(), false)
+                .apply_to(current.clone()),
             ContactDetails {
                 hidden: false,
                 ..current.clone()
             }
         );
         assert_eq!(
-            ContactInfoUpdate::replace_all(None, None, false).apply_to(current),
+            ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false)
+                .apply_to(current),
             ContactDetails::default()
         );
     }
@@ -590,6 +616,7 @@ mod tests {
                 nickname: ContactInfoField::Preserve,
                 note: ContactInfoField::Preserve,
                 display_hidden: ContactInfoField::Preserve,
+                opened: opened.clone(),
             }
         );
         assert_eq!(
@@ -605,6 +632,7 @@ mod tests {
                 nickname: ContactInfoField::Replace(None),
                 note: ContactInfoField::Replace(Some("n".into())),
                 display_hidden: ContactInfoField::Preserve,
+                opened: opened.clone(),
             }
         );
     }

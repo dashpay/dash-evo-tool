@@ -316,7 +316,7 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update: ContactInfoUpdate::visibility(false),
+        update: ContactInfoUpdate::visibility(&contact.details(), false),
     }
 }
 
@@ -330,7 +330,7 @@ pub fn save_note_task(
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update: ContactInfoUpdate::note(note),
+        update: ContactInfoUpdate::note(&contact.details(), note),
     }
 }
 
@@ -1500,7 +1500,11 @@ mod tests {
             BackendTask::DashPayTask(Box::new(task)),
         ));
         assert_eq!((owner, contact_id), (id(1), id(5)));
-        assert_eq!(update, ContactInfoUpdate::note(Some("Bao".into())));
+        assert_eq!(
+            update,
+            ContactInfoUpdate::note(&contact.details(), Some("Bao".into())),
+            "the update carries the details the user saw"
+        );
     }
 
     #[test]

@@ -1489,6 +1489,13 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// A contact-details save would replace a value that changed since the
+    /// user opened the details, so nothing was saved.
+    #[error(
+        "This contact's details changed since you opened them, so nothing was saved. Check the latest details, then make your change again."
+    )]
+    DashPayContactDetailsChanged,
+
     /// A contact-details save that stayed on this device, because publishing
     /// waits for a second contact, could not record which details this device
     /// holds; on reload the older details would show again.

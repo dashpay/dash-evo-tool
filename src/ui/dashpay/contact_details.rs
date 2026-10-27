@@ -792,15 +792,19 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         self.loading = false;
-        if matches!(
-            error,
-            TaskError::DashPayContactInfoActionFailed {
-                identity_id,
-                contact_id,
-                ..
-            } if *identity_id == self.identity.identity.id() && *contact_id == self.contact_id
-        ) {
+        if let TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            source,
+        } = error
+            && *identity_id == self.identity.identity.id()
+            && *contact_id == self.contact_id
+        {
             self.pending_update = None;
+            // The details changed since the editor opened: read the latest.
+            if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.needs_backend_fetch = true;
+            }
         }
         false
     }
@@ -843,6 +847,7 @@ mod tests {
                 nickname: ContactInfoField::Preserve,
                 note: ContactInfoField::Replace(Some("Met at the meetup".into())),
                 display_hidden: ContactInfoField::Preserve,
+                opened: update.opened.clone(),
             }
         );
     }
@@ -1003,6 +1008,26 @@ mod tests {
         assert!(!info.is_hidden);
     }
 
+    /// A save refused because the details changed reads them again, so the
+    /// next edit starts from the latest.
+    #[test]
+    fn a_save_over_changed_details_reads_them_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let (owner, contact) = (Identifier::from([1; 32]), Identifier::from([2; 32]));
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+        screen.needs_backend_fetch = false;
+
+        screen.display_task_error(&TaskError::DashPayContactInfoActionFailed {
+            identity_id: owner,
+            contact_id: contact,
+            source: Box::new(TaskError::DashPayContactDetailsChanged),
+        });
+
+        assert!(screen.needs_backend_fetch);
+    }
+
     /// Clearing a field is an edit too: it is sent as a replacement with no
     /// value, not dropped.
     #[test]
@@ -1028,6 +1053,7 @@ mod tests {
                 nickname: ContactInfoField::Replace(None),
                 note: ContactInfoField::Preserve,
                 display_hidden: ContactInfoField::Replace(true),
+                opened: update.opened.clone(),
             }
         );
     }

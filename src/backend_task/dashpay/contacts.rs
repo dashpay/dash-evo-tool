@@ -12,8 +12,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
+use dash_sdk::query_types::Documents;
 use futures::future::join_all;
+use platform_wallet::wallet::identity::crypto::{ContactInfoPrivateData, decode_private_data};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
@@ -125,12 +128,108 @@ pub(super) fn decrypt_private_data(
     Ok(decrypted.to_vec())
 }
 
+/// The nickname, note and visibility the owner stored for each contact, read
+/// from every page of the owner's `contactInfo` documents.
+///
+/// Documents come oldest first, the order the write lookup scans, and the
+/// newest document for a contact wins, so the load shows the document a save
+/// rewrites.
+pub(super) async fn load_contact_details<P, PF, D, DF>(
+    query: DocumentQuery,
+    fetch_page: P,
+    mut derive_keys: D,
+) -> Result<HashMap<Identifier, ContactData>, TaskError>
+where
+    P: FnMut(DocumentQuery) -> PF,
+    PF: Future<Output = Result<Documents, TaskError>>,
+    D: FnMut(u32) -> DF,
+    DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
+{
+    let query = query.with_order_by(OrderClause {
+        field: "$updatedAt".to_string(),
+        ascending: true,
+    });
+    let documents =
+        super::contact_info::fetch_all_contact_info_documents(query, fetch_page).await?;
+
+    let mut contact_info_map: HashMap<Identifier, ContactData> = HashMap::new();
+    for doc in documents.into_values().flatten() {
+        let props = doc.properties();
+        let Some(deriv_idx) = props
+            .get("derivationEncryptionKeyIndex")
+            .and_then(|value| value.to_integer::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok((enc_user_id_key, private_data_key)) = derive_keys(deriv_idx).await else {
+            continue;
+        };
+        // Platform returns the fixed 32-byte field as `Value::Bytes32`; a
+        // document built locally carries `Value::Bytes`.
+        let Some(enc_user_id) = props
+            .get("encToUserId")
+            .and_then(|value| value.as_bytes_slice().ok())
+        else {
+            continue;
+        };
+        let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key) else {
+            continue;
+        };
+        let Ok(contact_id) = Identifier::from_bytes(&decrypted_id) else {
+            tracing::warn!(
+                "Failed to parse decrypted contact ID (length {}), skipping contact info entry",
+                decrypted_id.len()
+            );
+            continue;
+        };
+        // The DIP-15 codec platform-wallet writes with. A payload that is
+        // present but cannot be opened is not "no details": its hidden flag
+        // is unknown, so the contact stays hidden.
+        let private_data = match props.get("privateData") {
+            None => Some(ContactInfoPrivateData::default()),
+            Some(value) => value
+                .as_bytes_slice()
+                .ok()
+                .and_then(|encrypted| decrypt_private_data(encrypted, &private_data_key).ok())
+                .and_then(|plaintext| decode_private_data(&plaintext).ok()),
+        };
+        let details_unreadable = private_data.is_none();
+        let private_data = private_data.unwrap_or(ContactInfoPrivateData {
+            display_hidden: true,
+            ..Default::default()
+        });
+
+        // Documents come oldest first, so the newest replaces older ones: it
+        // is the one a save rewrites, and the rewrite keeps it the newest.
+        contact_info_map.insert(
+            contact_id,
+            ContactData {
+                identity_id: contact_id,
+                account_reference: private_data.accepted_accounts.first().copied().unwrap_or(0),
+                nickname: private_data.alias_name,
+                note: private_data.note,
+                is_hidden: private_data.display_hidden,
+                details_unreadable,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            },
+        );
+    }
+
+    Ok(contact_info_map)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContactData {
     pub identity_id: Identifier,
     pub nickname: Option<String>,
     pub note: Option<String>,
     pub is_hidden: bool,
+    /// The stored details exist but could not be decrypted or decoded. Such a
+    /// contact is kept hidden, since its hidden flag cannot be read.
+    pub details_unreadable: bool,
     pub account_reference: u32,
     // Profile data (fetched from Platform)
     pub username: Option<String>,
@@ -212,122 +311,16 @@ pub async fn load_contacts(
         operator: WhereOperator::Equal,
         value: Value::Identifier(identity_id.to_buffer()),
     });
-    contact_info_query.limit = 100;
-
-    let contact_info_docs = Document::fetch_many(sdk, contact_info_query).await?;
-
-    // Build a map of contact ID to contact info
-    let mut contact_info_map: HashMap<Identifier, ContactData> = HashMap::new();
-
-    for (_doc_id, doc) in contact_info_docs.iter() {
-        if let Some(doc) = doc {
-            let props = doc.properties();
-
-            // Get the derivation index used for this document
-            if let Some(deriv_idx) = props
-                .get("derivationEncryptionKeyIndex")
-                .and_then(|value| value.to_integer::<u32>().ok())
-            {
-                // Derive keys for this document
-                let (enc_user_id_key, private_data_key) =
-                    match derive_contact_info_keys(app_context, &identity, deriv_idx).await {
-                        Ok(keys) => keys,
-                        Err(_) => continue,
-                    };
-
-                // Decrypt encToUserId to find which contact this is for
-                if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId")
-                    && let Ok(decrypted_id) = decrypt_to_user_id(enc_user_id, &enc_user_id_key)
-                {
-                    let Ok(contact_id) = Identifier::from_bytes(&decrypted_id) else {
-                        tracing::warn!(
-                            "Failed to parse decrypted contact ID (length {}), skipping contact info entry",
-                            decrypted_id.len()
-                        );
-                        continue;
-                    };
-
-                    // Decrypt private data if available
-                    let mut nickname = None;
-                    let mut note = None;
-                    let mut is_hidden = false;
-                    let mut account_reference = 0u32;
-
-                    if let Some(Value::Bytes(encrypted_private)) = props.get("privateData")
-                        && let Ok(decrypted_data) =
-                            decrypt_private_data(encrypted_private, &private_data_key)
-                    {
-                        // Parse the decrypted data
-                        // Simple format: version(4) + alias_len(1) + alias + note_len(1) + note + hidden(1) + accounts_len(1) + accounts
-                        if decrypted_data.len() >= 8 {
-                            let mut pos = 4; // Skip version
-
-                            // Read alias
-                            if pos < decrypted_data.len() {
-                                let alias_len = decrypted_data[pos] as usize;
-                                pos += 1;
-                                if pos + alias_len <= decrypted_data.len() && alias_len > 0 {
-                                    nickname = String::from_utf8(
-                                        decrypted_data[pos..pos + alias_len].to_vec(),
-                                    )
-                                    .ok();
-                                    pos += alias_len;
-                                }
-                            }
-
-                            // Read note
-                            if pos < decrypted_data.len() {
-                                let note_len = decrypted_data[pos] as usize;
-                                pos += 1;
-                                if pos + note_len <= decrypted_data.len() && note_len > 0 {
-                                    note = String::from_utf8(
-                                        decrypted_data[pos..pos + note_len].to_vec(),
-                                    )
-                                    .ok();
-                                    pos += note_len;
-                                }
-                            }
-
-                            // Read hidden flag
-                            if pos < decrypted_data.len() {
-                                is_hidden = decrypted_data[pos] != 0;
-                                pos += 1;
-                            }
-
-                            // Read accounts (simplified - just take first if available)
-                            if pos < decrypted_data.len() {
-                                let accounts_len = decrypted_data[pos] as usize;
-                                pos += 1;
-                                if accounts_len > 0 && pos + 4 <= decrypted_data.len() {
-                                    account_reference = u32::from_le_bytes([
-                                        decrypted_data[pos],
-                                        decrypted_data[pos + 1],
-                                        decrypted_data[pos + 2],
-                                        decrypted_data[pos + 3],
-                                    ]);
-                                }
-                            }
-                        }
-                    }
-
-                    contact_info_map.insert(
-                        contact_id,
-                        ContactData {
-                            identity_id: contact_id,
-                            nickname,
-                            note,
-                            is_hidden,
-                            account_reference,
-                            username: None,
-                            display_name: None,
-                            avatar_url: None,
-                            bio: None,
-                        },
-                    );
-                }
-            }
-        }
-    }
+    let contact_info_map = load_contact_details(
+        contact_info_query,
+        |query| async move {
+            Document::fetch_many(sdk, query)
+                .await
+                .map_err(TaskError::from)
+        },
+        |derivation_index| derive_contact_info_keys(app_context, &identity, derivation_index),
+    )
+    .await?;
 
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
@@ -341,6 +334,7 @@ pub async fn load_contacts(
                     nickname: None,
                     note: None,
                     is_hidden: false,
+                    details_unreadable: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,
@@ -478,6 +472,7 @@ pub async fn load_contacts_offline(
                 .map(|m| m.notes.clone())
                 .filter(|s| !s.is_empty()),
             is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            details_unreadable: false,
             // Carry the cached account reference so the "Account #N" badge shows
             // and offline ordering matches the post-refresh view. Falls back to
             // 0 ("default account") when no network read has cached one yet.

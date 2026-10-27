@@ -39,7 +39,7 @@ use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
 use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
@@ -1049,6 +1049,24 @@ impl WalletSendScreen {
             .is_some_and(|own| own == typed)
     }
 
+    /// Why the selected source cannot pay the typed private address, if it
+    /// cannot. Core and Platform can only shield into the paying wallet's own
+    /// private balance: the shield tasks carry no recipient and always deposit
+    /// into the wallet's own pool. Letting someone else's private address
+    /// through would keep the money while reporting success.
+    fn shielded_destination_refusal(&self) -> Option<&'static str> {
+        let shields_into_own_pool = matches!(
+            self.selected_source,
+            Some(SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_))
+        );
+        let private_destination = self
+            .validated_destination
+            .as_ref()
+            .is_some_and(|destination| destination.kind() == AddressKind::Shielded);
+        (shields_into_own_pool && private_destination && !self.shielded_destination_is_own_pool())
+            .then_some(SHIELDED_NOT_OWN_POOL)
+    }
+
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
         if !self.identity_constraint_holds() {
             return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
@@ -1084,17 +1102,8 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Core and Platform can only shield into the paying wallet's own
-        // private balance: the shield tasks carry no recipient and always
-        // deposit into the wallet's own pool. Letting someone else's private
-        // address through would keep the money while reporting success.
-        if matches!(
-            source,
-            SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_)
-        ) && destination.kind() == AddressKind::Shielded
-            && !self.shielded_destination_is_own_pool()
-        {
-            return Err(SHIELDED_NOT_OWN_POOL.to_string());
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            return Err(refusal.to_string());
         }
 
         match (source, destination.kind()) {
@@ -1697,6 +1706,7 @@ impl WalletSendScreen {
             self.keep_identity_constraint();
         } else {
             self.render_destination_input(ui);
+            self.render_shielded_destination_refusal(ui);
         }
 
         ui.add_space(10.0);
@@ -2950,6 +2960,14 @@ impl WalletSendScreen {
         resp.inner.update(&mut self.validated_destination);
     }
 
+    /// The route refusal a source and private destination already imply,
+    /// shown under the destination before anything is clicked.
+    fn render_shielded_destination_refusal(&self, ui: &mut Ui) {
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            ui.colored_label(DashColors::VALIDATION_WARNING, refusal);
+        }
+    }
+
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let kinds = self.general_destination_kinds();
         self.render_destination_input_with_kinds(ui, &kinds);
@@ -3796,7 +3814,15 @@ impl WalletSendScreen {
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
         let source_ready =
             matches!(self.selected_source, Some(SourceSelection::Identity(_))) || wallet_open;
-        let can_send = source_ready && !is_sending && has_destination && has_amount && has_source;
+        // Refused before the click, so the button never offers a send the
+        // route check will turn down.
+        let refusal = self.shielded_destination_refusal();
+        let can_send = source_ready
+            && !is_sending
+            && has_destination
+            && has_amount
+            && has_source
+            && refusal.is_none();
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -3811,7 +3837,13 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
+            let send_button =
+                ComponentStyles::add_primary_button_enabled(ui, can_send, button_text);
+            let send_button = match refusal {
+                Some(refusal) => send_button.disabled_tooltip(refusal),
+                None => send_button,
+            };
+            if send_button.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         let message = self.simple_send_confirmation_message();
@@ -7901,5 +7933,72 @@ mod tests {
             screen.validated_send_route(),
             Ok(ValidatedSendRoute::ShieldedToShielded(sh)) if sh == seed_hash
         ));
+    }
+
+    /// Renders the refusal line and the Send button of `screen`.
+    fn route_refusal_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 400.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    screen.render_shielded_destination_refusal(ui);
+                    let _ = screen.render_send_button(ui);
+                    let _ = screen.render_send_confirmation(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// Someone else's private address with Core as the source is refused
+    /// before the click: Shield DASH is turned off and the reason is shown
+    /// under the address, so the form never offers a send it will refuse.
+    #[test]
+    fn someone_elses_private_address_turns_core_shielding_off_before_the_click() {
+        use egui_kittest::kittest::NodeT;
+
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+        let mut harness = route_refusal_harness(screen);
+
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_some(),
+            "the refusal must be visible before any click"
+        );
+        // A turned-off primary button keeps its look but stops sensing clicks.
+        let clickable = |harness: &Harness<'static, WalletSendScreen>| {
+            harness
+                .get_by_label("Shield DASH")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        };
+        assert!(
+            !clickable(&harness),
+            "Shield DASH must be turned off for someone else's private address"
+        );
+        harness.get_by_label("Shield DASH").click();
+        harness.run();
+        assert!(harness.state().send_confirmation.is_none());
+        assert!(
+            !matches!(harness.state().send_status, SendStatus::Error),
+            "nothing is refused on click: the button never offered the send"
+        );
+
+        harness.state_mut().validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(7)));
+        harness.run();
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_none(),
+            "the wallet's own private address needs no refusal"
+        );
+        assert!(
+            clickable(&harness),
+            "shielding into the own pool stays available"
+        );
     }
 }

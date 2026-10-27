@@ -247,6 +247,7 @@ where
                 note: private_data.note,
                 is_hidden: private_data.display_hidden,
                 details_unreadable,
+                details_unknown: false,
                 username: None,
                 display_name: None,
                 avatar_url: None,
@@ -366,6 +367,19 @@ pub(super) fn legacy_details_shown(
     published.is_none() && !synced_before && local.is_none_or(ContactDetails::is_empty)
 }
 
+/// Whether a contact's details are unknown because reading the saved
+/// documents failed: exactly when they would come from a document that could
+/// not be read. Published details are then unknown too, so only details this
+/// device holds still count.
+pub(super) fn details_unknown(
+    read_failed: bool,
+    published: Option<&ContactDetails>,
+    local: Option<&ContactDetails>,
+    synced_before: bool,
+) -> bool {
+    read_failed && legacy_details_shown(published, local, synced_before)
+}
+
 /// Whether platform-wallet's side holds details worth recording as its own:
 /// a published DIP-0015 document (even an empty one), or non-empty details on
 /// this device.
@@ -415,6 +429,9 @@ pub struct ContactData {
     /// The stored details exist but could not be decrypted or decoded. Such a
     /// contact is kept hidden, since its hidden flag cannot be read.
     pub details_unreadable: bool,
+    /// Reading the saved details failed, and they would have come from that
+    /// read. Such a contact is kept hidden until a read succeeds.
+    pub details_unknown: bool,
     pub account_reference: u32,
     // Profile data (fetched from Platform)
     pub username: Option<String>,
@@ -512,13 +529,20 @@ pub async fn load_contacts(
     };
     let StoredContactDetails { published, legacy } =
         stored_contact_details(app_context, sdk, &identity).await?;
-    let mut published = published.unwrap_or_else(|error| {
-        tracing::debug!(?error, "LoadContacts: published contact details not read");
-        crate::wallet_backend::PublishedContactInfos::default()
-    });
-    let legacy = legacy.unwrap_or_else(|error| {
-        tracing::debug!(?error, "LoadContacts: legacy contact details not read");
-        HashMap::new()
+    // A failed read is not taken as "no details": contacts whose details
+    // rest on it are listed hidden, and the list says why.
+    let (mut published, published_error) = match published {
+        Ok(published) => (published, None),
+        Err(error) => (Default::default(), Some(error)),
+    };
+    let (legacy, legacy_error) = match legacy {
+        Ok(legacy) => (legacy, None),
+        Err(error) => (HashMap::new(), Some(error)),
+    };
+    let details_error = published_error.or(legacy_error).map(|source| {
+        Arc::new(TaskError::DashPayContactDetailsUnread {
+            source: Box::new(source),
+        })
     });
 
     // Build enriched contact list with basic data
@@ -550,6 +574,12 @@ pub async fn load_contacts(
             let details_unreadable = published_unreadable
                 || legacy_details_shown(published.as_ref(), synced.as_ref(), synced_before)
                     && legacy.is_some_and(|legacy| legacy.details_unreadable);
+            let details_unknown = details_unknown(
+                details_error.is_some(),
+                published.as_ref(),
+                synced.as_ref(),
+                synced_before,
+            );
             let details = shown_contact_details(
                 published,
                 synced,
@@ -560,8 +590,9 @@ pub async fn load_contacts(
                 identity_id: contact_id,
                 nickname: details.nickname,
                 note: details.note,
-                is_hidden: details.hidden,
+                is_hidden: details.hidden || details_unknown,
                 details_unreadable,
+                details_unknown,
                 account_reference: legacy.map_or(0, |legacy| legacy.account_reference),
                 username: None,
                 display_name: None,
@@ -651,6 +682,7 @@ pub async fn load_contacts(
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
         identity: identity_id,
         contacts: contact_list,
+        details_error,
     })
 }
 
@@ -721,6 +753,7 @@ pub async fn load_contacts_offline(
             note: details.note,
             is_hidden: details.hidden,
             details_unreadable: false,
+            details_unknown: false,
             // Carry the cached account reference so the "Account #N" badge shows
             // and offline ordering matches the post-refresh view. Falls back to
             // 0 ("default account") when no network read has cached one yet.
@@ -741,6 +774,7 @@ pub async fn load_contacts_offline(
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
         identity: owner_id,
         contacts: contact_list,
+        details_error: None,
     })
 }
 
@@ -1022,6 +1056,29 @@ mod tests {
             shown_contact_details(None, None, true, Some(legacy)),
             ContactDetails::default()
         );
+    }
+
+    /// A failed read leaves only the contacts whose details come from this
+    /// device known; with the read done, nothing is unknown.
+    #[test]
+    fn details_are_unknown_only_when_they_rest_on_a_failed_read() {
+        let empty = ContactDetails::default();
+        let note = details("note");
+        for (read_failed, published, local, synced_before, unknown) in [
+            (true, None, None, false, true),
+            (true, None, Some(&empty), false, true),
+            (true, None, Some(&note), false, false),
+            (true, None, None, true, false),
+            // Only the legacy read failed: published details are known.
+            (true, Some(&empty), None, false, false),
+            (false, None, None, false, false),
+        ] {
+            assert_eq!(
+                details_unknown(read_failed, published, local, synced_before),
+                unknown,
+                "{read_failed} {published:?} {local:?} {synced_before}"
+            );
+        }
     }
 
     /// Unreadable legacy details mark a contact unreadable only while they

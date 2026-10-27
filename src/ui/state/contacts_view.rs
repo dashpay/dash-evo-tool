@@ -8,6 +8,7 @@
 
 use super::contact_detail_view::{ContactDetailState, PendingWrite};
 use crate::backend_task::dashpay::ContactData;
+use crate::backend_task::error::TaskError;
 use crate::model::dashpay::{ContactsLoadKind, contact_request_recipient};
 use crate::model::identity_name::display_label as profile_display_label;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -17,6 +18,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Threshold for surfacing an unusually long-running request and pruning its
@@ -66,6 +68,9 @@ pub struct ContactsState {
     /// Whether `contacts` holds a loaded list, not the empty one before the
     /// first load lands.
     contacts_known: bool,
+    /// Why the last list could not read the saved contact details; while
+    /// set, no contact details are saved from this list.
+    details_error: Option<Arc<TaskError>>,
     /// Notes the hub saved, shown over lists that may not hold them yet.
     confirmed_notes: HashMap<(Network, Identifier, Identifier), ConfirmedNote>,
     /// Established contacts flagged `display_hidden`, kept aside so the tab can
@@ -153,6 +158,7 @@ impl ContactsState {
         self.outgoing.clear();
         self.contacts.clear();
         self.contacts_known = false;
+        self.details_error = None;
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
@@ -323,6 +329,17 @@ impl ContactsState {
     /// out of the active list — that is what "hidden" promises — but remain
     /// reachable through [`ContactsState::hidden_contacts`]. The selected
     /// contact's note draft follows the reloaded note.
+    /// Record whether the last list read the saved contact details.
+    pub fn record_details_error(&mut self, error: Option<Arc<TaskError>>) {
+        self.details_error = error;
+    }
+
+    /// Why the saved contact details are unread, if they are. Contact
+    /// details must not be saved from this list until a read succeeds.
+    pub fn details_error(&self) -> Option<&Arc<TaskError>> {
+        self.details_error.as_ref()
+    }
+
     pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
         self.record_loaded_contacts(contacts, None);
     }
@@ -669,6 +686,7 @@ mod tests {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: username.map(str::to_string),
             display_name: display.map(str::to_string),
@@ -724,6 +742,7 @@ mod tests {
         state.record_contacts(vec![ContactData {
             is_hidden: true,
             details_unreadable: false,
+            details_unknown: false,
             ..contact(Some("Bao"), None, None)
         }]);
         assert!(
@@ -896,6 +915,7 @@ mod tests {
             identity_id,
             is_hidden: true,
             details_unreadable: false,
+            details_unknown: false,
             ..contact(Some(nickname), None, None)
         }
     }

@@ -82,6 +82,10 @@ pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 
 /// Shown under a hidden contact whose saved details could not be read: its
 /// hidden flag is unknown, so it stays hidden until the user unhides it.
+/// Shown under a hidden contact whose saved details were not read.
+pub const UNREAD_DETAILS_NOTE: &str = "This contact's saved details have not been read yet.";
+/// Why saving waits while the saved contact details are unread.
+pub const DETAILS_UNREAD_TOOLTIP: &str = "Saving waits until your saved contact details are read. Unlock your wallet, then open Contacts again.";
 pub const UNREADABLE_DETAILS_NOTE: &str = "The details you saved for this contact could not be read, so it stays \
      hidden. Unhide it to show it in your list again.";
 
@@ -337,6 +341,11 @@ pub fn note_fee_text(fee: &str) -> String {
 /// change. A save already running for that contact dispatches nothing: each
 /// save is a paid write.
 fn dispatch_note_save(state: &mut ContactsState, identity: &QualifiedIdentity) -> AppAction {
+    // A note shown from unread details is a guess; saving it could replace
+    // a note the user never saw.
+    if state.details_error().is_some() {
+        return AppAction::None;
+    }
     let Some(contact) = state.selected_contact().cloned() else {
         return AppAction::None;
     };
@@ -364,9 +373,10 @@ fn dispatch_unhide(
     identity: &QualifiedIdentity,
     contact: &ContactData,
 ) -> AppAction {
-    if !state
-        .detail_mut()
-        .begin_visibility_write(identity.identity.id(), contact.identity_id)
+    if state.details_error().is_some()
+        || !state
+            .detail_mut()
+            .begin_visibility_write(identity.identity.id(), contact.identity_id)
     {
         return AppAction::None;
     }
@@ -543,6 +553,10 @@ fn render_populated(
     let mut action = AppAction::None;
 
     action |= header_row(ui, app_context, dark_mode);
+    if let Some(error) = state.details_error() {
+        ui.add_space(Spacing::SM);
+        ui.label(RichText::new(error.to_string()).color(DashColors::WARNING));
+    }
 
     // Everything scrolls below the header, so a long contact list stays
     // reachable in a short window. The two columns scroll on their own, so the
@@ -726,6 +740,7 @@ fn note_editor(
     let saving = state
         .detail()
         .is_writing(&identity.identity.id(), &contact_id);
+    let unread = state.details_error().is_some();
     let detail = state.detail_mut();
     let Some(note) = detail.note_mut(&contact_id) else {
         return false;
@@ -743,7 +758,7 @@ fn note_editor(
     );
     ui.add_space(6.0);
     ui.add_enabled(
-        !saving,
+        !saving && !unread,
         TextEdit::multiline(note)
             .hint_text(NOTE_PLACEHOLDER)
             .desired_rows(4)
@@ -770,7 +785,7 @@ fn note_editor(
     ui.add_space(6.0);
 
     let dirty = detail.is_dirty(&contact_id);
-    let can_save = dirty && invalid.is_none() && !saving;
+    let can_save = dirty && invalid.is_none() && !saving && !unread;
     let label = if saving {
         SAVING_NOTE_LABEL
     } else {
@@ -781,6 +796,8 @@ fn note_editor(
         save.clickable_tooltip(NOTE_SAVE_TOOLTIP)
     } else if saving {
         save.disabled_tooltip(NOTE_SAVING_TOOLTIP)
+    } else if unread {
+        save.disabled_tooltip(DETAILS_UNREAD_TOOLTIP)
     } else if let Some(error) = invalid {
         save.disabled_tooltip(error.to_string())
     } else {
@@ -976,6 +993,7 @@ fn hidden_section(
     for contact in state.hidden_contacts() {
         // A write to this contact is still running; the unhide waits for it.
         let busy = state.detail().is_writing(&owner, &contact.identity_id);
+        let unread = state.details_error().is_some();
         // Unhide is laid out first so a long name is shortened to the room it
         // leaves instead of pushing the button past the content column.
         eframe::egui::Sides::new().shrink_left().truncate().show(
@@ -987,20 +1005,30 @@ fn hidden_section(
                 );
             },
             |ui| {
-                let unhide = ui
-                    .add_enabled(
-                        !busy,
-                        ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode),
-                    )
-                    .clickable_tooltip(UNHIDE_TOOLTIP);
+                let unhide = ui.add_enabled(
+                    !busy && !unread,
+                    ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode),
+                );
+                let unhide = if unread {
+                    unhide.disabled_tooltip(DETAILS_UNREAD_TOOLTIP)
+                } else {
+                    unhide.clickable_tooltip(UNHIDE_TOOLTIP)
+                };
                 if unhide.clicked() {
                     clicked = Some(contact.clone());
                 }
             },
         );
-        if contact.details_unreadable {
+        let note = if contact.details_unknown {
+            Some(UNREAD_DETAILS_NOTE)
+        } else if contact.details_unreadable {
+            Some(UNREADABLE_DETAILS_NOTE)
+        } else {
+            None
+        };
+        if let Some(note) = note {
             ui.label(
-                RichText::new(UNREADABLE_DETAILS_NOTE)
+                RichText::new(note)
                     .small()
                     .color(DashColors::text_secondary(dark_mode)),
             );
@@ -1300,6 +1328,7 @@ mod tests {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -1320,6 +1349,7 @@ mod tests {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -1526,8 +1556,32 @@ mod tests {
         ContactData {
             is_hidden: true,
             details_unreadable: false,
+            details_unknown: false,
             ..contact_with_note(None)
         }
+    }
+
+    /// While the saved details are unread, the list's note and hidden flag
+    /// are guesses: no note save or unhide goes out from them.
+    #[test]
+    fn nothing_is_saved_while_the_saved_details_are_unread() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, None);
+        state.record_details_error(Some(std::sync::Arc::new(
+            crate::backend_task::error::TaskError::DashPayContactDetailsUnread {
+                source: Box::new(crate::backend_task::error::TaskError::SecretPromptCancelled),
+            },
+        )));
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "Bao".into();
+
+        assert_eq!(dispatch_note_save(&mut state, &identity), AppAction::None);
+        assert_eq!(
+            dispatch_unhide(&mut state, &identity, &hidden_bao()),
+            AppAction::None
+        );
+
+        state.record_details_error(None);
+        assert_ne!(dispatch_note_save(&mut state, &identity), AppAction::None);
     }
 
     /// An unhide and a note save both rewrite the same contactInfo document,
@@ -1734,6 +1788,7 @@ mod tests {
             note: note.map(str::to_string),
             is_hidden: true,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,

@@ -900,6 +900,7 @@ impl ScreenLike for ContactsList {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity,
                 contacts: contacts_data,
+                ..
             } => {
                 let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
 

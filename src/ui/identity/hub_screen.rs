@@ -804,7 +804,12 @@ impl ScreenLike for IdentityHubScreen {
         }
         // A reload re-arms without cancelling the load before it, so lists
         // can answer out of order; an older one would undo a confirmed note.
-        if let BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } = &result {
+        if let BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity,
+            contacts,
+            details_error,
+        } = &result
+        {
             if self
                 .contacts_state
                 .accepts_contacts_from(context.dispatch_id())
@@ -812,6 +817,8 @@ impl ScreenLike for IdentityHubScreen {
             {
                 self.contacts_state
                     .record_loaded_contacts(contacts.clone(), context.dispatch_id());
+                self.contacts_state
+                    .record_details_error(details_error.clone());
             }
             return;
         }
@@ -2449,6 +2456,7 @@ mod tests {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -2491,6 +2499,7 @@ mod tests {
                     note: None,
                     is_hidden: false,
                     details_unreadable: false,
+                    details_unknown: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,
@@ -2588,6 +2597,7 @@ mod tests {
                 note: note.map(Into::into),
                 is_hidden: false,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
@@ -2655,6 +2665,7 @@ mod tests {
         let contacts_result = |note| BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
             contacts: listed(note),
+            details_error: None,
         };
         screen.display_backend_task_result(&load_b, contacts_result(Some("Bao")));
         screen.display_backend_task_result(&load_a, contacts_result(None));
@@ -2802,12 +2813,14 @@ mod tests {
                 note: Some(note.into()),
                 is_hidden: false,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
                 avatar_url: None,
                 bio: None,
             }],
+            details_error: None,
         };
         let contacts_load = |screen: &mut IdentityHubScreen, on_screen: &QualifiedIdentity| {
             screen.contacts_state.invalidate();

@@ -203,6 +203,7 @@ mod tests {
             note: note.map(str::to_string),
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,

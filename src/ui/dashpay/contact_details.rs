@@ -53,6 +53,9 @@ pub struct ContactInfo {
     pub account_reference: u32,
 }
 
+/// Why Edit is unavailable before the contact's saved details are read.
+const EDIT_WAITS_FOR_DETAILS: &str = "Editing waits until this contact's saved details are read. Unlock your wallet, then open this contact again.";
+
 pub struct ContactDetailsScreen {
     pub app_context: Arc<AppContext>,
     pub identity: QualifiedIdentity,
@@ -196,7 +199,9 @@ impl ContactDetailsScreen {
     }
 
     fn start_editing(&mut self) {
-        if self.details_loading {
+        // This device's copy may not hold what is saved: a save from it could
+        // replace saved values the user never saw.
+        if self.details_loading || !self.details_read {
             return;
         }
         if let Some(info) = &self.contact_info {
@@ -399,7 +404,11 @@ impl ContactDetailsScreen {
                                     action = self.save_contact_info();
                                 }
                             } else if ui
-                                .add_enabled(!self.details_loading, egui::Button::new("Edit"))
+                                .add_enabled(
+                                    !self.details_loading && self.details_read,
+                                    egui::Button::new("Edit"),
+                                )
+                                .on_disabled_hover_text(EDIT_WAITS_FOR_DETAILS)
                                 .clicked()
                             {
                                 self.start_editing();
@@ -636,10 +645,10 @@ impl ScreenLike for ContactDetailsScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        // Only this screen's own details read reopens the editor: a failed
-        // profile read must not unlock it from this device's older copy while
-        // the details read is still pending. A failed details read leaves that
-        // copy in place; a save from it still replaces only the edited fields.
+        // Only this screen's own details read ends the wait: a failed profile
+        // read must not end it while the details read is still pending. A
+        // failed details read ends it with the editor still closed, since
+        // only a read that succeeds opens it.
         if context.dashpay_contact_details_target()
             == Some((self.identity.identity.id(), self.contact_id))
         {
@@ -738,6 +747,7 @@ impl ScreenLike for ContactDetailsScreen {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity,
                 contacts: contacts_data,
+                ..
             } => {
                 // Contacts loaded for another identity say nothing about this
                 // screen's contact — a reload that outlived an identity switch
@@ -880,9 +890,9 @@ mod tests {
         assert!(screen.edit_hidden);
     }
 
-    /// A failed profile read does not open the editor while the details read
-    /// is still pending; only the details read's own failure does, leaving
-    /// this device's copy in place.
+    /// The editor opens only once the details read succeeds: neither a failed
+    /// profile read nor a failed details read opens it on this device's copy,
+    /// which may not hold what is saved.
     #[test]
     fn a_failed_profile_read_keeps_the_editor_closed_until_the_details_read_ends() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -928,9 +938,17 @@ mod tests {
         fail(&mut screen, details);
         screen.start_editing();
         assert!(
-            screen.editing_info,
-            "a failed details read opens the editor"
+            !screen.editing_info,
+            "a failed details read keeps the editor closed"
         );
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails::default(),
+        });
+        screen.start_editing();
+        assert!(screen.editing_info, "a read that succeeds opens it");
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no
@@ -944,6 +962,8 @@ mod tests {
         if let Some(info) = &mut screen.contact_info {
             info.nickname = Some("Bao".into());
         }
+        // The details read succeeded.
+        screen.details_read = true;
 
         screen.start_editing();
         screen.edit_nickname.clear();

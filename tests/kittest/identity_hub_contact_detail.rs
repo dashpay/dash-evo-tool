@@ -33,6 +33,7 @@ fn bao(note: Option<&str>) -> ContactData {
         note: note.map(str::to_string),
         is_hidden: false,
         details_unreadable: false,
+        details_unknown: false,
         account_reference: 0,
         username: Some("bao".into()),
         display_name: Some("Bao Nguyen".into()),
@@ -42,6 +43,16 @@ fn bao(note: Option<&str>) -> ContactData {
 }
 
 fn deliver(hub: &mut HubHarness, owner: Identifier, contact: ContactData) {
+    deliver_with(hub, owner, contact, None);
+}
+
+/// [`deliver`], with the list's saved-details read error.
+fn deliver_with(
+    hub: &mut HubHarness,
+    owner: Identifier,
+    contact: ContactData,
+    details_error: Option<std::sync::Arc<dash_evo_tool::backend_task::error::TaskError>>,
+) {
     let app_context = hub.state().0.app_context.clone();
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
         identity: app_context.resolve_selected_identity().expect("identity"),
@@ -51,6 +62,7 @@ fn deliver(hub: &mut HubHarness, owner: Identifier, contact: ContactData) {
         BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
             contacts: vec![contact],
+            details_error,
         },
     );
 }
@@ -680,6 +692,63 @@ fn an_unreadable_hidden_contact_is_labelled() {
                 hub.query_by_label(UNREADABLE_DETAILS_NOTE).is_some(),
                 unreadable,
                 "unreadable = {unreadable}"
+            );
+        });
+    }
+}
+
+/// A list whose saved details could not be read says so, labels the hidden
+/// contact those details would place, and offers no unhide until a read
+/// succeeds.
+#[test]
+fn unread_saved_details_are_explained_and_block_the_unhide() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    use dash_evo_tool::ui::identity::contacts::{
+        SHOW_HIDDEN_LABEL, UNHIDE_LABEL, UNREAD_DETAILS_NOTE,
+    };
+    use egui_kittest::kittest::NodeT;
+    let unread_error = || TaskError::DashPayContactDetailsUnread {
+        source: Box::new(TaskError::SecretPromptCancelled),
+    };
+    for unread in [true, false] {
+        with_isolated_data_dir(|| {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            let _guard = runtime.enter();
+            let app = crate::support::mount_app(
+                dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances,
+            );
+            let app_context = app.state().current_app_context().clone();
+            let owner = seed_identity_with_usernames(&app_context);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                WIDE,
+                IdentityHubTab::Contacts,
+                |hub, owner| {
+                    let mut contact = bao(None);
+                    contact.is_hidden = true;
+                    contact.details_unknown = unread;
+                    let error = unread.then(|| std::sync::Arc::new(unread_error()));
+                    deliver_with(hub, owner, contact, error);
+                },
+            );
+            hub.get_by_label(&format!("{SHOW_HIDDEN_LABEL} · 1"))
+                .click();
+            hub.run_steps(2);
+
+            let notice = unread_error().to_string();
+            assert_eq!(hub.query_by_label(&notice).is_some(), unread, "{unread}");
+            assert_eq!(
+                hub.query_by_label(UNREAD_DETAILS_NOTE).is_some(),
+                unread,
+                "{unread}"
+            );
+            assert_eq!(
+                hub.get_by_label(UNHIDE_LABEL)
+                    .accesskit_node()
+                    .is_disabled(),
+                unread,
+                "{unread}"
             );
         });
     }

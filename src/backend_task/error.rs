@@ -1467,6 +1467,18 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// The contacts list could not read the contact details saved in the
+    /// owner's stored documents (the wallet is locked, or its password prompt
+    /// was cancelled). Contacts whose visibility depends on them stay hidden,
+    /// and edits wait for a read that succeeds.
+    #[error(
+        "Your saved contact details could not be read, so some contacts stay hidden and editing is paused. Unlock your wallet, then open Contacts again."
+    )]
+    DashPayContactDetailsUnread {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A contact-details save that stayed on this device, because publishing
     /// waits for a second contact, could not record which details this device
     /// holds; on reload the older details would show again.

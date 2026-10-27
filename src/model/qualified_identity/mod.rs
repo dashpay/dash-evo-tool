@@ -10,7 +10,8 @@ pub mod qualified_identity_public_key;
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
 use crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES;
 use crate::model::identity_key_usability::{
-    KeyRequirements, SigningScope, document_security_levels, now_ms, select_identity_signing_key,
+    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, document_security_levels, now_ms,
+    select_identity_signing_key,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -584,6 +585,11 @@ const IDENTITY_BLOB_DECODE_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB
 // key selector once it exists, instead of restating them here.
 pub const DASHPAY_SIGNING_KEY_TYPES: &[KeyType] =
     &[KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160];
+
+/// The key purposes DPP accepts for a batch of one token transfer or claim,
+/// in the order [`QualifiedIdentity::single_token_transition_key`] tries them
+/// (`BatchTransitionV1::purpose_requirement`; TRANSFER requires CRITICAL).
+const SINGLE_TOKEN_TRANSITION_PURPOSES: [Purpose; 2] = [Purpose::AUTHENTICATION, Purpose::TRANSFER];
 
 /// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
 /// Pulled into its own function (rather than inlined at the one call site) so
@@ -1279,28 +1285,30 @@ impl QualifiedIdentity {
         contract_id: dash_sdk::platform::Identifier,
     ) -> Option<&IdentityPublicKey> {
         let scope = SigningScope::ContractWide { contract_id };
-        [Purpose::AUTHENTICATION, Purpose::TRANSFER]
+        SINGLE_TOKEN_TRANSITION_PURPOSES
             .into_iter()
             .find_map(|purpose| {
-                self.signing_key_now(KeyRequirements::new(
-                    purpose,
-                    &[SecurityLevel::CRITICAL],
-                    scope,
-                ))
+                self.signing_key_now(
+                    KeyRequirements::new(purpose, &[SecurityLevel::CRITICAL], scope)
+                        .with_key_types(PLATFORM_SIGNING_KEY_TYPES),
+                )
             })
     }
 
-    /// Whether a private key of a purpose and level
+    /// Whether a private key of a purpose, level and key type
     /// [`Self::single_token_transition_key`] takes is filed for the identity:
-    /// the gate in front of the token transfer and claim forms.
+    /// the gate in front of the token transfer form, and of the claim form
+    /// for a user identity. Expiry and contract bounds are left to the key
+    /// chooser's warnings, as for every other form.
     pub fn holds_single_token_transition_key(&self) -> bool {
         self.private_keys
             .identity_public_keys()
             .iter()
             .any(|key_ref| {
                 let key = &key_ref.1.identity_public_key;
-                matches!(key.purpose(), Purpose::AUTHENTICATION | Purpose::TRANSFER)
+                SINGLE_TOKEN_TRANSITION_PURPOSES.contains(&key.purpose())
                     && key.security_level() == SecurityLevel::CRITICAL
+                    && PLATFORM_SIGNING_KEY_TYPES.contains(&key.key_type())
             })
     }
 
@@ -3479,7 +3487,7 @@ mod protocol_v14_compat_tests {
         );
     }
 
-    /// Review fix: the automatic choice took any key with a private half
+    /// Regression: the automatic choice took any key with a private half
     /// filed, so an unlimited key filed under a wallet this device does not
     /// hold, or in the legacy encrypted form, won over a usable limited key,
     /// and signing then failed instead of falling back to the usable key.
@@ -3722,7 +3730,7 @@ mod protocol_v14_compat_tests {
         );
     }
 
-    /// Review fix: a token transfer took only a CRITICAL AUTHENTICATION key,
+    /// Regression: a token transfer took only a CRITICAL AUTHENTICATION key,
     /// so an identity holding only a CRITICAL TRANSFER key, which DPP also
     /// accepts for a batch of one token transfer or claim, could not send.
     #[test]
@@ -3762,7 +3770,36 @@ mod protocol_v14_compat_tests {
         assert!(!qi.holds_single_token_transition_key());
     }
 
-    /// Review fix: the automatic username registration key was taken of any
+    /// Regression: the single token transition key took any key type, so a
+    /// CRITICAL EdDSA authentication key, which Platform refuses, shadowed a
+    /// usable CRITICAL TRANSFER key, and the gate counted it as usable.
+    #[test]
+    fn a_single_token_transition_skips_a_key_platform_cannot_verify() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let mut eddsa = auth_key(1, SecurityLevel::CRITICAL);
+        eddsa.set_key_type(KeyType::EDDSA_25519_HASH160);
+        let mut transfer = auth_key(2, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+
+        let qi = identity_holding(&[eddsa.clone(), transfer]);
+        assert_eq!(
+            qi.single_token_transition_key(Identifier::new([0x70; 32]))
+                .map(|k| k.id()),
+            Some(2)
+        );
+        assert!(!identity_holding(&[eddsa]).holds_single_token_transition_key());
+
+        let mut bls = auth_key(3, SecurityLevel::CRITICAL);
+        bls.set_key_type(KeyType::BLS12_381);
+        assert!(
+            identity_holding(&[bls]).holds_single_token_transition_key(),
+            "Platform verifies BLS signatures"
+        );
+    }
+
+    /// Regression: the automatic username registration key was taken of any
     /// key type, so a BLS or EdDSA key with a lower id won over an ECDSA key.
     #[test]
     fn a_username_registration_key_is_an_ecdsa_key() {

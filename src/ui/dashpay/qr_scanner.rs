@@ -404,7 +404,7 @@ fn signing_key_wallet(
 mod tests {
     use super::*;
 
-    /// Review fix: the screen preselected an identity but no wallet, and
+    /// Regression: the screen preselected an identity but no wallet, and
     /// picked the wallet only when the identity changed, so the default path
     /// never checked whether the wallet holding the DashPay signing key was
     /// locked before offering to send.

@@ -2583,7 +2583,7 @@ mod tests {
         );
     }
 
-    /// Review fix: an unlinked identity whose keys come from two wallets was
+    /// Regression: an unlinked identity whose keys come from two wallets was
     /// owned by the wallet of its lowest key id, no longer by the wallet of
     /// its DPNS signing key as before, so Add Identity could preselect the
     /// other wallet. The signing-key wallet comes first again.

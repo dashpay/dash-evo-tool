@@ -369,14 +369,15 @@ impl TransactionType {
             TransactionType::UsernameRegistration => {
                 Some(crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES)
             }
+            TransactionType::TokenTransfer | TransactionType::TokenClaim => {
+                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
+            }
             TransactionType::RegisterContract
             | TransactionType::UpdateContract
             | TransactionType::Transfer
             | TransactionType::Withdraw
             | TransactionType::DocumentAction
-            | TransactionType::TokenAction
-            | TransactionType::TokenTransfer
-            | TransactionType::TokenClaim => None,
+            | TransactionType::TokenAction => None,
         }
     }
 
@@ -1311,7 +1312,7 @@ mod tests {
         }
     }
 
-    /// Review fix: the chooser gate counted any filed key of the right purpose
+    /// Regression: the chooser gate counted any filed key of the right purpose
     /// and level, while the list left out disabled keys and keys bound
     /// elsewhere, so an identity holding only such a key got an empty list
     /// instead of the no-usable-key guidance. Both now apply one predicate,
@@ -1397,6 +1398,13 @@ mod tests {
             Some(DPNS_SIGNING_KEY_TYPES)
         );
         assert_eq!(TransactionType::DocumentAction.allowed_key_types(), None);
+        for token in [TransactionType::TokenTransfer, TransactionType::TokenClaim] {
+            assert_eq!(
+                token.allowed_key_types(),
+                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES),
+                "{token:?}"
+            );
+        }
         assert_eq!(
             TransactionType::UsernameRegistration.allowed_purposes(),
             vec![Purpose::AUTHENTICATION]

@@ -341,22 +341,15 @@ impl ScreenLike for ClaimTokensScreen {
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
             } else {
-                match identity.identity_type {
-                    IdentityType::User => !identity
-                        .available_authentication_keys_with_critical_security_level()
-                        .is_empty(),
-                    IdentityType::Masternode | IdentityType::Evonode => {
-                        !identity.available_transfer_keys().is_empty()
-                    }
-                }
+                holds_claim_key(identity)
             };
 
             if !has_keys {
                 ui.colored_label(
                     Color32::RED,
                     format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        identity.identity_type,
+                        "No CRITICAL authentication or transfer key is loaded for this {identity_type} identity.",
+                        identity_type = identity.identity_type,
                     ),
                 );
                 ui.add_space(10.0);
@@ -620,5 +613,42 @@ impl ScreenLike for ClaimTokensScreen {
         }
 
         action
+    }
+}
+
+/// Whether `identity` holds a key the claim form can sign with, the gate in
+/// front of the form outside developer mode: for a user identity, a key of
+/// the kind [`QualifiedIdentity::single_token_transition_key`] picks.
+fn holds_claim_key(identity: &QualifiedIdentity) -> bool {
+    match identity.identity_type {
+        IdentityType::User => identity.holds_single_token_transition_key(),
+        IdentityType::Masternode | IdentityType::Evonode => {
+            !identity.available_transfer_keys().is_empty()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+    /// Regression: the claim key falls back to a CRITICAL TRANSFER key, but
+    /// the gate in front of the form counted only CRITICAL AUTHENTICATION
+    /// keys for a user identity, so one holding only a transfer key was told
+    /// it had no key.
+    #[test]
+    fn the_claim_gate_admits_the_keys_the_claim_signs_with() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let mut transfer = auth_key(1, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+        let identity = identity_holding(&[transfer]);
+        assert_eq!(identity.identity_type, IdentityType::User);
+        assert!(holds_claim_key(&identity));
+
+        assert!(!holds_claim_key(&identity_holding(&[auth_key(
+            1,
+            SecurityLevel::HIGH
+        )])));
     }
 }

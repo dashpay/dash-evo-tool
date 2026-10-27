@@ -24,6 +24,18 @@ use dash_sdk::dpp::identity::{
 };
 use dash_sdk::platform::Identifier;
 
+/// The key types Platform verifies an identity-signed state transition's
+/// signature with (drive-abci's `SUPPORTED_KEY_TYPES`), all of which DET's
+/// signer signs with. Platform refuses `EDDSA_25519_HASH160` and
+/// `BIP13_SCRIPT_HASH` keys, whatever the transition.
+// TODO(upstream): take the set from dpp once it exposes one; drive-abci's
+// is private.
+pub const PLATFORM_SIGNING_KEY_TYPES: &[KeyType] = &[
+    KeyType::ECDSA_SECP256K1,
+    KeyType::ECDSA_HASH160,
+    KeyType::BLS12_381,
+];
+
 /// What a signature authorizes, as far as contract bounds are concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningScope<'a> {
@@ -284,7 +296,7 @@ mod tests {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
 
-    /// Review fix: a document type requiring MASTER accepted no level, as
+    /// Regression: a document type requiring MASTER accepted no level, as
     /// MASTER sorts below CRITICAL. Platform accepts exactly MASTER for it,
     /// as upstream platform-wallet's `allowed_signing_security_levels` does.
     #[test]

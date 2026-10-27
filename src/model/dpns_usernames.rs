@@ -142,6 +142,12 @@ pub fn key_can_sign_documents(
 /// network time, not this device's clock. So is a key bound to a contract
 /// group: whether the group covers DPNS is Platform state, so only a key
 /// certainly bound elsewhere is refused here.
+///
+/// By design, the relaxation reaches only an identity that can register at
+/// all: [`registration_key_status`] applies the automatic rule
+/// ([`key_can_sign_documents`]), so an identity whose only registration-capable
+/// keys are expired or contract-group bound is told it has no suitable key and
+/// never reaches the chooser that would offer them.
 // TODO(upstream): call platform-wallet's public explicit-key validation once it
 // exists (`resolve_authentication_signing_key` is private) and route the
 // registration through `register_name_with_signer`.
@@ -161,11 +167,17 @@ pub fn chosen_key_can_sign_documents(
 }
 
 /// The key types a username registration is signed with: ECDSA keys, as
-/// upstream platform-wallet's DPNS writes require (Platform refuses EdDSA
-/// outright). `ECDSA_HASH160` is taken too, as for DashPay
-/// ([`super::qualified_identity::DASHPAY_SIGNING_KEY_TYPES`]): Platform accepts
-/// it and DET signed with it before, so dropping it would strand identities
-/// whose only document key is a hash160 key.
+/// upstream platform-wallet's DPNS writes require. `ECDSA_HASH160` is taken
+/// too, as for DashPay ([`super::qualified_identity::DASHPAY_SIGNING_KEY_TYPES`]):
+/// Platform accepts it and DET signed with it before, so dropping it would
+/// strand identities whose only document key is a hash160 key.
+///
+/// `BLS12_381` is left out for parity with upstream, not because Platform
+/// refuses it: Platform verifies BLS signatures
+/// ([`super::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES`]) and DET can
+/// sign with a BLS key, so an identity whose only registration-capable key is
+/// a BLS key cannot register a username here. EdDSA and BIP13 keys Platform
+/// refuses outright.
 // TODO(upstream): take the key types from platform-wallet's public DPNS key
 // selector once it exists, instead of restating them here.
 pub const DPNS_SIGNING_KEY_TYPES: &[dash_sdk::dpp::identity::KeyType] = &[
@@ -1269,7 +1281,7 @@ mod tests {
         assert!(!chosen_key_can_sign_documents(&disabled, high));
     }
 
-    /// Review fix: a username registration was signed with any key type, so a
+    /// Regression: a username registration was signed with any key type, so a
     /// BLS or EdDSA key could be picked although upstream platform-wallet's
     /// DPNS writes sign with ECDSA keys only, and Platform refuses EdDSA.
     #[test]
@@ -1308,7 +1320,7 @@ mod tests {
         }
     }
 
-    /// Review fix: a contract-group bound key the user chose was refused here,
+    /// Regression: a contract-group bound key the user chose was refused here,
     /// though whether the group covers DPNS is only known to Platform. The
     /// automatic choice still never takes one; a key bound elsewhere is
     /// refused either way.
@@ -1332,7 +1344,7 @@ mod tests {
         assert!(!chosen_key_can_sign_documents(&elsewhere, high));
     }
 
-    /// Review fix: readiness judged the stored copy of a key, so a key whose
+    /// Regression: readiness judged the stored copy of a key, so a key whose
     /// expiry Platform has since extended was reported unusable, and its
     /// missing wallet was not reported as what would lift the refusal.
     #[test]

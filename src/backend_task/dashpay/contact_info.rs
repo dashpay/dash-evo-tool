@@ -155,12 +155,14 @@ impl ContactInfoPrivateData {
             })
             .collect::<Option<Vec<u32>>>()?;
 
-        // Every payload without a reserved length reads the same both ways,
-        // so the fallback adds nothing for it.
-        if prefix == LengthPrefix::SingleByte && !reserved_length {
-            return None;
-        }
-        if !Self::is_padding(bytes, pos) {
+        let complete = match prefix {
+            LengthPrefix::CompactSize => Self::is_padding(bytes, pos),
+            // A payload without a reserved length reads the same both ways, so
+            // the fallback adds nothing for it. One with such a length is over
+            // 255 bytes, which older versions never padded.
+            LengthPrefix::SingleByte => reserved_length && pos == bytes.len(),
+        };
+        if !complete {
             return None;
         }
 
@@ -195,29 +197,28 @@ enum LengthPrefix {
     CompactSize,
     /// One byte, which older versions of this client wrote for lengths up to
     /// 255. It differs from CompactSize only for 253 to 255, the CompactSize
-    /// prefix markers, so it is tried only when CompactSize fails and only
-    /// accepted when such a length is present. A text read both ways would
-    /// need a control character as its second byte, which text fields do
-    /// not produce.
+    /// prefix markers, so it is tried only when CompactSize fails, and only
+    /// accepted when such a length is present and the payload ends exactly
+    /// after the last field.
     SingleByte,
 }
 
 /// Decode a decrypted `privateData` payload for display.
 ///
-/// platform-wallet's tolerant reader comes first, so newer minor versions
-/// still show. This client's reader then covers the long nicknames and notes
-/// older versions of this client wrote, which platform-wallet misreads.
+/// This client's reader comes first, so the contact list shows every payload
+/// a save can read with the same values, including the long nicknames and
+/// notes older versions of this client wrote, which platform-wallet can
+/// misread. platform-wallet's tolerant reader then covers what a save will
+/// not rewrite, such as a newer minor version.
 pub(super) fn decode_contact_info_details(plaintext: &[u8]) -> Option<UpstreamPrivateData> {
-    platform_wallet::wallet::identity::crypto::decode_private_data(plaintext)
-        .ok()
-        .or_else(|| {
-            ContactInfoPrivateData::deserialize(plaintext).map(|data| UpstreamPrivateData {
-                alias_name: data.alias_name,
-                note: data.note,
-                display_hidden: data.display_hidden,
-                accepted_accounts: data.accepted_accounts,
-            })
+    ContactInfoPrivateData::deserialize(plaintext)
+        .map(|data| UpstreamPrivateData {
+            alias_name: data.alias_name,
+            note: data.note,
+            display_hidden: data.display_hidden,
+            accepted_accounts: data.accepted_accounts,
         })
+        .or_else(|| platform_wallet::wallet::identity::crypto::decode_private_data(plaintext).ok())
 }
 
 /// Apply an explicit whole-document update to the payload already on Platform.
@@ -1694,6 +1695,84 @@ mod tests {
         for corrupt in [invalid_utf8, extended] {
             assert!(ContactInfoPrivateData::deserialize(&corrupt).is_none());
             assert!(decode_contact_info_details(&corrupt).is_none());
+        }
+    }
+
+    /// A 253-byte note older versions wrote, starting with bytes that a
+    /// CompactSize reader takes as an in-range 8-byte length followed by a
+    /// complete, shorter payload.
+    fn control_character_note() -> String {
+        let note = format!("\u{8}\u{0}abcdefgh\u{1}\u{0}{}", "x".repeat(241));
+        assert_eq!(note.len(), 253);
+        note
+    }
+
+    /// Whatever a save reads, the contact list shows with the same values,
+    /// including legacy text with control characters, which platform-wallet
+    /// reads as different fields.
+    #[test]
+    fn the_contact_list_shows_what_a_save_reads() {
+        let mut payloads = Vec::new();
+        for len in [0, 3, 252, 253, 254, 255] {
+            let text = "x".repeat(len);
+            let text = (len > 0).then_some(text.as_str());
+            for hidden in [false, true] {
+                let contact = legacy_contact(text, text, hidden, vec![0, 7]);
+                payloads.push(legacy_det_plaintext(&contact, 0x9C));
+                payloads.push(contact.serialize().expect("serialize"));
+            }
+        }
+        let control = control_character_note();
+        for contact in [
+            legacy_contact(None, Some(&control), false, Vec::new()),
+            legacy_contact(Some(&control), Some("Met"), true, vec![4]),
+            legacy_contact(Some("\u{0}\u{1}"), Some(&control), false, vec![1]),
+        ] {
+            payloads.push(legacy_det_plaintext(&contact, 0));
+            payloads.push(contact.serialize().expect("serialize"));
+        }
+
+        for payload in &payloads {
+            let saved = ContactInfoPrivateData::deserialize(payload)
+                .unwrap_or_else(|| panic!("a save must read {payload:02x?}"));
+            let shown = decode_contact_info_details(payload)
+                .unwrap_or_else(|| panic!("the contact list must show {payload:02x?}"));
+            assert_eq!(shown.alias_name, saved.alias_name, "{payload:02x?}");
+            assert_eq!(shown.note, saved.note, "{payload:02x?}");
+            assert_eq!(shown.display_hidden, saved.display_hidden, "{payload:02x?}");
+            assert_eq!(
+                shown.accepted_accounts, saved.accepted_accounts,
+                "{payload:02x?}"
+            );
+        }
+    }
+
+    /// Control characters in a long field must not let a damaged payload
+    /// through the single-byte fallback.
+    #[test]
+    fn control_characters_in_long_fields_do_not_hide_corruption() {
+        let control = control_character_note();
+        let long_control = format!("\u{0}\u{1}{}", "x".repeat(252));
+        for contact in [
+            legacy_contact(None, Some(&control), true, Vec::new()),
+            legacy_contact(Some(&long_control), None, false, vec![2]),
+            legacy_contact(Some(&control), Some(&long_control), false, Vec::new()),
+        ] {
+            for payload in [
+                legacy_det_plaintext(&contact, 0),
+                contact.serialize().expect("serialize"),
+            ] {
+                let mut appended = payload.clone();
+                appended.push(0);
+                let mut truncated = payload.clone();
+                truncated.pop();
+                for corrupt in [appended, truncated] {
+                    assert!(
+                        ContactInfoPrivateData::deserialize(&corrupt).is_none(),
+                        "a save must not read {corrupt:02x?}"
+                    );
+                }
+            }
         }
     }
 

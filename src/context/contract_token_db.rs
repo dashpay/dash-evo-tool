@@ -1185,6 +1185,65 @@ mod tests {
         .collect()
     }
 
+    /// Protocol versions the pinned contract fixtures were written at.
+    const PINNED_CONTRACT_PROTOCOLS: std::ops::RangeInclusive<u32> = 10..=15;
+
+    /// Labels of [`stored_contracts_at`]'s contracts, in its order.
+    const PINNED_CONTRACT_LABELS: [&str; 4] = ["user", "dpns", "dashpay", "token-history"];
+
+    fn pinned_contract_path(protocol_version: u32, label: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/context/testdata/stored_contracts")
+            .join(format!("p{protocol_version}-{label}.hex"))
+    }
+
+    /// Contract bytes written by an earlier DET build, pinned in
+    /// `testdata/stored_contracts` (see its README), still load after a
+    /// dependency bump: each decodes at the protocol it was written at, to the
+    /// contract this build makes, and at every later protocol version, without
+    /// losing a byte. A failure here means an upgrade would break contracts
+    /// users already saved. Never regenerate the fixtures to make it pass.
+    #[test]
+    fn contracts_saved_by_an_earlier_build_still_load() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+        for written_at in PINNED_CONTRACT_PROTOCOLS {
+            let written_version = PlatformVersion::get(written_at).expect("known version");
+            let built_now = stored_contracts_at(written_at);
+            for ((original, _), label) in built_now.into_iter().zip(PINNED_CONTRACT_LABELS) {
+                let path = pinned_contract_path(written_at, label);
+                let pinned = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                let bytes = hex::decode(pinned.trim()).expect("hex fixture");
+
+                for read_at in written_at..=*PINNED_CONTRACT_PROTOCOLS.end() {
+                    crate::context::test_support::set_sdk_protocol_version(&ctx, read_at);
+                    let decoded = ctx
+                        .decode_stored_contract(StoredContract {
+                            contract_bytes: bytes.clone(),
+                            alias: Some("saved".to_string()),
+                        })
+                        .unwrap_or_else(|e| panic!("p{written_at}-{label} at {read_at}: {e:?}"));
+                    assert_eq!(decoded.alias.as_deref(), Some("saved"));
+                    if read_at == written_at {
+                        assert_eq!(
+                            decoded.contract, original,
+                            "p{written_at}-{label} decodes to a different contract"
+                        );
+                    }
+                    assert_eq!(
+                        decoded
+                            .contract
+                            .serialize_to_bytes_with_platform_version(written_version)
+                            .expect("re-encode"),
+                        bytes,
+                        "p{written_at}-{label} read at {read_at} lost data"
+                    );
+                }
+            }
+        }
+    }
+
     /// Contracts saved while DET built at protocol 12 still load, unchanged,
     /// once DET builds at the network's 13 or 14.
     #[test]

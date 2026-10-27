@@ -56,24 +56,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Platform dependencies track `fix/persist-drain-conflict-outcomes`
-  (dashpay/platform#5528) at `344e110a`, which restores confirmed spends and
-  finality on wallet load, reconciles persisted Core transaction accounting and
-  records funding asset locks that lose an input conflict. DET retains its
-  pre-send history check.
-
-- Core payments and new asset locks are blocked before signing when persisted
-  confirmed history shows that the wallet still offers already-spent inputs.
-  This consistency check remains active after Full resync clears visible history.
-- Core-to-Platform funding appears inside Dash Core Transactions with row
-  details and recorded payment conflicts. Pending transactions appear first;
-  recovered historical funding is not labelled as an unfinished transfer. Local
-  records reload through Advanced → Refresh; row buttons share the final Actions column. Cancellation
-  remains unavailable until the wallet backend supports safe reconciliation.
-- Wallet maintenance actions are grouped under Advanced: Import key, Refresh,
-  Full resync, which rescans the selected HD wallet’s Core history from genesis,
-  and Get test DASH on Testnet. Full resync uses the blocking initial-sync
-  progress window until the wallet scan completes.
 - **Upgrade backup retention setting**: Settings → Upgrade Backups controls how
   long the backup copies taken before a storage upgrade are kept. By default,
   backups older than 90 days are now deleted automatically; choose another
@@ -230,16 +212,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Backend E2E funding waits for final, unreserved asset-lock inputs and recovers
-  leftover test funds before checking the suite budget. Asset-lock tests select
-  the newly broadcast transaction in duffs; shielded tests wait for balance
-  propagation and use a withdrawal amount above the protocol minimum.
-
-- Backend E2E funded test wallets use unique names so successive tests can
-  register wallets in the shared persistent database.
-
-- CI runs documentation tests once as part of the main test suite and uses
-  Cargo directly instead of the retired Cargo action.
 - Long lists of masternodes can be scrolled everywhere. In Masternodes →
   Votes, the "Vote with" list named every loaded node but did not scroll: with
   more nodes than fit in the window, the rest of the list and the "Save as my
@@ -890,8 +862,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Full resync clears the selected wallet’s displayed Core history across restarts
-  and rebuilds it from observed blocks, retaining spend accounting and reservations.
 - Masternodes → Votes → History now opens with the contest that ended most
   recently at the top, instead of in name order. Contests that ended at the
   same time follow their names. The column headings show which column orders

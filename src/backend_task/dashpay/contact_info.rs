@@ -206,11 +206,15 @@ trait SaveOps {
 ///
 /// Nothing is written when the current details cannot be read (a cancelled
 /// password prompt included): a field the update keeps would otherwise be
-/// saved from a guess. Over saved details that could not be read, a save that
-/// keeps a text field, other than unhiding, is refused with
-/// [`TaskError::DashPayContactDetailsUnreadable`]. A save whose synced record
-/// fails is reported as failed, since the old legacy details would show
-/// again on reload.
+/// saved from a guess. Two refusals follow, in this order, each writing
+/// nothing:
+/// - [`TaskError::DashPayContactDetailsChanged`]: a field the update
+///   replaces no longer holds what the user opened.
+/// - [`TaskError::DashPayContactDetailsUnreadable`]: the saved details could
+///   not be read and the save, other than unhiding, keeps a text field.
+///
+/// A save whose synced record fails is reported as failed, since the old
+/// legacy details would show again on reload.
 async fn save_contact_details<O: SaveOps>(
     ops: &O,
     update: &ContactInfoUpdate,
@@ -629,6 +633,63 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!*ops.marked.lock().unwrap());
+    }
+
+    /// A stale view wins over unreadable details: the user saw something
+    /// else, so they reload first and nothing is written, whatever the
+    /// update keeps.
+    #[tokio::test]
+    async fn a_stale_view_of_unreadable_details_is_refused_as_changed() {
+        let ops = ScriptedSave {
+            unreadable: true,
+            ..ScriptedSave::new(
+                Ok(ContactDetails {
+                    hidden: true,
+                    ..Default::default()
+                }),
+                false,
+            )
+        };
+
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::visibility(&ContactDetails::default(), true),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// An unhide sent from a list that showed the details as unreadable,
+    /// after they became readable: it keeps them when they are still hidden,
+    /// and is refused as changed, writing nothing, when they are not.
+    #[tokio::test]
+    async fn an_unhide_over_details_that_became_readable_keeps_them() {
+        let listed = ContactDetails {
+            hidden: true,
+            ..Default::default()
+        };
+        let readable = |hidden| ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Real".into()),
+            hidden,
+        };
+        let unhide = ContactInfoUpdate::visibility(&listed, false);
+
+        let ops = ScriptedSave::new(Ok(readable(true)), false);
+        save_contact_details(&ops, &unhide).await.expect("unhidden");
+        assert_eq!(*ops.published.lock().unwrap(), vec![readable(false)]);
+
+        let ops = ScriptedSave::new(Ok(readable(false)), false);
+        assert!(matches!(
+            save_contact_details(&ops, &unhide).await,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
     }
 
     /// Saved details that could not be read are not empty ones: a save that

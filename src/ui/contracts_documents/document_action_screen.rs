@@ -2907,7 +2907,14 @@ mod tests {
         screen.pay_optional_token_cost = true;
         assert_eq!(
             token_payment(&mut screen),
-            super::token_payment(Some(cost), true)
+            Some(TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+                payment_token_contract_id: None,
+                token_contract_position: 0,
+                gas_fees_paid_by: cost.gas_fees_paid_by,
+                minimum_token_cost: None,
+                maximum_token_cost: Some(5),
+            })),
+            "the kept cost is paid, capped at its amount"
         );
     }
 

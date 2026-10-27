@@ -1247,6 +1247,33 @@ impl WalletSendScreen {
         }
     }
 
+    /// Take a receiving address the backend generated, returning whether it
+    /// answered this form's request. An address for another network (a reply
+    /// to a request sent before a network switch) is consumed but not kept:
+    /// the request stays open for the right one.
+    fn take_own_address(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        kind: OwnAddressKind,
+        address: &str,
+    ) -> bool {
+        if !self.own_addresses.awaits(&seed_hash, kind) {
+            return false;
+        }
+        let expected = match kind {
+            OwnAddressKind::Core => AddressKind::Core,
+            OwnAddressKind::Platform => AddressKind::Platform,
+        };
+        if self
+            .row_address(address)
+            .is_some_and(|valid| valid.kind() == expected)
+        {
+            self.own_addresses
+                .store(seed_hash, kind, address.to_string());
+        }
+        true
+    }
+
     fn destination_address_string(&self) -> String {
         self.validated_destination
             .as_ref()
@@ -3769,30 +3796,14 @@ impl WalletSendScreen {
         // A receiving address this form asked for is consumed here: it is
         // not the outcome of a send.
         let own_address = match result {
-            // An address for another network (a reply to a request sent
-            // before a network switch) is not kept: the request stays open.
             crate::backend_task::BackendTaskSuccessResult::GeneratedReceiveAddress {
                 seed_hash,
                 address,
-            } => {
-                self.row_address(address)
-                    .is_some_and(|valid| valid.kind() == AddressKind::Core)
-                    && self
-                        .own_addresses
-                        .store(*seed_hash, OwnAddressKind::Core, address.clone())
-            }
+            } => self.take_own_address(*seed_hash, OwnAddressKind::Core, address),
             crate::backend_task::BackendTaskSuccessResult::GeneratedPlatformReceiveAddress {
                 seed_hash,
                 address,
-            } => {
-                self.row_address(address)
-                    .is_some_and(|valid| valid.kind() == AddressKind::Platform)
-                    && self.own_addresses.store(
-                        *seed_hash,
-                        OwnAddressKind::Platform,
-                        address.clone(),
-                    )
-            }
+            } => self.take_own_address(*seed_hash, OwnAddressKind::Platform, address),
             _ => false,
         };
         if Self::task_result_updates_address_input(result) {
@@ -7619,33 +7630,107 @@ mod tests {
     fn an_own_receiving_address_from_another_network_is_not_kept() {
         let (mut screen, _temp_dir) = send_screen();
         let seed_hash = screen.selected_wallet_seed_hash.expect("seed hash");
-        assert!(
-            screen
-                .own_addresses
-                .ensure_requested(seed_hash, OwnAddressKind::Core)
-                .is_some()
-        );
-        let mainnet = Address::p2pkh(
+        let mainnet_core = mainnet_core_address();
+        let mainnet_platform = PlatformAddress::try_from(mainnet_core.clone())
+            .expect("platform address")
+            .to_bech32m_string(Network::Mainnet);
+        for (kind, reply) in [
+            (
+                OwnAddressKind::Core,
+                BackendTaskSuccessResult::GeneratedReceiveAddress {
+                    seed_hash,
+                    address: mainnet_core.to_string(),
+                },
+            ),
+            (
+                OwnAddressKind::Platform,
+                BackendTaskSuccessResult::GeneratedPlatformReceiveAddress {
+                    seed_hash,
+                    address: mainnet_platform.clone(),
+                },
+            ),
+        ] {
+            assert!(
+                screen
+                    .own_addresses
+                    .ensure_requested(seed_hash, kind)
+                    .is_some()
+            );
+            // The reply answers this form's request, so it is consumed and
+            // never read as the end of a send, but it is not kept.
+            assert!(
+                screen.refresh_form_inputs(&reply),
+                "{kind:?} reply consumed"
+            );
+            assert_eq!(screen.own_addresses.get(&seed_hash, kind), None);
+            assert!(screen.own_addresses.is_fetching(&seed_hash, kind));
+        }
+    }
+
+    fn mainnet_core_address() -> Address {
+        Address::p2pkh(
             &dash_sdk::dpp::dashcore::PublicKey::new(
                 dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([3; 32])
                     .expect("key")
                     .public_key(),
             ),
             Network::Mainnet,
-        );
-        screen.refresh_form_inputs(&BackendTaskSuccessResult::GeneratedReceiveAddress {
-            seed_hash,
-            address: mainnet.to_string(),
-        });
+        )
+    }
+
+    /// Recipient rows accept only Core and Platform addresses of the active
+    /// network.
+    #[test]
+    fn recipient_rows_need_an_address_of_the_active_network() {
+        let (screen, _temp_dir) = send_screen();
+        let mainnet = mainnet_core_address();
+        let mainnet_platform = PlatformAddress::try_from(mainnet.clone())
+            .expect("platform address")
+            .to_bech32m_string(Network::Mainnet);
+        assert_eq!(screen.row_address(&mainnet.to_string()), None);
+        assert_eq!(screen.row_address(&mainnet_platform), None);
+        assert!(matches!(
+            screen.row_address(&testnet_core_address(4).to_string()),
+            Some(ValidatedAddress::Core(_))
+        ));
+        assert!(matches!(
+            screen.row_address(&testnet_platform_bech32m(4)),
+            Some(ValidatedAddress::Platform { .. })
+        ));
+    }
+
+    /// A row with a zero amount, or with no address, is incomplete, and Send
+    /// refuses to build the payment.
+    #[test]
+    fn several_recipients_refuse_an_incomplete_row() {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0".to_string(),
+        };
+        screen.sync_route();
+        assert!(!screen.recipient_rows_complete(), "a zero amount");
         assert_eq!(
-            screen.own_addresses.get(&seed_hash, OwnAddressKind::Core),
-            None
+            screen.prepare_send().err().as_deref(),
+            Some(RECIPIENT_ROWS_INCOMPLETE)
         );
-        assert!(
-            screen
-                .own_addresses
-                .is_fetching(&seed_hash, OwnAddressKind::Core)
+
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: String::new(),
+            amount: "0.2".to_string(),
+        };
+        screen.sync_route();
+        assert!(!screen.recipient_rows_complete(), "no address");
+        assert_eq!(
+            screen.prepare_send().err().as_deref(),
+            Some(RECIPIENT_ROWS_INCOMPLETE)
         );
+
+        screen.form.recipients_mut()[1].address = testnet_core_address(22).to_string();
+        assert!(screen.recipient_rows_complete());
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

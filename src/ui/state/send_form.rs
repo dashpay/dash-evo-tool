@@ -366,9 +366,12 @@ impl SendFormState {
         self.pin_notice = None;
         self.to_mode = mode;
         // A Pay from pin only lets Receive into choose under My wallets.
+        // Releasing it puts Pay from back on Auto, so Receive into takes its
+        // default again on the way back instead of a second Auto.
         if mode == ToMode::SomeoneElse && self.pay_from_pinned {
             self.pay_from = PayFrom::Auto;
             self.pay_from_pinned = false;
+            self.receive_into_chosen = false;
         }
         if mode == ToMode::MyWallets {
             if self.to_wallet.is_none() {
@@ -877,5 +880,14 @@ mod tests {
         form.choose_to_mode(ToMode::SomeoneElse, Some(MAIN), PayFromKind::Core);
 
         assert_eq!(form.pay_from(), PayFrom::Auto);
+
+        // Back to My wallets: Receive into takes its default again, never
+        // Auto beside Pay from's Auto.
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        assert_eq!(form.pay_from(), PayFrom::Auto);
+        assert_eq!(
+            form.receive_into(),
+            ReceiveInto::from_kind(PayFromKind::Core)
+        );
     }
 }

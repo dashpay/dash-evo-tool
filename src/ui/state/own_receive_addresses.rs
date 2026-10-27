@@ -72,8 +72,19 @@ impl OwnReceiveAddresses {
         }))
     }
 
-    /// Take an address the backend returned. Only an address this cache asked
-    /// for is kept, so another screen's request cannot redirect a payment.
+    /// Whether a request for `seed_hash` was sent and not answered, however
+    /// long ago.
+    pub fn awaits(&self, seed_hash: &WalletSeedHash, kind: OwnAddressKind) -> bool {
+        matches!(
+            self.entries.get(&(*seed_hash, kind)),
+            Some(Entry::InFlight(_))
+        )
+    }
+
+    /// Take an address the backend returned. Only an answer for a wallet and
+    /// kind this cache is waiting on is kept. Entries are keyed by wallet and
+    /// kind alone, so another screen's address for the same wallet and kind
+    /// can fill one; it is still an unused receiving address of that wallet.
     /// Returns whether it was kept.
     pub fn store(
         &mut self,

@@ -8,6 +8,7 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
+use crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES;
 use crate::model::identity_key_usability::{
     KeyRequirements, SigningScope, document_security_levels, now_ms, select_identity_signing_key,
 };
@@ -1166,20 +1167,39 @@ impl QualifiedIdentity {
     }
 
     /// The key to sign document transitions on `document_type` with, within
-    /// `scope`: a live AUTHENTICATION key at a level the type accepts
-    /// ([`document_security_levels`]) whose contract bounds permit `scope`,
-    /// in upstream platform-wallet's order (see [`Self::signing_key_now`]).
+    /// `scope`: a live AUTHENTICATION key of one of `key_types`, at a level the
+    /// type accepts ([`document_security_levels`]), whose contract bounds
+    /// permit `scope`, in upstream platform-wallet's order (see
+    /// [`Self::signing_key_now`]).
     pub fn document_signing_key(
         &self,
         scope: SigningScope<'_>,
         document_type: &DocumentTypeRef,
+        key_types: &[KeyType],
     ) -> Option<&IdentityPublicKey> {
         let levels = document_security_levels(*document_type);
-        self.signing_key_now(KeyRequirements::new(
-            Purpose::AUTHENTICATION,
-            &levels,
-            scope,
-        ))
+        self.signing_key_now(
+            KeyRequirements::new(Purpose::AUTHENTICATION, &levels, scope).with_key_types(key_types),
+        )
+    }
+
+    /// The key to register a username with: a [`Self::document_signing_key`]
+    /// for DPNS `preorder` documents, across the DPNS contract (a registration
+    /// writes preorder and domain documents), of one of
+    /// [`DPNS_SIGNING_KEY_TYPES`]. `None` when `dpns_contract` has no
+    /// `preorder` type or no key qualifies.
+    pub fn username_registration_key(
+        &self,
+        dpns_contract: &DataContract,
+    ) -> Option<&IdentityPublicKey> {
+        let preorder = dpns_contract.document_type_for_name("preorder").ok()?;
+        self.document_signing_key(
+            SigningScope::ContractWide {
+                contract_id: dpns_contract.id(),
+            },
+            &preorder,
+            DPNS_SIGNING_KEY_TYPES,
+        )
     }
 
     /// The key to sign an action on document type `document_type_name` of
@@ -3648,7 +3668,8 @@ mod protocol_v14_compat_tests {
             contract_id: dpns.id(),
         };
         assert_eq!(
-            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            qi.document_signing_key(scope, &preorder, DPNS_SIGNING_KEY_TYPES)
+                .map(|k| k.id()),
             Some(2),
             "the CRITICAL key, never the MASTER key"
         );
@@ -3660,10 +3681,39 @@ mod protocol_v14_compat_tests {
             auth_key(3, SecurityLevel::HIGH),
         ]);
         assert_eq!(
-            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            qi.document_signing_key(scope, &preorder, DPNS_SIGNING_KEY_TYPES)
+                .map(|k| k.id()),
             Some(2),
             "key id order among accepted levels, as upstream orders them"
         );
+    }
+
+    /// Review fix: the automatic username registration key was taken of any
+    /// key type, so a BLS or EdDSA key with a lower id won over an ECDSA key.
+    #[test]
+    fn a_username_registration_key_is_an_ecdsa_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let dpns = dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+            dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+            PlatformVersion::latest(),
+        )
+        .expect("the DPNS contract");
+        let typed = |id: KeyID, key_type: KeyType| {
+            let mut key = auth_key(id, SecurityLevel::HIGH);
+            key.set_key_type(key_type);
+            key
+        };
+        let qi = identity_holding(&[
+            typed(1, KeyType::BLS12_381),
+            typed(2, KeyType::EDDSA_25519_HASH160),
+            typed(3, KeyType::ECDSA_SECP256K1),
+        ]);
+        assert_eq!(qi.username_registration_key(&dpns).map(|k| k.id()), Some(3));
+
+        let qi = identity_holding(&[typed(1, KeyType::BLS12_381)]);
+        assert!(qi.username_registration_key(&dpns).is_none());
     }
 
     /// The document signing key skips a key Platform would refuse (expired,
@@ -3697,7 +3747,8 @@ mod protocol_v14_compat_tests {
             contract_id: dpns.id(),
         };
         assert_eq!(
-            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            qi.document_signing_key(scope, &preorder, DPNS_SIGNING_KEY_TYPES)
+                .map(|k| k.id()),
             Some(4),
             "the unlimited, unbound, live key"
         );
@@ -3706,7 +3757,8 @@ mod protocol_v14_compat_tests {
         keys.remove(&4);
         qi.identity.set_public_keys(keys);
         assert_eq!(
-            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            qi.document_signing_key(scope, &preorder, DPNS_SIGNING_KEY_TYPES)
+                .map(|k| k.id()),
             Some(3),
             "a limited key when it is the only usable one"
         );
@@ -3727,7 +3779,8 @@ mod protocol_v14_compat_tests {
         keys.insert(5, auth_key(5));
         qi.identity.set_public_keys(keys);
         assert_eq!(
-            qi.document_signing_key(scope, &preorder).map(|k| k.id()),
+            qi.document_signing_key(scope, &preorder, DPNS_SIGNING_KEY_TYPES)
+                .map(|k| k.id()),
             Some(3),
             "the unlimited key 5 cannot be signed with here"
         );

@@ -1,4 +1,3 @@
-use crate::model::identity_key_usability::SigningScope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -158,7 +157,7 @@ impl AppContext {
 
         let qualified_identity = input.qualified_identity;
 
-        let preorder_document_type = dpns_contract
+        dpns_contract
             .document_type_for_name("preorder")
             .map_err(|_| TaskError::DataContractNotFound)?;
         let domain_document_type = dpns_contract
@@ -199,12 +198,7 @@ impl AppContext {
                         dpns_signing_requirement(&self.dpns_contract()),
                     )
                 }),
-            None => qualified_identity.document_signing_key(
-                SigningScope::ContractWide {
-                    contract_id: dpns_contract.id(),
-                },
-                &preorder_document_type,
-            ),
+            None => qualified_identity.username_registration_key(&dpns_contract),
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 

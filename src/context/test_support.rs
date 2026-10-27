@@ -64,6 +64,8 @@ pub(crate) fn user_identity_with_signing_key(
     key.set_id(1);
     key.set_purpose(Purpose::AUTHENTICATION);
     key.set_security_level(SecurityLevel::HIGH);
+    // Username registrations are signed with ECDSA keys only.
+    key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
     let mut identity = bare_user_identity(id, network);
     identity.identity.add_public_key(key.clone());
     if held {

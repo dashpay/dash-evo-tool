@@ -597,16 +597,8 @@ impl RegisterDpnsNameScreen {
                         .document_type_cloned_for_name("domain")
                         .ok();
                     if self.selected_key.is_none() {
-                        self.selected_key = document_type
-                            .as_ref()
-                            .and_then(|doc_type| {
-                                identity.document_signing_key(
-                                    SigningScope::ContractWide {
-                                        contract_id: self.app_context.dpns_contract().id(),
-                                    },
-                                    &doc_type.as_ref(),
-                                )
-                            })
+                        self.selected_key = identity
+                            .username_registration_key(&self.app_context.dpns_contract())
                             .cloned();
                     }
                     action |= add_key_chooser_with_doc_type(

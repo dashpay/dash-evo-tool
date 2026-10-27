@@ -4058,10 +4058,15 @@ impl App for AppState {
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
+                // Any failure of the switch's own task releases the app it is
+                // blocking, including one that stopped without a result (a
+                // panic arrives as `BackendTaskFailed`, not as the typed error).
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::NetworkContextCreationFailed { .. },
-                } => {
+                    error: err,
+                } if matches!(err, TaskError::NetworkContextCreationFailed { .. })
+                    || matches!(context, BackendTaskContext::NetworkSwitch { .. }) =>
+                {
                     if !recovery_delivered {
                         self.tell_owner_its_task_failed(route, &context, &err);
                     }

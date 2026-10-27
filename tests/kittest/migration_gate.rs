@@ -1063,13 +1063,34 @@ fn a_disconnect_during_a_first_visit_switch_is_honored() {
     });
 }
 
+/// A real pointer press and release at `pos`, as a user's click arrives.
+fn pointer_click(harness: &mut Harness<'static, AppState>, pos: egui::Pos2) {
+    harness.input_mut().events.extend([
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        },
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        },
+    ]);
+}
+
 /// While a first-visit switch builds the new network's context, a blocking
-/// progress overlay names the destination and takes every click: the outgoing
-/// network's Connect, still painted beneath, cannot start its chain sync. The
-/// overlay goes away once the switch lands.
+/// progress overlay names the destination and takes every click. The overlay
+/// goes away once the switch lands.
 ///
-/// The click is a real pointer press and release on Connect, so it has to get
-/// through the overlay's input claim exactly as a user's would.
+/// The overlay's input claim is checked on its own with the Wallets nav item,
+/// which no other guard covers: clicked under the overlay it does nothing, and
+/// the same click navigates once the overlay is gone. Connect is also clicked
+/// under the overlay; it is refused twice over, by the claim and by the
+/// Connect guard (see `a_connect_during_a_pending_switch_is_refused`).
 #[test]
 fn a_pending_switch_blocks_the_app_behind_a_progress_overlay() {
     crate::support::with_isolated_data_dir(|| {
@@ -1097,22 +1118,20 @@ fn a_pending_switch_blocks_the_app_behind_a_progress_overlay() {
             h.query_by_label_contains(switching).is_some()
         });
 
+        let wallets = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Wallets")
+            .rect()
+            .center();
+        pointer_click(&mut harness, wallets);
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenNetworkChooser,
+            "the overlay must take the click: the Wallets nav item stays behind it",
+        );
+
         let connect = harness.get_by_label("Connect").rect().center();
-        harness.input_mut().events.extend([
-            egui::Event::PointerMoved(connect),
-            egui::Event::PointerButton {
-                pos: connect,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::default(),
-            },
-            egui::Event::PointerButton {
-                pos: connect,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::default(),
-            },
-        ]);
+        pointer_click(&mut harness, connect);
         for _ in 0..25 {
             harness.step();
             let started = outgoing_context
@@ -1146,6 +1165,80 @@ fn a_pending_switch_blocks_the_app_behind_a_progress_overlay() {
             &mut harness,
             "on the destination: the Connect pressed during the switch was not taken",
         );
+
+        // The same click lands once nothing covers the app, so the one under
+        // the overlay was stopped by the overlay, not by the click itself.
+        let wallets = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "Wallets")
+            .rect()
+            .center();
+        pointer_click(&mut harness, wallets);
+        step_until_painted(&mut harness, "the Wallets click to navigate", |h| {
+            h.state().selected_main_screen == RootScreenType::RootScreenWalletsBalances
+        });
+    });
+}
+
+/// A switch whose task stops without a result, as a panic does, must not leave
+/// the app blocked: the overlay closes, the failure is shown, and the app stays
+/// on the network it was on.
+#[test]
+fn a_switch_that_stops_without_a_result_releases_the_app() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext};
+
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        let switching = match second {
+            Network::Mainnet => "Switching to Mainnet…",
+            _ => "Switching to Testnet…",
+        };
+        step_until_painted(&mut harness, "the switch's progress overlay", |h| {
+            h.query_by_label_contains(switching).is_some()
+        });
+
+        // What the join watcher reports for a switch task that panicked.
+        let panicked = rt
+            .block_on(tokio::spawn(async { panic!("the switch task panicked") }))
+            .expect_err("the stand-in task panics");
+        let switch = BackendTask::SwitchNetwork {
+            network: second,
+            start_spv: false,
+        };
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Error {
+                context: BackendTaskContext::from(&switch),
+                error: TaskError::BackendTaskFailed {
+                    source: panicked.into(),
+                },
+            })
+            .expect("queue the stopped switch");
+
+        step_until_painted(&mut harness, "the overlay to close", |h| {
+            h.query_by_label_contains(switching).is_none()
+        });
+        assert!(
+            harness
+                .query_by_label_contains("The requested action stopped before it finished.")
+                .is_some(),
+            "the failure is shown"
+        );
+        assert_eq!(harness.state().current_app_context().network(), first);
+
+        // Let the held stand-in switch finish so teardown has nothing in flight.
+        drop(pending_switch);
+        poll_until(&mut harness, "the held switch to finish", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
     });
 }
 

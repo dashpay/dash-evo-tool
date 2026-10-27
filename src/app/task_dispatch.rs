@@ -267,55 +267,98 @@ mod tests {
         }
     }
 
-    /// A contact details write that stops without an outcome, by a panic or
-    /// by its worker being interrupted, reports under its dispatch with its
-    /// owner and contact, so the hub releases that write's guard.
+    /// A contact details write that stops without an outcome reports under
+    /// its dispatch with its owner and contact, so the hub releases that
+    /// write's guard: a panic or an aborted sequential batch, a worker that
+    /// panicked or was cancelled, and a task manager that is shutting down.
     #[tokio::test]
     async fn contact_info_failures_keep_the_dispatched_owner_and_contact() {
         use crate::backend_task::dashpay::DashPayTask;
-        use crate::context::test_support::bare_user_identity;
+        use crate::context::test_support::{bare_user_identity, test_app_context};
         use crate::model::dashpay::ContactInfoUpdate;
         use dash_sdk::dpp::dashcore::Network;
         let owner = Identifier::from([0x42; 32]);
         let contact = Identifier::from([0x43; 32]);
-        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
-            identity: bare_user_identity(owner, Network::Testnet),
-            contact_id: contact,
-            update: ContactInfoUpdate::note(Some("Saved".into())),
-        }));
-        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        let task = || {
+            BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+                identity: bare_user_identity(owner, Network::Testnet),
+                contact_id: contact,
+                update: ContactInfoUpdate::note(Some("Saved".into())),
+            }))
+        };
+        let context = BackendTaskContext::for_dispatch_on(&task(), Network::Testnet);
         let names_the_write = |error: &TaskError, stopped: fn(&TaskError) -> bool| {
             matches!(error, TaskError::DashPayContactInfoActionFailed {
                 identity_id, contact_id, source,
             } if *identity_id == owner && *contact_id == contact && stopped(source))
         };
 
+        // The batch arm: a panic, and a sequential item skipped after one.
         let panicked = request_error(&context, None, TaskError::BackendTaskPanicked);
         assert!(names_the_write(&panicked, |source| matches!(
             source,
             TaskError::BackendTaskPanicked
         )));
-
-        let pending: PendingRequests = Arc::new(Mutex::new(vec![(context.clone(), None)]));
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let joined = tokio::task::spawn_blocking(|| panic!("contact-info worker panic")).await;
-        report_interrupted(
-            joined,
-            pending,
-            SenderAsync::new(tx, egui::Context::default()),
-        )
-        .await;
-        let Some(TaskResult::Error {
-            context: received,
-            error,
-        }) = rx.recv().await
-        else {
-            panic!("expected the interrupted write to be reported");
-        };
-        assert_eq!(received, context);
-        assert!(names_the_write(&error, |source| matches!(
+        let aborted = request_error(&context, None, TaskError::BackendTaskBatchAborted);
+        assert!(names_the_write(&aborted, |source| matches!(
             source,
-            TaskError::BackendTaskFailed { .. }
+            TaskError::BackendTaskBatchAborted
+        )));
+
+        // The worker arm: a worker that panicked or was cancelled.
+        let cancelled = tokio::spawn(std::future::pending::<()>());
+        cancelled.abort();
+        for joined in [
+            tokio::task::spawn_blocking(|| panic!("contact-info worker panic")).await,
+            cancelled.await,
+        ] {
+            let pending: PendingRequests = Arc::new(Mutex::new(vec![(context.clone(), None)]));
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            report_interrupted(
+                joined,
+                pending,
+                SenderAsync::new(tx, egui::Context::default()),
+            )
+            .await;
+            let Some(TaskResult::Error {
+                context: received,
+                error,
+            }) = rx.recv().await
+            else {
+                panic!("expected the interrupted write to be reported");
+            };
+            assert_eq!(received, context);
+            assert!(names_the_write(&error, |source| matches!(
+                source,
+                TaskError::BackendTaskFailed { .. }
+            )));
+        }
+
+        // The admission arm: the task manager is shutting down.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let manager = TaskManager::new();
+        let _shutdown = manager.shutdown_async();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let refused = spawn(
+            test_app_context(dir.path()),
+            &manager,
+            SenderAsync::new(tx, egui::Context::default()),
+            vec![(task(), context.clone())],
+            BackendTasksExecutionMode::Sequential,
+        );
+        let [
+            TaskResult::Error {
+                context: received,
+                error,
+            },
+        ] = refused.as_slice()
+        else {
+            panic!("expected the refused write to be reported, got {refused:?}");
+        };
+        assert_eq!(*received, context);
+        assert!(names_the_write(error, |source| matches!(
+            source,
+            TaskError::TaskManagerShuttingDown
         )));
     }
 }

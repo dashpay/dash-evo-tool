@@ -1,6 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -86,22 +86,7 @@ impl ClaimTokensScreen {
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
             let key = id
-                .signing_key_now(KeyRequirements::new(
-                    Purpose::AUTHENTICATION,
-                    &[SecurityLevel::CRITICAL],
-                    SigningScope::ContractWide {
-                        contract_id: identity_token_basic_info.contract_id,
-                    },
-                ))
-                .or_else(|| {
-                    id.signing_key_now(KeyRequirements::new(
-                        Purpose::TRANSFER,
-                        &[SecurityLevel::CRITICAL],
-                        SigningScope::ContractWide {
-                            contract_id: identity_token_basic_info.contract_id,
-                        },
-                    ))
-                })
+                .single_token_transition_key(identity_token_basic_info.contract_id)
                 .cloned();
 
             let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);

@@ -1270,6 +1270,40 @@ impl QualifiedIdentity {
         })
     }
 
+    /// The key to sign a batch of one token transfer or claim on
+    /// `contract_id` with: a CRITICAL AUTHENTICATION key, else a CRITICAL
+    /// TRANSFER key, which DPP also accepts for such a batch (and requires
+    /// CRITICAL for), each picked as [`Self::signing_key_now`] picks.
+    pub fn single_token_transition_key(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> Option<&IdentityPublicKey> {
+        let scope = SigningScope::ContractWide { contract_id };
+        [Purpose::AUTHENTICATION, Purpose::TRANSFER]
+            .into_iter()
+            .find_map(|purpose| {
+                self.signing_key_now(KeyRequirements::new(
+                    purpose,
+                    &[SecurityLevel::CRITICAL],
+                    scope,
+                ))
+            })
+    }
+
+    /// Whether a private key of a purpose and level
+    /// [`Self::single_token_transition_key`] takes is filed for the identity:
+    /// the gate in front of the token transfer and claim forms.
+    pub fn holds_single_token_transition_key(&self) -> bool {
+        self.private_keys
+            .identity_public_keys()
+            .iter()
+            .any(|key_ref| {
+                let key = &key_ref.1.identity_public_key;
+                matches!(key.purpose(), Purpose::AUTHENTICATION | Purpose::TRANSFER)
+                    && key.security_level() == SecurityLevel::CRITICAL
+            })
+    }
+
     /// The key [`select_identity_signing_key`] would pick for `requirements`
     /// now, whether or not this device holds its private half. For
     /// informational lookups only (e.g. pointing the user at a key whose
@@ -3686,6 +3720,46 @@ mod protocol_v14_compat_tests {
             Some(2),
             "key id order among accepted levels, as upstream orders them"
         );
+    }
+
+    /// Review fix: a token transfer took only a CRITICAL AUTHENTICATION key,
+    /// so an identity holding only a CRITICAL TRANSFER key, which DPP also
+    /// accepts for a batch of one token transfer or claim, could not send.
+    #[test]
+    fn a_single_token_transition_falls_back_to_a_transfer_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let transfer = |id: KeyID, level| {
+            let mut key = auth_key(id, level);
+            key.set_purpose(Purpose::TRANSFER);
+            key
+        };
+
+        let qi = identity_holding(&[transfer(1, SecurityLevel::CRITICAL)]);
+        assert_eq!(
+            qi.single_token_transition_key(contract_id).map(|k| k.id()),
+            Some(1)
+        );
+        assert!(qi.holds_single_token_transition_key());
+
+        let qi = identity_holding(&[
+            transfer(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ]);
+        assert_eq!(
+            qi.single_token_transition_key(contract_id).map(|k| k.id()),
+            Some(2),
+            "an authentication key first"
+        );
+
+        let qi = identity_holding(&[
+            transfer(1, SecurityLevel::HIGH),
+            auth_key(2, SecurityLevel::HIGH),
+        ]);
+        assert!(qi.single_token_transition_key(contract_id).is_none());
+        assert!(!qi.holds_single_token_transition_key());
     }
 
     /// Review fix: the automatic username registration key was taken of any

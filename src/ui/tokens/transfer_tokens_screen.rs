@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -96,14 +96,8 @@ impl TransferTokensScreen {
 
         let max_amount = Amount::from(&identity_token_balance);
         let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
-            id.signing_key_now(KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
-                    contract_id: identity_token_balance.data_contract_id,
-                },
-            ))
-            .cloned()
+            id.single_token_transition_key(identity_token_balance.data_contract_id)
+                .cloned()
         });
         let selected_wallet = identity.as_ref().and_then(|id| {
             get_selected_wallet(id, None, selected_key.as_ref())
@@ -431,28 +425,27 @@ impl ScreenLike for TransferTokensScreen {
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
             } else {
-                !identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
+                identity.holds_single_token_transition_key()
             };
 
             if !has_keys {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
-                let key = identity
-                    .identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
+                let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]
+                    .into_iter()
+                    .find_map(|purpose| {
+                        identity.identity.get_first_public_key_matching(
+                            purpose,
+                            HashSet::from([SecurityLevel::CRITICAL]),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                    })
                     .cloned();
                 ui.colored_label(
                     DashColors::error_color(dark_mode),
                     format!(
-                        "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
-                        identity_type
+                        "You do not have a CRITICAL authentication or transfer key loaded for this {identity_type} identity."
                     ),
                 );
                 ui.add_space(10.0);

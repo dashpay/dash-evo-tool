@@ -32,7 +32,7 @@ inside each section.
 | Gates | The unlock gate hides the whole form until the wallet is unlocked |
 | Routes | 14 supported; Identity→Shielded and Shielded→Identity are refused at Send time |
 
-Problems found (`UX-NNN`, severity per the `severity` skill):
+Problems found (`P-NN`, severity per the `severity` skill):
 
 | ID | Sev | Finding |
 |---|---|---|

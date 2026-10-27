@@ -978,3 +978,67 @@ fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() 
         });
     }
 }
+
+fn votes_panel(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::dpns::dpns_contested_names_screen::DPNSScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenMasternodes)
+    {
+        Some(Screen::MasternodesScreen(screen)) => screen.votes_mut(),
+        _ => panic!("the Masternodes screen is open"),
+    }
+}
+
+/// A contest refresh the voting panel sent on the previous network ends
+/// with that network: when its result arrives after a switch, the panel's
+/// own refresh on the new network keeps running, whether the panel is in
+/// view or hidden behind another root screen. That refresh still ends on
+/// its own failure.
+#[test]
+fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the previous network's refresh leaves the new one running (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: current,
+                    error: TaskError::TaskManagerShuttingDown,
+                },
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the new refresh still ends on its own failure (in view: {in_view})"
+            );
+        });
+    }
+}

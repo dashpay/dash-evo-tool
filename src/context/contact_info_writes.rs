@@ -14,22 +14,30 @@ pub(crate) struct ContactInfoWrites {
 impl ContactInfoWrites {
     /// Hold through the network read, merge and confirmed document write.
     pub(crate) async fn acquire(&self, owner: Identifier) -> OwnedMutexGuard<()> {
-        let gate = {
-            let mut owners = self
-                .owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            owners.retain(|_, gate| gate.strong_count() > 0);
-            match owners.get(&owner).and_then(Weak::upgrade) {
-                Some(gate) => gate,
-                None => {
-                    let gate = Arc::new(AsyncMutex::new(()));
-                    owners.insert(owner, Arc::downgrade(&gate));
-                    gate
-                }
+        self.gate(owner).lock_owned().await
+    }
+
+    /// [`Self::acquire`] without waiting: `None` while a write holds it.
+    pub(crate) fn try_acquire(&self, owner: Identifier) -> Option<OwnedMutexGuard<()>> {
+        self.gate(owner).try_lock_owned().ok()
+    }
+
+    /// The owner's gate. The map's std mutex is released on return, never
+    /// held across an await.
+    fn gate(&self, owner: Identifier) -> Arc<AsyncMutex<()>> {
+        let mut owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owners.retain(|_, gate| gate.strong_count() > 0);
+        match owners.get(&owner).and_then(Weak::upgrade) {
+            Some(gate) => gate,
+            None => {
+                let gate = Arc::new(AsyncMutex::new(()));
+                owners.insert(owner, Arc::downgrade(&gate));
+                gate
             }
-        };
-        gate.lock_owned().await
+        }
     }
 }
 

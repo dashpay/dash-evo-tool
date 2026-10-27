@@ -330,6 +330,78 @@ pub enum BackendTask {
     None,
 }
 
+impl BackendTask {
+    /// The identity whose credits pay for this task, for tasks whose handler
+    /// does not store the payer's new balance itself.
+    pub(crate) fn fee_payer(&self) -> Option<Identifier> {
+        let payer = match self {
+            Self::TokenTask(task) => match task.as_ref() {
+                TokenTask::RegisterTokenContract { identity, .. }
+                | TokenTask::PurchaseTokens { identity, .. }
+                | TokenTask::SetDirectPurchasePrice { identity, .. } => identity,
+                TokenTask::MintTokens {
+                    sending_identity, ..
+                }
+                | TokenTask::TransferTokens {
+                    sending_identity, ..
+                } => sending_identity,
+                TokenTask::BurnTokens { owner_identity, .. } => owner_identity,
+                TokenTask::DestroyFrozenFunds { actor_identity, .. }
+                | TokenTask::FreezeTokens { actor_identity, .. }
+                | TokenTask::UnfreezeTokens { actor_identity, .. }
+                | TokenTask::PauseTokens { actor_identity, .. }
+                | TokenTask::ResumeTokens { actor_identity, .. }
+                | TokenTask::ClaimTokens { actor_identity, .. } => actor_identity,
+                TokenTask::UpdateTokenConfig {
+                    identity_token_info,
+                    ..
+                } => &identity_token_info.identity,
+                _ => return None,
+            },
+            Self::ContractTask(task) => match task.as_ref() {
+                ContractTask::RegisterDataContract(_, _, identity, _)
+                | ContractTask::UpdateDataContract(_, identity, _) => identity,
+                _ => return None,
+            },
+            Self::DocumentTask(task) => match task.as_ref() {
+                DocumentTask::BroadcastDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::DeleteDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::ReplaceDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::TransferDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::PurchaseDocument {
+                    qualified_identity, ..
+                }
+                | DocumentTask::SetDocumentPrice {
+                    qualified_identity, ..
+                } => qualified_identity,
+                DocumentTask::FetchDocuments(_) | DocumentTask::FetchDocumentsPage(_) => {
+                    return None;
+                }
+            },
+            Self::DashPayTask(task) => match task.as_ref() {
+                DashPayTask::UpdateProfile { identity, .. }
+                | DashPayTask::SendContactRequest { identity, .. }
+                | DashPayTask::SendContactRequestWithProof { identity, .. }
+                | DashPayTask::AcceptContactRequest { identity, .. }
+                | DashPayTask::RejectContactRequest { identity, .. }
+                | DashPayTask::CancelContactRequest { identity, .. }
+                | DashPayTask::UpdateContactInfo { identity, .. } => identity,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(payer.identity.id())
+    }
+}
+
 /// Identifies the operation that produced a backend-task error without retaining
 /// the complete [`BackendTask`] in the UI result channel. Document operations
 /// retain their query because the visible screen needs it for exact matching.
@@ -1448,7 +1520,8 @@ impl AppContext {
             };
         }
 
-        match task {
+        let fee_payer = task.fee_payer();
+        let result = match task {
             BackendTask::ContractTask(contract_task) => {
                 Ok(self.run_contract_task(*contract_task, sdk, sender).await?)
             }
@@ -1515,7 +1588,8 @@ impl AppContext {
                 })
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
-        }
+        };
+        self.refresh_fee_payer_balance(sdk, fee_payer, result).await
     }
 
     /// Test seam: keep every network switch dispatched from this context
@@ -2475,6 +2549,90 @@ mod tests {
 
         if let Ok(backend) = ctx.wallet_backend() {
             backend.shutdown().await;
+        }
+    }
+
+    /// Every task paid from an identity's credits names that identity, so
+    /// its stored balance is read back after the task; reads name nobody.
+    #[test]
+    fn paid_tasks_name_the_identity_that_pays_for_them() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let payer = qualified_identity(0x21);
+        let payer_id = payer.identity.id();
+        let contract = Arc::new(
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("DPNS contract"),
+        );
+        let document_type = contract
+            .document_type_cloned_for_name("domain")
+            .expect("domain type");
+        let key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+
+        let paid = [
+            BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+                data_contract: contract.clone(),
+                token_position: 0,
+                actor_identity: payer.clone(),
+                distribution_type: TokenDistributionType::OncePerIdentity,
+                signing_key: key.clone(),
+                public_note: None,
+            })),
+            BackendTask::ContractTask(Box::new(ContractTask::RegisterDataContract(
+                contract.as_ref().clone(),
+                String::new(),
+                payer.clone(),
+                key.clone(),
+            ))),
+            BackendTask::ContractTask(Box::new(ContractTask::UpdateDataContract(
+                contract.as_ref().clone(),
+                payer.clone(),
+                key.clone(),
+            ))),
+            BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
+                document_id: Identifier::from([0x31; 32]),
+                document_type,
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            })),
+            BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+                identity: payer.clone(),
+                display_name: Some("QA".to_string()),
+                bio: None,
+                avatar_url: None,
+            })),
+            BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
+                identity: payer.clone(),
+                signing_key: key.clone(),
+                to_username: "bob.dash".to_string(),
+                account_label: None,
+            })),
+            BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                identity: payer.clone(),
+                request_id: Identifier::from([0x41; 32]),
+            })),
+        ];
+        for (index, task) in paid.iter().enumerate() {
+            assert_eq!(task.fee_payer(), Some(payer_id), "paid task #{index}");
+        }
+
+        let free = [
+            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![contract.id()]))),
+            BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
+                identity: payer.clone(),
+            })),
+            BackendTask::SystemTask(SystemTask::ClearNetworkDatabase),
+        ];
+        for (index, task) in free.iter().enumerate() {
+            assert_eq!(task.fee_payer(), None, "free task #{index}");
         }
     }
 

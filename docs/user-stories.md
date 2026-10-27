@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination.
+- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016).
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -448,7 +448,7 @@ As a user, I want to top up an identity directly from the Send screen so that I 
 
 As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
 
-- Select Platform Addresses as source and enter a shielded address as destination.
+- Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016).
 - System auto-selects the highest-balance Platform address.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
@@ -1458,6 +1458,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
+- When the network runs a newer protocol version than this build knows, the report advises updating Dash Evo Tool; some features stay unavailable until then.
+- A withdrawal history that lists a failed withdrawal notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
@@ -1628,6 +1630,7 @@ As a user, I want a clear connection indicator and status rows so that I know at
 
 - Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
 - Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+- When wallet sync data could not be saved, the tooltip adds a line saying so and advising a restart of Dash Evo Tool. The indicator colour does not change, because the connection itself is healthy.
 
 ### NET-018: Auto-start SPV sync on startup [Implemented]
 **Persona:** Priya, Jordan
@@ -1852,7 +1855,8 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Sent requests offer Cancel, which withdraws the request (see DPY-014).
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
-- Contacts the user has hidden do not appear in the list.
+- Contacts the user has hidden do not appear in the main list; they stay available in the collapsed "Show hidden contacts" section (see DPY-009).
+- Selecting a contact shows its details (picture, name, username, bio) and a private note beside the list, or under it on a narrow window (see DPY-005, DPY-009).
 
 ## Masternodes (MN)
 

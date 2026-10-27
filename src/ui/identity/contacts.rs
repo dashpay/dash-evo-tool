@@ -868,10 +868,15 @@ fn active_section(
     let pay_available = FeatureGate::DashPayOperations.is_available(app_context);
     ui.add_space(12.0);
 
-    let heading = format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len());
     let has_contacts = state.contacts_len() > 0;
-    // Until the list is loaded there is no list to call empty.
+    // Until the list is loaded there is no list to call empty, or to count.
     let notice = unknown_contacts_notice(state);
+    let loading = notice == Some(CONTACTS_LOADING);
+    let heading = if notice.is_some() {
+        ACTIVE_HEADING_PREFIX.to_string()
+    } else {
+        format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len())
+    };
     let selected = state.detail().selected();
     let mut clicked_contact = None;
 
@@ -888,7 +893,12 @@ fn active_section(
 
         let matches = state.filtered_contacts();
         if let Some(notice) = notice {
-            ui.label(RichText::new(notice).color(DashColors::text_secondary(dark_mode)));
+            ui.horizontal(|ui| {
+                if loading {
+                    ui.add(eframe::egui::Spinner::new());
+                }
+                ui.label(RichText::new(notice).color(DashColors::text_secondary(dark_mode)));
+            });
         } else if !has_contacts {
             ui.label(RichText::new(NO_ACTIVE_EMPTY).color(DashColors::text_secondary(dark_mode)));
         } else if matches.is_empty() {

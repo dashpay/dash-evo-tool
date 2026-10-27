@@ -21,6 +21,7 @@ use dash_evo_tool::ui::identity::contacts;
 use dash_evo_tool::ui::identity::social_profile_gate_card::{
     HEADING as GATE_HEADING, PRIMARY_LABEL as GATE_PRIMARY,
 };
+use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -145,7 +146,8 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
                 },
                 (ContactsState::default(), profiles),
             );
-        harness.run();
+        // The loading spinner keeps repainting, so step instead of settling.
+        harness.run_steps(2);
         harness.state_mut().0.record_contacts(vec![ContactData {
             identity_id: Identifier::from([0xD8; 32]),
             nickname: Some("Bao".into()),
@@ -162,10 +164,15 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
         assert!(harness.query_by_label(&heading(1)).is_some());
 
         app_context.set_selected_identity(Some(second));
-        harness.run();
+        harness.run_steps(2);
         assert!(
-            harness.query_by_label(&heading(0)).is_some(),
+            harness.query_by_label(&heading(1)).is_none()
+                && harness.query_by_label("Bao").is_none(),
             "one identity's contacts must never be listed under another"
+        );
+        assert!(
+            harness.query_by_label(contacts::CONTACTS_LOADING).is_some(),
+            "the new identity's own list is loading"
         );
         assert_eq!(harness.state().0.contacts_len(), 0);
     });
@@ -209,20 +216,36 @@ fn active_contacts_say_loading_until_the_first_load_lands() {
                 },
                 (ContactsState::default(), profiles),
             );
-        harness.run();
+        // The loading spinner keeps repainting, so step instead of settling.
+        harness.run_steps(2);
         assert!(
             harness.query_by_label(contacts::CONTACTS_LOADING).is_some(),
             "the section must say the contacts are loading"
         );
         assert!(
+            harness.query_by_role(Role::ProgressIndicator).is_some(),
+            "a spinner shows next to the loading text"
+        );
+        assert!(
             harness.query_by_label(contacts::NO_ACTIVE_EMPTY).is_none(),
             "an unloaded list must not be reported as empty"
+        );
+        assert!(
+            harness
+                .query_by_label(contacts::ACTIVE_HEADING_PREFIX)
+                .is_some(),
+            "the heading names the section without a count while loading"
+        );
+        assert!(
+            harness.query_by_label_contains("· 0").is_none(),
+            "an unloaded list must not be counted as zero contacts"
         );
 
         harness.state_mut().0.record_contacts(Vec::new());
         harness.run();
         assert!(harness.query_by_label(contacts::NO_ACTIVE_EMPTY).is_some());
         assert!(harness.query_by_label(contacts::CONTACTS_LOADING).is_none());
+        assert!(harness.query_by_role(Role::ProgressIndicator).is_none());
     });
 }
 

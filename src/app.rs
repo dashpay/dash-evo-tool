@@ -872,6 +872,12 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// [`Self::BackendTasks`] with the context each task's result comes back
+    /// under, so a screen can tell one dispatch of a task from another.
+    BackendTasksWithContexts(
+        Vec<(BackendTask, BackendTaskContext)>,
+        BackendTasksExecutionMode,
+    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -2991,7 +2997,10 @@ impl App for AppState {
                 }
                 action @ (AppAction::BackendTask(_)
                 | AppAction::BackendTaskWithContext { .. }
-                | AppAction::BackendTasks(..)) => self.dispatch_screen_task(owner, action),
+                | AppAction::BackendTasks(..)
+                | AppAction::BackendTasksWithContexts(..)) => {
+                    self.dispatch_screen_task(owner, action)
+                }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);
                 }

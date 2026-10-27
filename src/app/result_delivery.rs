@@ -242,6 +242,9 @@ impl AppState {
                     .collect(),
                 mode,
             ),
+            // The screen chose each task's context, so it can tell one
+            // dispatch of a task from another.
+            AppAction::BackendTasksWithContexts(tasks, mode) => (tasks, mode),
             _ => return,
         };
         if let Some(owner) = owner {

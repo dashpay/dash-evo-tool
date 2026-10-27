@@ -13,13 +13,25 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn request_error(request_id: Option<Identifier>, error: TaskError) -> TaskError {
-    match request_id {
-        Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+/// The error a request that stopped without an outcome reports: a contact
+/// details write names its owner and contact, a paid DashPay action its
+/// request id, so the screen holding a guard for it can release that guard.
+fn request_error(
+    context: &BackendTaskContext,
+    request_id: Option<Identifier>,
+    error: TaskError,
+) -> TaskError {
+    match (context.dashpay_contact_info_target(), request_id) {
+        (Some((identity_id, contact_id)), _) => TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            source: Box::new(error),
+        },
+        (None, Some(request_id)) => TaskError::DashPayContactRequestActionFailed {
             request_id,
             source: Box::new(error),
         },
-        None => error,
+        (None, None) => error,
     }
 }
 
@@ -75,6 +87,7 @@ async fn report_interrupted(
     let unfinished = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
     for (context, request_id) in unfinished {
         let error = request_error(
+            &context,
             request_id,
             TaskError::BackendTaskFailed {
                 source: source.clone(),
@@ -130,7 +143,7 @@ pub(super) fn spawn(
                         .remove(0);
                     let result = result.map_err(|error| match error {
                         TaskError::BackendTaskPanicked | TaskError::BackendTaskBatchAborted => {
-                            request_error(request_id, error)
+                            request_error(&context, request_id, error)
                         }
                         other => other,
                     });
@@ -150,7 +163,7 @@ pub(super) fn spawn(
         return unfinished
             .into_iter()
             .map(|(context, request_id)| {
-                let error = request_error(request_id, TaskError::TaskManagerShuttingDown);
+                let error = request_error(&context, request_id, TaskError::TaskManagerShuttingDown);
                 TaskResult::Error { context, error }
             })
             .collect();
@@ -252,5 +265,57 @@ mod tests {
             assert_eq!(reported, contexts);
             assert!(pending.lock().unwrap().is_empty());
         }
+    }
+
+    /// A contact details write that stops without an outcome, by a panic or
+    /// by its worker being interrupted, reports under its dispatch with its
+    /// owner and contact, so the hub releases that write's guard.
+    #[tokio::test]
+    async fn contact_info_failures_keep_the_dispatched_owner_and_contact() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::context::test_support::bare_user_identity;
+        use crate::model::dashpay::ContactInfoUpdate;
+        use dash_sdk::dpp::dashcore::Network;
+        let owner = Identifier::from([0x42; 32]);
+        let contact = Identifier::from([0x43; 32]);
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+            identity: bare_user_identity(owner, Network::Testnet),
+            contact_id: contact,
+            update: ContactInfoUpdate::note(Some("Saved".into())),
+        }));
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        let names_the_write = |error: &TaskError, stopped: fn(&TaskError) -> bool| {
+            matches!(error, TaskError::DashPayContactInfoActionFailed {
+                identity_id, contact_id, source,
+            } if *identity_id == owner && *contact_id == contact && stopped(source))
+        };
+
+        let panicked = request_error(&context, None, TaskError::BackendTaskPanicked);
+        assert!(names_the_write(&panicked, |source| matches!(
+            source,
+            TaskError::BackendTaskPanicked
+        )));
+
+        let pending: PendingRequests = Arc::new(Mutex::new(vec![(context.clone(), None)]));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let joined = tokio::task::spawn_blocking(|| panic!("contact-info worker panic")).await;
+        report_interrupted(
+            joined,
+            pending,
+            SenderAsync::new(tx, egui::Context::default()),
+        )
+        .await;
+        let Some(TaskResult::Error {
+            context: received,
+            error,
+        }) = rx.recv().await
+        else {
+            panic!("expected the interrupted write to be reported");
+        };
+        assert_eq!(received, context);
+        assert!(names_the_write(&error, |source| matches!(
+            source,
+            TaskError::BackendTaskFailed { .. }
+        )));
     }
 }

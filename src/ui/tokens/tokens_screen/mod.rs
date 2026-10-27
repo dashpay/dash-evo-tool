@@ -60,6 +60,9 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::{
+    TokenRegistrationFeatures, estimate_token_contract_registration,
+};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -1200,6 +1203,13 @@ pub struct TokensScreen {
     pub enable_pre_programmed_distribution: bool,
     pub pre_programmed_distributions: Vec<DistributionEntry>,
 
+    // Once-per-identity distribution (protocol version 14)
+    pub enable_once_per_identity_distribution: bool,
+    /// The amount, in base token units, every identity may claim once.
+    pub once_per_identity_amount_input: String,
+    /// Why the once-per-identity amount is not valid, shown under the field.
+    once_per_identity_amount_error: Option<String>,
+
     // New Tokens Destination Identity
     pub new_tokens_destination_identity_should_default_to_contract_owner: bool,
     pub new_tokens_destination_other_identity_enabled: bool,
@@ -1627,6 +1637,9 @@ impl TokensScreen {
 
             // Pre-programmed distribution
             enable_pre_programmed_distribution: false,
+            enable_once_per_identity_distribution: false,
+            once_per_identity_amount_input: String::new(),
+            once_per_identity_amount_error: None,
             // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
             // For an example, we'll keep it simple:
             pre_programmed_distributions: Vec::new(),
@@ -1881,47 +1894,32 @@ impl TokensScreen {
     }
 
     fn estimate_registration_cost(&self) -> Credits {
-        let registration_fees = &self
-            .app_context
-            .platform_version()
-            .fee_version
-            .data_contract_registration;
-        let mut fee = registration_fees.base_contract_registration_fee;
-        fee += registration_fees.token_registration_fee;
-        if self.enable_perpetual_distribution {
-            fee += registration_fees.token_uses_perpetual_distribution_fee;
-        }
-        if self.enable_pre_programmed_distribution {
-            fee += registration_fees.token_uses_pre_programmed_distribution_fee;
-        }
-        let contract_keywords = if self.contract_keywords_input.trim().is_empty() {
-            Vec::new()
+        let contract_keyword_count = if self.contract_keywords_input.trim().is_empty() {
+            0
         } else {
             self.contract_keywords_input
                 .split(',')
-                .filter_map(|s| {
-                    let trimmed = s.trim().to_string();
-                    if trimmed.len() < 3 || trimmed.len() > 50 {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect::<Vec<String>>()
+                .filter(|s| (3..=50).contains(&s.trim().len()))
+                .count()
         };
-
-        fee += registration_fees.search_keyword_fee * contract_keywords.len() as u64;
         let searchable_count = self
             .token_names_input
             .iter()
-            .filter(|(_, _, _, searchable)| *searchable) // or `.is_searchable()` if it's a method
+            .filter(|(_, _, _, searchable)| *searchable)
             .count();
-
-        fee += registration_fees.search_keyword_fee * searchable_count as u64;
-
-        fee += 200_000_000; //just an extra estimate
-
-        fee
+        estimate_token_contract_registration(
+            &self
+                .app_context
+                .platform_version()
+                .fee_version
+                .data_contract_registration,
+            TokenRegistrationFeatures {
+                perpetual_distribution: self.enable_perpetual_distribution,
+                pre_programmed_distribution: self.enable_pre_programmed_distribution,
+                once_per_identity_distribution: self.enable_once_per_identity_distribution,
+                search_keyword_count: contract_keyword_count + searchable_count,
+            },
+        )
     }
 
     fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
@@ -2395,6 +2393,9 @@ impl TokensScreen {
         self.perpetual_distribution_rules = ChangeControlRulesUI::default();
         self.enable_pre_programmed_distribution = false;
         self.pre_programmed_distributions = Vec::new();
+        self.enable_once_per_identity_distribution = false;
+        self.once_per_identity_amount_input = String::new();
+        self.once_per_identity_amount_error = None;
         self.new_tokens_destination_other_identity_enabled = false;
         self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
         self.new_tokens_destination_other_identity = "".to_string();
@@ -3768,6 +3769,124 @@ mod tests {
             }
             _ => panic!("Expected TimeBasedDistribution"),
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture setup/teardown outside any production deletion path"
+    )]
+    fn once_per_identity_distribution_builds_version_1_rules_only_on_protocol_14() {
+        let db_file_path = "test_db_once_per_identity_distribution";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
+        let db = Arc::new(Database::new(db_file_path).unwrap());
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
+
+        ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
+        let app_context = AppContext::new(
+            data_dir,
+            Network::Regtest,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("Expected to create AppContext");
+        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+
+        // Identity selection
+        let test_identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .unwrap();
+        let mock =
+            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
+                .expect("Expected to create Identity");
+        let mock_identity = QualifiedIdentity {
+            identity: mock,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Mainnet,
+        };
+
+        token_creator_ui.selected_identity = Some(mock_identity);
+
+        // Key selection
+        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
+        token_creator_ui.selected_key = Some(mock_key);
+
+        token_creator_ui.token_names_input = vec![(
+            "TestToken".to_owned(),
+            "TestToken".to_owned(),
+            TokenNameLanguage::English,
+            true,
+        )];
+
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
+        token_creator_ui.enable_once_per_identity_distribution = true;
+        token_creator_ui.once_per_identity_amount_input = "250".to_string();
+
+        // The connected network's version is not known yet: refused locally.
+        let err = token_creator_ui
+            .parse_token_build_args()
+            .expect_err("a network below protocol 14 refuses the distribution");
+        assert_eq!(
+            err,
+            crate::backend_task::error::TaskError::TokenOncePerIdentityNotSupported.to_string(),
+            "the local refusal reads like the backend's"
+        );
+
+        crate::context::test_support::prove_protocol_version(&app_context, 14);
+        let build_args = token_creator_ui
+            .parse_token_build_args()
+            .expect("Should parse");
+        let owner_id = build_args.identity_id;
+        let data_contract = app_context
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
+            .expect("Should build successfully");
+        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
+        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
+            panic!("the existing token builder must retain V0 configuration");
+        };
+        assert!(matches!(
+            token_v0.distribution_rules,
+            TokenDistributionRules::V1(_)
+        ));
+        assert_eq!(
+            crate::model::token::once_per_identity_amount(&contract_v1.tokens[&0u16]),
+            Some(250)
+        );
+
+        // A bad amount is reported, not sent.
+        token_creator_ui.once_per_identity_amount_input = "0".to_string();
+        assert!(token_creator_ui.parse_token_build_args().is_err());
     }
 
     #[test]

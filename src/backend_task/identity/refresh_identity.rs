@@ -9,6 +9,10 @@ use dash_sdk::query_types::IdentityBalance;
 
 use super::BackendTaskSuccessResult;
 
+/// How long a finished paid task waits for its payer's new balance before
+/// reporting success without it.
+const FEE_PAYER_BALANCE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl AppContext {
     pub(super) async fn refresh_identity(
         &self,
@@ -82,14 +86,23 @@ impl AppContext {
     }
 
     async fn store_identity_balance_from_platform(&self, sdk: &Sdk, identity_id: Identifier) {
-        let balance = match IdentityBalance::fetch(sdk, identity_id).await {
-            Ok(Some(balance)) => balance,
-            Ok(None) => {
+        let read = tokio::time::timeout(
+            FEE_PAYER_BALANCE_READ_TIMEOUT,
+            IdentityBalance::fetch(sdk, identity_id),
+        )
+        .await;
+        let balance = match read {
+            Ok(Ok(Some(balance))) => balance,
+            Ok(Ok(None)) => {
                 tracing::debug!(%identity_id, "Paying identity not found on Platform; its stored balance is kept");
                 return;
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(%identity_id, ?error, "Balance after a paid task could not be read; it updates on the next identity refresh");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(%identity_id, "Balance after a paid task took too long to read; it updates on the next identity refresh");
                 return;
             }
         };

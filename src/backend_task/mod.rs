@@ -356,12 +356,25 @@ impl BackendTask {
                     identity_token_info,
                     ..
                 } => &identity_token_info.identity,
-                _ => return None,
+                TokenTask::QueryMyTokenBalances
+                | TokenTask::QueryIdentityTokenBalance(_)
+                | TokenTask::StopTrackingTokenBalance(_)
+                | TokenTask::ClearOncePerIdentityClaimHint(_)
+                | TokenTask::QueryDescriptionsByKeyword(..)
+                | TokenTask::FetchTokenByContractId(_)
+                | TokenTask::FetchTokenByTokenId(_)
+                | TokenTask::SaveTokenLocally(_)
+                | TokenTask::QueryTokenPricing(_)
+                | TokenTask::EstimatePerpetualTokenRewardsWithExplanation { .. } => return None,
             },
             Self::ContractTask(task) => match task.as_ref() {
                 ContractTask::RegisterDataContract(_, _, identity, _)
                 | ContractTask::UpdateDataContract(_, identity, _) => identity,
-                _ => return None,
+                ContractTask::FetchContracts(_)
+                | ContractTask::FetchContractsWithDescriptions(_)
+                | ContractTask::FetchActiveGroupActions(..)
+                | ContractTask::RemoveContract(_)
+                | ContractTask::SaveDataContract(..) => return None,
             },
             Self::DocumentTask(task) => match task.as_ref() {
                 DocumentTask::BroadcastDocument {
@@ -394,9 +407,36 @@ impl BackendTask {
                 | DashPayTask::RejectContactRequest { identity, .. }
                 | DashPayTask::CancelContactRequest { identity, .. }
                 | DashPayTask::UpdateContactInfo { identity, .. } => identity,
-                _ => return None,
+                // A contact payment is paid from the wallet's Core funds.
+                DashPayTask::SendPaymentToContact { .. }
+                | DashPayTask::LoadProfile { .. }
+                | DashPayTask::LoadContacts { .. }
+                | DashPayTask::LoadContactsOffline { .. }
+                | DashPayTask::LoadContactRequests { .. }
+                | DashPayTask::FetchContactProfile { .. }
+                | DashPayTask::FetchAvatar { .. }
+                | DashPayTask::SearchProfiles { .. }
+                | DashPayTask::LoadPaymentHistory { .. }
+                | DashPayTask::RegisterDashPayAddresses { .. }
+                | DashPayTask::DetectIncomingContactPayments { .. }
+                | DashPayTask::GenerateAutoAcceptQrCode { .. } => return None,
             },
-            _ => return None,
+            // Identity tasks store the new balance themselves; a raw state
+            // transition does not name its payer without decoding it.
+            Self::IdentityTask(_)
+            | Self::BroadcastStateTransition(_)
+            | Self::ContestedResourceTask(_)
+            | Self::CoreTask(_)
+            | Self::SystemTask(_)
+            | Self::PlatformInfo(_)
+            | Self::GroveSTARKTask(_)
+            | Self::WalletTask(_)
+            | Self::ShieldedTask(_)
+            | Self::MigrationTask(_)
+            | Self::ReinitCoreClientAndSdk
+            | Self::SwitchNetwork { .. }
+            | Self::DiscoverDapiNodes { .. }
+            | Self::None => return None,
         };
         Some(payer.identity.id())
     }
@@ -2556,15 +2596,29 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
+        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
+        use crate::backend_task::tokens::TokenContractParams;
+        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::qualified_contract::QualifiedContract;
+        use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
+        use dash_sdk::dpp::data_contract::TokenConfiguration;
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
         use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
+        use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
         use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::document::DocumentV0;
         use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::IdentityPublicKey;
 
+        // Every other identity-typed field holds a different identity, so a
+        // payer read from the wrong field fails the comparison.
         let payer = qualified_identity(0x21);
         let payer_id = payer.identity.id();
+        let bystander = qualified_identity(0x22);
+        let other = Identifier::from([0x31; 32]);
         let contract = Arc::new(
             load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
                 .expect("DPNS contract"),
@@ -2572,68 +2626,411 @@ mod tests {
         let document_type = contract
             .document_type_cloned_for_name("domain")
             .expect("domain type");
+        let document = Document::V0(DocumentV0::default());
         let key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+        let config = TokenConfigurationV0::default_most_restrictive();
+        let rules = config.manual_minting_rules.clone();
+        let params = TokenContractParams {
+            token_names: Vec::new(),
+            contract_keywords: Vec::new(),
+            token_description: None,
+            should_capitalize: false,
+            decimals: 0,
+            base_supply: 0,
+            max_supply: None,
+            start_paused: false,
+            allow_transfers_to_frozen_identities: false,
+            keeps_history: config.keeps_history,
+            main_control_group: None,
+            manual_minting_rules: rules.clone(),
+            manual_burning_rules: rules.clone(),
+            freeze_rules: rules.clone(),
+            unfreeze_rules: rules.clone(),
+            destroy_frozen_funds_rules: rules.clone(),
+            emergency_action_rules: rules.clone(),
+            max_supply_change_rules: rules.clone(),
+            conventions_change_rules: rules.clone(),
+            main_control_group_change_authorized: AuthorizedActionTakers::NoOne,
+            distribution_rules: config.distribution_rules.clone(),
+            groups: BTreeMap::new(),
+            document_schemas: None,
+            marketplace_rules: rules,
+            transferable: true,
+        };
+        let token = |task: TokenTask| BackendTask::TokenTask(Box::new(task));
+        let contract_task = |task: ContractTask| BackendTask::ContractTask(Box::new(task));
+        let document_task = |task: DocumentTask| BackendTask::DocumentTask(Box::new(task));
+        let dashpay = |task: DashPayTask| BackendTask::DashPayTask(Box::new(task));
 
         let paid = [
-            BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
+            token(TokenTask::RegisterTokenContract {
+                identity: payer.clone(),
+                signing_key: Box::new(key.clone()),
+                params: Box::new(params),
+            }),
+            token(TokenTask::MintTokens {
+                sending_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                amount: 1,
+                recipient_id: Some(other),
+                group_info: None,
+            }),
+            token(TokenTask::TransferTokens {
+                sending_identity: payer.clone(),
+                recipient_id: other,
+                amount: 1,
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+            }),
+            token(TokenTask::BurnTokens {
+                owner_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                amount: 1,
+                group_info: None,
+            }),
+            token(TokenTask::DestroyFrozenFunds {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                frozen_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::FreezeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                freeze_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::UnfreezeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                unfreeze_identity: other,
+                group_info: None,
+            }),
+            token(TokenTask::PauseTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::ResumeTokens {
+                actor_identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::ClaimTokens {
                 data_contract: contract.clone(),
                 token_position: 0,
                 actor_identity: payer.clone(),
                 distribution_type: TokenDistributionType::OncePerIdentity,
                 signing_key: key.clone(),
                 public_note: None,
-            })),
-            BackendTask::ContractTask(Box::new(ContractTask::RegisterDataContract(
+            }),
+            token(TokenTask::UpdateTokenConfig {
+                identity_token_info: Box::new(IdentityTokenInfo {
+                    token_id: other,
+                    token_alias: String::new(),
+                    identity: payer.clone(),
+                    data_contract: QualifiedContract {
+                        contract: contract.as_ref().clone(),
+                        alias: None,
+                    },
+                    token_config: TokenConfiguration::V0(config.clone()),
+                    token_position: 0,
+                }),
+                change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
+                signing_key: key.clone(),
+                public_note: None,
+                group_info: None,
+            }),
+            token(TokenTask::PurchaseTokens {
+                identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                amount: 1,
+                total_agreed_price: 1,
+            }),
+            token(TokenTask::SetDirectPurchasePrice {
+                identity: payer.clone(),
+                data_contract: contract.clone(),
+                token_position: 0,
+                signing_key: key.clone(),
+                token_pricing_schedule: None,
+                public_note: None,
+                group_info: None,
+            }),
+            contract_task(ContractTask::RegisterDataContract(
                 contract.as_ref().clone(),
                 String::new(),
                 payer.clone(),
                 key.clone(),
-            ))),
-            BackendTask::ContractTask(Box::new(ContractTask::UpdateDataContract(
+            )),
+            contract_task(ContractTask::UpdateDataContract(
                 contract.as_ref().clone(),
                 payer.clone(),
                 key.clone(),
-            ))),
-            BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
-                document_id: Identifier::from([0x31; 32]),
+            )),
+            document_task(DocumentTask::BroadcastDocument {
+                document: document.clone(),
+                token_payment_info: None,
+                entropy: [0; 32],
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+            }),
+            document_task(DocumentTask::DeleteDocument {
+                document_id: other,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::ReplaceDocument {
+                document,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::TransferDocument {
+                document_id: other,
+                new_owner_id: bystander.identity.id(),
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::PurchaseDocument {
+                price: 1,
+                document_id: other,
+                document_type: document_type.clone(),
+                data_contract: contract.clone(),
+                qualified_identity: payer.clone(),
+                identity_key: key.clone(),
+                token_payment_info: None,
+            }),
+            document_task(DocumentTask::SetDocumentPrice {
+                price: 1,
+                document_id: other,
                 document_type,
                 data_contract: contract.clone(),
                 qualified_identity: payer.clone(),
                 identity_key: key.clone(),
                 token_payment_info: None,
-            })),
-            BackendTask::DashPayTask(Box::new(DashPayTask::UpdateProfile {
+            }),
+            dashpay(DashPayTask::UpdateProfile {
                 identity: payer.clone(),
                 display_name: Some("QA".to_string()),
                 bio: None,
                 avatar_url: None,
-            })),
-            BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
+            }),
+            dashpay(DashPayTask::SendContactRequest {
                 identity: payer.clone(),
                 signing_key: key.clone(),
                 to_username: "bob.dash".to_string(),
                 account_label: None,
-            })),
-            BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+            }),
+            dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
-                request_id: Identifier::from([0x41; 32]),
-            })),
+                signing_key: key.clone(),
+                to_identity_id: other,
+                account_label: None,
+                qr_auto_accept: AutoAcceptProofData {
+                    identity_id: other,
+                    proof_key: [0; 32],
+                    account_reference: 0,
+                    expires_at: 0,
+                },
+            }),
+            dashpay(DashPayTask::AcceptContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+            }),
+            dashpay(DashPayTask::RejectContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            }),
+            dashpay(DashPayTask::CancelContactRequest {
+                identity: payer.clone(),
+                request_id: other,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            }),
+            dashpay(DashPayTask::UpdateContactInfo {
+                identity: payer.clone(),
+                contact_id: other,
+                update: ContactInfoUpdate::visibility(true),
+            }),
         ];
         for (index, task) in paid.iter().enumerate() {
             assert_eq!(task.fee_payer(), Some(payer_id), "paid task #{index}");
         }
 
         let free = [
-            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![contract.id()]))),
-            BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
+            token(TokenTask::QueryMyTokenBalances),
+            contract_task(ContractTask::FetchContracts(vec![contract.id()])),
+            contract_task(ContractTask::FetchActiveGroupActions(
+                QualifiedContract {
+                    contract: contract.as_ref().clone(),
+                    alias: None,
+                },
+                payer.clone(),
+            )),
+            dashpay(DashPayTask::LoadProfile {
                 identity: payer.clone(),
-            })),
+            }),
+            dashpay(DashPayTask::SendPaymentToContact {
+                identity: payer.clone(),
+                contact_id: other,
+                amount_duffs: 1,
+                memo: None,
+            }),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(payer)),
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase),
         ];
         for (index, task) in free.iter().enumerate() {
             assert_eq!(task.fee_payer(), None, "free task #{index}");
         }
+    }
+
+    /// Regression: after a paid task the Identity hub kept showing the
+    /// pre-fee balance. A paid task run through `run_backend_task` stores the
+    /// payer's balance read back afterwards. Accepting an already answered
+    /// contact request succeeds without a broadcast, so a mock SDK can drive it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_task_run_through_dispatch_stores_the_payers_new_balance() {
+        use dash_sdk::dpp::document::DocumentV0;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::drive::query::{WhereClause, WhereOperator};
+        use dash_sdk::query_types::IdentityBalance;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wire wallet backend");
+
+        // The mock reports the latest protocol version, and the system
+        // contracts the queries carry follow it; settle it before building them.
+        let sdk = dash_sdk::Sdk::new_mock();
+        let mut mock = sdk.clone();
+        context.sdk.store(Arc::new(sdk));
+        crate::context::test_support::prove_protocol_version(
+            &context,
+            dash_sdk::dpp::version::LATEST_VERSION,
+        );
+
+        let mut payer = qualified_identity(0x21);
+        payer.identity.set_balance(43_600_388_314);
+        context
+            .update_local_qualified_identity(&payer)
+            .expect("store payer");
+        let payer_id = payer.identity.id();
+        let requester = Identifier::from([0x22; 32]);
+        let request_id = Identifier::from([0x23; 32]);
+        let request_document = |id: Identifier, owner: Identifier, to: Identifier| {
+            let mut document = DocumentV0 {
+                id,
+                owner_id: owner,
+                ..Default::default()
+            };
+            document
+                .properties
+                .insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
+            Document::V0(document)
+        };
+        let contact_requests = || {
+            DocumentQuery::new(context.dashpay_contract(), "contactRequest")
+                .expect("contactRequest query")
+        };
+        let mut answered = contact_requests()
+            .with_where(WhereClause {
+                field: "$ownerId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(payer_id.to_buffer()),
+            })
+            .with_where(WhereClause {
+                field: "toUserId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(requester.to_buffer()),
+            });
+        answered.limit = 1;
+        let reply_id = Identifier::from([0x24; 32]);
+        let reply: Documents = [(
+            reply_id,
+            Some(request_document(reply_id, payer_id, requester)),
+        )]
+        .into_iter()
+        .collect();
+
+        mock.mock()
+            .expect_fetch(
+                DocumentQuery::with_document_id(contact_requests(), &request_id),
+                Some(request_document(request_id, requester, payer_id)),
+            )
+            .await
+            .expect("incoming request expectation");
+        mock.mock()
+            .expect_fetch_many::<Identifier, Document, _, Documents>(answered, Some(reply))
+            .await
+            .expect("existing reply expectation");
+        mock.mock()
+            .expect_fetch::<IdentityBalance, _>(payer_id, Some(3_400_000_000))
+            .await
+            .expect("balance expectation");
+
+        let result = context
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                    identity: payer,
+                    request_id,
+                })),
+                sender,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished { .. })
+            ),
+            "{result:?}"
+        );
+        let stored = context
+            .get_local_qualified_identity(&payer_id)
+            .expect("read payer")
+            .expect("payer stored");
+        assert_eq!(stored.identity.balance(), 3_400_000_000);
     }
 
     fn qualified_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {

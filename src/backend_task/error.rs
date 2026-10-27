@@ -2310,6 +2310,14 @@ pub enum TaskError {
         source: Box<ProtocolError>,
     },
 
+    /// The identity keys could not be built in the identity key structure of
+    /// the active protocol version, typically one this build does not know yet.
+    #[error("Could not prepare the identity keys. Update Dash Evo Tool and try again.")]
+    IdentityKeysPreparationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,

@@ -312,19 +312,25 @@ impl IdentityKeySpecs {
     pub fn to_public_keys_map(
         &self,
         platform_version: &PlatformVersion,
-    ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, String> {
+    ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, TaskError> {
         let mut key_map = BTreeMap::new();
         if let Some(master) = &self.master {
             match master.key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(format!(
-                        "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                        other
-                    ));
+                    return Err(TaskError::PublicKeyMapBuildFailed {
+                        detail: format!(
+                            "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
+                            other
+                        ),
+                    });
                 }
             }
-            let key = Self::master_key(master, platform_version).map_err(|e| e.to_string())?;
+            let key = Self::master_key(master, platform_version).map_err(|e| {
+                TaskError::IdentityKeysPreparationFailed {
+                    source: Box::new(dash_sdk::Error::Protocol(*e)),
+                }
+            })?;
             key_map.insert(0, key);
         }
         for (i, entry) in self.others.iter().enumerate() {
@@ -337,18 +343,22 @@ impl IdentityKeySpecs {
             match purpose {
                 Purpose::TRANSFER => {
                     if *security_level != SecurityLevel::CRITICAL {
-                        return Err(format!(
-                            "Key {}: TRANSFER purpose requires CRITICAL security level, got {:?}",
-                            id, security_level
-                        ));
+                        return Err(TaskError::PublicKeyMapBuildFailed {
+                            detail: format!(
+                                "Key {}: TRANSFER purpose requires CRITICAL security level, got {:?}",
+                                id, security_level
+                            ),
+                        });
                     }
                 }
                 Purpose::ENCRYPTION | Purpose::DECRYPTION => {
                     if *security_level != SecurityLevel::MEDIUM {
-                        return Err(format!(
-                            "Key {}: {:?} purpose requires MEDIUM security level, got {:?}",
-                            id, purpose, security_level
-                        ));
+                        return Err(TaskError::PublicKeyMapBuildFailed {
+                            detail: format!(
+                                "Key {}: {:?} purpose requires MEDIUM security level, got {:?}",
+                                id, purpose, security_level
+                            ),
+                        });
                     }
                 }
                 Purpose::AUTHENTICATION
@@ -356,10 +366,12 @@ impl IdentityKeySpecs {
                         && *security_level != SecurityLevel::HIGH
                         && *security_level != SecurityLevel::MEDIUM =>
                 {
-                    return Err(format!(
-                        "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
-                        id, security_level
-                    ));
+                    return Err(TaskError::PublicKeyMapBuildFailed {
+                        detail: format!(
+                            "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
+                            id, security_level
+                        ),
+                    });
                 }
                 _ => {}
             }
@@ -367,10 +379,12 @@ impl IdentityKeySpecs {
             match key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(format!(
-                        "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                        id, other
-                    ));
+                    return Err(TaskError::PublicKeyMapBuildFailed {
+                        detail: format!(
+                            "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
+                            id, other
+                        ),
+                    });
                 }
             }
             // A literal: the key setters cannot bind a key to a contract.
@@ -1519,6 +1533,50 @@ mod tests {
             master.public_key.inner.to_compressed(),
             resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
+        );
+    }
+
+    /// A protocol whose identity key structure this build does not know fails
+    /// the public keys map with a dedicated variant that keeps dpp's typed
+    /// version-mismatch error as its source.
+    #[test]
+    fn unknown_key_structure_keeps_the_typed_protocol_error() {
+        let seed = [0x33u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let master = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master");
+        let specs = IdentityKeySpecs::new(Some(master), Vec::new());
+        let mut platform_version = PlatformVersion::latest().clone();
+        platform_version
+            .dpp
+            .identity_versions
+            .identity_key_structure_version = u16::MAX;
+
+        let error = specs
+            .to_public_keys_map(&platform_version)
+            .expect_err("unknown key structure");
+
+        let TaskError::IdentityKeysPreparationFailed { source } = &error else {
+            panic!("expected IdentityKeysPreparationFailed, got {error:?}");
+        };
+        assert!(
+            matches!(
+                source.as_ref(),
+                dash_sdk::Error::Protocol(ProtocolError::UnknownVersionMismatch { received, .. })
+                    if *received == u16::MAX
+            ),
+            "source keeps dpp's typed error: {source:?}"
         );
     }
 

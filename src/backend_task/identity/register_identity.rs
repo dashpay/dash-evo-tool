@@ -40,9 +40,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys
-            .to_public_keys_map(self.platform_version())
-            .map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
+        let public_keys = keys.to_public_keys_map(self.platform_version())?;
         let key_count = public_keys.len();
         let estimated_fee = self.fee_estimator().estimate_identity_create(key_count);
 
@@ -283,9 +281,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys
-            .to_public_keys_map(sdk.version())
-            .map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
+        let public_keys = keys.to_public_keys_map(sdk.version())?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();

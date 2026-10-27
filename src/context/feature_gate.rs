@@ -12,6 +12,11 @@ use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
+/// Version 1 token distribution rules (the once-per-identity distribution)
+/// are accepted from protocol version 14. Upstream names no feature constant
+/// for it, so the protocol version it shipped in is used directly.
+const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
+
 /// Tokens that cannot be transferred (a version 1 token configuration) are
 /// accepted from protocol version 14. Upstream names no feature constant for
 /// them, so the protocol version they shipped in is used directly.
@@ -32,6 +37,9 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform accepts tokens with a once-per-identity
+    /// distribution.
+    OncePerIdentityDistribution,
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
@@ -62,6 +70,10 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
+            Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
+                ctx,
+                ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
+            ),
             Capability::NonTransferableTokens => known_protocol_version_at_least(
                 ctx,
                 NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
@@ -161,6 +173,10 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Creating a token with a once-per-identity distribution. Offered only
+    /// where the connected network accepts it; claiming from an existing one
+    /// needs no gate, since such a token can only exist on such a network.
+    TokenOncePerIdentityDistribution,
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
@@ -180,6 +196,9 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::TokenOncePerIdentityDistribution => {
+                &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
             }
@@ -461,7 +480,10 @@ mod tests {
     #[test]
     fn protocol_v14_gates_follow_the_connected_version() {
         // One entry per protocol version 14 gate this build offers.
-        let gates = [FeatureGate::NonTransferableTokens];
+        let gates = [
+            FeatureGate::TokenOncePerIdentityDistribution,
+            FeatureGate::NonTransferableTokens,
+        ];
         for role in ROLES {
             for gate in gates {
                 // A proven version only rises, so each gate gets a fresh context.
@@ -484,6 +506,7 @@ mod tests {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
         let capabilities = [
             Capability::ShieldedProtocol,
+            Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
         ];
 

@@ -1,14 +1,16 @@
 ---
 name: release-review
-description: "This skill should be used when preparing to QA a dash-evo-tool nightly/weekly build before it ships — comparing the last published pre-release against the current development-branch HEAD via a verified changelog, a scoped code review, and a true A/B GUI regression pass with a visual changelog."
+description: "This skill should be used when preparing to QA a dash-evo-tool nightly/weekly build before it ships — comparing the last published pre-release against the current development-branch HEAD via a verified changelog, a scoped code review, a static before/after from the diff with functional GUI testing of the NEW build (OLD-build A/B optional), and a visual changelog."
 ---
 
 # Release Review
 
 End-to-end nightly-release QA campaign for dash-evo-tool: find what actually changed since the
 last shipped pre-release, run a scoped code review, and prove the GUI isn't worse than before in
-the happy flow. Produces a triageable findings report plus a visual (screenshot) changelog a human
-can eyeball in minutes.
+the happy flow. Default method: the before/after comes from a static check of the diff (verified
+changelog + code review + `git diff`); only the NEW build is driven in the GUI. An OLD-build GUI
+A/B is optional (§ Phase 4). Produces a triageable findings report plus a visual (screenshot)
+changelog a human can eyeball in minutes.
 
 This procedure assumes nothing about the machine it runs on beyond a working Rust toolchain, `git`,
 and the `gh` CLI, and nothing about which Claude Code capabilities are installed beyond the
@@ -199,24 +201,31 @@ inflate a severity score to match your expectation and instead re-derives it hon
 lower than you expected — is doing its job correctly. Don't push back without a substantive
 argument for the new score.
 
-## Phase 2b — Build both binaries for A/B comparison
+## Phase 2b — Build the NEW binary (and OLD only for an A/B)
 
-Create two isolated `git worktree`s under your scratch root — one at the baseline tag's commit, one
-at **the development SHA resolved in Phase 1** (never a bare `HEAD` — if this procedure is running
-from a feature/PR checkout, `HEAD` there is that checkout, not the development branch you diffed and
-wrote the changelog against) — never inside the repo's own tracked working tree, and never let a
-spawned sub-agent create worktrees on its own initiative if you're coordinating multiple agents
-(create them yourself first, hand the paths out). Build each with:
+Build the NEW binary. Build OLD only if Phase 4 will run the optional A/B: an older build may fail
+to sync against the current testnet (confirmed: a fresh OLD sync stalled twice at masternode
+lists/QRInfo while NEW synced). If OLD does not reach "Synced" on the first try, close it and stay
+NEW-only — don't debug it or burn time retrying; record the stall as unattributed (environment vs
+defect unknown).
+
+Create isolated `git worktree`s under your scratch root — one at **the development SHA resolved in
+Phase 1** and, for an A/B, one at the baseline tag's commit (never a bare `HEAD` — if this procedure
+is running from a feature/PR checkout, `HEAD` there is that checkout, not the development branch you
+diffed and wrote the changelog against) — never inside the repo's own tracked working tree, and
+never let a spawned sub-agent create worktrees on its own initiative if you're coordinating multiple
+agents (create them yourself first, hand the paths out). Build each with:
 
 ```shell
 CARGO_TARGET_DIR=<scratch-root>/<name>-target cargo build --bin dash-evo-tool --manifest-path <worktree>/Cargo.toml
 ```
 
-Distinct `CARGO_TARGET_DIR`s are mandatory — both binaries must coexist afterward for the A/B run;
-sharing a target dir means whichever built last silently overwrites the other's binary at the same
-output path. Always pass `--manifest-path` explicitly (worktree auto-discovery can resolve to the
-wrong checkout). Build sequentially if the machine is RAM-constrained (two full dependency-graph
-cold builds concurrently risks OOM/thrashing) — check available memory / existing load first.
+Distinct `CARGO_TARGET_DIR`s are mandatory when building both — both binaries must coexist for the
+A/B run; sharing a target dir means whichever built last silently overwrites the other's binary at
+the same output path. Always pass `--manifest-path` explicitly (worktree auto-discovery can resolve
+to the wrong checkout). Build sequentially if the machine is RAM-constrained (two full
+dependency-graph cold builds concurrently risks OOM/thrashing) — check available memory / existing
+load first.
 
 **Confirmed gotcha, background builds only, both Linux and macOS**: a `cargo build` backgrounded
 (`... &`, `nohup`, or similar) from an automated shell can fail with a "cargo: No such file or
@@ -229,14 +238,14 @@ build invocation rather than the bare `cargo` name.
 ## Phase 3 — Author GUI regression scenarios
 
 Informed by Phase 1's risk map, write **version-agnostic** scenario files under
-`docs/gui-testing/scenarios/` (from that directory's `TEMPLATE.md`) — the same procedure runs
-against both binaries, so never phrase a step as "confirm the fix works." Bake the blocker rule (§
+`docs/gui-testing/scenarios/` (from that directory's `TEMPLATE.md`) — the same procedure must run
+against any build, so never phrase a step as "confirm the fix works." Bake the blocker rule (§
 below) directly into each scenario's "Expected outcome" section. Update the "Scenario index" table
 in `docs/gui-testing/README.md`.
 
 Also produce a risk-prioritized `docs/user-stories.md` checklist, two tiers:
-- **Deep tier**: full acceptance-criteria comparison (old vs new) for every story plausibly touched
-  by the diff.
+- **Deep tier**: full acceptance-criteria check of NEW against the before state the diff implies
+  (OLD GUI only in an A/B) for every story plausibly touched by the diff.
 - **Smoke tier**: everything else — screen opens, no crash, no error in logs — toured in one
   continuous session per binary rather than relaunching per story ID.
 
@@ -247,10 +256,17 @@ If a story text is found stale against shipped behavior while cross-referencing 
 one describing a pre-redesign button layout weeks after the redesign shipped), flag it as a doc
 defect for the final report — don't silently fix it mid-campaign, that's scope creep.
 
-## Phase 4 — GUI A/B run
+## Phase 4 — GUI run (NEW build; OLD A/B optional)
 
-Drive the actual compiled binary through a real rendered window, twice (once per build) — how you
-reach a real window differs by OS, so confirm before assuming:
+**Default: static before/after + NEW-only GUI.** For each user-visible change, the before/after
+comes from the diff (verified changelog, code review, `git diff`). Drive only the NEW build and
+check that every changed flow works and shows what the diff says it should. A defect found on NEW
+is "introduced" only if the static diff shows the changed code causes it; otherwise
+"pre-existing/unknown". **Optional A/B**: also drive OLD when it still works against the current
+network (Phase 2b). Ask the user if unsure.
+
+Drive the actual compiled binary through a real rendered window — how you reach a real window
+differs by OS, so confirm before assuming:
 
 - **Any headless/server Linux environment**: check whether `$DISPLAY` (or `$WAYLAND_DISPLAY`) is
   already set to something — if the session was reached over SSH with X11 forwarding, that ambient
@@ -268,26 +284,26 @@ reach a real window differs by OS, so confirm before assuming:
 
 For each scenario/story check: confirm no conflicting instance of the app is already running
 (process list, e.g. `pgrep -f dash-evo-tool` or `ps aux | grep dash-evo-tool` if `pgrep` isn't
-available) before launching. Launch **old**, perform the flow, screenshot, fully close (confirm
-process exit); launch **new**, identical flow, screenshot, close. Never run both simultaneously —
-one real window/display target at a time, and it keeps screenshot provenance unambiguous. Check the
-app's log output for both runs (with an isolated data directory, verify where logs actually landed
-for this run rather than assuming a fixed default path).
+available) before launching. Launch **new**, perform the flow, screenshot, fully close (confirm
+process exit). In an A/B, run **old** through the identical flow the same way. Never run both
+simultaneously — one real window/display target at a time, and it keeps screenshot provenance
+unambiguous. Check the app's log output for every run (with an isolated data directory, verify
+where logs actually landed for this run rather than assuming a fixed default path).
 
-**Isolated data directories give the two builds separate local state, but not separate live-network
-state — plan for that separately.** A scenario that spends a UTXO, consumes a deposit, registers a
-DPNS name, or moves credits mutates shared on-chain/live-network fixture state; running the baseline
-binary through it and then the development binary through the identical flow means the second run
-starts from state the first run already changed (an already-consumed deposit, a spent UTXO set, a
-name that's no longer available), which can produce a false regression or a false pass. For any
-scenario step that mutates fund-moving or name-registering state, give each build its own
-independently-funded/equivalent fixture — a separate wallet, identity, or name per side, or a fixture
-restored to an equivalent starting state between the two runs — rather than sharing one. Recording
-each side's starting balances/UTXOs/deposits/identities/DPNS names and "accounting for the
+**A/B only — isolated data directories give the two builds separate local state, but not separate
+live-network state — plan for that separately.** A scenario that spends a UTXO, consumes a deposit,
+registers a DPNS name, or moves credits mutates shared on-chain/live-network fixture state; running
+the baseline binary through it and then the development binary through the identical flow means the
+second run starts from state the first run already changed (an already-consumed deposit, a spent
+UTXO set, a name that's no longer available), which can produce a false regression or a false pass.
+For any scenario step that mutates fund-moving or name-registering state, give each build its own
+independently-funded/equivalent fixture — a separate wallet, identity, or name per side, or a
+fixture restored to an equivalent starting state between the two runs — rather than sharing one.
+Recording each side's starting balances/UTXOs/deposits/identities/DPNS names and "accounting for the
 difference" afterwards is not an alternative: you cannot account your way past a DPNS name that no
-longer exists or a deposit the first run already consumed, because the second build can't execute the
-flow at all. Steps that only read state (navigation, display checks) aren't affected — reserve this
-for anything that actually spends or registers something.
+longer exists or a deposit the first run already consumed, because the second build can't execute
+the flow at all. Steps that only read state (navigation, display checks) aren't affected — reserve
+this for anything that actually spends or registers something.
 
 **Blocker rule** (confirm with the user for each run — the default below is the standing default,
 adopted 2026-09-15 after a run where the user explicitly requested it; still not a universal
@@ -296,12 +312,12 @@ constant, so still confirm per run in case a specific campaign wants something l
   **data-loss** scenario, OR **any new, noticeable UX/perf regression even outside the happy flow**
   (a new error-path regression, a newly-broken secondary flow, a perceptible slowdown) — this is
   stricter than "happy-flow only" and is the current default.
-- **Not blocking**: timing noise with no user-visible effect; anything reproduced identically on
-  **both** builds (pre-existing — note it, don't flag as a regression). Read that exemption
-  narrowly — a *new* intermittent race stays blocking whenever it breaks the happy flow, crashes the
-  app, loses data, or produces a noticeable regression anywhere else covered by this run's scenarios.
-  "It's a race" never downgrades those; intermittency only means you reproduce it more times before
-  confirming.
+- **Not blocking**: timing noise with no user-visible effect; anything pre-existing — reproduced
+  identically on **both** builds in an A/B, or not caused by the changed code per the static diff
+  (note it, don't flag as a regression). Read that exemption narrowly — a *new* intermittent race
+  stays blocking whenever it breaks the happy flow, crashes the app, loses data, or produces a
+  noticeable regression anywhere else covered by this run's scenarios. "It's a race" never
+  downgrades those; intermittency only means you reproduce it more times before confirming.
 - Reproduce anything about to be marked blocking at least twice before confirming.
 - If a repro attempt genuinely can't be reproduced after several tries, don't leave it open
   indefinitely — write up the negative evidence, downgrade to backlog, and say explicitly that repro
@@ -313,10 +329,11 @@ can be blocking-worthy on its own severity (real data loss) while NOT being a re
 caused. But don't let a single check decide this either way: `git log <baseline>..<development-sha>
 -- <suspect-file>` returning zero commits proves only that the file wasn't *directly* edited — a
 changed caller, a shared model type, a persisted-data format change, a feature gate, or a bumped
-dependency can still cause a regression that surfaces in an otherwise-untouched file. Treat old-vs-new
-reproduction as the primary evidence (does the exact same trigger actually behave differently on the
-two builds?), and use the git-log check as one corroborating signal, not proof by itself — if the
-file is untouched but you suspect the behavior still changed, trace the transitive callers/
+dependency can still cause a regression that surfaces in an otherwise-untouched file. In an A/B,
+treat old-vs-new reproduction as the primary evidence (does the exact same trigger actually behave
+differently on the two builds?); NEW-only, the traced diff is the evidence and an untraced defect is
+"pre-existing/unknown". Use the git-log check as one corroborating signal, not proof by itself — if
+the file is untouched but you suspect the behavior still changed, trace the transitive callers/
 dependencies of the code path before concluding "pre-existing." Frame the finding as "we are choosing
 to hold/flag a pre-existing defect," not "this release broke X" — the second is a factual claim that
 can be wrong and, if wrong, undermines the whole report's credibility.
@@ -412,12 +429,16 @@ self-report is not the end of it:
 
 ## Phase 5 — Visual changelog + consolidated report
 
-Build a self-contained HTML page (`visual-changelog.html`) presenting old/new screenshot pairs side
-by side per scenario/story, with a verdict badge and a one-line rationale each — inline the images
-(e.g. base64) so the page has no external file dependencies. Run the pre-embedding secret check from
-§ Security incidents during GUI testing over every image and caption first: once inlined, a leaked
-secret travels with every copy of the page. Save it to your artifacts location.
-For presentation-grade annotated images (one spotlight-style image per changed screen), use the `visual-diff` skill.
+Build a self-contained HTML page (`visual-changelog.html`): one section per verified-changelog
+theme/scenario with NEW screenshots, a verdict badge (PASS/NOTE/FAIL) and a one-line rationale each;
+the subtitle names both builds and says the GUI was verified on NEW only, before/after from the
+static diff (A/B: old/new pairs side by side). Inline the images (e.g. base64) so the page has no
+external file dependencies. Run the pre-embedding secret check from § Security incidents during GUI
+testing over every image and caption first: once inlined, a leaked secret travels with every copy of
+the page. Save it to your artifacts location.
+Then produce the visual diff with the `visual-diff` skill in its default NEW-only mode: one
+spotlight image per changed NEW screen, annotated from the diff, plus the commit-coverage table
+(pair mode only after an A/B). Reuse Phase 4's NEW captures where they show the change.
 Merge Phase 4's findings into Phase 2's report as an additional section, re-validate the combined
 report against whatever schema/format it uses, and re-render any human-readable version. The
 combined report is then ready to hand to the user for triage — code-review and GUI-regression

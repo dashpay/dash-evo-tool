@@ -53,6 +53,10 @@ pub struct ContactInfo {
     pub account_reference: u32,
 }
 
+/// Why Edit is unavailable before the contact's saved details are read.
+const EDIT_WAITS_FOR_DETAILS: &str =
+    "Editing waits until this contact's saved details are read. Open this contact again to retry.";
+
 pub struct ContactDetailsScreen {
     pub app_context: Arc<AppContext>,
     pub identity: QualifiedIdentity,
@@ -196,7 +200,9 @@ impl ContactDetailsScreen {
     }
 
     fn start_editing(&mut self) {
-        if self.details_loading {
+        // This device's copy may not hold what is saved: a save from it could
+        // replace saved values the user never saw.
+        if self.details_loading || !self.details_read {
             return;
         }
         if let Some(info) = &self.contact_info {
@@ -399,7 +405,11 @@ impl ContactDetailsScreen {
                                     action = self.save_contact_info();
                                 }
                             } else if ui
-                                .add_enabled(!self.details_loading, egui::Button::new("Edit"))
+                                .add_enabled(
+                                    !self.details_loading && self.details_read,
+                                    egui::Button::new("Edit"),
+                                )
+                                .on_disabled_hover_text(EDIT_WAITS_FOR_DETAILS)
                                 .clicked()
                             {
                                 self.start_editing();
@@ -636,10 +646,10 @@ impl ScreenLike for ContactDetailsScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        // Only this screen's own details read reopens the editor: a failed
-        // profile read must not unlock it from this device's older copy while
-        // the details read is still pending. A failed details read leaves that
-        // copy in place; a save from it still replaces only the edited fields.
+        // Only this screen's own details read ends the wait: a failed profile
+        // read must not end it while the details read is still pending. A
+        // failed details read ends it with the editor still closed, since
+        // only a read that succeeds opens it.
         if context.dashpay_contact_details_target()
             == Some((self.identity.identity.id(), self.contact_id))
         {
@@ -738,6 +748,7 @@ impl ScreenLike for ContactDetailsScreen {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity,
                 contacts: contacts_data,
+                details_error,
             } => {
                 // Contacts loaded for another identity say nothing about this
                 // screen's contact — a reload that outlived an identity switch
@@ -762,9 +773,13 @@ impl ScreenLike for ContactDetailsScreen {
                             if contact_data.bio.is_some() {
                                 info.bio = contact_data.bio;
                             }
-                            info.nickname = contact_data.nickname;
-                            info.note = contact_data.note;
-                            info.is_hidden = contact_data.is_hidden;
+                            // A list that could not read the saved details
+                            // holds guesses; Edit starts from these fields.
+                            if details_error.is_none() {
+                                info.nickname = contact_data.nickname;
+                                info.note = contact_data.note;
+                                info.is_hidden = contact_data.is_hidden;
+                            }
                             info.account_reference = contact_data.account_reference;
                         }
                         break;
@@ -777,15 +792,21 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         self.loading = false;
-        if matches!(
-            error,
-            TaskError::DashPayContactInfoActionFailed {
-                identity_id,
-                contact_id,
-                ..
-            } if *identity_id == self.identity.identity.id() && *contact_id == self.contact_id
-        ) {
+        if let TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            source,
+        } = error
+            && *identity_id == self.identity.identity.id()
+            && *contact_id == self.contact_id
+        {
             self.pending_update = None;
+            // The details changed since the editor opened: close it and read
+            // the latest. A save from its old baseline would be refused again.
+            if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.cancel_editing();
+                self.needs_backend_fetch = true;
+            }
         }
         false
     }
@@ -817,6 +838,16 @@ mod tests {
         let context = test_app_context(dir.path());
         let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
         let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+        let read = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: Identifier::from([1; 32]),
+            contact_id: Identifier::from([2; 32]),
+            details: read.clone(),
+        });
 
         screen.start_editing();
         screen.edit_note = "Met at the meetup".to_string();
@@ -828,6 +859,7 @@ mod tests {
                 nickname: ContactInfoField::Preserve,
                 note: ContactInfoField::Replace(Some("Met at the meetup".into())),
                 display_hidden: ContactInfoField::Preserve,
+                opened: read,
             }
         );
     }
@@ -880,9 +912,9 @@ mod tests {
         assert!(screen.edit_hidden);
     }
 
-    /// A failed profile read does not open the editor while the details read
-    /// is still pending; only the details read's own failure does, leaving
-    /// this device's copy in place.
+    /// The editor opens only once the details read succeeds: neither a failed
+    /// profile read nor a failed details read opens it on this device's copy,
+    /// which may not hold what is saved.
     #[test]
     fn a_failed_profile_read_keeps_the_editor_closed_until_the_details_read_ends() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -928,8 +960,95 @@ mod tests {
         fail(&mut screen, details);
         screen.start_editing();
         assert!(
-            screen.editing_info,
-            "a failed details read opens the editor"
+            !screen.editing_info,
+            "a failed details read keeps the editor closed"
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails::default(),
+        });
+        screen.start_editing();
+        assert!(screen.editing_info, "a read that succeeds opens it");
+    }
+
+    /// A contacts list whose saved details were not read holds guesses: it
+    /// must not replace the details this screen already read, which Edit
+    /// starts from.
+    #[test]
+    fn an_unread_contacts_list_keeps_the_details_this_screen_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let (owner, contact) = (Identifier::from([1; 32]), Identifier::from([2; 32]));
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails {
+                nickname: None,
+                note: Some("Real".into()),
+                hidden: false,
+            },
+        });
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity: owner,
+            contacts: vec![crate::backend_task::dashpay::ContactData {
+                identity_id: contact,
+                nickname: None,
+                note: None,
+                is_hidden: true,
+                details_unreadable: false,
+                details_unknown: true,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }],
+            details_error: Some(std::sync::Arc::new(
+                TaskError::DashPayContactDetailsUnread {
+                    source: Box::new(TaskError::SecretPromptCancelled),
+                },
+            )),
+        });
+
+        let info = screen.contact_info.as_ref().expect("contact info");
+        assert_eq!(info.note.as_deref(), Some("Real"));
+        assert!(!info.is_hidden);
+    }
+
+    /// A save refused because the details changed reads them again, so the
+    /// next edit starts from the latest.
+    #[test]
+    fn a_save_over_changed_details_reads_them_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let (owner, contact) = (Identifier::from([1; 32]), Identifier::from([2; 32]));
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails::default(),
+        });
+        screen.needs_backend_fetch = false;
+        screen.start_editing();
+        screen.edit_note = "Mine".into();
+        let _ = screen.save_contact_info();
+
+        screen.display_task_error(&TaskError::DashPayContactInfoActionFailed {
+            identity_id: owner,
+            contact_id: contact,
+            source: Box::new(TaskError::DashPayContactDetailsChanged),
+        });
+
+        assert!(screen.needs_backend_fetch);
+        assert!(
+            !screen.editing_info,
+            "the editor closes: its baseline is out of date, so every save from it would be refused"
         );
     }
 
@@ -941,9 +1060,16 @@ mod tests {
         let context = test_app_context(dir.path());
         let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
         let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
-        if let Some(info) = &mut screen.contact_info {
-            info.nickname = Some("Bao".into());
-        }
+        let read = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Met".into()),
+            hidden: false,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: Identifier::from([1; 32]),
+            contact_id: Identifier::from([2; 32]),
+            details: read.clone(),
+        });
 
         screen.start_editing();
         screen.edit_nickname.clear();
@@ -956,6 +1082,7 @@ mod tests {
                 nickname: ContactInfoField::Replace(None),
                 note: ContactInfoField::Preserve,
                 display_hidden: ContactInfoField::Replace(true),
+                opened: read,
             }
         );
     }

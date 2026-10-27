@@ -433,12 +433,19 @@ impl IdentityHubScreen {
         if let TaskError::DashPayContactInfoActionFailed {
             identity_id,
             contact_id,
-            ..
+            source,
         } = error
         {
             let network = self.contact_info_write_network(identity_id, contact_id);
             self.contacts_state
                 .release_contact_info_write(network, identity_id, contact_id);
+            // The details changed since the user saw them: show the latest,
+            // and restart the note draft from it, since a draft on the old
+            // baseline would be refused again.
+            if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.contacts_state.detail_mut().drop_draft(contact_id);
+                self.contacts_state.invalidate();
+            }
         }
         if let Some(key) = contact_info_error_key(error) {
             self.forget_contact_info_task(&key);
@@ -804,7 +811,12 @@ impl ScreenLike for IdentityHubScreen {
         }
         // A reload re-arms without cancelling the load before it, so lists
         // can answer out of order; an older one would undo a confirmed note.
-        if let BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } = &result {
+        if let BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity,
+            contacts,
+            details_error,
+        } = &result
+        {
             if self
                 .contacts_state
                 .accepts_contacts_from(context.dispatch_id())
@@ -812,6 +824,8 @@ impl ScreenLike for IdentityHubScreen {
             {
                 self.contacts_state
                     .record_loaded_contacts(contacts.clone(), context.dispatch_id());
+                self.contacts_state
+                    .record_details_error(details_error.clone());
             }
             return;
         }
@@ -2424,8 +2438,14 @@ mod tests {
     fn a_saved_note_and_an_unhide_report_differently() {
         use crate::model::dashpay::ContactInfoUpdate;
 
-        let note = contact_info_task(ContactInfoUpdate::note(Some("Bao".into())));
-        let unhide = contact_info_task(ContactInfoUpdate::visibility(false));
+        let note = contact_info_task(ContactInfoUpdate::note(
+            &crate::model::dashpay::ContactDetails::default(),
+            Some("Bao".into()),
+        ));
+        let unhide = contact_info_task(ContactInfoUpdate::visibility(
+            &crate::model::dashpay::ContactDetails::default(),
+            false,
+        ));
         assert!(is_note_save(&note));
         assert!(!is_note_save(&unhide));
         assert_eq!(
@@ -2449,6 +2469,7 @@ mod tests {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -2491,6 +2512,7 @@ mod tests {
                     note: None,
                     is_hidden: false,
                     details_unreadable: false,
+                    details_unknown: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,
@@ -2515,7 +2537,10 @@ mod tests {
                 DashPayTask::UpdateContactInfo {
                     identity: hub_identity(owner),
                     contact_id: contact,
-                    update: ContactInfoUpdate::note(Some("Bao".into())),
+                    update: ContactInfoUpdate::note(
+                        &crate::model::dashpay::ContactDetails::default(),
+                        Some("Bao".into()),
+                    ),
                 },
             )));
             screen.capture_contact_info_update(&action);
@@ -2588,6 +2613,7 @@ mod tests {
                 note: note.map(Into::into),
                 is_hidden: false,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
@@ -2633,7 +2659,10 @@ mod tests {
             DashPayTask::UpdateContactInfo {
                 identity: identity.clone(),
                 contact_id: contact,
-                update: ContactInfoUpdate::note(Some("Bao".into())),
+                update: ContactInfoUpdate::note(
+                    &crate::model::dashpay::ContactDetails::default(),
+                    Some("Bao".into()),
+                ),
             },
         )));
         screen.capture_contact_info_update(&action);
@@ -2655,6 +2684,7 @@ mod tests {
         let contacts_result = |note| BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
             contacts: listed(note),
+            details_error: None,
         };
         screen.display_backend_task_result(&load_b, contacts_result(Some("Bao")));
         screen.display_backend_task_result(&load_a, contacts_result(None));
@@ -2674,6 +2704,132 @@ mod tests {
                 .note_mut(&contact)
                 .map(|draft| draft.clone()),
             Some("Bao".into())
+        );
+    }
+
+    /// A save refused because the contact's details changed reloads the
+    /// list, so the next edit starts from the latest details.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_save_over_changed_details_reloads_the_contacts() {
+        use crate::backend_task::dashpay::ContactData;
+        let listed = |note: &str| ContactData {
+            identity_id: id(2),
+            nickname: None,
+            note: Some(note.into()),
+            is_hidden: false,
+            details_unreadable: false,
+            details_unknown: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        };
+        let (_temp_dir, app_context) = wired_test_context().await;
+        let mut screen = IdentityHubScreen::new(&app_context);
+        screen.contacts_state.record_contacts(vec![listed("A")]);
+        screen.contacts_state.select_contact(&id(2));
+        *screen
+            .contacts_state
+            .detail_mut()
+            .note_mut(&id(2))
+            .expect("draft") = "B".into();
+        assert!(screen.contacts_state.claim_reads().is_some());
+        assert!(!screen.contacts_state.load_is_due());
+
+        screen.handle_contact_info_error(&TaskError::DashPayContactInfoActionFailed {
+            identity_id: id(1),
+            contact_id: id(2),
+            source: Box::new(TaskError::DashPayContactDetailsChanged),
+        });
+
+        assert!(screen.contacts_state.load_is_due());
+        // The draft restarts from the reloaded note: a draft kept on its old
+        // baseline would be refused on every later save.
+        screen.contacts_state.record_contacts(vec![listed("C")]);
+        assert_eq!(
+            screen
+                .contacts_state
+                .detail_mut()
+                .note_mut(&id(2))
+                .map(|draft| draft.clone()),
+            Some("C".into())
+        );
+    }
+
+    /// A list whose saved details were not read pauses saving; a newer list
+    /// that read them resumes it, and the older load answering afterwards
+    /// does not pause it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unread_details_pause_saving_until_a_newer_list_reads_them() {
+        use crate::backend_task::dashpay::ContactData;
+
+        let (_temp_dir, app_context) = wired_test_context().await;
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            id(0x32),
+            Network::Testnet,
+            false,
+        );
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        app_context.set_selected_identity(Some(identity.identity.id()));
+        let owner = identity.identity.id();
+        let contacts_load = |screen: &mut IdentityHubScreen| {
+            let AppAction::BackendTasksWithContexts(tasks, _) =
+                super::super::contacts::load_action(&identity, &mut screen.contacts_state)
+            else {
+                panic!("the contact loads are dispatched");
+            };
+            tasks
+                .into_iter()
+                .find_map(|(task, context)| {
+                    matches!(&task, BackendTask::DashPayTask(t)
+                        if matches!(**t, DashPayTask::LoadContacts { .. }))
+                    .then_some(context)
+                })
+                .expect("a contact list load")
+        };
+        let list = |details_error: Option<Arc<TaskError>>| {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity: owner,
+                contacts: vec![ContactData {
+                    identity_id: id(4),
+                    nickname: None,
+                    note: None,
+                    is_hidden: details_error.is_some(),
+                    details_unreadable: false,
+                    details_unknown: details_error.is_some(),
+                    account_reference: 0,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                    bio: None,
+                }],
+                details_error,
+            }
+        };
+        let unread = || {
+            Some(Arc::new(TaskError::DashPayContactDetailsLocked {
+                source: Box::new(TaskError::SecretPromptCancelled),
+            }))
+        };
+
+        let mut screen = IdentityHubScreen::new(&app_context);
+        screen.contacts_state.reconcile_owner(&identity);
+        let load_a = contacts_load(&mut screen);
+        screen.display_backend_task_result(&load_a, list(unread()));
+        assert!(screen.contacts_state.details_error().is_some());
+
+        screen.contacts_state.invalidate();
+        let load_b = contacts_load(&mut screen);
+        screen.display_backend_task_result(&load_b, list(None));
+        assert!(screen.contacts_state.details_error().is_none());
+
+        screen.display_backend_task_result(&load_a, list(unread()));
+        assert!(
+            screen.contacts_state.details_error().is_none(),
+            "an older load must not pause saving again"
         );
     }
 
@@ -2802,12 +2958,14 @@ mod tests {
                 note: Some(note.into()),
                 is_hidden: false,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
                 avatar_url: None,
                 bio: None,
             }],
+            details_error: None,
         };
         let contacts_load = |screen: &mut IdentityHubScreen, on_screen: &QualifiedIdentity| {
             screen.contacts_state.invalidate();
@@ -2848,7 +3006,10 @@ mod tests {
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
             identity: identity.clone(),
             contact_id: contact,
-            update: ContactInfoUpdate::note(Some("Mine".into())),
+            update: ContactInfoUpdate::note(
+                &crate::model::dashpay::ContactDetails::default(),
+                Some("Mine".into()),
+            ),
         }));
         let action = AppAction::BackendTask(task.clone());
         screen.capture_contact_info_update(&action);

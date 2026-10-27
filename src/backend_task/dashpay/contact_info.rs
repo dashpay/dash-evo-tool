@@ -206,16 +206,23 @@ trait SaveOps {
 ///
 /// Nothing is written when the current details cannot be read (a cancelled
 /// password prompt included): a field the update keeps would otherwise be
-/// saved from a guess. Over saved details that could not be read, a save that
-/// keeps a text field, other than unhiding, is refused with
-/// [`TaskError::DashPayContactDetailsUnreadable`]. A save whose synced record
-/// fails is reported as failed, since the old legacy details would show
-/// again on reload.
+/// saved from a guess. Two refusals follow, in this order, each writing
+/// nothing:
+/// - [`TaskError::DashPayContactDetailsChanged`]: a field the update
+///   replaces no longer holds what the user opened.
+/// - [`TaskError::DashPayContactDetailsUnreadable`]: the saved details could
+///   not be read and the save, other than unhiding, keeps a text field.
+///
+/// A save whose synced record fails is reported as failed, since the old
+/// legacy details would show again on reload.
 async fn save_contact_details<O: SaveOps>(
     ops: &O,
     update: &ContactInfoUpdate,
 ) -> Result<bool, TaskError> {
     let (current, unreadable) = ops.current().await?;
+    if update.changed_since_opened(&current) {
+        return Err(TaskError::DashPayContactDetailsChanged);
+    }
     // Unreadable saved details are not empty ones: a text field the update
     // keeps would be published as empty, and the saved one lost. Unhiding
     // replaces them on purpose, as the hidden list says.
@@ -506,10 +513,44 @@ mod tests {
     async fn an_unreadable_baseline_writes_nothing() {
         let ops = ScriptedSave::new(Err(TaskError::SecretPromptCancelled), false);
 
-        let result = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into()))).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into())),
+        )
+        .await;
 
         assert!(matches!(result, Err(TaskError::SecretPromptCancelled)));
         assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// A save replaces only values the user saw: a note typed over a note
+    /// that changed since, or that was never read, is refused, and nothing
+    /// is written. Fields the update keeps may change freely.
+    #[tokio::test]
+    async fn a_save_over_details_that_changed_writes_nothing() {
+        let saved = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Real".into()),
+            hidden: false,
+        };
+        let ops = ScriptedSave::new(Ok(saved.clone()), false);
+        let unseen = ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into()));
+
+        let result = save_contact_details(&ops, &unseen).await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
+
+        let opened = ContactDetails {
+            nickname: None,
+            ..saved.clone()
+        };
+        let ops = ScriptedSave::new(Ok(saved), false);
+        let seen = ContactInfoUpdate::note(&opened, Some("n".into()));
+        assert!(save_contact_details(&ops, &seen).await.is_ok());
     }
 
     /// The baseline is unreadable when the published document did not open,
@@ -523,6 +564,7 @@ mod tests {
             note: None,
             is_hidden: true,
             details_unreadable,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -583,11 +625,71 @@ mod tests {
             ..ScriptedSave::new(Ok(ContactDetails::default()), false)
         };
 
-        let result =
-            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(!*ops.marked.lock().unwrap());
+    }
+
+    /// A stale view wins over unreadable details: the user saw something
+    /// else, so they reload first and nothing is written, whatever the
+    /// update keeps.
+    #[tokio::test]
+    async fn a_stale_view_of_unreadable_details_is_refused_as_changed() {
+        let ops = ScriptedSave {
+            unreadable: true,
+            ..ScriptedSave::new(
+                Ok(ContactDetails {
+                    hidden: true,
+                    ..Default::default()
+                }),
+                false,
+            )
+        };
+
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::visibility(&ContactDetails::default(), true),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
+    }
+
+    /// An unhide sent from a list that showed the details as unreadable,
+    /// after they became readable: it keeps them when they are still hidden,
+    /// and is refused as changed, writing nothing, when they are not.
+    #[tokio::test]
+    async fn an_unhide_over_details_that_became_readable_keeps_them() {
+        let listed = ContactDetails {
+            hidden: true,
+            ..Default::default()
+        };
+        let readable = |hidden| ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Real".into()),
+            hidden,
+        };
+        let unhide = ContactInfoUpdate::visibility(&listed, false);
+
+        let ops = ScriptedSave::new(Ok(readable(true)), false);
+        save_contact_details(&ops, &unhide).await.expect("unhidden");
+        assert_eq!(*ops.published.lock().unwrap(), vec![readable(false)]);
+
+        let ops = ScriptedSave::new(Ok(readable(false)), false);
+        assert!(matches!(
+            save_contact_details(&ops, &unhide).await,
+            Err(TaskError::DashPayContactDetailsChanged)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
     }
 
     /// Saved details that could not be read are not empty ones: a save that
@@ -607,9 +709,14 @@ mod tests {
             )
         };
 
+        // What the hub lists for such a contact: hidden, with no details.
+        let shown = ContactDetails {
+            hidden: true,
+            ..Default::default()
+        };
         for update in [
-            ContactInfoUpdate::note(Some("n".into())),
-            ContactInfoUpdate::visibility(true),
+            ContactInfoUpdate::note(&shown, Some("n".into())),
+            ContactInfoUpdate::visibility(&shown, true),
         ] {
             let ops = unreadable();
             let result = save_contact_details(&ops, &update).await;
@@ -621,7 +728,7 @@ mod tests {
         }
 
         let ops = unreadable();
-        save_contact_details(&ops, &ContactInfoUpdate::visibility(false))
+        save_contact_details(&ops, &ContactInfoUpdate::visibility(&shown, false))
             .await
             .expect("unhiding replaces them");
         assert_eq!(
@@ -638,8 +745,11 @@ mod tests {
         let ops = ScriptedSave::new(Ok(ContactDetails::default()), true)
             .with_outcome(ContactInfoPublishOutcome::Published);
 
-        let result =
-            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -654,8 +764,11 @@ mod tests {
     async fn a_failed_synced_record_of_a_deferred_save_claims_no_publish() {
         let ops = ScriptedSave::new(Ok(ContactDetails::default()), true);
 
-        let result =
-            save_contact_details(&ops, &ContactInfoUpdate::replace_all(None, None, false)).await;
+        let result = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+        )
+        .await;
 
         let Err(error) = result else {
             panic!("a failed synced record fails the save");
@@ -676,9 +789,12 @@ mod tests {
         };
         let ops = ScriptedSave::new(Ok(current.clone()), false);
 
-        let published = save_contact_details(&ops, &ContactInfoUpdate::note(Some("n".into())))
-            .await
-            .expect("saved");
+        let published = save_contact_details(
+            &ops,
+            &ContactInfoUpdate::note(&ContactDetails::default(), Some("n".into())),
+        )
+        .await
+        .expect("saved");
 
         assert!(!published, "deferred until two contacts");
         assert_eq!(

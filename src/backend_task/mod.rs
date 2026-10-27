@@ -915,6 +915,11 @@ pub enum BackendTaskSuccessResult {
         /// [`BackendTaskSuccessResult::DashPayContactRequests`].
         identity: Identifier,
         contacts: Vec<ContactData>,
+        /// Set when the saved contact details could not be read
+        /// ([`TaskError::DashPayContactDetailsUnread`] or
+        /// [`TaskError::DashPayContactDetailsLocked`]): contacts whose
+        /// details are unknown are listed hidden, and edits must wait.
+        details_error: Option<Arc<TaskError>>,
     },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(crate::model::dashpay::ProfileSnapshot),
@@ -2657,7 +2662,10 @@ mod tests {
                 BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
                     identity: owner,
                     contact_id,
-                    update: crate::model::dashpay::ContactInfoUpdate::note(None),
+                    update: crate::model::dashpay::ContactInfoUpdate::note(
+                        &crate::model::dashpay::ContactDetails::default(),
+                        None,
+                    ),
                 })),
                 SenderAsync::new(tx, ctx.egui_ctx().clone()),
             )

@@ -166,12 +166,14 @@ fn deliver_contact_with(
                 note: None,
                 is_hidden,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username,
                 display_name: None,
                 avatar_url: None,
                 bio: None,
             }],
+            details_error: None,
         },
     );
 }

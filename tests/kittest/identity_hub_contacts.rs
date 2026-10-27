@@ -152,6 +152,7 @@ fn contacts_tab_follows_an_identity_selected_outside_the_hub() {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,

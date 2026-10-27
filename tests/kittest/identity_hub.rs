@@ -382,6 +382,7 @@ pub(crate) mod loads {
             note: None,
             is_hidden: false,
             details_unreadable: false,
+            details_unknown: false,
             account_reference: 0,
             username: None,
             display_name: None,
@@ -400,6 +401,7 @@ pub(crate) mod loads {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity: owner,
                 contacts: vec![named_contact(name)],
+                details_error: None,
             },
         );
     }
@@ -727,6 +729,7 @@ pub(crate) mod loads {
                 note: None,
                 is_hidden: false,
                 details_unreadable: false,
+                details_unknown: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
@@ -744,6 +747,7 @@ pub(crate) mod loads {
                 answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
                     identity: shown,
                     contacts: vec![contact("Bao")],
+                    details_error: None,
                 }),
                 answer(BackendTaskSuccessResult::DashPayContactRequests {
                     identity: shown,
@@ -761,6 +765,7 @@ pub(crate) mod loads {
                 answer(BackendTaskSuccessResult::DashPayContactsWithInfo {
                     identity: other,
                     contacts: vec![contact("Zed")],
+                    details_error: None,
                 }),
             ];
             receive_behind_the_send_screen(&runtime, &mut app, &mut hub, results);

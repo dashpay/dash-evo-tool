@@ -1473,6 +1473,20 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A private contact note exceeds the application's byte limit.
+    #[error("This note is too long. Shorten it to save it.")]
+    DashPayContactNoteTooLong {
+        #[from]
+        source: crate::model::dashpay::ContactNoteTooLong,
+    },
+
+    /// Contact details could not be encoded within the document size limit.
+    #[error("Contact info is too large to save. Try shortening your nickname or note.")]
+    DashPayContactInfoEncoding {
+        #[source]
+        source: Box<platform_wallet::PlatformWalletError>,
+    },
+
     /// An existing contact's encrypted details could not be read safely.
     #[error(
         "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."

@@ -1160,6 +1160,157 @@ mod tests {
         })
     }
 
+    /// A user contract using what a token creator's contract can carry: a
+    /// group, keywords, a description, `$defs` with a `$ref`, a contested
+    /// unique index and a token with group-controlled rules, perpetual and
+    /// pre-programmed distribution.
+    fn rich_user_contract_at(platform_version: &PlatformVersion) -> DataContract {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
+        use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+        use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
+        use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
+        use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::group::Group;
+        use dash_sdk::dpp::data_contract::group::v0::GroupV0;
+        use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::data_contract::v1::DataContractV1;
+        use dash_sdk::dpp::platform_value::platform_value;
+        use dash_sdk::dpp::version::TryFromPlatformVersioned;
+        use std::collections::BTreeMap;
+
+        let (owner, member) = (ident(7), ident(9));
+        let group_rules = |self_change: bool| {
+            ChangeControlRules::V0(ChangeControlRulesV0 {
+                authorized_to_make_change: AuthorizedActionTakers::Group(0),
+                admin_action_takers: AuthorizedActionTakers::ContractOwner,
+                changing_authorized_action_takers_to_no_one_allowed: true,
+                changing_admin_action_takers_to_no_one_allowed: false,
+                self_changing_admin_action_takers_allowed: self_change,
+            })
+        };
+        let mut token = TokenConfigurationV0::default_most_restrictive();
+        token.base_supply = 1_000_000;
+        token.max_supply = Some(10_000_000);
+        token.main_control_group = Some(0);
+        token.main_control_group_can_be_modified = AuthorizedActionTakers::ContractOwner;
+        token.manual_minting_rules = group_rules(true);
+        token.manual_burning_rules = group_rules(false);
+        token.freeze_rules = group_rules(false);
+        token.max_supply_change_rules = group_rules(false);
+        token.description = Some("A token to pin saved-contract bytes".to_string());
+        token.distribution_rules = TokenDistributionRules::V0(TokenDistributionRulesV0 {
+            perpetual_distribution: Some(TokenPerpetualDistribution::V0(
+                TokenPerpetualDistributionV0 {
+                    distribution_type: RewardDistributionType::BlockBasedDistribution {
+                        interval: 100,
+                        function: DistributionFunction::FixedAmount { amount: 7 },
+                    },
+                    distribution_recipient: TokenDistributionRecipient::ContractOwner,
+                },
+            )),
+            perpetual_distribution_rules: group_rules(false),
+            pre_programmed_distribution: Some(TokenPreProgrammedDistribution::V0(
+                TokenPreProgrammedDistributionV0 {
+                    distributions: BTreeMap::from([(
+                        1_700_000_000_000,
+                        BTreeMap::from([(member, 1_000)]),
+                    )]),
+                },
+            )),
+            new_tokens_destination_identity: Some(owner),
+            new_tokens_destination_identity_rules: group_rules(false),
+            minting_allow_choosing_destination: false,
+            minting_allow_choosing_destination_rules: group_rules(false),
+            change_direct_purchase_pricing_rules: group_rules(false),
+        });
+
+        let name = platform_value!({
+            "type": "object",
+            "documentsMutable": false,
+            "canBeDeleted": true,
+            "properties": {
+                "label": {"$ref": "#/$defs/label", "position": 0},
+                "normalizedLabel": {"type": "string", "position": 1, "maxLength": 63_u32},
+            },
+            "required": ["label", "normalizedLabel"],
+            "indices": [{
+                "name": "byNormalizedLabel",
+                "properties": [{"normalizedLabel": "asc"}],
+                "unique": true,
+                "contested": {
+                    "fieldMatches": [{"field": "normalizedLabel", "regexPattern": "^[a-z01-]{3,19}$"}],
+                    "resolution": 0,
+                    "description": "Short names are awarded by a masternode vote",
+                },
+            }],
+            "additionalProperties": false,
+        });
+        let id = ident(10);
+        let config = DataContractConfig::default_for_version(platform_version).expect("config");
+        let schema_defs = BTreeMap::from([(
+            "label".to_string(),
+            platform_value!({"type": "string", "minLength": 3_u32, "maxLength": 63_u32}),
+        )]);
+        let tokens = BTreeMap::from([(0, token.into())]);
+        let name = DocumentType::try_from_schema(
+            id,
+            1,
+            config.version(),
+            "name",
+            name,
+            Some(&schema_defs),
+            &tokens,
+            &config,
+            true,
+            &mut Vec::new(),
+            platform_version,
+        )
+        .expect("document type");
+        let contract = DataContract::V1(DataContractV1 {
+            id,
+            version: 1,
+            owner_id: owner,
+            document_types: BTreeMap::from([("name".to_string(), name)]),
+            config,
+            schema_defs: Some(schema_defs),
+            groups: BTreeMap::from([(
+                0,
+                Group::V0(GroupV0 {
+                    members: BTreeMap::from([(owner, 1), (member, 1)]),
+                    required_power: 2,
+                }),
+            )]),
+            tokens,
+            keywords: vec!["Pinned".to_string(), "bytes".to_string()],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: Some("A contract to pin saved-contract bytes".to_string()),
+        });
+        // Read back through the serialization format, as a contract fetched
+        // from Platform is: that lowercases the keywords.
+        let format = DataContractInSerializationFormat::try_from_platform_versioned(
+            contract,
+            platform_version,
+        )
+        .expect("serialization format");
+        DataContract::try_from_platform_versioned(format, true, &mut Vec::new(), platform_version)
+            .expect("rich user contract")
+    }
+
     /// The contracts a user may hold locally, encoded as DET encodes them at
     /// `protocol_version`.
     fn stored_contracts_at(protocol_version: u32) -> Vec<(DataContract, StoredContract)> {
@@ -1171,6 +1322,7 @@ mod tests {
             load_system_data_contract(SystemDataContract::DPNS, pv).expect("dpns"),
             load_system_data_contract(SystemDataContract::Dashpay, pv).expect("dashpay"),
             load_system_data_contract(SystemDataContract::TokenHistory, pv).expect("history"),
+            rich_user_contract_at(pv),
         ]
         .into_iter()
         .map(|contract| {
@@ -1189,7 +1341,8 @@ mod tests {
     const PINNED_CONTRACT_PROTOCOLS: std::ops::RangeInclusive<u32> = 10..=15;
 
     /// Labels of [`stored_contracts_at`]'s contracts, in its order.
-    const PINNED_CONTRACT_LABELS: [&str; 4] = ["user", "dpns", "dashpay", "token-history"];
+    const PINNED_CONTRACT_LABELS: [&str; 5] =
+        ["user", "dpns", "dashpay", "token-history", "rich-user"];
 
     fn pinned_contract_path(protocol_version: u32, label: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

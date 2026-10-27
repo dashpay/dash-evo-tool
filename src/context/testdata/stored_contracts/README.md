@@ -9,7 +9,10 @@ k/v store (`StoredContract::contract_bytes`, from
 - `p<N>-<label>.hex`: the contract written at protocol version `N`, hex-encoded.
 - Labels, in the order of the test helper `stored_contracts_at`: `user` (a
   user contract with a unique index and a token), `dpns`, `dashpay`,
-  `token-history` (system contracts at that protocol version).
+  `token-history` (system contracts at that protocol version), `rich-user` (a
+  user contract with a group, keywords, a description, `$defs` with a `$ref`,
+  a contested unique index and a token with group-controlled rules, perpetual
+  and pre-programmed distribution).
 
 Provenance: written by the `dpp` of dashpay/platform
 `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`, the platform pin of DET

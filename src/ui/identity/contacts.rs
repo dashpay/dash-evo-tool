@@ -80,12 +80,14 @@ pub const UNHIDE_TOOLTIP: &str = "Show this contact in your contact list again."
 /// count tells the user there is something to recover.
 pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
 
+/// Shown under a hidden contact whose saved details were not read, because
+/// reading them failed; the notice at the top of the tab says why.
+pub const UNREAD_DETAILS_NOTE: &str = "This contact's saved details have not been read, so it stays hidden for now. Open the Contacts tab again to retry.";
+/// Why saving waits while the saved contact details are unread.
+pub const DETAILS_UNREAD_TOOLTIP: &str = "Saving is paused until your saved contact details can be read. The message at the top of this tab says what to do.";
+
 /// Shown under a hidden contact whose saved details could not be read: its
 /// hidden flag is unknown, so it stays hidden until the user unhides it.
-/// Shown under a hidden contact whose saved details were not read.
-pub const UNREAD_DETAILS_NOTE: &str = "This contact's saved details have not been read yet.";
-/// Why saving waits while the saved contact details are unread.
-pub const DETAILS_UNREAD_TOOLTIP: &str = "Saving waits until your saved contact details are read. Unlock your wallet, then open Contacts again.";
 pub const UNREADABLE_DETAILS_NOTE: &str = "The details you saved for this contact could not be read, so it stays \
      hidden. Unhide it to show it in your list again.";
 

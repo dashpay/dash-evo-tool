@@ -383,6 +383,22 @@ pub(super) fn details_unknown(
     read_failed && legacy_details_shown(published, local, synced_before)
 }
 
+/// The error the contacts list reports when reading the saved contact
+/// details failed, with the action that fits `source`.
+pub(super) fn details_read_error(source: TaskError) -> TaskError {
+    tracing::debug!(error = ?source, "LoadContacts: saved contact details not read");
+    match source {
+        TaskError::SecretPromptCancelled
+        | TaskError::ContactWalletSeedUnavailable
+        | TaskError::WalletLockedNotLoaded { .. } => TaskError::DashPayContactDetailsLocked {
+            source: Box::new(source),
+        },
+        source => TaskError::DashPayContactDetailsUnread {
+            source: Box::new(source),
+        },
+    }
+}
+
 /// Whether platform-wallet's side holds details worth recording as its own:
 /// a published DIP-0015 document (even an empty one), or non-empty details on
 /// this device.
@@ -546,11 +562,9 @@ pub async fn load_contacts(
         Ok(legacy) => (legacy, None),
         Err(error) => (HashMap::new(), Some(error)),
     };
-    let details_error = published_error.or(legacy_error).map(|source| {
-        Arc::new(TaskError::DashPayContactDetailsUnread {
-            source: Box::new(source),
-        })
-    });
+    let details_error = published_error
+        .or(legacy_error)
+        .map(|source| Arc::new(details_read_error(source)));
 
     // Recording which details platform-wallet holds must not race a save,
     // which stores its details here before it publishes them: with a save
@@ -1076,6 +1090,30 @@ mod tests {
             shown_contact_details(None, None, true, Some(legacy)),
             ContactDetails::default()
         );
+    }
+
+    /// A locked wallet or a cancelled password prompt asks the user to
+    /// unlock; any other cause does not claim the wallet is locked.
+    #[test]
+    fn a_details_read_error_names_the_action_that_fits_its_cause() {
+        for source in [
+            TaskError::SecretPromptCancelled,
+            TaskError::ContactWalletSeedUnavailable,
+        ] {
+            assert!(
+                matches!(
+                    details_read_error(source),
+                    TaskError::DashPayContactDetailsLocked { .. }
+                ),
+                "a locked wallet asks to unlock"
+            );
+        }
+        let other = details_read_error(TaskError::WalletStateInconsistent);
+        assert!(
+            matches!(other, TaskError::DashPayContactDetailsUnread { .. }),
+            "{other:?}"
+        );
+        assert!(!other.to_string().contains("Unlock"));
     }
 
     /// A failed read leaves only the contacts whose details come from this

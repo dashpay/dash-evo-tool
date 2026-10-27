@@ -916,7 +916,8 @@ pub enum BackendTaskSuccessResult {
         identity: Identifier,
         contacts: Vec<ContactData>,
         /// Set when the saved contact details could not be read
-        /// ([`TaskError::DashPayContactDetailsUnread`]): contacts whose
+        /// ([`TaskError::DashPayContactDetailsUnread`] or
+        /// [`TaskError::DashPayContactDetailsLocked`]): contacts whose
         /// details are unknown are listed hidden, and edits must wait.
         details_error: Option<Arc<TaskError>>,
     },

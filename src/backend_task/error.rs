@@ -1468,13 +1468,23 @@ pub enum TaskError {
     },
 
     /// The contacts list could not read the contact details saved in the
-    /// owner's stored documents (the wallet is locked, or its password prompt
-    /// was cancelled). Contacts whose visibility depends on them stay hidden,
-    /// and edits wait for a read that succeeds.
+    /// owner's stored documents. Contacts whose visibility depends on them
+    /// stay hidden, and edits wait for a read that succeeds. A locked wallet
+    /// is [`TaskError::DashPayContactDetailsLocked`].
     #[error(
-        "Your saved contact details could not be read, so some contacts stay hidden and editing is paused. Unlock your wallet, then open Contacts again."
+        "Your saved contact details could not be read, so some contacts stay hidden and editing is paused. Open the Contacts tab again to retry."
     )]
     DashPayContactDetailsUnread {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// [`TaskError::DashPayContactDetailsUnread`] because the wallet is
+    /// locked or its password prompt was cancelled.
+    #[error(
+        "Your wallet is locked, so your saved contact details could not be read. Some contacts stay hidden and editing is paused until they are. Unlock your wallet, then open the Contacts tab again."
+    )]
+    DashPayContactDetailsLocked {
         #[source]
         source: Box<TaskError>,
     },

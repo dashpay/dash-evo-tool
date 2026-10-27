@@ -324,11 +324,6 @@ impl ContactsState {
             .collect();
     }
 
-    /// Store the established-contact list from `DashPayTask::LoadContacts`,
-    /// split into the visible contacts and the hidden ones. Hidden contacts stay
-    /// out of the active list — that is what "hidden" promises — but remain
-    /// reachable through [`ContactsState::hidden_contacts`]. The selected
-    /// contact's note draft follows the reloaded note.
     /// Record whether the last list read the saved contact details.
     pub fn record_details_error(&mut self, error: Option<Arc<TaskError>>) {
         self.details_error = error;
@@ -340,6 +335,11 @@ impl ContactsState {
         self.details_error.as_ref()
     }
 
+    /// Store the established-contact list from `DashPayTask::LoadContacts`,
+    /// split into the visible contacts and the hidden ones. Hidden contacts stay
+    /// out of the active list — that is what "hidden" promises — but remain
+    /// reachable through [`ContactsState::hidden_contacts`]. The selected
+    /// contact's note draft follows the reloaded note.
     pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
         self.record_loaded_contacts(contacts, None);
     }

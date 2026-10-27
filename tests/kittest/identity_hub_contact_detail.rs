@@ -754,6 +754,55 @@ fn unread_saved_details_are_explained_and_block_the_unhide() {
     }
 }
 
+/// While the saved details are unread, the selected contact's note cannot
+/// be edited or saved: the note shown is a guess.
+#[test]
+fn unread_saved_details_disable_the_note_editor() {
+    use dash_evo_tool::backend_task::error::TaskError;
+    use egui_kittest::kittest::NodeT;
+    for unread in [true, false] {
+        with_isolated_data_dir(|| {
+            let (_runtime, app_context) = fresh_app_context();
+            let owner = seed_identity_with_usernames(&app_context);
+            let mut hub = hub_for(
+                &app_context,
+                owner,
+                WIDE,
+                IdentityHubTab::Contacts,
+                move |hub, owner| {
+                    let error = unread.then(|| {
+                        std::sync::Arc::new(TaskError::DashPayContactDetailsLocked {
+                            source: Box::new(TaskError::SecretPromptCancelled),
+                        })
+                    });
+                    deliver_with(hub, owner, bao(None), error);
+                },
+            );
+            hub.get_by_role_and_label(Role::Button, "Bao Nguyen")
+                .click();
+            hub.run_steps(4);
+
+            assert_eq!(
+                note_editor(&hub).accesskit_node().is_disabled(),
+                unread,
+                "{unread}"
+            );
+            note_editor(&hub).focus();
+            hub.run();
+            note_editor(&hub).type_text("Met at the meetup");
+            hub.run();
+            hub.get_by_role_and_label(Role::Button, SAVE_NOTE_LABEL)
+                .click();
+            hub.run_steps(2);
+            assert_eq!(
+                saved_notes(&hub).len(),
+                usize::from(!unread),
+                "a note is saved only from read details ({unread})"
+            );
+        });
+    }
+}
+
 #[test]
 fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
     use dash_evo_tool::backend_task::error::TaskError;

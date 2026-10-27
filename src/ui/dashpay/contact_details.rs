@@ -54,7 +54,8 @@ pub struct ContactInfo {
 }
 
 /// Why Edit is unavailable before the contact's saved details are read.
-const EDIT_WAITS_FOR_DETAILS: &str = "Editing waits until this contact's saved details are read. Unlock your wallet, then open this contact again.";
+const EDIT_WAITS_FOR_DETAILS: &str =
+    "Editing waits until this contact's saved details are read. Open this contact again to retry.";
 
 pub struct ContactDetailsScreen {
     pub app_context: Arc<AppContext>,
@@ -747,7 +748,7 @@ impl ScreenLike for ContactDetailsScreen {
             BackendTaskSuccessResult::DashPayContactsWithInfo {
                 identity,
                 contacts: contacts_data,
-                ..
+                details_error,
             } => {
                 // Contacts loaded for another identity say nothing about this
                 // screen's contact — a reload that outlived an identity switch
@@ -772,9 +773,13 @@ impl ScreenLike for ContactDetailsScreen {
                             if contact_data.bio.is_some() {
                                 info.bio = contact_data.bio;
                             }
-                            info.nickname = contact_data.nickname;
-                            info.note = contact_data.note;
-                            info.is_hidden = contact_data.is_hidden;
+                            // A list that could not read the saved details
+                            // holds guesses; Edit starts from these fields.
+                            if details_error.is_none() {
+                                info.nickname = contact_data.nickname;
+                                info.note = contact_data.note;
+                                info.is_hidden = contact_data.is_hidden;
+                            }
                             info.account_reference = contact_data.account_reference;
                         }
                         break;
@@ -949,6 +954,53 @@ mod tests {
         });
         screen.start_editing();
         assert!(screen.editing_info, "a read that succeeds opens it");
+    }
+
+    /// A contacts list whose saved details were not read holds guesses: it
+    /// must not replace the details this screen already read, which Edit
+    /// starts from.
+    #[test]
+    fn an_unread_contacts_list_keeps_the_details_this_screen_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let (owner, contact) = (Identifier::from([1; 32]), Identifier::from([2; 32]));
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails {
+                nickname: None,
+                note: Some("Real".into()),
+                hidden: false,
+            },
+        });
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactsWithInfo {
+            identity: owner,
+            contacts: vec![crate::backend_task::dashpay::ContactData {
+                identity_id: contact,
+                nickname: None,
+                note: None,
+                is_hidden: true,
+                details_unreadable: false,
+                details_unknown: true,
+                account_reference: 0,
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }],
+            details_error: Some(std::sync::Arc::new(
+                TaskError::DashPayContactDetailsUnread {
+                    source: Box::new(TaskError::SecretPromptCancelled),
+                },
+            )),
+        });
+
+        let info = screen.contact_info.as_ref().expect("contact info");
+        assert_eq!(info.note.as_deref(), Some("Real"));
+        assert!(!info.is_hidden);
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no

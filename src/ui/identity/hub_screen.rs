@@ -2688,6 +2688,82 @@ mod tests {
         );
     }
 
+    /// A list whose saved details were not read pauses saving; a newer list
+    /// that read them resumes it, and the older load answering afterwards
+    /// does not pause it again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unread_details_pause_saving_until_a_newer_list_reads_them() {
+        use crate::backend_task::dashpay::ContactData;
+
+        let (_temp_dir, app_context) = wired_test_context().await;
+        let identity = crate::context::test_support::user_identity_with_signing_key(
+            id(0x32),
+            Network::Testnet,
+            false,
+        );
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed identity");
+        app_context.set_selected_identity(Some(identity.identity.id()));
+        let owner = identity.identity.id();
+        let contacts_load = |screen: &mut IdentityHubScreen| {
+            let AppAction::BackendTasksWithContexts(tasks, _) =
+                super::super::contacts::load_action(&identity, &mut screen.contacts_state)
+            else {
+                panic!("the contact loads are dispatched");
+            };
+            tasks
+                .into_iter()
+                .find_map(|(task, context)| {
+                    matches!(&task, BackendTask::DashPayTask(t)
+                        if matches!(**t, DashPayTask::LoadContacts { .. }))
+                    .then_some(context)
+                })
+                .expect("a contact list load")
+        };
+        let list = |details_error: Option<Arc<TaskError>>| {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity: owner,
+                contacts: vec![ContactData {
+                    identity_id: id(4),
+                    nickname: None,
+                    note: None,
+                    is_hidden: details_error.is_some(),
+                    details_unreadable: false,
+                    details_unknown: details_error.is_some(),
+                    account_reference: 0,
+                    username: None,
+                    display_name: None,
+                    avatar_url: None,
+                    bio: None,
+                }],
+                details_error,
+            }
+        };
+        let unread = || {
+            Some(Arc::new(TaskError::DashPayContactDetailsLocked {
+                source: Box::new(TaskError::SecretPromptCancelled),
+            }))
+        };
+
+        let mut screen = IdentityHubScreen::new(&app_context);
+        screen.contacts_state.reconcile_owner(&identity);
+        let load_a = contacts_load(&mut screen);
+        screen.display_backend_task_result(&load_a, list(unread()));
+        assert!(screen.contacts_state.details_error().is_some());
+
+        screen.contacts_state.invalidate();
+        let load_b = contacts_load(&mut screen);
+        screen.display_backend_task_result(&load_b, list(None));
+        assert!(screen.contacts_state.details_error().is_none());
+
+        screen.display_backend_task_result(&load_a, list(unread()));
+        assert!(
+            screen.contacts_state.details_error().is_none(),
+            "an older load must not pause saving again"
+        );
+    }
+
     /// One event in the life of a confirmed note; see `ConfirmedNote`.
     #[derive(Debug, Clone, Copy)]
     enum NoteEvent {

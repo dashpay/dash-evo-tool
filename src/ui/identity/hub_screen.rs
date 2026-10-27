@@ -566,9 +566,12 @@ impl ScreenLike for IdentityHubScreen {
         result: &BackendTaskSuccessResult,
     ) {
         let needs_completion = match result {
+            // Another screen's contact details write is newer than any note
+            // the hub saved, so the hub retires that note and reloads.
             BackendTaskSuccessResult::DashPayProfileUpdated(_)
             | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
-            | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
+            | BackendTaskSuccessResult::DashPayContactRequests { .. }
+            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };

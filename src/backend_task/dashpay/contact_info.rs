@@ -33,7 +33,7 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 // ContactInfo private data structure
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContactInfoPrivateData {
     pub version: u32,
     pub alias_name: Option<String>,
@@ -86,12 +86,27 @@ impl ContactInfoPrivateData {
     /// Stricter than platform-wallet's reader: a write must never drop fields
     /// it cannot read.
     ///
-    /// The single-byte layout older versions wrote comes first, so a legacy
-    /// payload that also parses as CompactSize keeps its values (see
-    /// [`LengthPrefix::SingleByte`]).
+    /// Also returns `None` for bytes that read completely both ways with
+    /// different values (see [`PrivateDataReading::Ambiguous`]), so a save
+    /// asks before overwriting them instead of persisting a guess.
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        Self::parse(bytes, LengthPrefix::SingleByte)
-            .or_else(|| Self::parse(bytes, LengthPrefix::CompactSize))
+        match Self::read(bytes) {
+            PrivateDataReading::Read(data) => Some(data),
+            PrivateDataReading::Ambiguous | PrivateDataReading::Unreadable => None,
+        }
+    }
+
+    /// Read `bytes` both as CompactSize and as the single-byte layout older
+    /// versions wrote, and keep a result only when it is unambiguous.
+    fn read(bytes: &[u8]) -> PrivateDataReading {
+        match (
+            Self::parse(bytes, LengthPrefix::SingleByte),
+            Self::parse(bytes, LengthPrefix::CompactSize),
+        ) {
+            (Some(legacy), Some(compact)) if legacy != compact => PrivateDataReading::Ambiguous,
+            (Some(data), _) | (None, Some(data)) => PrivateDataReading::Read(data),
+            (None, None) => PrivateDataReading::Unreadable,
+        }
     }
 
     fn parse(bytes: &[u8], prefix: LengthPrefix) -> Option<Self> {
@@ -204,14 +219,26 @@ enum LengthPrefix {
     /// prefix markers, so it is accepted only when such a length is present
     /// and the payload ends exactly after the last field.
     ///
-    /// It is tried before CompactSize, because a legacy payload can also
-    /// parse as CompactSize with other values. The reverse cannot happen for
-    /// a payload this client writes: a 253 to 255-byte field is `FD xx 00`
-    /// with `xx` in `FD..=FF`, never valid UTF-8 as the first text byte, and
-    /// a 253+ account count never totals the same bytes both ways. Only a
-    /// 256+ byte field from another client, whose bytes happen to form a
-    /// complete legacy payload too, is read as legacy.
+    /// Some bytes read completely both ways, with different values: a legacy
+    /// payload can also parse as CompactSize, and a 256+ byte field from
+    /// another client can also form a legacy payload. Such bytes are
+    /// [`PrivateDataReading::Ambiguous`]. What this client writes never is:
+    /// a 253 to 255-byte field is `FD xx 00` with `xx` in `FD..=FF`, never
+    /// valid UTF-8 as the first text byte, and a 253+ account count never
+    /// totals the same bytes both ways.
     SingleByte,
+}
+
+/// The outcome of reading a decrypted `privateData` payload.
+#[derive(Debug)]
+enum PrivateDataReading {
+    /// Exactly one reading succeeded, or both agree.
+    Read(ContactInfoPrivateData),
+    /// The CompactSize and single-byte readings both succeed with different
+    /// values, so neither can be trusted.
+    Ambiguous,
+    /// Neither reading succeeds.
+    Unreadable,
 }
 
 /// Decode a decrypted `privateData` payload for display.
@@ -219,17 +246,22 @@ enum LengthPrefix {
 /// This client's reader comes first, so the contact list shows every payload
 /// a save can read with the same values, including the long nicknames and
 /// notes older versions of this client wrote, which platform-wallet can
-/// misread. platform-wallet's tolerant reader then covers what a save will
-/// not rewrite, such as a newer minor version.
+/// misread. An ambiguous payload is shown as unreadable, never as a guess.
+/// platform-wallet's tolerant reader then covers what neither reading
+/// accepts and a save will not rewrite, such as a newer minor version.
 pub(super) fn decode_contact_info_details(plaintext: &[u8]) -> Option<UpstreamPrivateData> {
-    ContactInfoPrivateData::deserialize(plaintext)
-        .map(|data| UpstreamPrivateData {
+    match ContactInfoPrivateData::read(plaintext) {
+        PrivateDataReading::Read(data) => Some(UpstreamPrivateData {
             alias_name: data.alias_name,
             note: data.note,
             display_hidden: data.display_hidden,
             accepted_accounts: data.accepted_accounts,
-        })
-        .or_else(|| platform_wallet::wallet::identity::crypto::decode_private_data(plaintext).ok())
+        }),
+        PrivateDataReading::Ambiguous => None,
+        PrivateDataReading::Unreadable => {
+            platform_wallet::wallet::identity::crypto::decode_private_data(plaintext).ok()
+        }
+    }
 }
 
 /// Apply an explicit whole-document update to the payload already on Platform.
@@ -1805,7 +1837,7 @@ mod tests {
     /// An older version's 253-byte note starting with `03 01`, which a
     /// CompactSize reader takes as `FD 03 01`, a 259-byte length, followed by
     /// a complete payload with other values.
-    fn legacy_note_that_also_reads_as_compact_size() -> (ContactInfoPrivateData, Vec<u8>) {
+    fn legacy_note_that_also_reads_as_compact_size() -> Vec<u8> {
         let note = format!("\u{3}\u{1}{}", "x".repeat(251));
         let contact = legacy_contact(None, Some(&note), true, vec![0, 0]);
         let mut payload = vec![0, 0, 0, 0, 0x00, 0xFD];
@@ -1813,24 +1845,62 @@ mod tests {
         payload.extend_from_slice(&[0x01, 0x02]);
         payload.extend_from_slice(&[0; 8]);
         assert_eq!(payload, legacy_det_plaintext(&contact, 0));
-        (contact, payload)
+        payload
     }
 
-    /// A payload older versions wrote is read as they wrote it, even when it
-    /// also parses as CompactSize, so a later save keeps its values.
+    /// platform-wallet's encoding of a plain 300-byte nickname whose byte 251
+    /// is `1` (49). The legacy reading takes 253 bytes of nickname, then a
+    /// 49-byte note that ends exactly at the real visibility byte.
+    fn upstream_alias_that_also_reads_as_legacy() -> Vec<u8> {
+        use platform_wallet::wallet::identity::crypto as upstream;
+        let mut alias = "x".repeat(300);
+        alias.replace_range(251..252, "1");
+        upstream::encode_private_data(&upstream::ContactInfoPrivateData {
+            alias_name: Some(alias),
+            note: None,
+            display_hidden: true,
+            accepted_accounts: vec![7],
+        })
+    }
+
+    /// Bytes that read completely both as an older version's layout and as
+    /// CompactSize, with different values, are unreadable. A save prompts
+    /// instead of guessing and persisting the guess, and the contact list
+    /// shows no guess either.
     #[test]
-    fn a_legacy_payload_that_also_parses_as_compact_size_reads_as_legacy() {
-        let (expected, payload) = legacy_note_that_also_reads_as_compact_size();
+    fn details_that_read_two_ways_are_unreadable() {
+        use platform_wallet::wallet::identity::crypto as upstream;
+        for payload in [
+            legacy_note_that_also_reads_as_compact_size(),
+            upstream_alias_that_also_reads_as_legacy(),
+        ] {
+            let legacy = ContactInfoPrivateData::parse(&payload, LengthPrefix::SingleByte)
+                .expect("a complete legacy reading");
+            let compact = ContactInfoPrivateData::parse(&payload, LengthPrefix::CompactSize)
+                .expect("a complete CompactSize reading");
+            assert_ne!(legacy, compact);
+            assert!(upstream::decode_private_data(&payload).is_ok());
 
-        let parsed = ContactInfoPrivateData::deserialize(&payload)
-            .expect("the legacy payload must stay readable");
-        assert_same_details(&parsed, &expected);
+            assert!(ContactInfoPrivateData::deserialize(&payload).is_none());
+            assert!(
+                decode_contact_info_details(&payload).is_none(),
+                "the contact list must not show a guess"
+            );
 
-        let shown = decode_contact_info_details(&payload).expect("the contact list shows it");
-        assert_eq!(shown.alias_name, expected.alias_name);
-        assert_eq!(shown.note, expected.note);
-        assert_eq!(shown.display_hidden, expected.display_hidden);
-        assert_eq!(shown.accepted_accounts, expected.accepted_accounts);
+            let stored = contact_info_document(Some(Value::Bytes(
+                encrypt_private_data(&payload, &KEY).expect("encrypt"),
+            )));
+            assert!(matches!(
+                read_contact_info_private_data(
+                    Some(&stored),
+                    &KEY,
+                    UnreadableContactInfoPolicy::Abort,
+                ),
+                Err(TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::DeserializeFailed,
+                })
+            ));
+        }
     }
 
     /// What this client writes now still reads back when a length is 253 to
@@ -1855,45 +1925,37 @@ mod tests {
         }
     }
 
-    /// Another client may write a note of 256 bytes or more. It reads back
-    /// unless its bytes happen to form a complete legacy payload too, which
-    /// takes a note shaped to fit; then the legacy reading wins.
+    /// Another client may write a nickname or note of 256 bytes or more,
+    /// which this client never writes. Unless its bytes also form a complete
+    /// older layout, it reads back.
     #[test]
-    fn upstream_notes_over_255_bytes_read_unless_aligned_with_a_legacy_layout() {
+    fn upstream_details_over_255_bytes_read_back() {
         use platform_wallet::wallet::identity::crypto as upstream;
         for len in [256, 259, 300, 1000] {
-            for hidden in [false, true] {
-                let theirs = upstream::ContactInfoPrivateData {
-                    alias_name: None,
-                    note: Some("x".repeat(len)),
-                    display_hidden: hidden,
-                    accepted_accounts: vec![0, 0],
-                };
-                let parsed =
-                    ContactInfoPrivateData::deserialize(&upstream::encode_private_data(&theirs))
-                        .unwrap_or_else(|| panic!("a {len}-byte note must read back"));
-                assert_eq!(parsed.alias_name, theirs.alias_name);
-                assert_eq!(parsed.note, theirs.note);
-                assert_eq!(parsed.display_hidden, hidden);
-                assert_eq!(parsed.accepted_accounts, theirs.accepted_accounts);
+            let text = Some("x".repeat(len));
+            for (alias_name, note) in [
+                (None, text.clone()),
+                (text.clone(), None),
+                (text.clone(), text.clone()),
+            ] {
+                for hidden in [false, true] {
+                    let theirs = upstream::ContactInfoPrivateData {
+                        alias_name: alias_name.clone(),
+                        note: note.clone(),
+                        display_hidden: hidden,
+                        accepted_accounts: vec![0, 0],
+                    };
+                    let payload = upstream::encode_private_data(&theirs);
+                    let parsed = ContactInfoPrivateData::deserialize(&payload)
+                        .unwrap_or_else(|| panic!("{len}-byte details must read back"));
+                    assert_eq!(parsed.alias_name, theirs.alias_name);
+                    assert_eq!(parsed.note, theirs.note);
+                    assert_eq!(parsed.display_hidden, hidden);
+                    assert_eq!(parsed.accepted_accounts, theirs.accepted_accounts);
+                    assert_eq!(decode_contact_info_details(&payload), Some(theirs));
+                }
             }
         }
-
-        // The accepted residual: these upstream bytes equal a legacy payload.
-        let (legacy, payload) = legacy_note_that_also_reads_as_compact_size();
-        let aligned = upstream::ContactInfoPrivateData {
-            alias_name: None,
-            note: Some(format!(
-                "{}\u{1}\u{2}{}",
-                "x".repeat(251),
-                "\u{0}".repeat(6)
-            )),
-            display_hidden: false,
-            accepted_accounts: Vec::new(),
-        };
-        assert_eq!(upstream::encode_private_data(&aligned), payload);
-        let parsed = ContactInfoPrivateData::deserialize(&payload).expect("readable");
-        assert_same_details(&parsed, &legacy);
     }
 
     #[test]

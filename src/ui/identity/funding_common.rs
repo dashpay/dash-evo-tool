@@ -448,10 +448,10 @@ pub fn actionable_asset_locks(
         return FundingAssetLockPicker::Handled;
     };
 
-    // Consumed locks are tracked for history but cannot fund an identity.
+    // Spent and conflicted locks are tracked for history but cannot fund an identity.
     let tracked: Vec<TrackedAssetLock> = all_tracked
         .iter()
-        .filter(|t| !matches!(t.status, AssetLockStatus::Consumed))
+        .filter(|t| TrackedAssetLockCache::can_fund(&t.status))
         .cloned()
         .collect();
 

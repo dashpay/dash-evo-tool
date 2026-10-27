@@ -749,8 +749,9 @@ impl SnapshotStore {
                 if records
                     .get(txid)
                     .is_some_and(|tx| tx.block_hash == *block_hash)
+                    && let Some(record) = records.remove(txid)
                 {
-                    archived.insert(*txid, records.remove(txid).expect("record checked above"));
+                    archived.insert(*txid, record);
                 }
             }
         }

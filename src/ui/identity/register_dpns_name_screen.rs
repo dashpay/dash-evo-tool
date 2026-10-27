@@ -606,7 +606,7 @@ impl RegisterDpnsNameScreen {
                         &self.app_context,
                         &identity,
                         &mut self.selected_key,
-                        TransactionType::DocumentAction,
+                        TransactionType::UsernameRegistration,
                         document_type.as_ref(),
                         SigningScope::ContractWide {
                             contract_id: self.app_context.dpns_contract().id(),

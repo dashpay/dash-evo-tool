@@ -3672,7 +3672,9 @@ mod dpns_result_routing_tests {
             },
             BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
             BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-            BackendTaskSuccessResult::RefreshedDpnsContests,
+            BackendTaskSuccessResult::RefreshedDpnsContests {
+                network: Network::Testnet,
+            },
         ] {
             assert!(DPNSScreen::handles_result(&handled));
         }

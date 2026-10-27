@@ -978,3 +978,59 @@ fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() 
         });
     }
 }
+
+fn votes_panel(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::dpns::dpns_contested_names_screen::DPNSScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenMasternodes)
+    {
+        Some(Screen::MasternodesScreen(screen)) => screen.votes_mut(),
+        _ => panic!("the Masternodes screen is open"),
+    }
+}
+
+/// A contest refresh that ran on the previous network reaches no screen of
+/// the new one: its mid-task "contests refreshed" result leaves the voting
+/// panel's own refresh on the new network running, whether the panel is in
+/// view or hidden behind another root screen. The same result for the
+/// active network still ends that refresh.
+#[test]
+fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let previous_network = harness.state().current_app_context().network();
+
+            switch_network(&mut harness);
+            let current_network = harness.state().current_app_context().network();
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let refresh = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&refresh);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            let refreshed = |network| TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::RefreshedDpnsContests { network }),
+            };
+            deliver(&mut harness, refreshed(previous_network));
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the previous network's refresh leaves the new one running (in view: {in_view})"
+            );
+
+            deliver(&mut harness, refreshed(current_network));
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the active network's refresh still ends it (in view: {in_view})"
+            );
+        });
+    }
+}

@@ -391,7 +391,9 @@ impl AppContext {
 
         sender
             .send(TaskResult::unattributed_success(
-                BackendTaskSuccessResult::RefreshedDpnsContests,
+                BackendTaskSuccessResult::RefreshedDpnsContests {
+                    network: self.network,
+                },
             ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;

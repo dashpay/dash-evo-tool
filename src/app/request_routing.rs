@@ -13,9 +13,10 @@
 //! reaches screens only while that network is active: one arriving after a
 //! switch to another network ([`ResultRoute::PreviousNetwork`]) reaches no
 //! screen and no observer, and banners report it as for a closed sender. A
-//! switch back before it arrives delivers it as usual. The app's own
-//! scheduled-vote sweeps are undispatched but name their network in their
-//! context, so they are held to the same rule.
+//! switch back before it arrives delivers it as usual. Two results without a
+//! dispatch id name their network and are held to the same rule: the app's
+//! own scheduled-vote sweeps, in their context, and a contest refresh's
+//! mid-task `RefreshedDpnsContests`, in the result itself.
 //!
 //! Known limitation: other results without a dispatch id — undispatched app
 //! tasks and mid-task `Progress` updates — carry no network and still go to

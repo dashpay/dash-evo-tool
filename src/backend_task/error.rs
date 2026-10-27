@@ -3041,7 +3041,7 @@ pub enum TaskError {
 
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
-    PublicKeyMapBuildFailed { detail: String },
+    PublicKeyMapBuildFailed(#[from] crate::backend_task::identity::IdentityKeySpecError),
 
     /// The wallet-binding information for an identity could not be determined.
     #[error(

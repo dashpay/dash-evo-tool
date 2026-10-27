@@ -309,6 +309,16 @@ impl IdentityKeySpecs {
         Ok(key_map.into())
     }
 
+    /// The error for a key whose purpose does not allow its security level.
+    fn level_not_allowed(id: KeyID, purpose: &Purpose, level: &SecurityLevel) -> TaskError {
+        IdentityKeySpecError::SecurityLevelNotAllowed {
+            key_id: id,
+            purpose: *purpose,
+            security_level: *level,
+        }
+        .into()
+    }
+
     pub fn to_public_keys_map(
         &self,
         platform_version: &PlatformVersion,
@@ -318,12 +328,11 @@ impl IdentityKeySpecs {
             match master.key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(TaskError::PublicKeyMapBuildFailed {
-                        detail: format!(
-                            "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                            other
-                        ),
-                    });
+                    return Err(IdentityKeySpecError::UnsupportedKeyType {
+                        key_id: 0,
+                        key_type: other,
+                    }
+                    .into());
                 }
             }
             let key = Self::master_key(master, platform_version).map_err(|e| {
@@ -343,22 +352,12 @@ impl IdentityKeySpecs {
             match purpose {
                 Purpose::TRANSFER => {
                     if *security_level != SecurityLevel::CRITICAL {
-                        return Err(TaskError::PublicKeyMapBuildFailed {
-                            detail: format!(
-                                "Key {}: TRANSFER purpose requires CRITICAL security level, got {:?}",
-                                id, security_level
-                            ),
-                        });
+                        return Err(Self::level_not_allowed(id, purpose, security_level));
                     }
                 }
                 Purpose::ENCRYPTION | Purpose::DECRYPTION => {
                     if *security_level != SecurityLevel::MEDIUM {
-                        return Err(TaskError::PublicKeyMapBuildFailed {
-                            detail: format!(
-                                "Key {}: {:?} purpose requires MEDIUM security level, got {:?}",
-                                id, purpose, security_level
-                            ),
-                        });
+                        return Err(Self::level_not_allowed(id, purpose, security_level));
                     }
                 }
                 Purpose::AUTHENTICATION
@@ -366,12 +365,7 @@ impl IdentityKeySpecs {
                         && *security_level != SecurityLevel::HIGH
                         && *security_level != SecurityLevel::MEDIUM =>
                 {
-                    return Err(TaskError::PublicKeyMapBuildFailed {
-                        detail: format!(
-                            "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
-                            id, security_level
-                        ),
-                    });
+                    return Err(Self::level_not_allowed(id, purpose, security_level));
                 }
                 _ => {}
             }
@@ -379,12 +373,11 @@ impl IdentityKeySpecs {
             match key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(TaskError::PublicKeyMapBuildFailed {
-                        detail: format!(
-                            "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                            id, other
-                        ),
-                    });
+                    return Err(IdentityKeySpecError::UnsupportedKeyType {
+                        key_id: id,
+                        key_type: *other,
+                    }
+                    .into());
                 }
             }
             // A literal: the key setters cannot bind a key to a contract.
@@ -750,6 +743,22 @@ pub async fn build_identity_registration(
             },
         )
         .await
+}
+
+/// Why identity key specs could not become the identity's public keys.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityKeySpecError {
+    /// Only ECDSA_SECP256K1 and ECDSA_HASH160 keys can be registered.
+    #[error("Unsupported key type for key {key_id}: {key_type:?}")]
+    UnsupportedKeyType { key_id: KeyID, key_type: KeyType },
+
+    /// The key's purpose does not allow its security level.
+    #[error("Key {key_id}: {purpose:?} purpose does not allow {security_level:?} security level")]
+    SecurityLevelNotAllowed {
+        key_id: KeyID,
+        purpose: Purpose,
+        security_level: SecurityLevel,
+    },
 }
 
 /// Failure while checking that an identity carries a public key matching a
@@ -1533,6 +1542,49 @@ mod tests {
             master.public_key.inner.to_compressed(),
             resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
+        );
+    }
+
+    /// A key whose purpose does not allow its security level fails the public
+    /// keys map with a typed source naming the key, purpose and level.
+    #[test]
+    fn a_disallowed_security_level_is_a_typed_key_spec_error() {
+        use std::error::Error as _;
+
+        let seed = [0x44u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let transfer = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            1,
+            KeyType::ECDSA_SECP256K1,
+            Purpose::TRANSFER,
+            SecurityLevel::HIGH,
+            None,
+        )
+        .expect("transfer key");
+        let specs = IdentityKeySpecs::new(None, vec![transfer]);
+
+        let error = specs
+            .to_public_keys_map(PlatformVersion::latest())
+            .expect_err("TRANSFER needs CRITICAL");
+
+        assert!(
+            matches!(error, TaskError::PublicKeyMapBuildFailed { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<IdentityKeySpecError>()),
+            Some(&IdentityKeySpecError::SecurityLevelNotAllowed {
+                key_id: 1,
+                purpose: Purpose::TRANSFER,
+                security_level: SecurityLevel::HIGH,
+            })
         );
     }
 

@@ -1032,8 +1032,9 @@ impl WalletSendScreen {
         if let Some(index) = remove
             && let Some(survivor) = self.form.remove_recipient(index)
         {
-            // Back to one recipient: its address and amount carry over.
-            self.typed_destination = None;
+            // Back to one recipient: its address and amount carry over, the
+            // address still valid so Send needs no further edit.
+            self.typed_destination = self.row_address(&survivor.address);
             self.address_input = None;
             self.pending_typed_address = Some(survivor.address);
             let amount = Amount::parse(&survivor.amount, DASH_DECIMAL_PLACES)
@@ -1215,9 +1216,15 @@ impl WalletSendScreen {
         let quote_pending = limits
             .as_ref()
             .is_some_and(|limits| limits.quote == QuoteState::Pending)
+            || limits
+                .as_ref()
+                .is_some_and(|limits| limits.quote == QuoteState::Failed)
+            // A failed quote is retried with Max still on.
             || matches!(
                 self.route.auto_max,
-                Some(AutoMax::Checking { .. } | AutoMax::Withheld { .. })
+                Some(
+                    AutoMax::Checking { .. } | AutoMax::Withheld { .. } | AutoMax::QuoteFailed { .. }
+                )
             );
         let amount_input = self.amount_input.get_or_insert_with(Self::new_amount_input);
         amount_input.set_max_amount(max_credits);
@@ -1704,6 +1711,9 @@ impl WalletSendScreen {
                 DestinationStatus::NeedsUnlock { .. } => "Unlock the receiving wallet first.",
                 _ => "Enter who you're paying.",
             });
+        }
+        if self.form.has_several_recipients() && !self.recipient_rows_complete() {
+            return Some(RECIPIENT_ROWS_INCOMPLETE);
         }
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {

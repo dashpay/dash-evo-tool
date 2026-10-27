@@ -365,6 +365,11 @@ impl SendFormState {
         }
         self.pin_notice = None;
         self.to_mode = mode;
+        // A Pay from pin only lets Receive into choose under My wallets.
+        if mode == ToMode::SomeoneElse && self.pay_from_pinned {
+            self.pay_from = PayFrom::Auto;
+            self.pay_from_pinned = false;
+        }
         if mode == ToMode::MyWallets {
             if self.to_wallet.is_none() {
                 self.to_wallet = from_wallet;
@@ -854,5 +859,23 @@ mod tests {
         form.choose_pay_from(PayFrom::Platform, PayFromKind::Core);
         form.choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
         assert_eq!(form.pay_from(), PayFrom::Platform);
+    }
+
+    /// A Pay from pin exists only so Receive into can choose under My
+    /// wallets; leaving My wallets releases it.
+    #[test]
+    fn switching_to_someone_else_releases_the_pay_from_pin() {
+        let mut form = SendFormState::default();
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        form.choose_receive_into(ReceiveInto::Auto, PayFromKind::Platform);
+        assert_eq!(
+            form.pay_from(),
+            PayFrom::Platform,
+            "sanity: Pay from is pinned"
+        );
+
+        form.choose_to_mode(ToMode::SomeoneElse, Some(MAIN), PayFromKind::Core);
+
+        assert_eq!(form.pay_from(), PayFrom::Auto);
     }
 }

@@ -584,8 +584,15 @@ fn w8_several_recipients_count_only_filled_rows_and_align_their_remove_buttons()
     with_isolated_data_dir(|| {
         let mut fixture = fixture(None);
         fixture.screen.app_context.set_user_role(UserRole::Power);
-        let destination = platform_destination();
-        let bech32m = destination.to_address_string();
+        // A row must hold an address for the active network.
+        let network = fixture.screen.app_context.network();
+        let address =
+            PlatformAddress::try_from(core_address_on(network)).expect("Platform address");
+        let bech32m = address.to_bech32m_string(network);
+        let destination = ValidatedAddress::Platform {
+            address,
+            bech32m: bech32m.clone(),
+        };
         enter(&mut fixture.screen, destination, 0.5);
         let (mut harness, _) = harness(fixture.screen, 900.0);
 
@@ -946,5 +953,92 @@ fn advanced_core_max_offers_only_the_ticked_addresses() {
 
         assert!(!has(&harness, "The ticked addresses hold"));
         assert!(has(&harness, "Everything available in Core · ≈ 1 DASH"));
+    });
+}
+
+/// A recipient row missing its address or amount keeps Send disabled: the
+/// payment would otherwise leave that row out.
+#[test]
+fn an_incomplete_recipient_row_keeps_send_disabled() {
+    with_isolated_data_dir(|| {
+        let fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+        let network = harness.state().app_context.network();
+        type_into_input(&mut harness, 0, &core_address_on(network).to_string());
+        type_into_input(&mut harness, 1, "0.1");
+        // The second row has an amount but nobody to pay.
+        type_into_input(&mut harness, 3, "0.2");
+        harness
+            .state_mut()
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        harness.run();
+
+        assert!(!send_responds(&mut harness));
+        assert!(has(
+            &harness,
+            "Enter an address and an amount for every recipient"
+        ));
+    });
+}
+
+/// Removing the second recipient keeps the first one's valid address as the
+/// recipient, so Send works without editing it again.
+#[test]
+fn the_remaining_recipient_stays_valid_after_removing_a_row() {
+    with_isolated_data_dir(|| {
+        let fixture = fixture(None);
+        fixture.screen.app_context.set_user_role(UserRole::Power);
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("+ Add another recipient").click();
+        harness.run();
+        enter_two_core_rows(&mut harness);
+        harness
+            .get_all_by_label("✕")
+            .last()
+            .expect("remove")
+            .click();
+        harness.run();
+        harness
+            .state_mut()
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        harness.run();
+
+        assert!(harness.state().resolved_route_for_test().1.is_some());
+        assert!(send_responds(&mut harness));
+    });
+}
+
+/// A failed Core quote under Auto Max keeps the Max intent: once the retry
+/// answers, Max fills in without pressing it again.
+#[test]
+fn auto_max_survives_a_failed_quote_and_its_retry() {
+    with_isolated_data_dir(|| {
+        let mut fixture = fixture(None);
+        enter(
+            &mut fixture.screen,
+            ValidatedAddress::Core(core_address()),
+            0.5,
+        );
+        let (mut harness, _) = harness(fixture.screen, 900.0);
+        harness.get_by_label("Max").click();
+        harness.run();
+        harness
+            .state_mut()
+            .mark_core_send_error_for_test(&TaskError::SpendLimitTimedOut);
+        harness.run();
+        assert!(has(&harness, "could not be checked"));
+
+        harness.get_by_label("Retry available amount check").click();
+        harness.run();
+        harness
+            .state_mut()
+            .seed_core_send_limit_for_test(ONE_DASH_CREDITS);
+        harness.run();
+        harness.run();
+
+        assert!(has(&harness, "Max uses the largest balance"));
     });
 }

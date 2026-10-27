@@ -4,6 +4,7 @@
 //! exactly as before; Auto only decides which of them is used.
 
 use super::*;
+use crate::model::address::validate_platform_address_for_network;
 use crate::model::send_route::{
     AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind, RouteRefusal,
     resolve_auto_max, resolve_destination_auto, resolve_source_auto, route_refusal,
@@ -721,31 +722,49 @@ impl WalletSendScreen {
     /// With several recipients, the destination Auto resolves against: the
     /// first row, once every filled-in row is a valid address of its kind.
     fn rows_destination(&self) -> Option<ValidatedAddress> {
-        let network = self.app_context.network;
-        let mut rows =
-            self.form
-                .recipients()
-                .iter()
-                .map(|row| row.address.trim())
-                .filter(|address| !address.is_empty())
-                .map(|address| match AddressKind::detect(address)? {
-                    AddressKind::Core => address
-                        .parse::<Address<NetworkUnchecked>>()
-                        .ok()?
-                        .require_network(network)
-                        .ok()
-                        .map(ValidatedAddress::Core),
-                    AddressKind::Platform => PlatformAddress::from_bech32m_string(address)
-                        .ok()
-                        .map(|platform| ValidatedAddress::Platform {
-                            address: platform,
-                            bech32m: address.to_string(),
-                        }),
-                    _ => None,
-                });
+        let mut rows = self
+            .form
+            .recipients()
+            .iter()
+            .map(|row| row.address.trim())
+            .filter(|address| !address.is_empty())
+            .map(|address| self.row_address(address));
         let first = rows.next()??;
         rows.all(|row| row.is_some_and(|row| row.kind() == first.kind()))
             .then_some(first)
+    }
+
+    /// A recipient row's address, when it is a valid Core or Platform address
+    /// on the active network.
+    pub(super) fn row_address(&self, address: &str) -> Option<ValidatedAddress> {
+        let address = address.trim();
+        match AddressKind::detect(address)? {
+            AddressKind::Core => address
+                .parse::<Address<NetworkUnchecked>>()
+                .ok()?
+                .require_network(self.app_context.network)
+                .ok()
+                .map(ValidatedAddress::Core),
+            AddressKind::Platform => {
+                validate_platform_address_for_network(address, self.app_context.network).ok()?;
+                PlatformAddress::from_bech32m_string(address)
+                    .ok()
+                    .map(|platform| ValidatedAddress::Platform {
+                        address: platform,
+                        bech32m: address.to_string(),
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether every recipient row names an address and a positive amount.
+    /// A row missing either would be left out of the payment.
+    pub(super) fn recipient_rows_complete(&self) -> bool {
+        self.form.recipients().iter().all(|row| {
+            !row.address.trim().is_empty()
+                && Self::parse_amount_to_credits(&row.amount).is_ok_and(|credits| credits > 0)
+        })
     }
 
     /// The amount the source must cover, in credits: the single amount, or

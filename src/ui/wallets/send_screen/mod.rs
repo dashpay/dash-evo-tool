@@ -411,6 +411,10 @@ fn form_start(flow: SendFlow, identity_mode: Option<IdentitySendMode>) -> FormSt
 /// Refusal of Core or Platform funds paying someone else's private address.
 const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into your own private balance. To pay this private address, choose Shielded under Pay from.";
 
+/// Refusal of several recipients while a row lacks its address or amount.
+const RECIPIENT_ROWS_INCOMPLETE: &str =
+    "Enter an address and an amount for every recipient, or remove the rows you don't need.";
+
 /// Refusal of several recipients on a route that carries one output.
 const SEVERAL_RECIPIENTS_ROUTE: &str = "Several recipients can be paid only from Core to Core addresses, or from Platform to Platform addresses. Change Pay from or send separately.";
 
@@ -2857,6 +2861,9 @@ impl WalletSendScreen {
         }
         self.sync_explicit_payment();
         if self.form.has_several_recipients() {
+            if !self.recipient_rows_complete() {
+                return Err(RECIPIENT_ROWS_INCOMPLETE.to_string());
+            }
             let kinds: Vec<_> = self
                 .advanced_outputs
                 .iter()
@@ -3173,13 +3180,15 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Seeds the backend's quote of the largest Core payment, in credits.
+    /// Seeds the backend's quote of the largest Core payment, in credits,
+    /// replacing any quote request still in flight.
     pub fn seed_core_send_limit_for_test(&mut self, max_credits: Credits) {
         let Some((seed_hash, kind, revision)) =
             self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
         else {
             return;
         };
+        self.spend_limits.invalidate();
         if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
             .spend_limits
             .ensure_requested(seed_hash, kind, revision)
@@ -3199,13 +3208,15 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Answers the Core send quote with `error`.
+    /// Answers the Core send quote with `error`, replacing any quote
+    /// request still in flight.
     pub fn mark_core_send_error_for_test(&mut self, error: &TaskError) {
         let Some((seed_hash, kind, revision)) =
             self.spend_limit_target_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
         else {
             return;
         };
+        self.spend_limits.invalidate();
         if let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) = self
             .spend_limits
             .ensure_requested(seed_hash, kind, revision)
@@ -3758,18 +3769,30 @@ impl WalletSendScreen {
         // A receiving address this form asked for is consumed here: it is
         // not the outcome of a send.
         let own_address = match result {
+            // An address for another network (a reply to a request sent
+            // before a network switch) is not kept: the request stays open.
             crate::backend_task::BackendTaskSuccessResult::GeneratedReceiveAddress {
                 seed_hash,
                 address,
-            } => self
-                .own_addresses
-                .store(*seed_hash, OwnAddressKind::Core, address.clone()),
+            } => {
+                self.row_address(address)
+                    .is_some_and(|valid| valid.kind() == AddressKind::Core)
+                    && self
+                        .own_addresses
+                        .store(*seed_hash, OwnAddressKind::Core, address.clone())
+            }
             crate::backend_task::BackendTaskSuccessResult::GeneratedPlatformReceiveAddress {
                 seed_hash,
                 address,
-            } => self
-                .own_addresses
-                .store(*seed_hash, OwnAddressKind::Platform, address.clone()),
+            } => {
+                self.row_address(address)
+                    .is_some_and(|valid| valid.kind() == AddressKind::Platform)
+                    && self.own_addresses.store(
+                        *seed_hash,
+                        OwnAddressKind::Platform,
+                        address.clone(),
+                    )
+            }
             _ => false,
         };
         if Self::task_result_updates_address_input(result) {
@@ -7587,6 +7610,42 @@ mod tests {
         screen.sync_route();
         assert!(screen.uses_explicit_payment());
         assert!(!screen.shows_fee_options());
+    }
+
+    /// A receiving address from another network (an answer to a request
+    /// sent before a network switch) never becomes the destination: the
+    /// request stays open so the right address can still arrive.
+    #[test]
+    fn an_own_receiving_address_from_another_network_is_not_kept() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("seed hash");
+        assert!(
+            screen
+                .own_addresses
+                .ensure_requested(seed_hash, OwnAddressKind::Core)
+                .is_some()
+        );
+        let mainnet = Address::p2pkh(
+            &dash_sdk::dpp::dashcore::PublicKey::new(
+                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([3; 32])
+                    .expect("key")
+                    .public_key(),
+            ),
+            Network::Mainnet,
+        );
+        screen.refresh_form_inputs(&BackendTaskSuccessResult::GeneratedReceiveAddress {
+            seed_hash,
+            address: mainnet.to_string(),
+        });
+        assert_eq!(
+            screen.own_addresses.get(&seed_hash, OwnAddressKind::Core),
+            None
+        );
+        assert!(
+            screen
+                .own_addresses
+                .is_fetching(&seed_hash, OwnAddressKind::Core)
+        );
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

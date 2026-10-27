@@ -181,10 +181,8 @@ where
             );
             continue;
         };
-        if contact_info_map.contains_key(&contact_id) {
-            continue;
-        }
-
+        // Documents come oldest first, so the newest replaces older ones: it
+        // is the one a save rewrites, and the rewrite keeps it the newest.
         // The DIP-15 codec platform-wallet writes with. A payload that is
         // present but cannot be opened is not "no details": its hidden flag
         // is unknown, so the contact stays hidden.

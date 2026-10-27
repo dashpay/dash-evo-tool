@@ -393,10 +393,10 @@ fn has_contact_info_key_material(document: &Document) -> bool {
             .get("rootEncryptionKeyIndex")
             .and_then(|value| value.to_integer::<u32>().ok())
             .is_some()
-        && matches!(
-            document.properties().get("encToUserId"),
-            Some(Value::Bytes(_))
-        )
+        && document
+            .properties()
+            .get("encToUserId")
+            .is_some_and(|value| value.as_bytes_slice().is_ok())
 }
 
 fn find_existing_contact_info<F>(
@@ -407,7 +407,9 @@ fn find_existing_contact_info<F>(
 where
     F: FnMut(u32) -> Result<ContactInfoKeys, TaskError>,
 {
-    for document in documents {
+    // Documents come oldest first; the newest match is the one the contacts
+    // load shows, and a rewrite keeps it the newest.
+    for document in documents.into_iter().rev() {
         let Some(derivation_index) = contact_info_derivation_index(&document) else {
             continue;
         };
@@ -418,7 +420,12 @@ where
         let Ok((enc_user_id_key, private_data_key)) = derive_keys(derivation_index) else {
             continue;
         };
-        let Some(Value::Bytes(enc_user_id)) = document.properties().get("encToUserId") else {
+        // Platform returns the fixed 32-byte field as `Value::Bytes32`.
+        let Some(enc_user_id) = document
+            .properties()
+            .get("encToUserId")
+            .and_then(|value| value.as_bytes_slice().ok())
+        else {
             continue;
         };
         if decrypt_to_user_id(enc_user_id, &enc_user_id_key).ok()
@@ -945,9 +952,10 @@ mod tests {
             encrypt_to_user_id(&contact_user_id.to_buffer(), &KEY).expect("encrypt target");
         let encrypted_other =
             encrypt_to_user_id(&id(211).to_buffer(), &KEY).expect("encrypt other");
+        // Newest last: the scan starts from the newest document.
         let documents = vec![
-            lookup_contact_info_document(1, 3, encrypted_target),
             lookup_contact_info_document(2, 4, encrypted_other),
+            lookup_contact_info_document(1, 3, encrypted_target),
         ];
         let mut derived_indices = Vec::new();
 
@@ -1266,14 +1274,16 @@ mod tests {
         assert!(!details.get(&contact).expect("listed").details_unreadable);
     }
 
-    /// With two documents for one contact, the load shows the one a save
-    /// rewrites: the first in that order.
+    /// With two documents for one contact, the load shows the newest, the
+    /// one a save rewrites. A rewrite keeps it the newest, so the load and
+    /// the save stay on the same document; with the oldest, a rewrite would
+    /// move it to the end and the load would show the untouched one.
     #[tokio::test]
     async fn the_contact_details_load_shows_the_document_a_save_rewrites() {
         let contact = id(201);
         let page = contact_details_page([
-            saved_note_document(1, contact, "kept"),
-            saved_note_document(2, contact, "stale"),
+            saved_note_document(1, contact, "stale"),
+            saved_note_document(2, contact, "kept"),
         ]);
 
         let (details, _) = load_details(vec![page]).await;
@@ -1281,6 +1291,39 @@ mod tests {
         assert_eq!(
             details.get(&contact).and_then(|c| c.note.as_deref()),
             Some("kept")
+        );
+
+        let documents = vec![
+            saved_note_document(1, contact, "stale"),
+            saved_note_document(2, contact, "kept"),
+        ];
+        let existing = find_existing_contact_info(documents, contact, |_| {
+            Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))
+        });
+        assert_eq!(existing.map(|existing| existing.derivation_index), Some(2));
+    }
+
+    /// Platform returns the fixed 32-byte `encToUserId` as `Value::Bytes32`;
+    /// a save must still find the contact's document instead of creating a
+    /// second one.
+    #[tokio::test]
+    async fn a_save_finds_a_document_as_platform_returns_it() {
+        let contact = id(230);
+        let encrypted = encrypt_to_user_id(&contact.to_buffer(), &KEY).expect("encrypt");
+        let mut document = lookup_contact_info_document(1, 5, encrypted);
+        document.set("encToUserId", Value::Bytes32(encrypted));
+
+        let lookup = scan_contact_info_documents(vec![document], contact, |documents, target| {
+            ready(Ok(find_existing_contact_info(documents, target, |_| {
+                Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+            })))
+        })
+        .await
+        .expect("scan");
+
+        assert_eq!(
+            lookup.existing.map(|existing| existing.derivation_index),
+            Some(5)
         );
     }
 

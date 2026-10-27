@@ -300,18 +300,13 @@ pub fn request_task(
 }
 
 /// Backend task that makes a hidden contact visible again, keeping its
-/// nickname and note. Details that could not be read cannot be kept: unhiding
-/// such a contact replaces them, as its note in the hidden list says.
+/// nickname and note. Details that could not be read cannot be kept: the
+/// backend replaces them when it reads them so, as the hidden list says.
 pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPayTask {
-    let update = if contact.details_unreadable {
-        ContactInfoUpdate::replace_all(None, None, false)
-    } else {
-        ContactInfoUpdate::visibility(false)
-    };
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update,
+        update: ContactInfoUpdate::visibility(false),
     }
 }
 
@@ -1520,25 +1515,6 @@ mod tests {
         assert_eq!(
             dispatch_note_save(&mut unselected, &identity),
             AppAction::None
-        );
-    }
-
-    /// Unhiding keeps a readable contact's nickname and note, and replaces
-    /// unreadable ones on purpose: the backend refuses to keep them.
-    #[test]
-    fn unhiding_replaces_only_unreadable_details() {
-        let unhide = |contact: &ContactData| match unhide_task(qualified_identity(id(1)), contact) {
-            DashPayTask::UpdateContactInfo { update, .. } => update,
-            other => panic!("expected UpdateContactInfo, got {other:?}"),
-        };
-        assert_eq!(unhide(&hidden_bao()), ContactInfoUpdate::visibility(false));
-        let unreadable = ContactData {
-            details_unreadable: true,
-            ..hidden_bao()
-        };
-        assert_eq!(
-            unhide(&unreadable),
-            ContactInfoUpdate::replace_all(None, None, false)
         );
     }
 

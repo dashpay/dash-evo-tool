@@ -94,6 +94,27 @@ const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the ap
 /// Why a document type left over from another contract is not built.
 const FOREIGN_DOCUMENT_TYPE_MESSAGE: &str = "This document type belongs to another contract. Select a document type from the selected contract and try again.";
 
+/// Why a new document was not built.
+#[derive(Debug, PartialEq)]
+enum DocumentBuildError {
+    /// The selected document type belongs to another contract.
+    ForeignDocumentType,
+    /// A selection or field is missing or invalid; the text is for details.
+    Invalid(String),
+}
+
+impl From<String> for DocumentBuildError {
+    fn from(detail: String) -> Self {
+        Self::Invalid(detail)
+    }
+}
+
+impl From<&str> for DocumentBuildError {
+    fn from(detail: &str) -> Self {
+        Self::Invalid(detail.to_string())
+    }
+}
+
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
     pub action_type: DocumentActionType,
@@ -1041,13 +1062,21 @@ impl DocumentActionScreen {
                     identity_key: key.clone(),
                 }))
             }
-            Err(error) => {
+            Err(DocumentBuildError::ForeignDocumentType) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    FOREIGN_DOCUMENT_TYPE_MESSAGE,
+                    crate::ui::MessageType::Error,
+                );
+                BackendTask::None
+            }
+            Err(DocumentBuildError::Invalid(detail)) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "The document could not be built. Check its fields and try again.",
                     crate::ui::MessageType::Error,
                 )
-                .with_details(error);
+                .with_details(detail);
                 BackendTask::None
             }
         }
@@ -1254,7 +1283,7 @@ impl DocumentActionScreen {
         }))
     }
 
-    fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
+    fn try_build_document(&self) -> Result<(Document, [u8; 32]), DocumentBuildError> {
         let contract = self
             .selected_contract
             .as_ref()
@@ -1266,7 +1295,7 @@ impl DocumentActionScreen {
         // The chooser keeps the type when the contract changes, and the
         // document id commits to the type's contract, not the selected one.
         if doc_type.data_contract_id() != contract.contract.id() {
-            return Err(FOREIGN_DOCUMENT_TYPE_MESSAGE.to_string());
+            return Err(DocumentBuildError::ForeignDocumentType);
         }
         let qi = self
             .selected_identity
@@ -1274,13 +1303,13 @@ impl DocumentActionScreen {
             .ok_or("No identity selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.into());
         }
 
         for (prop, schema) in doc_type.properties() {
             let entry = self.field_inputs.get(prop).map(|s| s.trim());
             if schema.required && entry.unwrap_or("").is_empty() {
-                return Err(format!("Field \"{}\" is required", prop));
+                return Err(format!("Field \"{}\" is required", prop).into());
             }
         }
 
@@ -1397,19 +1426,19 @@ impl DocumentActionScreen {
                 DocumentPropertyType::TypedArray(_) => {
                     // Unreachable while `supports_field_editor` refuses the
                     // document first; kept so a typed array is never encoded.
-                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.into());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
                         "Object field {} must be supplied via JSON textarea",
                         name
-                    ));
+                    )
+                    .into());
                 }
                 DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
-                    return Err(format!(
-                        "Array field {} must be supplied via JSON textarea",
-                        name
-                    ));
+                    return Err(
+                        format!("Array field {} must be supplied via JSON textarea", name).into(),
+                    );
                 }
             };
 
@@ -1980,7 +2009,43 @@ mod tests {
 
         assert_eq!(
             screen.try_build_document().unwrap_err(),
-            FOREIGN_DOCUMENT_TYPE_MESSAGE
+            DocumentBuildError::ForeignDocumentType
+        );
+    }
+
+    /// The create banner names the leftover document type as the problem,
+    /// not the fields.
+    #[test]
+    fn the_create_banner_explains_a_document_type_from_another_contract() {
+        use crate::ui::components::message_banner::global_banner_texts;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let network = context.network;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        screen.selected_contract = Some(QualifiedContract {
+            contract: load_system_data_contract(
+                SystemDataContract::DPNS,
+                PlatformVersion::latest(),
+            )
+            .expect("dpns contract"),
+            alias: None,
+        });
+        screen.selected_document_type = Some(editor_document_type(false));
+        screen.selected_identity = Some(
+            crate::context::test_support::user_identity_with_signing_key(
+                Identifier::new([9; 32]),
+                network,
+                false,
+            ),
+        );
+
+        assert!(matches!(screen.create_document_task(), BackendTask::None));
+        assert_eq!(
+            global_banner_texts(screen.app_context.egui_ctx()),
+            vec![FOREIGN_DOCUMENT_TYPE_MESSAGE.to_string()]
         );
     }
 

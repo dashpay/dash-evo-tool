@@ -160,7 +160,6 @@ impl ContactInfoUpdate {
     }
 
     /// Replace every editable field, over details that held `opened`.
-    #[cfg(test)]
     pub fn replace_all(
         opened: &ContactDetails,
         nickname: Option<String>,

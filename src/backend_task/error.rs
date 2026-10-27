@@ -1496,6 +1496,13 @@ pub enum TaskError {
     )]
     DashPayContactDetailsChanged,
 
+    /// The details saved for a contact could not be read, and a save would
+    /// keep some of them: it would publish them as empty. Nothing was saved.
+    #[error(
+        "The details saved for this contact could not be read, so nothing was changed. Unhide the contact in the Contacts tab to replace them, then edit it."
+    )]
+    DashPayContactDetailsUnreadable,
+
     /// A contact-details save that stayed on this device, because publishing
     /// waits for a second contact, could not record which details this device
     /// holds; on reload the older details would show again.

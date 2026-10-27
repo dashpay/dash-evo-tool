@@ -1373,6 +1373,8 @@ impl WalletBackend {
             .map_err(|source| TaskError::DashPayLocalStateRead { source })
     }
 
+    /// Serialize `owner`'s request actions keyed by `request_id`: a request
+    /// id, or the id of the person the requests are with.
     pub(crate) async fn dashpay_lock_contact_request_action(
         &self,
         owner: &Identifier,

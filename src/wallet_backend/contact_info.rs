@@ -552,7 +552,8 @@ impl ContactCryptoProvider for ContactInfoCrypto<'_> {
 mod tests {
     use super::*;
 
-    const SEED: [u8; 64] = [0x42; 64];
+    /// Generated each run, so no seed bytes are committed.
+    static SEED: std::sync::LazyLock<[u8; 64]> = std::sync::LazyLock::new(rand::random);
     const NETWORK: Network = Network::Testnet;
     const IDENTITY_INDEX: u32 = 1;
 
@@ -567,7 +568,7 @@ mod tests {
     }
 
     fn upstream_keys(key_id: u32, derivation_index: u32) -> ContactInfoKeys {
-        let wallet = Wallet::from_seed_bytes(SEED, NETWORK, WalletAccountCreationOptions::None)
+        let wallet = Wallet::from_seed_bytes(*SEED, NETWORK, WalletAccountCreationOptions::None)
             .expect("wallet");
         derive_contact_info_keys(&wallet, NETWORK, IDENTITY_INDEX, key_id, derivation_index)
             .expect("upstream keys")
@@ -818,7 +819,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let backend = context.wallet_backend().expect("backend wired");
-        let wallet = DetWallet::new_from_seed(SEED, NETWORK, None, None).expect("wallet");
+        let wallet = DetWallet::new_from_seed(*SEED, NETWORK, None, None).expect("wallet");
         let mut identity =
             crate::context::test_support::bare_user_identity(Identifier::from([5; 32]), NETWORK);
         identity.associated_wallets =

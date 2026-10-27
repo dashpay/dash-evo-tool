@@ -8,7 +8,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::{ContactDetails, ContactInfoUpdate, validate_contact_note};
+use crate::model::dashpay::{
+    ContactDetails, ContactInfoField, ContactInfoUpdate, validate_contact_note,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
@@ -115,7 +117,8 @@ pub async fn load_contact_details(
     {
         synced?;
     }
-    let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
+    let (details, _) =
+        shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
     Ok(BackendTaskSuccessResult::DashPayContactDetails {
         identity: identity.identity.id(),
         contact_id,
@@ -125,7 +128,8 @@ pub async fn load_contact_details(
 
 /// The details shown for `contact_id`, with the precedence of
 /// [`super::contacts::shown_contact_details`]: published, then
-/// platform-wallet's on this device, then a legacy-key document.
+/// platform-wallet's on this device, then a legacy-key document; and whether
+/// they stand in for saved details that could not be read.
 ///
 /// # Errors
 ///
@@ -139,36 +143,37 @@ async fn shown_details_for(
     backend: &WalletBackend,
     identity: &QualifiedIdentity,
     contact_id: &Identifier,
-) -> Result<ContactDetails, TaskError> {
+) -> Result<(ContactDetails, bool), TaskError> {
     let owner = identity.identity.id();
     let local = backend
         .dashpay_contact_details(&owner)
         .await
         .remove(contact_id);
     let stored = super::contacts::stored_contact_details(app_context, sdk, identity).await?;
-    let published = stored
-        .published?
-        .take(contact_id)
-        .map(|(details, _)| details);
+    let (published, published_unreadable) = match stored.published?.take(contact_id) {
+        Some((details, unreadable)) => (Some(details), unreadable),
+        None => (None, false),
+    };
     let legacy = stored.legacy?;
     let synced_before = backend.dashpay_details_synced(&owner, contact_id)?
         || super::contacts::holds_details(published.as_ref(), local.as_ref());
-    let legacy = legacy
-        .get(contact_id)
-        .map(super::contacts::ContactData::details);
-    Ok(super::contacts::shown_contact_details(
-        published,
-        local,
-        synced_before,
-        legacy,
+    let legacy = legacy.get(contact_id);
+    let unreadable = published_unreadable
+        || super::contacts::legacy_details_shown(published.as_ref(), local.as_ref(), synced_before)
+            && legacy.is_some_and(|legacy| legacy.details_unreadable);
+    let legacy = legacy.map(super::contacts::ContactData::details);
+    Ok((
+        super::contacts::shown_contact_details(published, local, synced_before, legacy),
+        unreadable,
     ))
 }
 
 /// The reads and writes one contact details save performs, behind a trait so
 /// their order and failures can be driven in tests.
 trait SaveOps {
-    /// The details shown for the contact now; the fields an update keeps.
-    fn current(&self) -> impl Future<Output = Result<ContactDetails, TaskError>> + Send;
+    /// The details shown for the contact now, the fields an update keeps, and
+    /// whether they are a stand-in for saved details that could not be read.
+    fn current(&self) -> impl Future<Output = Result<(ContactDetails, bool), TaskError>> + Send;
     fn publish(
         &self,
         details: ContactDetails,
@@ -176,6 +181,8 @@ trait SaveOps {
     /// Record that platform-wallet holds the contact's details, so a legacy
     /// document no longer stands in for them.
     fn mark_synced(&self) -> Result<(), TaskError>;
+    /// Whether platform-wallet holds `details` for the contact on this device.
+    fn holds_locally(&self, details: &ContactDetails) -> impl Future<Output = bool> + Send;
 }
 
 /// Save `update` and return whether the details reached Platform.
@@ -190,9 +197,17 @@ async fn save_contact_details<O: SaveOps>(
     ops: &O,
     update: &ContactInfoUpdate,
 ) -> Result<bool, TaskError> {
-    let current = ops.current().await?;
+    let (current, unreadable) = ops.current().await?;
     if update.changed_since_opened(&current) {
         return Err(TaskError::DashPayContactDetailsChanged);
+    }
+    // Unreadable saved details are not empty ones: a text field the update
+    // keeps would be published as empty, and the saved one lost.
+    if unreadable
+        && (matches!(update.nickname, ContactInfoField::Preserve)
+            || matches!(update.note, ContactInfoField::Preserve))
+    {
+        return Err(TaskError::DashPayContactDetailsUnreadable);
     }
     let details = update.apply_to(current);
 
@@ -208,7 +223,20 @@ async fn save_contact_details<O: SaveOps>(
         source: Box::new(source),
     })?;
 
-    let outcome = ops.publish(details).await?;
+    let outcome = match ops.publish(details.clone()).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // platform-wallet stores the details here before it publishes
+            // them. Once it has, a legacy document must not stand in for them
+            // on reload: this device stays ahead of Platform until next save.
+            if ops.holds_locally(&details).await
+                && let Err(mark) = ops.mark_synced()
+            {
+                tracing::debug!(error = ?mark, "contact details held here but not recorded");
+            }
+            return Err(error);
+        }
+    };
     match ops.mark_synced() {
         Ok(()) => {}
         // A deferred save published nothing, so the storage error's claim
@@ -240,7 +268,7 @@ struct PlatformSaveOps<'a> {
 }
 
 impl SaveOps for PlatformSaveOps<'_> {
-    async fn current(&self) -> Result<ContactDetails, TaskError> {
+    async fn current(&self) -> Result<(ContactDetails, bool), TaskError> {
         // The save holds the owner's write lock, so this sync cannot race one.
         self.backend
             .dashpay_sync_contact_infos(&self.identity.identity.id())
@@ -268,6 +296,14 @@ impl SaveOps for PlatformSaveOps<'_> {
     fn mark_synced(&self) -> Result<(), TaskError> {
         self.backend
             .dashpay_mark_details_synced(&self.identity.identity.id(), &self.contact_id)
+    }
+
+    async fn holds_locally(&self, details: &ContactDetails) -> bool {
+        self.backend
+            .dashpay_contact_details(&self.identity.identity.id())
+            .await
+            .get(&self.contact_id)
+            == Some(details)
     }
 }
 
@@ -409,7 +445,11 @@ mod tests {
 
     struct ScriptedSave {
         current: std::sync::Mutex<Option<Result<ContactDetails, TaskError>>>,
+        unreadable: bool,
         mark_fails: bool,
+        marked: std::sync::Mutex<bool>,
+        publish_fails: bool,
+        holds_locally: bool,
         outcome: ContactInfoPublishOutcome,
         published: std::sync::Mutex<Vec<ContactDetails>>,
     }
@@ -418,7 +458,11 @@ mod tests {
         fn new(current: Result<ContactDetails, TaskError>, mark_fails: bool) -> Self {
             Self {
                 current: std::sync::Mutex::new(Some(current)),
+                unreadable: false,
                 mark_fails,
+                marked: std::sync::Mutex::new(false),
+                publish_fails: false,
+                holds_locally: false,
                 outcome: ContactInfoPublishOutcome::DeferredUntilTwoContacts,
                 published: std::sync::Mutex::new(Vec::new()),
             }
@@ -431,16 +475,28 @@ mod tests {
     }
 
     impl SaveOps for ScriptedSave {
-        async fn current(&self) -> Result<ContactDetails, TaskError> {
-            self.current.lock().unwrap().take().expect("read once")
+        async fn current(&self) -> Result<(ContactDetails, bool), TaskError> {
+            self.current
+                .lock()
+                .unwrap()
+                .take()
+                .expect("read once")
+                .map(|details| (details, self.unreadable))
         }
 
         async fn publish(
             &self,
             details: ContactDetails,
         ) -> Result<ContactInfoPublishOutcome, TaskError> {
+            if self.publish_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
             self.published.lock().unwrap().push(details);
             Ok(self.outcome)
+        }
+
+        async fn holds_locally(&self, _details: &ContactDetails) -> bool {
+            self.holds_locally
         }
 
         fn mark_synced(&self) -> Result<(), TaskError> {
@@ -449,6 +505,7 @@ mod tests {
                     source: crate::wallet_backend::KvAdapterError::Truncated,
                 });
             }
+            *self.marked.lock().unwrap() = true;
             Ok(())
         }
     }
@@ -498,6 +555,73 @@ mod tests {
         let ops = ScriptedSave::new(Ok(saved), false);
         let seen = ContactInfoUpdate::note(&opened, Some("n".into()));
         assert!(save_contact_details(&ops, &seen).await.is_ok());
+    }
+
+    /// A publish that fails after platform-wallet stored the details here
+    /// still records them as held, so a cleared field does not fall back to
+    /// an older legacy document on reload: this device stays ahead of
+    /// Platform until the next save. The save is still reported as failed.
+    #[tokio::test]
+    async fn a_failed_publish_of_details_held_here_records_them() {
+        for holds_locally in [true, false] {
+            let ops = ScriptedSave {
+                publish_fails: true,
+                holds_locally,
+                ..ScriptedSave::new(Ok(ContactDetails::default()), false)
+            };
+
+            let result = save_contact_details(
+                &ops,
+                &ContactInfoUpdate::replace_all(&ContactDetails::default(), None, None, false),
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert_eq!(*ops.marked.lock().unwrap(), holds_locally);
+        }
+    }
+
+    /// Saved details that could not be read are not empty ones: a save that
+    /// keeps a text field would publish it as empty and lose it. Only an
+    /// update that replaces every text field may write over them.
+    #[tokio::test]
+    async fn unreadable_saved_details_are_replaced_only_on_purpose() {
+        let unreadable = || ScriptedSave {
+            unreadable: true,
+            ..ScriptedSave::new(
+                Ok(ContactDetails {
+                    hidden: true,
+                    ..Default::default()
+                }),
+                false,
+            )
+        };
+
+        // What the hub lists for such a contact: hidden, with no details.
+        let shown = ContactDetails {
+            hidden: true,
+            ..Default::default()
+        };
+        let ops = unreadable();
+        let result =
+            save_contact_details(&ops, &ContactInfoUpdate::visibility(&shown, false)).await;
+        assert!(matches!(
+            result,
+            Err(TaskError::DashPayContactDetailsUnreadable)
+        ));
+        assert!(ops.published.lock().unwrap().is_empty());
+
+        let ops = unreadable();
+        save_contact_details(
+            &ops,
+            &ContactInfoUpdate::replace_all(&shown, None, None, false),
+        )
+        .await
+        .expect("an explicit replacement");
+        assert_eq!(
+            *ops.published.lock().unwrap(),
+            vec![ContactDetails::default()]
+        );
     }
 
     /// A published save whose synced record fails is not reported as saved:

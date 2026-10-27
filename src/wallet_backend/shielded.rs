@@ -402,9 +402,12 @@ impl WalletBackend {
     /// Make the Max transfer `operation_id` visible to status readers as a
     /// running drain, until the returned handle is dropped.
     ///
-    /// Taken before the transfer's id is stored and held until its outcome is
-    /// read: in between, a status read sees the drain as pending rather than
-    /// "not sent", and so never releases the id of a drain about to run.
+    /// Taken before the transfer's id is stored and held until the drain
+    /// returns: in between, a status read sees the drain as pending rather
+    /// than "not sent", and so never releases the id of a drain about to run.
+    /// [`shield_max_from_core`](Self::shield_max_from_core) drops it before
+    /// reading the outcome, so a drain that ended before building its lock
+    /// reads as not sent.
     pub(crate) async fn register_max_transfer(
         &self,
         seed_hash: &WalletSeedHash,

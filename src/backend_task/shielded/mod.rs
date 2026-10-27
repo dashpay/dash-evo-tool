@@ -33,7 +33,12 @@ pub enum ShieldedTask {
 
     /// Move the whole Core balance, minus fees, into the wallet's own shielded
     /// balance ("Max"). The amount is known only once the funding is built.
-    ShieldMaxFromCore { seed_hash: WalletSeedHash },
+    ShieldMaxFromCore {
+        seed_hash: WalletSeedHash,
+        /// The Core balance, in duffs, the user confirmed the transfer for.
+        /// A different balance at the start refuses the transfer.
+        confirmed_balance_duffs: u64,
+    },
 
     /// Quote what a Max transfer from the Core wallet would move, so the user
     /// confirms the drain's own figures. Reads the wallet only.
@@ -167,8 +172,12 @@ impl AppContext {
                 Ok(result)
             }
 
-            ShieldedTask::ShieldMaxFromCore { seed_hash } => {
-                self.shield_max_from_core(backend, seed_hash).await
+            ShieldedTask::ShieldMaxFromCore {
+                seed_hash,
+                confirmed_balance_duffs,
+            } => {
+                self.shield_max_from_core(backend, seed_hash, confirmed_balance_duffs)
+                    .await
             }
             ShieldedTask::QuoteShieldMaxFromCore { seed_hash } => {
                 self.quote_shield_max_from_core(backend, seed_hash).await

@@ -3415,6 +3415,13 @@ pub enum TaskError {
     )]
     ShieldedMaxTooManyCoins,
 
+    /// The Core balance a "Max" transfer would spend differs from the one the
+    /// user confirmed, so the transfer was not started.
+    #[error(
+        "Your balance changed after you confirmed this transfer, so it was not started. Review the new amount and confirm the transfer again."
+    )]
+    ShieldedMaxBalanceChanged,
+
     /// An earlier identity-funded shielded payment is still unresolved, so the
     /// upstream coordinator refused to start this one. Nothing was built or
     /// broadcast; retrying immediately hits the same refusal.

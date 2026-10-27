@@ -42,13 +42,16 @@ impl AppContext {
         self: &Arc<Self>,
         backend: &WalletBackend,
         seed_hash: WalletSeedHash,
+        confirmed_balance_duffs: u64,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let records = backend.shielded_max_transfer_records();
         if records.pending(self.network(), &seed_hash)?.is_some() {
             return Err(TaskError::ShieldedMaxTransferAlreadyPending);
         }
-        // Refuses a wallet that cannot pay the fees before anything is stored.
+        // Refuses a wallet that cannot pay the fees, or whose balance moved
+        // since the user confirmed, before anything is stored.
         let preview = backend.shielded_max_transfer_preview(&seed_hash).await?;
+        check_confirmed_balance(&preview, confirmed_balance_duffs)?;
         max_transfer_quote(&preview)?;
         let (record, transfer) = self.begin_max_transfer(backend, &seed_hash).await?;
         self.run_max_transfer(backend, seed_hash, record, transfer)
@@ -60,7 +63,9 @@ impl AppContext {
     /// The order matters: from the moment the id is stored, a status read
     /// must see the drain as running, or it would report the transfer as
     /// never started and drop the id of a drain about to move the balance.
-    /// The registration is held until the drain's outcome is read.
+    /// The registration is held until the drain returns, then dropped before
+    /// its outcome is read, so a drain that never built a lock reads as not
+    /// sent.
     async fn begin_max_transfer(
         &self,
         backend: &WalletBackend,
@@ -69,6 +74,16 @@ impl AppContext {
         let record = PendingShieldedMaxTransfer {
             operation_id: rand::random(),
         };
+        self.begin_max_transfer_as(backend, seed_hash, record).await
+    }
+
+    /// [`begin_max_transfer`](Self::begin_max_transfer) for the given id.
+    async fn begin_max_transfer_as(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+        record: PendingShieldedMaxTransfer,
+    ) -> Result<(PendingShieldedMaxTransfer, MaxTransferOperation), TaskError> {
         let transfer = backend
             .register_max_transfer(seed_hash, record.operation_id)
             .await?;
@@ -179,6 +194,20 @@ impl AppContext {
         ) {
             tracing::warn!(?error, "Could not remove a settled Max transfer record");
         }
+    }
+}
+
+/// Refuse a transfer whose spendable balance is no longer the one the user
+/// confirmed: the drain spends whatever is there when it is built, so the
+/// figures the user saw would be wrong.
+fn check_confirmed_balance(
+    preview: &WalletDrainPreview,
+    confirmed_balance_duffs: u64,
+) -> Result<(), TaskError> {
+    if preview.candidate_balance_duffs == confirmed_balance_duffs {
+        Ok(())
+    } else {
+        Err(TaskError::ShieldedMaxBalanceChanged)
     }
 }
 
@@ -342,7 +371,8 @@ mod tests {
         assert_eq!(stored(&ctx, &backend, &seed_hash), None);
     }
 
-    /// A stored transfer refuses a second one before the wallet is read.
+    /// A stored transfer refuses a second one before the wallet is read, and
+    /// the refused one leaves no registration behind.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_transfer_waits_for_the_first() {
         let tmp = tempfile::tempdir().unwrap();
@@ -350,14 +380,75 @@ mod tests {
         let (record, _transfer) = ctx.begin_max_transfer(&backend, &seed_hash).await.unwrap();
 
         assert!(matches!(
-            ctx.shield_max_from_core(&backend, seed_hash).await,
+            ctx.shield_max_from_core(&backend, seed_hash, 0).await,
             Err(TaskError::ShieldedMaxTransferAlreadyPending)
         ));
+        let loser = PendingShieldedMaxTransfer {
+            operation_id: [0x5A; 16],
+        };
         assert!(matches!(
-            ctx.begin_max_transfer(&backend, &seed_hash).await,
+            ctx.begin_max_transfer_as(&backend, &seed_hash, loser).await,
             Err(TaskError::ShieldedMaxTransferAlreadyPending)
         ));
         assert_eq!(stored(&ctx, &backend, &seed_hash), Some(record));
+        // A registration still held would read as Pending.
+        assert_eq!(
+            backend
+                .shielded_max_transfer_state(&seed_hash, loser.operation_id)
+                .await
+                .unwrap(),
+            ShieldedMaxTransferState::NotSent
+        );
+        assert_eq!(
+            backend
+                .shielded_max_transfer_state(&seed_hash, record.operation_id)
+                .await
+                .unwrap(),
+            ShieldedMaxTransferState::Pending
+        );
+    }
+
+    /// A drain that fails before building its lock (here: no shielded
+    /// support on the offline context) settles as not sent: the error is
+    /// reported and the id goes, so the wallet is not left blocked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_drain_that_fails_before_its_lock_settles_as_not_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, backend, seed_hash) = registered_wallet(tmp.path()).await;
+        let (record, transfer) = ctx.begin_max_transfer(&backend, &seed_hash).await.unwrap();
+
+        let result = ctx
+            .run_max_transfer(&backend, seed_hash, record, transfer)
+            .await;
+
+        assert!(
+            result.is_err()
+                && !matches!(result, Err(TaskError::ShieldedMaxTransferUnfinished { .. })),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(stored(&ctx, &backend, &seed_hash), None);
+        assert_eq!(
+            backend
+                .shielded_max_transfer_state(&seed_hash, record.operation_id)
+                .await
+                .unwrap(),
+            ShieldedMaxTransferState::NotSent
+        );
+    }
+
+    #[test]
+    fn a_changed_balance_refuses_the_confirmed_transfer() {
+        let ready = preview(WalletDrainPreviewStatus::Ready);
+        assert!(check_confirmed_balance(&ready, 300_000).is_ok());
+        for confirmed in [299_999, 300_001, 0] {
+            assert!(
+                matches!(
+                    check_confirmed_balance(&ready, confirmed),
+                    Err(TaskError::ShieldedMaxBalanceChanged)
+                ),
+                "confirmed {confirmed} against a 300000-duff balance"
+            );
+        }
     }
 
     /// Without a stored transfer, neither a status read nor Finish touches

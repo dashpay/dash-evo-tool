@@ -92,11 +92,12 @@ pub async fn create_or_update_contact_info(
 }
 
 /// Read the details shown for `contact_id`, the ones a contact details
-/// editor starts from.
+/// editor starts from. While a save of the owner runs, the details are not
+/// synced first; see [`super::contacts::unless_saving`].
 ///
 /// # Errors
 ///
-/// As for [`shown_details_for`].
+/// The details sync fails, or as for [`shown_details_for`].
 pub async fn load_contact_details(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -104,6 +105,16 @@ pub async fn load_contact_details(
     contact_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let backend = app_context.wallet_backend()?;
+    let owner = identity.identity.id();
+    if let Some(synced) = super::contacts::unless_saving(
+        &app_context.contact_info_writes,
+        owner,
+        backend.dashpay_sync_contact_infos(&owner),
+    )
+    .await
+    {
+        synced?;
+    }
     let details = shown_details_for(app_context, sdk, &backend, &identity, &contact_id).await?;
     Ok(BackendTaskSuccessResult::DashPayContactDetails {
         identity: identity.identity.id(),
@@ -118,9 +129,10 @@ pub async fn load_contact_details(
 ///
 /// # Errors
 ///
-/// Fails when the details sync, the document fetch, or reading the published
-/// or legacy documents fails (a cancelled password prompt included), rather
-/// than guessing: a save keeps every field it does not replace from this.
+/// Fails when the document fetch, or reading the published or legacy
+/// documents fails (a cancelled password prompt included), rather than
+/// guessing: a save keeps every field it does not replace from this. Callers
+/// sync platform-wallet's details first, under the owner's write lock.
 async fn shown_details_for(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -129,7 +141,6 @@ async fn shown_details_for(
     contact_id: &Identifier,
 ) -> Result<ContactDetails, TaskError> {
     let owner = identity.identity.id();
-    backend.dashpay_sync_contact_infos(&owner).await?;
     let local = backend
         .dashpay_contact_details(&owner)
         .await
@@ -226,6 +237,10 @@ struct PlatformSaveOps<'a> {
 
 impl SaveOps for PlatformSaveOps<'_> {
     async fn current(&self) -> Result<ContactDetails, TaskError> {
+        // The save holds the owner's write lock, so this sync cannot race one.
+        self.backend
+            .dashpay_sync_contact_infos(&self.identity.identity.id())
+            .await?;
         shown_details_for(
             self.app_context,
             self.sdk,

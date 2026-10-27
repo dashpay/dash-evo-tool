@@ -259,17 +259,20 @@ where
     Ok(contact_info_map)
 }
 
-/// Run `sync` once no contact details save of `owner` is in flight.
+/// Run `sync` unless a contact details save of `owner` is in flight; `None`
+/// when one is.
 ///
 /// A save stores its details on this device before it publishes them; a
 /// sync in between would put the older published details back over them.
-async fn after_details_saves<T>(
+/// A read does not wait for the save, which can sit behind a password prompt
+/// or a slow publish: it shows the details this device already holds.
+pub(super) async fn unless_saving<T>(
     writes: &crate::context::ContactInfoWrites,
     owner: Identifier,
     sync: impl Future<Output = T>,
-) -> T {
-    let _write_guard = writes.acquire(owner).await;
-    sync.await
+) -> Option<T> {
+    let _write_guard = writes.try_acquire(owner)?;
+    Some(sync.await)
 }
 
 /// The details the owner's stored `contactInfo` documents hold.
@@ -508,17 +511,21 @@ pub async fn load_contacts(
                     "LoadContacts: DashPay sync degraded; using cached state"
                 );
             }
-            let synced = after_details_saves(
+            match unless_saving(
                 &app_context.contact_info_writes,
                 identity_id,
                 backend.dashpay_sync_contact_infos(&identity_id),
             )
-            .await;
-            if let Err(error) = synced {
-                tracing::debug!(
+            .await
+            {
+                Some(Ok(())) => {}
+                Some(Err(error)) => tracing::debug!(
                     ?error,
                     "LoadContacts: contact details sync degraded; using cached state"
-                );
+                ),
+                None => tracing::debug!(
+                    "LoadContacts: a contact details save is running; using cached state"
+                ),
             }
             backend.dashpay_contact_details(&identity_id).await
         }
@@ -545,6 +552,10 @@ pub async fn load_contacts(
         })
     });
 
+    // Recording which details platform-wallet holds must not race a save,
+    // which stores its details here before it publishes them: with a save
+    // running, nothing is recorded this time.
+    let record_guard = app_context.contact_info_writes.try_acquire(identity_id);
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
         .into_iter()
@@ -563,6 +574,7 @@ pub async fn load_contacts(
                         false
                     });
                 if !synced_before
+                    && record_guard.is_some()
                     && holds_details(published.as_ref(), synced.as_ref())
                     && let Err(error) =
                         backend.dashpay_mark_details_synced(&identity_id, &contact_id)
@@ -601,6 +613,8 @@ pub async fn load_contacts(
             }
         })
         .collect();
+    // Saves wait on this guard: it must not be held through the profile reads.
+    drop(record_guard);
 
     // Fetch profiles and usernames for all contacts in parallel with bounded concurrency.
     // Each contact requires two network queries (profile + DPNS username), so parallelizing
@@ -818,24 +832,30 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// The contacts list's details sync waits for a save of the same owner,
-    /// so it cannot put older published details over the save's own.
+    /// A details sync is skipped, not queued, while a save of the same owner
+    /// runs: it would put older published details over the save's own, and
+    /// waiting would hold the contacts behind the save's password prompt.
     #[tokio::test]
-    async fn the_list_details_sync_waits_for_a_save() {
+    async fn a_details_sync_is_skipped_while_a_save_runs() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::Poll;
         let writes = crate::context::ContactInfoWrites::default();
         let owner = Identifier::from([1; 32]);
         let ran = AtomicBool::new(false);
+        let sync = || async {
+            ran.store(true, Ordering::SeqCst);
+        };
         let save = writes.acquire(owner).await;
 
-        let mut sync = Box::pin(after_details_saves(&writes, owner, async {
-            ran.store(true, Ordering::SeqCst);
-        }));
-        assert!(futures::poll!(&mut sync).is_pending());
-        assert!(!ran.load(Ordering::SeqCst), "the sync waits for the save");
+        let mut skipped = Box::pin(unless_saving(&writes, owner, sync()));
+        assert!(matches!(futures::poll!(&mut skipped), Poll::Ready(None)));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "nothing synced during the save"
+        );
 
         drop(save);
-        sync.await;
+        assert_eq!(unless_saving(&writes, owner, sync()).await, Some(()));
         assert!(ran.load(Ordering::SeqCst));
     }
 

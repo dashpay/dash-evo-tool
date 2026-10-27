@@ -954,6 +954,18 @@ fn recorded_on_this_device(error: TaskError) -> TaskError {
     }
 }
 
+/// The progress record an older version kept is read by nothing once the
+/// decision is recorded, so failing to forget it leaves an inert entry and
+/// does not fail the action.
+fn forget_phase(cleared: Result<(), TaskError>) {
+    if let Err(error) = cleared {
+        tracing::warn!(
+            ?error,
+            "could not forget an old contact request progress record"
+        );
+    }
+}
+
 async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
     let result = if ops.ignore_sender().await? {
@@ -967,7 +979,7 @@ async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, 
             contact_id: ops.sender_id(),
         }
     };
-    ops.clear_phase().map_err(recorded_on_this_device)?;
+    forget_phase(ops.clear_phase());
     Ok(result)
 }
 
@@ -1089,7 +1101,7 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
         // The reply was taken in after the query, before the ignore.
         CancelOutcome::AlreadyEstablished
     };
-    ops.clear_phase().map_err(recorded_on_this_device)?;
+    forget_phase(ops.clear_phase());
     Ok(outcome)
 }
 
@@ -1611,6 +1623,7 @@ mod tests {
         withdrawn: Mutex<bool>,
         withdraw_fails: bool,
         phase_cleared: Mutex<bool>,
+        phase_fails: bool,
         ignored: Mutex<bool>,
         /// The reply is taken in between the reciprocal query and the ignore.
         established_meanwhile: bool,
@@ -1622,6 +1635,11 @@ mod tests {
         }
 
         fn clear_phase(&self) -> Result<(), TaskError> {
+            if self.phase_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
             *self.phase_cleared.lock().unwrap() = true;
             Ok(())
         }
@@ -1733,6 +1751,7 @@ mod tests {
         action_lock: Arc<tokio::sync::Mutex<()>>,
         ignore_fails: bool,
         decline_fails: bool,
+        phase_fails: bool,
         established_meanwhile: bool,
         ignored: Mutex<usize>,
         declined: Mutex<bool>,
@@ -1744,6 +1763,11 @@ mod tests {
         }
 
         fn clear_phase(&self) -> Result<(), TaskError> {
+            if self.phase_fails {
+                return Err(TaskError::DashpaySidecarStorage {
+                    source: crate::wallet_backend::KvAdapterError::Truncated,
+                });
+            }
             Ok(())
         }
 
@@ -1805,6 +1829,30 @@ mod tests {
         ));
         assert_eq!(*ops.ignored.lock().unwrap(), 1);
         assert!(*ops.declined.lock().unwrap());
+    }
+
+    /// The old progress record is inert once the decision is recorded, so
+    /// failing to forget it does not fail a decline or a withdrawal.
+    #[tokio::test]
+    async fn a_leftover_progress_record_does_not_fail_a_recorded_decision() {
+        let decline = ScriptedRejectOps {
+            phase_fails: true,
+            ..Default::default()
+        };
+        let withdraw = ScriptedOps {
+            phase_fails: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            reject_flow(&decline).await,
+            Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(_))
+        ));
+        assert!(*decline.declined.lock().unwrap());
+        assert_eq!(
+            cancel_flow(&withdraw).await.expect("withdrawn"),
+            CancelOutcome::Withdrawn
+        );
     }
 
     /// Declining and withdrawing publish nothing, so a failed local record

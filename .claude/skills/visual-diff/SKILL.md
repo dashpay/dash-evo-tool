@@ -31,6 +31,7 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 
 ## 2. History first
 - `git log --no-merges --format='%h %s' OLD..NEW`; map every user-visible commit to the screen that shows it. That is the shot list and the coverage table.
+- NEW-only has no `diff.py` discovery of UI changes the history does not name, so the changelog and coverage table drive the selection. To catch unannounced UI changes, also scan `git diff OLD..NEW -- src/ui` for user-visible edits that no commit subject mentions.
 - *(pair)* Also walk every reachable screen in both builds and run `scripts/diff.py`: it finds changes the history does not name, including screens present in one build only. Clocks, sync progress, banners, scroll offsets, panel widths and the title-bar version are noise.
 
 ## 3. Capture (NEW; in pair mode the same state in both builds)
@@ -67,6 +68,6 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).
 
 ## 7. Gallery and report
-- Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json --title "Visual diff <date>"`; `spec.json`, `meta.json`, `new/`, `old/` (empty in NEW-only), `annotated/` under OUT. The coverage table lists every user-visible commit of the range: an image, or a note saying why none (backend only, timing behaviour, needs state that was not reachable). In NEW-only mode the intro names both builds and says images mark what the diff says changed; `not_reached` lists the OLD screenshots.
+- Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json --title "Visual diff <date>"`; `spec.json`, `meta.json`, `new/`, `old/` (empty in NEW-only), `annotated/` under OUT. The coverage table lists every user-visible commit of the range: an image, or a note saying why none (backend only, timing behaviour, needs state that was not reachable). In NEW-only mode the intro names both builds and says images mark what the diff says changed; `not_reached` states that OLD screenshots were not taken (NEW-only mode).
 - Report: what was not reached and why (e.g. no open contests on testnet; do not create one); presenter notes: real faces in profile pictures, error banners, data that differs between shots (balances change during a session: data, not UI).
 - Captures, generated images and data dirs never go into the repository.

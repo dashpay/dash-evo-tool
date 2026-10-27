@@ -28,32 +28,35 @@ instructions, the final report).
 ## Rerunning after a fix lands (or a pause)
 
 The trigger is usually "a fix/PR landed, redo the campaign against the new HEAD" or resuming after
-a § Handling a Fixture/Infra Blocker pause. Don't rebuild from scratch:
+a § Handling a Fixture/Infra Blocker pause. Don't rebuild from scratch. In the default NEW-only
+path there is no baseline binary or OLD screenshots: re-verify the baseline SHA (step 1, it still
+defines the diff range), rebuild only the NEW binary, and recapture NEW. Baseline-binary and
+OLD-screenshot reuse below applies to an A/B only.
 
 1. **Re-verify the baseline is still current** (`gh release list --repo dashpay/dash-evo-tool` — a
    newer pre-release may have shipped since the prior run). A matching tag *name* is not enough:
    re-resolve the canonical peeled tag commit
-   (`git ls-remote <canonical-remote> "refs/tags/<tag>^{}"`) and compare it against the baseline SHA
-   recorded in this run's `qa-run-state.md`. Only when both the tag name and that SHA are unchanged
-   is the prior run's worktree/binary for it still valid — check for an existing `git worktree` and a
+   (`git ls-remote <canonical-remote> "refs/tags/<tag>^{}"`) and compare it against the baseline SHA recorded in this run's
+   `qa-run-state.md`. Only when both the tag name and that SHA are unchanged is the prior run's
+   worktree/binary for it (A/B only) still valid — check for an existing `git worktree` and a
    previously-built binary under your scratch root before rebuilding anything. Fail closed on a
-   mismatch, and equally when no baseline SHA was recorded: re-establish the baseline per Phase 1 and
-   rebuild its binary rather than reusing an artifact you can't prove.
-2. **Only rebuild what moved.** If the baseline is unchanged *by that SHA comparison* and only HEAD
-   advanced, reuse the baseline binary as-is; `git fetch` + `git checkout <new-sha>` the HEAD
-   worktree in place and rebuild only that binary. This turns a two-cold-build Phase 2b into one
-   incremental build.
+   mismatch, and equally when no baseline SHA was recorded: re-establish the baseline per Phase 1
+   and rebuild its binary rather than reusing an artifact you can't prove.
+2. **Only rebuild what moved.** NEW-only: rebuild the NEW binary only. A/B only: if the baseline is
+   unchanged *by that SHA comparison* and only HEAD advanced, reuse the baseline binary as-is;
+   `git fetch` + `git checkout <new-sha>` the HEAD worktree in place and rebuild only that binary. This
+   turns a two-cold-build Phase 2b into one incremental build.
 3. **Archive, don't overwrite, the prior run's output.** Before writing fresh Phase 1-5 artifacts,
    move the previous run's files into a subfolder (e.g. `run-vs-<old-head-short-sha>/`) under the
    same artifacts location. Both runs stay comparable/auditable, and nothing silently clobbers a
    finding a human might still want (e.g. a confirmed-fixed crash repro).
 4. **Reuse scenario files and prior findings as a starting point, not from scratch.** A changelog
    pass can diff the prior run's verified commit list against the new range instead of re-deriving
-   the whole thing; a GUI pass can decide per-scenario whether the flow is unchanged enough to reuse
-   the prior run's OLD-side (baseline) screenshots rather than recapturing them — a baseline binary
-   unchanged by step 1's peeled-SHA comparison (not merely by tag name) still has valid screenshots.
-   Always capture fresh NEW-side screenshots (HEAD moved), and log explicitly which screenshots were
-   reused vs freshly captured so it's auditable rather than assumed.
+   the whole thing; in an A/B, a GUI pass can decide per-scenario whether the flow is unchanged
+   enough to reuse the prior run's OLD-side (baseline) screenshots rather than recapturing them — a
+   baseline binary unchanged by step 1's peeled-SHA comparison (not merely by tag name) still has
+   valid screenshots. Always capture fresh NEW-side screenshots (HEAD moved), and log explicitly
+   which screenshots were reused vs freshly captured so it's auditable rather than assumed.
 5. If any part of this run is delegated (to a sub-agent or a fresh session), give it the prior run's
    key facts (SHAs, decisions already made, artifact paths) explicitly — it has no memory of a prior
    or paused run and will otherwise re-derive, and burn time on, things already verified.

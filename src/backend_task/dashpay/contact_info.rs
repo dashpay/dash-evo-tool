@@ -85,9 +85,13 @@ impl ContactInfoPrivateData {
     /// padding (see [`Self::is_padding`]).
     /// Stricter than platform-wallet's reader: a write must never drop fields
     /// it cannot read.
+    ///
+    /// The single-byte layout older versions wrote comes first, so a legacy
+    /// payload that also parses as CompactSize keeps its values (see
+    /// [`LengthPrefix::SingleByte`]).
     pub fn deserialize(bytes: &[u8]) -> Option<Self> {
-        Self::parse(bytes, LengthPrefix::CompactSize)
-            .or_else(|| Self::parse(bytes, LengthPrefix::SingleByte))
+        Self::parse(bytes, LengthPrefix::SingleByte)
+            .or_else(|| Self::parse(bytes, LengthPrefix::CompactSize))
     }
 
     fn parse(bytes: &[u8], prefix: LengthPrefix) -> Option<Self> {
@@ -158,8 +162,8 @@ impl ContactInfoPrivateData {
         let complete = match prefix {
             LengthPrefix::CompactSize => Self::is_padding(bytes, pos),
             // A payload without a reserved length reads the same both ways, so
-            // the fallback adds nothing for it. One with such a length is over
-            // 255 bytes, which older versions never padded.
+            // it is left to the CompactSize reader. One with such a length is
+            // over 255 bytes, which older versions never padded.
             LengthPrefix::SingleByte => reserved_length && pos == bytes.len(),
         };
         if !complete {
@@ -197,9 +201,16 @@ enum LengthPrefix {
     CompactSize,
     /// One byte, which older versions of this client wrote for lengths up to
     /// 255. It differs from CompactSize only for 253 to 255, the CompactSize
-    /// prefix markers, so it is tried only when CompactSize fails, and only
-    /// accepted when such a length is present and the payload ends exactly
-    /// after the last field.
+    /// prefix markers, so it is accepted only when such a length is present
+    /// and the payload ends exactly after the last field.
+    ///
+    /// It is tried before CompactSize, because a legacy payload can also
+    /// parse as CompactSize with other values. The reverse cannot happen for
+    /// a payload this client writes: a 253 to 255-byte field is `FD xx 00`
+    /// with `xx` in `FD..=FF`, never valid UTF-8 as the first text byte, and
+    /// a 253+ account count never totals the same bytes both ways. Only a
+    /// 256+ byte field from another client, whose bytes happen to form a
+    /// complete legacy payload too, is read as legacy.
     SingleByte,
 }
 
@@ -1748,7 +1759,7 @@ mod tests {
     }
 
     /// Control characters in a long field must not let a damaged payload
-    /// through the single-byte fallback.
+    /// through the single-byte reading.
     #[test]
     fn control_characters_in_long_fields_do_not_hide_corruption() {
         let control = control_character_note();
@@ -1776,7 +1787,7 @@ mod tests {
         }
     }
 
-    /// The single-byte fallback only applies to a length CompactSize reserves;
+    /// The single-byte reading only applies to a length CompactSize reserves;
     /// a malformed CompactSize prefix is not reinterpreted as a short length.
     #[test]
     fn single_byte_lengths_apply_only_to_reserved_values() {
@@ -1789,6 +1800,100 @@ mod tests {
         // A truncated payload without reserved lengths stays rejected.
         let short = legacy_det_plaintext(&legacy_contact(Some("Bob"), None, false, vec![1]), 0);
         assert!(ContactInfoPrivateData::deserialize(&short[..short.len() - 2]).is_none());
+    }
+
+    /// An older version's 253-byte note starting with `03 01`, which a
+    /// CompactSize reader takes as `FD 03 01`, a 259-byte length, followed by
+    /// a complete payload with other values.
+    fn legacy_note_that_also_reads_as_compact_size() -> (ContactInfoPrivateData, Vec<u8>) {
+        let note = format!("\u{3}\u{1}{}", "x".repeat(251));
+        let contact = legacy_contact(None, Some(&note), true, vec![0, 0]);
+        let mut payload = vec![0, 0, 0, 0, 0x00, 0xFD];
+        payload.extend_from_slice(note.as_bytes());
+        payload.extend_from_slice(&[0x01, 0x02]);
+        payload.extend_from_slice(&[0; 8]);
+        assert_eq!(payload, legacy_det_plaintext(&contact, 0));
+        (contact, payload)
+    }
+
+    /// A payload older versions wrote is read as they wrote it, even when it
+    /// also parses as CompactSize, so a later save keeps its values.
+    #[test]
+    fn a_legacy_payload_that_also_parses_as_compact_size_reads_as_legacy() {
+        let (expected, payload) = legacy_note_that_also_reads_as_compact_size();
+
+        let parsed = ContactInfoPrivateData::deserialize(&payload)
+            .expect("the legacy payload must stay readable");
+        assert_same_details(&parsed, &expected);
+
+        let shown = decode_contact_info_details(&payload).expect("the contact list shows it");
+        assert_eq!(shown.alias_name, expected.alias_name);
+        assert_eq!(shown.note, expected.note);
+        assert_eq!(shown.display_hidden, expected.display_hidden);
+        assert_eq!(shown.accepted_accounts, expected.accepted_accounts);
+    }
+
+    /// What this client writes now still reads back when a length is 253 to
+    /// 255: its `FD xx 00` prefix has `xx` in `FD..=FF`, which the legacy
+    /// reading takes as text that is not valid UTF-8.
+    #[test]
+    fn current_details_with_reserved_lengths_read_back_unchanged() {
+        let reviewer_shaped = |len: usize| format!("\u{3}\u{1}{}", "x".repeat(len - 2));
+        for len in [253, 254, 255] {
+            for text in ["x".repeat(len), reviewer_shaped(len)] {
+                for expected in [
+                    legacy_contact(Some(&text), None, false, vec![2]),
+                    legacy_contact(None, Some(&text), true, vec![0, 0]),
+                    legacy_contact(Some(&text), Some(&text), true, vec![0, 3]),
+                ] {
+                    let payload = expected.serialize().expect("serialize");
+                    let parsed = ContactInfoPrivateData::deserialize(&payload)
+                        .unwrap_or_else(|| panic!("{len}-byte details must read back"));
+                    assert_same_details(&parsed, &expected);
+                }
+            }
+        }
+    }
+
+    /// Another client may write a note of 256 bytes or more. It reads back
+    /// unless its bytes happen to form a complete legacy payload too, which
+    /// takes a note shaped to fit; then the legacy reading wins.
+    #[test]
+    fn upstream_notes_over_255_bytes_read_unless_aligned_with_a_legacy_layout() {
+        use platform_wallet::wallet::identity::crypto as upstream;
+        for len in [256, 259, 300, 1000] {
+            for hidden in [false, true] {
+                let theirs = upstream::ContactInfoPrivateData {
+                    alias_name: None,
+                    note: Some("x".repeat(len)),
+                    display_hidden: hidden,
+                    accepted_accounts: vec![0, 0],
+                };
+                let parsed =
+                    ContactInfoPrivateData::deserialize(&upstream::encode_private_data(&theirs))
+                        .unwrap_or_else(|| panic!("a {len}-byte note must read back"));
+                assert_eq!(parsed.alias_name, theirs.alias_name);
+                assert_eq!(parsed.note, theirs.note);
+                assert_eq!(parsed.display_hidden, hidden);
+                assert_eq!(parsed.accepted_accounts, theirs.accepted_accounts);
+            }
+        }
+
+        // The accepted residual: these upstream bytes equal a legacy payload.
+        let (legacy, payload) = legacy_note_that_also_reads_as_compact_size();
+        let aligned = upstream::ContactInfoPrivateData {
+            alias_name: None,
+            note: Some(format!(
+                "{}\u{1}\u{2}{}",
+                "x".repeat(251),
+                "\u{0}".repeat(6)
+            )),
+            display_hidden: false,
+            accepted_accounts: Vec::new(),
+        };
+        assert_eq!(upstream::encode_private_data(&aligned), payload);
+        let parsed = ContactInfoPrivateData::deserialize(&payload).expect("readable");
+        assert_same_details(&parsed, &legacy);
     }
 
     #[test]

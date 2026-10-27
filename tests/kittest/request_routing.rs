@@ -1027,6 +1027,10 @@ fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
                 votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
                 "the previous network's refresh leaves the new one running (in view: {in_view})"
             );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "the new refresh keeps its progress banner (in view: {in_view})"
+            );
 
             deliver(
                 &mut harness,
@@ -1038,6 +1042,10 @@ fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
             assert!(
                 !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
                 "the new refresh still ends on its own failure (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "its own failure takes its progress banner down (in view: {in_view})"
             );
         });
     }

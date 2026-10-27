@@ -50,12 +50,15 @@ jobs:
     # Sized for a COLD build, not a cache hit. The Cargo cache key below is
     # keyed on `Cargo.lock` and `rust-toolchain.toml`, so every dependency or
     # toolchain bump starts both arches from
-    # a prefix-restore that still recompiles the whole upstream tree: ~16
-    # minutes of `cargo build --release` on x86_64 before flatpak-builder even
-    # starts exporting. A warm run finishes in well under half this budget;
-    # the headroom exists so the cold run can reach "Save Cargo cache" and
-    # make the next one warm.
-    timeout-minutes: 45
+    # a prefix-restore that still recompiles the whole upstream tree. Without
+    # LTO that was ~16 minutes of `cargo build --release` on x86_64; the
+    # release profile's fat LTO and single codegen unit (Cargo.toml) are
+    # expected to make it 2.5-4x slower on these 4-vCPU runners, ~40-65
+    # minutes, before flatpak-builder even starts exporting. A warm run is
+    # slower than it used to be too: the app crate and the whole-program LTO
+    # link are redone on every commit. The headroom exists so the cold run can
+    # reach "Save Cargo cache" and make the next one warm.
+    timeout-minutes: 120
 
     steps:
       - name: Check out code

@@ -1260,6 +1260,12 @@ impl WalletBackend {
             .map_err(|source| TaskError::DashPayLocalStateRead { source })
     }
 
+    /// Whether `owner` withdrew their request to `peer` or declined `peer`'s:
+    /// either keeps the pair from being contacts until the owner re-engages.
+    pub fn dashpay_disengaged_from(&self, owner: &Identifier, peer: &Identifier) -> bool {
+        self.dashpay_is_withdrawn(owner, peer) || self.dashpay_is_declined(owner, peer)
+    }
+
     /// Clear `owner`'s decline marker for `counterparty_id`. Idempotent —
     /// clearing an absent marker is `Ok(())`.
     ///

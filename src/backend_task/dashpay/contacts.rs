@@ -515,10 +515,9 @@ pub async fn load_contacts(
     // As for the request lists: withdrawn and declined people are not
     // contacts until the owner re-engages.
     let contacts = mutual_contacts(&incoming, &outgoing, |peer| {
-        backend.as_ref().is_some_and(|backend| {
-            backend.dashpay_is_withdrawn(&identity_id, peer)
-                || backend.dashpay_is_declined(&identity_id, peer)
-        })
+        backend
+            .as_ref()
+            .is_some_and(|backend| backend.dashpay_disengaged_from(&identity_id, peer))
     });
 
     // platform-wallet's synced details first; a refresh failure leaves the

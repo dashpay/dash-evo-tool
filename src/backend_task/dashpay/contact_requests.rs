@@ -129,8 +129,8 @@ pub async fn load_contact_requests(
 /// Keep only the requests still waiting for an answer: drop the pairs that
 /// are contacts (both sides sent a request, unless the owner withdrew theirs
 /// or declined the other's — a reply to a withdrawn request is a new request
-/// to answer), then every
-/// request the user resolved on this device; see [`retain_unresolved`].
+/// to answer), then every request the user resolved on this device; see
+/// [`retain_unresolved`].
 fn pending_requests(
     incoming: &mut Vec<(Identifier, Document)>,
     outgoing: &mut Vec<(Identifier, Document)>,
@@ -1451,6 +1451,33 @@ mod tests {
             outgoing.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![id(12)]
         );
+    }
+
+    /// Every send re-engages, a first one included: a declined or withdrawn
+    /// person is a contact again once the owner sends them a request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_send_retires_a_decline_and_a_withdrawal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = app_context.wallet_backend().expect("backend");
+        let (owner, peer) = (id(1), id(2));
+        backend
+            .dashpay_mark_declined(&owner, &peer)
+            .expect("decline");
+        backend
+            .dashpay_mark_withdrawn(&owner, &peer)
+            .expect("withdraw");
+        assert!(backend.dashpay_disengaged_from(&owner, &peer));
+
+        re_engage_after_send(&PlatformReEngage {
+            backend: &backend,
+            owner,
+            peer,
+        })
+        .await
+        .expect("re-engaged");
+
+        assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
 
     /// Actions on requests with the same person run one at a time, whichever

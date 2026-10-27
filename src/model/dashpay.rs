@@ -176,14 +176,25 @@ impl ContactInfoUpdate {
     }
 
     /// Whether a field this update replaces holds another value in `current`
-    /// than in the details the user saw.
+    /// than in the details the user saw. Texts compare as stored: surrounding
+    /// whitespace dropped, and an empty text the same as none.
     pub fn changed_since_opened(&self, current: &ContactDetails) -> bool {
-        fn moved<T: PartialEq>(field: &ContactInfoField<T>, opened: &T, current: &T) -> bool {
-            matches!(field, ContactInfoField::Replace(_)) && opened != current
+        fn stored(text: &Option<String>) -> Option<&str> {
+            text.as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
         }
-        moved(&self.nickname, &self.opened.nickname, &current.nickname)
-            || moved(&self.note, &self.opened.note, &current.note)
-            || moved(&self.display_hidden, &self.opened.hidden, &current.hidden)
+        let replaced = |field: bool, moved: bool| field && moved;
+        replaced(
+            matches!(self.nickname, ContactInfoField::Replace(_)),
+            stored(&self.opened.nickname) != stored(&current.nickname),
+        ) || replaced(
+            matches!(self.note, ContactInfoField::Replace(_)),
+            stored(&self.opened.note) != stored(&current.note),
+        ) || replaced(
+            matches!(self.display_hidden, ContactInfoField::Replace(_)),
+            self.opened.hidden != current.hidden,
+        )
     }
 
     /// Replace only the fields that differ between `opened`, the details an
@@ -600,6 +611,56 @@ mod tests {
                 .apply_to(current),
             ContactDetails::default()
         );
+    }
+
+    /// The guard compares only the fields an update replaces, and treats an
+    /// empty or blank text as no text, as it is stored.
+    #[test]
+    fn only_a_replaced_field_that_moved_counts_as_changed() {
+        let opened = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        let moved = ContactDetails {
+            nickname: Some("Bo".into()),
+            note: Some("n".into()),
+            hidden: false,
+        };
+        let keep_all = ContactInfoUpdate::edits(&opened, opened.clone());
+        assert!(
+            !keep_all.changed_since_opened(&moved),
+            "kept fields may move"
+        );
+
+        let unhide = ContactInfoUpdate::visibility(&opened, false);
+        assert!(unhide.changed_since_opened(&ContactDetails {
+            hidden: false,
+            ..opened.clone()
+        }));
+        assert!(!unhide.changed_since_opened(&opened));
+
+        let rename = ContactInfoUpdate::edits(
+            &opened,
+            ContactDetails {
+                nickname: Some("B".into()),
+                ..opened.clone()
+            },
+        );
+        assert!(rename.changed_since_opened(&moved));
+        assert!(!rename.changed_since_opened(&ContactDetails {
+            nickname: Some(" Bao ".into()),
+            ..opened.clone()
+        }));
+
+        let note = ContactInfoUpdate::note(&opened, Some("x".into()));
+        for same in [Some(String::new()), Some("  ".into())] {
+            assert!(!note.changed_since_opened(&ContactDetails {
+                note: same,
+                ..opened.clone()
+            }));
+        }
+        assert!(note.changed_since_opened(&moved));
     }
 
     /// Only the fields an editor changed are replaced.

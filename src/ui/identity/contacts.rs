@@ -24,7 +24,9 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note};
+use crate::model::dashpay::{
+    ContactDetails, ContactInfoUpdate, MAX_CONTACT_NOTE_BYTES, validate_contact_note,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -321,16 +323,22 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
 }
 
 /// Backend task that stores `note` as the private note on `contact`, keeping
-/// its nickname, accepted accounts and hidden state.
+/// its nickname, accepted accounts and hidden state. `opened_note` is the
+/// stored note the user started editing from.
 pub fn save_note_task(
     identity: QualifiedIdentity,
     contact: &ContactData,
+    opened_note: Option<String>,
     note: Option<String>,
 ) -> DashPayTask {
+    let opened = ContactDetails {
+        note: opened_note,
+        ..contact.details()
+    };
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        update: ContactInfoUpdate::note(&contact.details(), note),
+        update: ContactInfoUpdate::note(&opened, note),
     }
 }
 
@@ -358,12 +366,16 @@ fn dispatch_note_save(state: &mut ContactsState, identity: &QualifiedIdentity) -
     if !valid || !detail.is_dirty(&contact.identity_id) {
         return AppAction::None;
     }
+    // A reload can change the listed note under the edit; the user saw the
+    // note the draft started from.
+    let opened_note = detail.note_baseline(&contact.identity_id).flatten();
     let Some(note) = detail.begin_save(identity.identity.id(), contact.identity_id) else {
         return AppAction::None;
     };
     AppAction::BackendTask(BackendTask::DashPayTask(Box::new(save_note_task(
         identity.clone(),
         &contact,
+        opened_note,
         note,
     ))))
 }
@@ -1495,7 +1507,12 @@ mod tests {
     fn saving_a_note_replaces_only_the_note_of_that_contact() {
         let mut contact = contact_with_note(None);
         contact.is_hidden = true;
-        let task = save_note_task(qualified_identity(id(1)), &contact, Some("Bao".into()));
+        let task = save_note_task(
+            qualified_identity(id(1)),
+            &contact,
+            None,
+            Some("Bao".into()),
+        );
         let (owner, contact_id, update) = saved_note(AppAction::BackendTask(
             BackendTask::DashPayTask(Box::new(task)),
         ));
@@ -1565,6 +1582,21 @@ mod tests {
             details_unknown: false,
             ..contact_with_note(None)
         }
+    }
+
+    /// A note save carries the note the user started editing from, not one a
+    /// reload brought in under their edit: that one they never saw.
+    #[test]
+    fn a_note_save_carries_the_note_its_draft_started_from() {
+        let identity = qualified_identity(id(1));
+        let mut state = state_with_selected_contact(&identity, Some("A"));
+        *state.detail_mut().note_mut(&id(5)).expect("draft") = "B".into();
+        state.record_contacts(vec![contact_with_note(Some("C"))]);
+
+        let (_, _, update) = saved_note(dispatch_note_save(&mut state, &identity));
+
+        assert_eq!(update.note, ContactInfoField::Replace(Some("B".into())));
+        assert_eq!(update.opened.note.as_deref(), Some("A"));
     }
 
     /// While the saved details are unread, the list's note and hidden flag

@@ -119,6 +119,21 @@ impl ContactDetailState {
             .map(|draft| &mut draft.text)
     }
 
+    /// The stored note the draft for `contact_id` started from; a save is
+    /// checked against it.
+    pub fn note_baseline(&self, contact_id: &Identifier) -> Option<Option<String>> {
+        self.draft_for(contact_id)
+            .map(|draft| draft.baseline.clone())
+    }
+
+    /// Drop the draft for `contact_id`; the next copy of the contact starts a
+    /// new one from the stored note.
+    pub fn drop_draft(&mut self, contact_id: &Identifier) {
+        if self.draft_for(contact_id).is_some() {
+            self.draft = None;
+        }
+    }
+
     /// The note the draft would store for `contact_id`.
     pub fn note_to_save(&self, contact_id: &Identifier) -> Option<String> {
         self.draft_for(contact_id)

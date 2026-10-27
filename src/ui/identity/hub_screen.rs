@@ -439,8 +439,11 @@ impl IdentityHubScreen {
             let network = self.contact_info_write_network(identity_id, contact_id);
             self.contacts_state
                 .release_contact_info_write(network, identity_id, contact_id);
-            // The details changed since the user saw them: show the latest.
+            // The details changed since the user saw them: show the latest,
+            // and restart the note draft from it, since a draft on the old
+            // baseline would be refused again.
             if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.contacts_state.detail_mut().drop_draft(contact_id);
                 self.contacts_state.invalidate();
             }
         }
@@ -2708,8 +2711,29 @@ mod tests {
     /// list, so the next edit starts from the latest details.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_save_over_changed_details_reloads_the_contacts() {
+        use crate::backend_task::dashpay::ContactData;
+        let listed = |note: &str| ContactData {
+            identity_id: id(2),
+            nickname: None,
+            note: Some(note.into()),
+            is_hidden: false,
+            details_unreadable: false,
+            details_unknown: false,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        };
         let (_temp_dir, app_context) = wired_test_context().await;
         let mut screen = IdentityHubScreen::new(&app_context);
+        screen.contacts_state.record_contacts(vec![listed("A")]);
+        screen.contacts_state.select_contact(&id(2));
+        *screen
+            .contacts_state
+            .detail_mut()
+            .note_mut(&id(2))
+            .expect("draft") = "B".into();
         assert!(screen.contacts_state.claim_reads().is_some());
         assert!(!screen.contacts_state.load_is_due());
 
@@ -2720,6 +2744,17 @@ mod tests {
         });
 
         assert!(screen.contacts_state.load_is_due());
+        // The draft restarts from the reloaded note: a draft kept on its old
+        // baseline would be refused on every later save.
+        screen.contacts_state.record_contacts(vec![listed("C")]);
+        assert_eq!(
+            screen
+                .contacts_state
+                .detail_mut()
+                .note_mut(&id(2))
+                .map(|draft| draft.clone()),
+            Some("C".into())
+        );
     }
 
     /// A list whose saved details were not read pauses saving; a newer list

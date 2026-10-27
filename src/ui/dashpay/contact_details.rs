@@ -801,8 +801,10 @@ impl ScreenLike for ContactDetailsScreen {
             && *contact_id == self.contact_id
         {
             self.pending_update = None;
-            // The details changed since the editor opened: read the latest.
+            // The details changed since the editor opened: close it and read
+            // the latest. A save from its old baseline would be refused again.
             if matches!(**source, TaskError::DashPayContactDetailsChanged) {
+                self.cancel_editing();
                 self.needs_backend_fetch = true;
             }
         }
@@ -836,6 +838,16 @@ mod tests {
         let context = test_app_context(dir.path());
         let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
         let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+        let read = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: Identifier::from([1; 32]),
+            contact_id: Identifier::from([2; 32]),
+            details: read.clone(),
+        });
 
         screen.start_editing();
         screen.edit_note = "Met at the meetup".to_string();
@@ -847,7 +859,7 @@ mod tests {
                 nickname: ContactInfoField::Preserve,
                 note: ContactInfoField::Replace(Some("Met at the meetup".into())),
                 display_hidden: ContactInfoField::Preserve,
-                opened: update.opened.clone(),
+                opened: read,
             }
         );
     }
@@ -1017,7 +1029,15 @@ mod tests {
         let (owner, contact) = (Identifier::from([1; 32]), Identifier::from([2; 32]));
         let identity = bare_user_identity(owner, Network::Testnet);
         let mut screen = ContactDetailsScreen::new(context, identity, contact);
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails::default(),
+        });
         screen.needs_backend_fetch = false;
+        screen.start_editing();
+        screen.edit_note = "Mine".into();
+        let _ = screen.save_contact_info();
 
         screen.display_task_error(&TaskError::DashPayContactInfoActionFailed {
             identity_id: owner,
@@ -1026,6 +1046,10 @@ mod tests {
         });
 
         assert!(screen.needs_backend_fetch);
+        assert!(
+            !screen.editing_info,
+            "the editor closes: its baseline is out of date, so every save from it would be refused"
+        );
     }
 
     /// Clearing a field is an edit too: it is sent as a replacement with no
@@ -1036,11 +1060,16 @@ mod tests {
         let context = test_app_context(dir.path());
         let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
         let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
-        if let Some(info) = &mut screen.contact_info {
-            info.nickname = Some("Bao".into());
-        }
-        // The details read succeeded.
-        screen.details_read = true;
+        let read = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: Some("Met".into()),
+            hidden: false,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: Identifier::from([1; 32]),
+            contact_id: Identifier::from([2; 32]),
+            details: read.clone(),
+        });
 
         screen.start_editing();
         screen.edit_nickname.clear();
@@ -1053,7 +1082,7 @@ mod tests {
                 nickname: ContactInfoField::Replace(None),
                 note: ContactInfoField::Preserve,
                 display_hidden: ContactInfoField::Replace(true),
-                opened: update.opened.clone(),
+                opened: read,
             }
         );
     }

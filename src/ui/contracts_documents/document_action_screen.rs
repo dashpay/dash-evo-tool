@@ -219,12 +219,12 @@ impl DocumentActionScreen {
     }
 
     /// Stop waiting on an outstanding document fetch, so its result or error
-    /// cannot reach the form.
+    /// cannot reach the form. A broadcast started meanwhile owns the progress
+    /// banner, so the banner goes only while the fetch is still shown.
     fn abandon_pending_fetch(&mut self) {
-        if self.pending_fetch.clear().is_some() {
-            self.refresh_banner.take_and_clear();
-        }
+        self.pending_fetch.clear();
         if self.broadcast_status == BroadcastStatus::Fetching {
+            self.refresh_banner.take_and_clear();
             self.broadcast_status = BroadcastStatus::NotBroadcasted;
         }
     }
@@ -2172,6 +2172,152 @@ mod tests {
         screen.display_backend_task_error(&current, &error);
         assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
         assert!(!screen.pending_fetch.is_pending());
+    }
+
+    /// A broadcast started while a fetch was still running keeps its status
+    /// and its progress banner when the selection changes.
+    #[test]
+    fn a_selection_change_leaves_a_running_broadcast_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.set_fetching_banner(&ctx, "Broadcasting...");
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+
+        screen.clear_selection_state();
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+        assert!(screen.refresh_banner.is_some());
+        assert!(!screen.pending_fetch.is_pending());
+    }
+
+    fn named_identity(byte: u8, name: &str) -> QualifiedIdentity {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::new([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![crate::model::qualified_identity::DPNSNameInfo {
+                name: name.to_string(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    /// Picking another document type in the chooser drops the running fetch
+    /// and everything fetched for the old type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn picking_another_document_type_abandons_the_fetch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        // The contract list needs the wallet backend.
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        let dpns = screen
+            .selected_contract
+            .clone()
+            .expect("DPNS is listed first");
+        screen.selected_document_type = dpns.contract.document_type_cloned_for_name("domain").ok();
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.original_doc = Some(DocumentV0::default().into());
+        screen.field_inputs.insert("label".into(), "old".into());
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    screen.render_contract_and_type_selection(ui)
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.state().pending_fetch.is_pending());
+
+        harness.get_by_value("domain").click();
+        harness.run();
+        harness.get_by_label("preorder").click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(
+            screen
+                .selected_document_type
+                .as_ref()
+                .map(|t| t.name().as_str()),
+            Some("preorder")
+        );
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.original_doc.is_none());
+        assert!(screen.field_inputs.is_empty());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+    }
+
+    /// Picking another identity drops the running fetch, so the previous
+    /// identity's owned documents cannot fill in the list.
+    #[test]
+    fn picking_another_identity_abandons_the_fetch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        let alice = named_identity(1, "alice");
+        let bob = named_identity(2, "bob");
+        screen.identities_map =
+            HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    screen.render_identity_and_key_selection(ui)
+                },
+                screen,
+            );
+        harness.run();
+        let alice_id = Identifier::new([1; 32]);
+        let bob_id = Identifier::new([2; 32]);
+        let (current, other, other_id) = match harness.state().selected_identity.as_ref() {
+            Some(selected) if selected.identity.id() == alice_id => ("alice", "bob", bob_id),
+            Some(_) => ("bob", "alice", alice_id),
+            None => panic!("the selector picks an identity on the first frame"),
+        };
+        let _ = harness.state_mut().dispatch_fetch(fetch_query());
+        assert!(harness.state().pending_fetch.is_pending());
+
+        harness.get_by_value(current).click();
+        harness.run();
+        harness.get_by_label_contains(other).click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(other_id)
+        );
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
     }
 
     #[test]

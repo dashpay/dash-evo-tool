@@ -440,7 +440,8 @@ mod send_payment_unsupported_options {
     }
 
     fn wallet_arc() -> Arc<RwLock<Wallet>> {
-        let w = Wallet::new_from_seed([5u8; 64], Network::Testnet, Some("send-opts".into()), None)
+        let seed_5 = crate::test_support::keys::seed();
+        let w = Wallet::new_from_seed(seed_5, Network::Testnet, Some("send-opts".into()), None)
             .expect("wallet");
         Arc::new(RwLock::new(w))
     }

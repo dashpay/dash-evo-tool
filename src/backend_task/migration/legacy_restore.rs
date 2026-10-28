@@ -368,7 +368,7 @@ mod tests {
         use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
-        let raw = [0x39; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
         let public = PublicKey::new(private.inner.public_key());
         let address = Address::p2pkh(&public, ctx.network).to_string();
@@ -549,16 +549,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restores_a_missing_wallet_and_never_overwrites_an_existing_one() {
+        let seed_5a = crate::test_support::keys::seed();
+        let seed_a1 = crate::test_support::keys::seed();
+        let seed_a2 = crate::test_support::keys::seed();
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
-        let missing = stage_wallet(&ctx, &[0xA1; 64], "Missing");
-        let present = stage_wallet(&ctx, &[0xA2; 64], "Present");
+        let missing = stage_wallet(&ctx, &seed_a1, "Missing");
+        let present = stage_wallet(&ctx, &seed_a2, "Present");
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend");
         // A sentinel value for the existing seed: an overwrite would replace it.
         backend
             .wallet_seeds()
-            .set_raw(&present, &[0x5A; 64])
+            .set_raw(&present, &seed_5a)
             .expect("existing seed");
 
         let summary = run(&ctx).await.expect("restore");
@@ -579,7 +582,7 @@ mod tests {
                 .get_raw(&present)
                 .expect("read")
                 .expect("kept"),
-            [0x5A; 64],
+            seed_5a,
             "an existing seed is never overwritten"
         );
         assert!(
@@ -603,7 +606,7 @@ mod tests {
     async fn restores_a_mainnet_wallet_saved_with_the_dash_network_spelling() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context_on(dir.path(), Network::Mainnet);
-        let seed = [0xA3; 64];
+        let seed = crate::test_support::keys::seed();
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
         seed_legacy_unprotected_hd_wallet_row(
             &ctx.db,
@@ -634,9 +637,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_run_restores_nothing() {
+        let seed_b1 = crate::test_support::keys::seed();
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
-        stage_wallet(&ctx, &[0xB1; 64], "Once");
+        stage_wallet(&ctx, &seed_b1, "Once");
         wire_backend(&ctx).await;
 
         assert_eq!(run(&ctx).await.expect("first").wallets_restored, 1);
@@ -694,9 +698,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_running_storage_update_blocks_the_restore() {
+        let seed_c1 = crate::test_support::keys::seed();
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = app_context(dir.path());
-        stage_wallet(&ctx, &[0xC1; 64], "Gate");
+        stage_wallet(&ctx, &seed_c1, "Gate");
         wire_backend(&ctx).await;
         let _gate = ctx.try_lock_prepare_gate().expect("hold the gate");
 

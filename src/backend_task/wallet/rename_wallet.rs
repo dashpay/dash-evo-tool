@@ -146,7 +146,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
 
-        let seed = [0x5Au8; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet =
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
         let seed_hash = wallet.seed_hash();
@@ -177,6 +177,7 @@ mod tests {
         use crate::wallet_backend::SecretScope;
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
         use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+        let seed_5a = crate::test_support::keys::seed();
 
         let dir = tempfile::tempdir().unwrap();
         let app_kv = AppContext::open_app_kv(dir.path()).unwrap();
@@ -233,7 +234,7 @@ mod tests {
                 seeds
                     .set_protected(
                         &f.seed_hash,
-                        &[0x5A; 64],
+                        &seed_5a,
                         &platform_wallet_storage::secrets::SecretString::new("test-only-password"),
                     )
                     .unwrap();
@@ -505,7 +506,7 @@ mod tests {
 
     /// Register a second HD wallet named `alias` in the fixture context.
     fn register_other_wallet(f: &Fixture, alias: &str) -> WalletSeedHash {
-        let seed = [0x6Bu8; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(alias.into()), None)
             .expect("build other wallet");
         f.ctx
@@ -710,7 +711,7 @@ mod tests {
         let hash = f.seed_hash;
         let rename = std::thread::spawn(move || ctx.rename_hd_wallet(hash, "Savings".into()));
         store.wait_until_intercepted();
-        let seed = [0x63; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet =
             Wallet::new_from_seed(seed, Network::Testnet, Some("Savings".into()), None).unwrap();
         let new_hash = wallet.seed_hash();
@@ -801,10 +802,11 @@ mod tests {
     /// and returns the `SingleKeyAliasRenamed` result carrying it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rename_single_key_persists_and_returns_typed_result() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
         // Mint a deterministic throwaway key rather than committing a WIF.
-        let sk = SecretKey::from_secret_bytes([0x11u8; 32]).expect("valid scalar");
+        let sk = SecretKey::from_secret_bytes(secret_11).expect("valid scalar");
         let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
             .to_wif();
@@ -850,9 +852,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn single_key_reimport_publishes_metadata_without_mutating_retained_handles() {
         use crate::model::wallet::alias::AliasSource;
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
-        let key = SecretKey::from_secret_bytes([0x33; 32]).expect("valid scalar");
+        let key = SecretKey::from_secret_bytes(secret_33).expect("valid scalar");
         let wif = PrivateKey::from_byte_array(key.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
             .to_wif();
@@ -904,9 +907,10 @@ mod tests {
     /// "Key N" and the result carries that name.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rename_single_key_blank_alias_resets_to_default_name() {
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let f = fixture().await;
         let backend = f.ctx.wallet_backend().expect("backend");
-        let sk = SecretKey::from_secret_bytes([0x22u8; 32]).expect("valid scalar");
+        let sk = SecretKey::from_secret_bytes(secret_22).expect("valid scalar");
         let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
             .to_wif();

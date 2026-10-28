@@ -1404,7 +1404,7 @@ mod tests {
     /// rejected or the wallet could not sign for its own identity.
     #[test]
     fn identity_key_entry_public_matches_private_derivation() {
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
 
         for network in [Network::Testnet, Network::Mainnet] {
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
@@ -1475,7 +1475,7 @@ mod tests {
     /// expects, with no private key held anywhere in the spec set.
     #[test]
     fn identity_key_specs_roundtrip_public_and_paths() {
-        let seed = [0x11u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let seed_hash = wallet.seed_hash();
@@ -1551,7 +1551,7 @@ mod tests {
     fn a_disallowed_security_level_is_a_typed_key_spec_error() {
         use std::error::Error as _;
 
-        let seed = [0x44u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let transfer = IdentityKeyEntry::from_seed(
@@ -1593,7 +1593,7 @@ mod tests {
     /// version-mismatch error as its source.
     #[test]
     fn unknown_key_structure_keeps_the_typed_protocol_error() {
-        let seed = [0x33u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let master = IdentityKeyEntry::from_seed(
@@ -1638,7 +1638,7 @@ mod tests {
     /// unchanged.
     #[test]
     fn identity_key_specs_build_v0_keys_at_protocols_13_and_14() {
-        let seed = [0x22u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
         let master = IdentityKeyEntry::from_seed(

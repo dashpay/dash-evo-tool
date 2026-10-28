@@ -1631,17 +1631,20 @@ fn the_identity_sentinel_is_per_network_and_distinct_from_the_wallet_sentinel() 
 
 // ── Rows an earlier drain skipped ───────────────────────────────────────
 
-/// A raw single key the fixture stores under mainnet's `dash` spelling.
-const SKIPPED_SINGLE_KEY: [u8; 32] = [0x2A; 32];
+/// A raw single key the fixture stores under mainnet's `dash` spelling:
+/// generated at runtime, stable for the whole test process.
+fn skipped_single_key() -> [u8; 32] {
+    crate::test_support::keys::labelled_secret("migration::v093_upgrade::skipped_single_key", 0)
+}
 
 /// Address of the password-protected single key the fixture stores beside
-/// [`SKIPPED_SINGLE_KEY`]. Only its address and alias are ever read.
+/// [`skipped_single_key`]. Only its address and alias are ever read.
 const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
 
-/// The P2PKH address of [`SKIPPED_SINGLE_KEY`] on mainnet.
+/// The P2PKH address of [`skipped_single_key`] on mainnet.
 fn skipped_single_key_address() -> String {
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
-    let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
+    let key = PrivateKey::from_byte_array(&skipped_single_key(), Network::Mainnet).expect("key");
     let public = PublicKey::new(key.inner.public_key());
     Address::p2pkh(&public, Network::Mainnet).to_string()
 }
@@ -1674,7 +1677,7 @@ async fn affected_mainnet_profile(
     (ctx, backend, fixture)
 }
 
-/// Save [`SKIPPED_SINGLE_KEY`] (unprotected) and a password-protected key at
+/// Save [`skipped_single_key`] (unprotected) and a password-protected key at
 /// [`SKIPPED_PROTECTED_ADDRESS`] under mainnet's `dash` spelling.
 fn add_skipped_single_keys(conn: &Connection) {
     conn.execute_batch(
@@ -1697,7 +1700,7 @@ fn add_skipped_single_keys(conn: &Connection) {
          VALUES (?1, ?2, x'', x'', x'', ?3, 'Paper key', 0, 'dash')",
         params![
             [0x2Bu8; 32].as_slice(),
-            SKIPPED_SINGLE_KEY.as_slice(),
+            skipped_single_key().as_slice(),
             skipped_single_key_address()
         ],
     )
@@ -1821,7 +1824,7 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
         .put_secret_protected(
             &single_key_namespace_id(),
             &label,
-            &SecretBytes::from_slice(&SKIPPED_SINGLE_KEY),
+            &SecretBytes::from_slice(&skipped_single_key()),
             &password,
         )
         .expect("a protected secret without details");
@@ -1843,7 +1846,7 @@ async fn restore_never_overwrites_a_protected_key_missing_from_the_key_list() {
         .expect("the original password still opens the secret")
         .expect("the original secret is retained");
     assert!(
-        secret.expose_secret() == SKIPPED_SINGLE_KEY,
+        secret.expose_secret() == skipped_single_key(),
         "metadata recovery must preserve the original key material",
     );
     let keys = backend.single_key().list();

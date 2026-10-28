@@ -94,8 +94,10 @@ mod tests {
     /// the network may hand that record back as plain bytes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn loading_by_name_follows_the_identity_the_name_points_at() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_11, secret_22)
                 .await;
         let ctx = &staged.ctx;
         let target = Identifier::from([7; 32]);

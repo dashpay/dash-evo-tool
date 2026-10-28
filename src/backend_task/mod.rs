@@ -1841,6 +1841,7 @@ mod tests {
         use crate::context::test_support::test_app_context;
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
         use zeroize::Zeroizing;
+        let seed_7b = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = test_app_context(temp_dir.path());
@@ -1884,7 +1885,7 @@ mod tests {
         };
         secret_access.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new([0x7b; 64])),
+            SecretPlaintext::HdSeed(&Zeroizing::new(seed_7b)),
             RememberPolicy::UntilAppClose,
         );
         assert!(secret_access.is_session_cached(&scope));
@@ -2020,7 +2021,7 @@ mod tests {
         let identity_id = [0x91; 32];
         let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
         let key_id = 7;
-        let key = [0xa5; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let password = "network-switch-password";
         let secret_store = ctx.secret_store();
         IdentityKeyView::new(&secret_store, identity_id)
@@ -2219,6 +2220,7 @@ mod tests {
         use crate::backend_task::core::{PaymentRecipient, WalletPaymentRequest};
         use crate::model::wallet::Wallet;
         use std::sync::RwLock;
+        let seed_7 = crate::test_support::keys::seed();
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
@@ -2227,8 +2229,7 @@ mod tests {
             }],
             override_fee: None,
         };
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, None, None).expect("wallet");
         let direct = BackendTask::CoreTask(CoreTask::SendWalletPayment {
             wallet: Arc::new(RwLock::new(wallet)),
             request,

@@ -319,7 +319,7 @@ mod tests {
     /// low half the time on its own, so this signs for many accounts.
     #[test]
     fn proof_signature_verifies_and_has_low_r() {
-        let key_bytes = [0x2Bu8; 32];
+        let key_bytes = crate::test_support::keys::secret_bytes();
         let public_key =
             PublicKey::from_secret_key(&SecretKey::from_secret_bytes(key_bytes).expect("valid"));
         let sender = Identifier::from([0x01; 32]);

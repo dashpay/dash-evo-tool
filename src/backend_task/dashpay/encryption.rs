@@ -340,7 +340,7 @@ mod tests {
     /// its drop has run is not allowed.
     #[test]
     fn ecdh_secret_key_zeroize_overwrites_the_key() {
-        let scalar = [0x5a; 32];
+        let scalar = crate::test_support::keys::secret_bytes();
         let mut key = EcdhSecretKey::from_secret_bytes(&scalar).expect("valid scalar");
         assert_eq!(key.0.to_secret_bytes(), scalar);
 

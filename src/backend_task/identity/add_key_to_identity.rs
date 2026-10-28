@@ -642,8 +642,10 @@ mod tests {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::derived_identity_key::test_support::fixture;
         use dash_sdk::dpp::secp256k1::{Message, SecretKey};
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let (mut identity, cache, seed_hash, seed) = fixture();
         identity.identity.set_id(staged.id);
         for (seed, wallet) in &identity.associated_wallets {
@@ -748,8 +750,10 @@ mod tests {
     async fn stage_derivation(register_wallet: bool) -> DerivedStage {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::derived_identity_key::test_support::fixture;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let (mut identity, cache, seed_hash, seed) = fixture();
         identity.identity.set_id(staged.id);
         if register_wallet {
@@ -827,11 +831,12 @@ mod tests {
     /// (not from this wallet) at key id 1.
     fn network_record_with_foreign_key(stage: &DerivedStage) -> Identity {
         use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+        let secret_9 = crate::test_support::keys::secret_bytes();
         let mut record = stage.identity.identity.clone();
         let mut foreign = record.public_keys()[&0].clone();
         foreign.set_id(1);
         foreign.set_security_level(dash_sdk::dpp::identity::SecurityLevel::HIGH);
-        let secret = SecretKey::from_secret_bytes([9; 32]).unwrap();
+        let secret = SecretKey::from_secret_bytes(secret_9).unwrap();
         foreign.set_data(
             PublicKey::from_secret_key(&secret)
                 .serialize()
@@ -922,12 +927,13 @@ mod tests {
     /// Make the stage's identity password-protected: seal a Tier-2 vault
     /// entry for its master key placement.
     fn protect_stage_identity(stage: &DerivedStage) {
+        let secret_17 = crate::test_support::keys::secret_bytes();
         store_protected_identity_key(
             &stage.staged.store,
             stage.staged.id.to_buffer(),
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x17; 32],
+            &secret_17,
             "identity-object-passwordpw",
         );
         let scope = stage
@@ -959,6 +965,7 @@ mod tests {
     /// fails closed before any network call.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn manual_add_to_a_protected_identity_still_requires_its_password() {
+        let secret_42 = crate::test_support::keys::secret_bytes();
         let stage = stage_derivation(true).await;
         protect_stage_identity(&stage);
         let mut key = derived_request(KeyType::ECDSA_SECP256K1);
@@ -973,7 +980,7 @@ mod tests {
         let result = stage
             .staged
             .ctx
-            .add_key_to_identity(&Sdk::new_mock(), stage.identity.clone(), key, [0x42; 32])
+            .add_key_to_identity(&Sdk::new_mock(), stage.identity.clone(), key, secret_42)
             .await;
         assert!(
             matches!(result, Err(TaskError::SecretPromptUnavailable)),
@@ -1274,6 +1281,9 @@ mod tests {
     async fn an_unload_during_the_broadcast_leaves_no_key_in_the_vault() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys_using_prompt;
         use crate::model::secret::Secret;
+        let secret_cd = crate::test_support::keys::secret_bytes();
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const PW: &str = "identity-object-passwordpw";
         const NEW_KEY_ID: u32 = 9;
@@ -1281,8 +1291,8 @@ mod tests {
         let staged = stage_identity_with_vaulted_keys_using_prompt(
             Network::Testnet,
             Some(prompt),
-            [0xAA; 32],
-            [0xBB; 32],
+            secret_aa,
+            secret_bb,
         )
         .await;
         let ctx = &staged.ctx;
@@ -1313,13 +1323,13 @@ mod tests {
             .expect("unload the identity");
 
         let new_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID);
-        let public_key = add_new_key_to_snapshot(&mut qualified_identity, NEW_KEY_ID, [0xCD; 32]);
+        let public_key = add_new_key_to_snapshot(&mut qualified_identity, NEW_KEY_ID, secret_cd);
         let error = ctx
             .persist_added_identity_key(
                 &qualified_identity,
                 (new_key.0.clone(), new_key.1),
                 &public_key,
-                Some(&[0xCD; 32]),
+                Some(&secret_cd),
                 Some(password),
             )
             .expect_err("an identity that is gone cannot take a new key");
@@ -1377,6 +1387,7 @@ mod tests {
     fn save_concurrent_key_and_alias(ctx: &AppContext, identity_id: &Identifier, key_id: KeyID) {
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::IdentityPublicKey;
+        let secret_11 = crate::test_support::keys::secret_bytes();
 
         let concurrent: QualifiedIdentityPublicKey =
             IdentityPublicKey::random_key(key_id, Some(99), PlatformVersion::latest()).into();
@@ -1386,7 +1397,7 @@ mod tests {
                 .add_public_key(concurrent.identity_public_key.clone());
             fresh.private_keys.insert_non_encrypted(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
-                (concurrent.clone(), [0x11; 32]),
+                (concurrent.clone(), secret_11),
             )
         })
         .expect("save the concurrent key");
@@ -1400,16 +1411,19 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn persisting_an_added_key_keeps_what_others_saved_during_the_broadcast() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        let secret_cd = crate::test_support::keys::secret_bytes();
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const NEW_KEY_ID: KeyID = 10;
         const CONCURRENT_KEY_ID: KeyID = 9;
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let mut snapshot = ctx
             .get_local_qualified_identity(&staged.id)
             .expect("read the identity")
             .expect("identity present");
-        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, secret_cd);
 
         save_concurrent_key_and_alias(ctx, &staged.id, CONCURRENT_KEY_ID);
 
@@ -1417,7 +1431,7 @@ mod tests {
             &snapshot,
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
             &public_key,
-            Some(&[0xCD; 32]),
+            Some(&secret_cd),
             None,
         )
         .expect("persist the added key");
@@ -1452,15 +1466,18 @@ mod tests {
     async fn a_protect_during_the_broadcast_reports_the_key_as_not_saved() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::secret::Secret;
+        let secret_cd = crate::test_support::keys::secret_bytes();
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const NEW_KEY_ID: KeyID = 10;
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let mut snapshot = ctx
             .get_local_qualified_identity(&staged.id)
             .expect("read the identity")
             .expect("identity present");
-        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, secret_cd);
 
         ctx.protect_identity_keys(staged.id, Secret::new("identity-object-passwordpw"), None)
             .expect("protect the identity meanwhile");
@@ -1470,7 +1487,7 @@ mod tests {
                 &snapshot,
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
                 &public_key,
-                Some(&[0xCD; 32]),
+                Some(&secret_cd),
                 None,
             )
             .expect_err("a keyless key cannot join a protected identity");
@@ -1496,15 +1513,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_occupied_slot_after_the_broadcast_reports_the_key_as_not_saved() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        let secret_cd = crate::test_support::keys::secret_bytes();
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const NEW_KEY_ID: KeyID = 10;
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let mut snapshot = ctx
             .get_local_qualified_identity(&staged.id)
             .expect("read the identity")
             .expect("identity present");
-        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, [0xCD; 32]);
+        let public_key = add_new_key_to_snapshot(&mut snapshot, NEW_KEY_ID, secret_cd);
         // A different key lands in the same slot on disk.
         save_concurrent_key_and_alias(ctx, &staged.id, NEW_KEY_ID);
 
@@ -1513,7 +1533,7 @@ mod tests {
                 &snapshot,
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID),
                 &public_key,
-                Some(&[0xCD; 32]),
+                Some(&secret_cd),
                 None,
             )
             .expect_err("the slot belongs to another key");
@@ -1528,7 +1548,8 @@ mod tests {
     /// other cause keeps the generic, source-preserving variant.
     #[test]
     fn user_entered_not_saved_advice_follows_the_cause() {
-        let entered = AddedKeyOrigin::of(Some(&[0x11; 32]));
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let entered = AddedKeyOrigin::of(Some(&secret_11));
         let protected = entered.not_saved(TaskError::IdentityKeyProtectionDowngrade);
         assert!(matches!(
             protected,
@@ -1571,6 +1592,7 @@ mod tests {
     /// fails closed before the broadcast.
     #[tokio::test]
     async fn headless_protected_precondition_fails_closed_before_broadcast() {
+        let secret_15 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let identity_id = [0x71u8; 32];
         let store = fresh_store(dir.path());
@@ -1581,7 +1603,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x15u8; 32],
+            &secret_15,
             "identity-object-passwordpw",
         );
         let sa = access(store, Arc::new(NullSecretPrompt));
@@ -1619,6 +1641,8 @@ mod tests {
     /// before the broadcast — yielding the password used to seal afterwards.
     #[tokio::test]
     async fn interactive_protected_precondition_verifies_then_yields_password() {
+        let secret_16 = crate::test_support::keys::secret_bytes();
+        let secret_26 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let identity_id = [0x72u8; 32];
         const PW: &str = "identity-object-passwordpw";
@@ -1628,7 +1652,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x16u8; 32],
+            &secret_16,
             PW,
         );
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]));
@@ -1646,7 +1670,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             5,
-            &[0x26u8; 32],
+            &secret_26,
             &password,
         )
         .expect("seal new key with the verified password");
@@ -1660,16 +1684,17 @@ mod tests {
     #[test]
     fn post_broadcast_seal_failure_maps_to_typed_orphan_error() {
         use std::error::Error as _;
+        let secret_11 = crate::test_support::keys::secret_bytes();
         // Any upstream seal error stands in for a vault-write failure; the
         // mapping wraps it without inspecting the specific variant.
-        let mapped = AddedKeyOrigin::of(Some(&[0x11; 32])).not_saved(TaskError::IdentityKeyMissing);
+        let mapped = AddedKeyOrigin::of(Some(&secret_11)).not_saved(TaskError::IdentityKeyMissing);
         assert!(
             matches!(mapped, TaskError::IdentityKeyAddedButNotSaved { .. }),
             "a post-broadcast seal failure must map to the typed orphan error, got {mapped:?}"
         );
         assert!(
             matches!(
-                AddedKeyOrigin::of(Some(&[0x11; 32])).identity_unloaded(),
+                AddedKeyOrigin::of(Some(&secret_11)).identity_unloaded(),
                 TaskError::IdentityKeyAddedButIdentityUnloaded
             ),
             "a user-entered key keeps the copy-your-key advice when its identity was unloaded"
@@ -1727,8 +1752,10 @@ mod tests {
     ) {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::derived_identity_key::test_support::fixture;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let (fixture_identity, cache, seed_hash, _) = fixture();
         let mut snapshot = staged
             .ctx

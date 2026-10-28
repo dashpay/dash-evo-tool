@@ -86,7 +86,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokiompsc;
 use tokio::sync::watch;
 
-pub(crate) use result_delivery::{deliver_identity_removal_result, deliver_legacy_recovery_result};
+pub(crate) use result_delivery::deliver_legacy_recovery_result;
 
 pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
     matches!(
@@ -2380,27 +2380,9 @@ impl App for AppState {
                             &self.network_contexts,
                             &unboxed_message,
                         ));
-                    if !matches!(
-                        unboxed_message,
-                        BackendTaskSuccessResult::RemovedIdentities { .. }
-                    ) {
-                        crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
-                    }
+                    crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
                     self.dpns_background.record_vote_result(&unboxed_message);
                     match unboxed_message {
-                        BackendTaskSuccessResult::RemovedIdentities { .. } => {
-                            if let ResultRoute::PreviousNetwork(_) = route {
-                                // The banner alone: the identities were on the
-                                // previous network, not on this one's screens.
-                                crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
-                            } else {
-                                deliver_identity_removal_result(
-                                    ctx,
-                                    &mut self.main_screens,
-                                    &unboxed_message,
-                                );
-                            }
-                        }
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::CacheUpdated(update) => {
                             pending_refresh.0.insert(update);

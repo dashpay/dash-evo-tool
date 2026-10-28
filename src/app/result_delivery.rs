@@ -5,7 +5,7 @@ use super::{AppAction, AppState, BackendTasksExecutionMode, VOTING_ROOT_SCREEN};
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, TaskResult};
-use crate::ui::{RootScreenType, Screen, ScreenLike, components::BannerHandle};
+use crate::ui::{RootScreenType, Screen, ScreenLike};
 use std::collections::BTreeMap;
 
 /// Cache notifications coalesced within one frame, without resetting forms.
@@ -52,26 +52,6 @@ pub(crate) fn deliver_legacy_recovery_result<'a>(
         }
     }
     true
-}
-
-/// Deliver removal outcomes to persistent roots even while another screen is visible.
-pub(crate) fn deliver_identity_removal_result(
-    ctx: &egui::Context,
-    roots: &mut BTreeMap<RootScreenType, Screen>,
-    result: &BackendTaskSuccessResult,
-) -> Option<BannerHandle> {
-    let BackendTaskSuccessResult::RemovedIdentities { .. } = result else {
-        return None;
-    };
-    for root in [
-        RootScreenType::RootScreenIdentityHub,
-        RootScreenType::RootScreenMasternodes,
-    ] {
-        if let Some(screen) = roots.get_mut(&root) {
-            screen.display_task_result(result.clone());
-        }
-    }
-    crate::ui::identity::task_feedback::show(ctx, result)
 }
 
 impl AppState {

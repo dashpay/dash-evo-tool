@@ -5,7 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::SigningScope;
-use crate::model::qualified_identity::{QualifiedIdentity, SingleTokenKeyStatus};
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -435,9 +435,9 @@ impl ScreenLike for TransferTokensScreen {
 
             let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
                 if identity.identity.public_keys().is_empty() {
-                    SingleTokenKeyStatus::NoneHeld
+                    SigningKeyStatus::NoneHeld
                 } else {
-                    SingleTokenKeyStatus::Usable
+                    SigningKeyStatus::Usable
                 }
             } else {
                 identity.single_token_transition_key_status(
@@ -445,7 +445,7 @@ impl ScreenLike for TransferTokensScreen {
                 )
             };
 
-            if key_status != SingleTokenKeyStatus::Usable {
+            if key_status != SigningKeyStatus::Usable {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
                 let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]
@@ -459,7 +459,7 @@ impl ScreenLike for TransferTokensScreen {
                         )
                     })
                     .cloned();
-                let message = if key_status == SingleTokenKeyStatus::HeldButUnusable {
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
                     "No key on this device can sign this token transfer. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
                 } else {
                     format!(

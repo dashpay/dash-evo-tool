@@ -474,29 +474,50 @@ impl<'a> KeyFilter<'a> {
     }
 }
 
-/// Whether `identity` has (a) a loaded private key `filter` offers and (b) a
-/// public key `filter` offers whose private key is not loaded. Keys are judged
-/// as the identity holds them now, as the list judges them.
+/// The keys `identity`'s chooser lists under `filter`, each as the identity
+/// holds it now: filed keys whose private half this device can obtain and
+/// that Platform may accept here. Outside developer mode also only keys of a
+/// purpose, security level and key type the transaction accepts.
+fn listed_keys<'a>(
+    identity: &'a QualifiedIdentity,
+    filter: KeyFilter<'a>,
+    is_dev_mode: bool,
+    now: TimestampMillis,
+) -> impl Iterator<Item = &'a IdentityPublicKey> + 'a {
+    identity
+        .private_keys
+        .identity_public_keys()
+        .into_iter()
+        // The stored copy may predate a limits raise: judge, label and hand
+        // on the key as the identity holds it now.
+        .map(|key_ref| identity.live_public_key(&key_ref.1.identity_public_key))
+        // Platform rejects signing with a disabled key or a key bound
+        // elsewhere, and no signer here can produce a private half this
+        // device cannot obtain, so never offer one — not even in dev mode,
+        // where the override only relaxes purpose, security-level and key
+        // type filters, not signability.
+        .filter(move |key| filter.may_sign(key, now) && identity.holds_obtainable_key(key))
+        .filter(move |key| is_dev_mode || filter.accepts(key))
+}
+
+/// Whether `identity` has (a) a key the chooser lists outside developer mode
+/// and (b) a public key `filter` offers whose private half this device cannot
+/// obtain: not loaded, kept in the legacy encrypted form, or derived from a
+/// wallet that is not here. Keys are judged as the identity holds them now,
+/// as the list judges them.
 fn key_eligibility(
     identity: &QualifiedIdentity,
     filter: &KeyFilter<'_>,
     now: TimestampMillis,
 ) -> (bool, bool) {
-    let filed = identity.private_keys.identity_public_keys();
-    let has_suitable_keys_with_private = filed.iter().any(|key_ref| {
-        filter.offers(
-            identity.live_public_key(&key_ref.1.identity_public_key),
-            now,
-        )
-    });
+    let has_suitable_keys_with_private =
+        listed_keys(identity, *filter, false, now).next().is_some();
 
-    let has_eligible_public_keys_without_private =
-        identity.identity.public_keys().values().any(|pub_key| {
-            filter.offers(pub_key, now)
-                && !filed
-                    .iter()
-                    .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id())
-        });
+    let has_eligible_public_keys_without_private = identity
+        .identity
+        .public_keys()
+        .values()
+        .any(|pub_key| filter.offers(pub_key, now) && !identity.holds_obtainable_key(pub_key));
 
     (
         has_suitable_keys_with_private,
@@ -569,23 +590,8 @@ fn render_key_combo(
                 kui.label("Pick an identity first");
                 return;
             };
-            for key_ref in qi.private_keys.identity_public_keys() {
-                // The stored copy may predate a limits raise: judge, label and
-                // hand on the key as the identity holds it now.
-                let key = qi.live_public_key(&key_ref.1.identity_public_key);
-
-                // Platform rejects signing with a disabled key or a key bound
-                // elsewhere, so never offer one — not even in dev mode, where
-                // the override only relaxes purpose, security-level and key
-                // type filters, not signability.
-                if !filter.may_sign(key, now) {
-                    continue;
-                }
+            for key in listed_keys(qi, *filter, is_dev_mode, now) {
                 let is_dev_override = !filter.accepts(key);
-                if is_dev_override && !is_dev_mode {
-                    continue;
-                }
-
                 let label = if is_dev_override {
                     format_key_label_dev(key)
                 } else {
@@ -1399,6 +1405,42 @@ mod tests {
                 ),
             )]));
         assert_eq!(key_eligibility(&public_only, &filter, now), (false, false));
+    }
+
+    /// Regression: the chooser gate and its list counted a filed key whose
+    /// private half this device cannot obtain (kept in the legacy encrypted
+    /// form, or as a reference into a wallet not on this device), so the form
+    /// opened onto a key that cannot sign. Such a key is offered nowhere, and
+    /// the gate gives the guidance for a key whose private half is missing.
+    #[test]
+    fn the_chooser_gate_and_list_skip_keys_this_device_cannot_obtain() {
+        use crate::context::test_support::{
+            auth_key, hold_as_legacy_encrypted, hold_as_wallet_reference, identity_holding,
+        };
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let now = 1_000;
+
+        let mut legacy = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        hold_as_legacy_encrypted(&mut legacy, 1);
+        let mut walletless = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        hold_as_wallet_reference(&mut walletless, 1, [0x5A; 32]);
+
+        for (case, identity) in [("legacy encrypted", legacy), ("wallet missing", walletless)] {
+            assert_eq!(
+                key_eligibility(&identity, &filter, now),
+                (false, true),
+                "{case}"
+            );
+            assert_eq!(
+                listed_keys(&identity, filter, true, now).count(),
+                0,
+                "{case}: not listed, not even in developer mode"
+            );
+        }
     }
 
     /// DashPay and username registration choosers offer the key types their

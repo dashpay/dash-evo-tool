@@ -591,12 +591,12 @@ pub const DASHPAY_SIGNING_KEY_TYPES: &[KeyType] =
 /// (`BatchTransitionV1::purpose_requirement`; TRANSFER requires CRITICAL).
 const SINGLE_TOKEN_TRANSITION_PURPOSES: [Purpose; 2] = [Purpose::AUTHENTICATION, Purpose::TRANSFER];
 
-/// Whether an identity can sign a batch of one token transfer or claim on a
-/// contract on this device, as
-/// [`QualifiedIdentity::single_token_transition_key_status`] reports it.
+/// Whether an identity can sign a token transition on a contract on this
+/// device, as [`QualifiedIdentity::single_token_transition_key_status`] and
+/// [`QualifiedIdentity::token_action_key_status`] report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SingleTokenKeyStatus {
-    /// [`QualifiedIdentity::single_token_transition_key`] picks a key.
+pub enum SigningKeyStatus {
+    /// The transition's key choice picks a key.
     Usable,
     /// A private key of a purpose, level and key type the transition takes
     /// is filed, but none can sign it now: each is disabled or expired, bound
@@ -1321,13 +1321,60 @@ impl QualifiedIdentity {
     pub fn single_token_transition_key_status(
         &self,
         contract_id: dash_sdk::platform::Identifier,
-    ) -> SingleTokenKeyStatus {
+    ) -> SigningKeyStatus {
         if self.single_token_transition_key(contract_id).is_some() {
-            SingleTokenKeyStatus::Usable
+            SigningKeyStatus::Usable
         } else if self.holds_single_token_transition_key() {
-            SingleTokenKeyStatus::HeldButUnusable
+            SigningKeyStatus::HeldButUnusable
         } else {
-            SingleTokenKeyStatus::NoneHeld
+            SigningKeyStatus::NoneHeld
+        }
+    }
+
+    /// The requirements of a token action on `contract_id` other than a
+    /// single transfer or claim (mint, burn, freeze, pause, pricing, purchase,
+    /// configuration updates): a CRITICAL AUTHENTICATION key valid for the
+    /// token's contract, of a type Platform verifies.
+    fn token_action_requirements(
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> KeyRequirements<'static> {
+        KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::CRITICAL],
+            SigningScope::ContractWide { contract_id },
+        )
+    }
+
+    /// The key to sign a token action on `contract_id` with, as
+    /// [`Self::signing_key_now`] picks it.
+    pub fn token_action_key(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> Option<&IdentityPublicKey> {
+        self.signing_key_now(Self::token_action_requirements(contract_id))
+    }
+
+    /// Whether this device can sign a token action on `contract_id`: the gate
+    /// in front of the token action forms. It opens exactly when
+    /// [`Self::token_action_key`] picks a key, so an open form can always
+    /// sign; when closed, it tells a missing key apart from keys that cannot
+    /// sign here.
+    pub fn token_action_key_status(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SigningKeyStatus {
+        let requirements = Self::token_action_requirements(contract_id);
+        if self.signing_key_now(requirements).is_some() {
+            SigningKeyStatus::Usable
+        } else if self
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .any(|key_ref| requirements.matches(&key_ref.1.identity_public_key))
+        {
+            SigningKeyStatus::HeldButUnusable
+        } else {
+            SigningKeyStatus::NoneHeld
         }
     }
 
@@ -1593,7 +1640,7 @@ impl QualifiedIdentity {
     /// Whether this device holds `key` under a placement whose private half it
     /// can obtain. Stricter than [`Signer::can_sign_with`], which also accepts a
     /// key that only refers to a wallet this device does not hold.
-    fn holds_obtainable_key(&self, key: &IdentityPublicKey) -> bool {
+    pub(crate) fn holds_obtainable_key(&self, key: &IdentityPublicKey) -> bool {
         self.private_keys.candidates(key).any(|placement| {
             self.private_keys
                 .entry_at(&placement)
@@ -3862,7 +3909,7 @@ mod protocol_v14_compat_tests {
             );
             assert_eq!(
                 qi.single_token_transition_key_status(contract_id),
-                SingleTokenKeyStatus::HeldButUnusable,
+                SigningKeyStatus::HeldButUnusable,
                 "{case}"
             );
         }
@@ -3878,13 +3925,81 @@ mod protocol_v14_compat_tests {
         );
         assert_eq!(
             bound_here.single_token_transition_key_status(contract_id),
-            SingleTokenKeyStatus::Usable
+            SigningKeyStatus::Usable
         );
         assert_eq!(
             identity_holding(&[auth_key(1, SecurityLevel::HIGH)])
                 .single_token_transition_key_status(contract_id),
-            SingleTokenKeyStatus::NoneHeld
+            SigningKeyStatus::NoneHeld
         );
+    }
+
+    /// Regression: the generic token action forms (mint, burn, pricing,
+    /// purchase, configuration…) opened whenever a CRITICAL AUTHENTICATION key
+    /// was filed, while the action signs only with a live key valid for the
+    /// token's contract whose private half this device can obtain. The gate
+    /// opens exactly when the action's key choice picks a key.
+    #[test]
+    fn the_token_action_gate_opens_exactly_when_a_key_is_picked() {
+        use crate::context::test_support::{
+            auth_key, bound_to, hold_as_legacy_encrypted, hold_as_wallet_reference,
+            identity_holding,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let critical = |id| auth_key(id, SecurityLevel::CRITICAL);
+        let expired = identity_holding(&[critical(1).with_limits(None, Some(1))]);
+        let elsewhere = identity_holding(&[bound_to(
+            critical(1),
+            ContractBounds::SingleContract {
+                id: Identifier::new([0x09; 32]),
+            },
+        )]);
+        let mut legacy = identity_holding(&[critical(1)]);
+        hold_as_legacy_encrypted(&mut legacy, 1);
+        let mut walletless = identity_holding(&[critical(1)]);
+        hold_as_wallet_reference(&mut walletless, 1, [0x5A; 32]);
+        let mut transfer_only = critical(1);
+        transfer_only.set_purpose(Purpose::TRANSFER);
+        let transfer_only = identity_holding(&[transfer_only]);
+
+        for (case, qi) in [
+            ("expired", &expired),
+            ("bound elsewhere", &elsewhere),
+            ("legacy encrypted", &legacy),
+            ("wallet not here", &walletless),
+        ] {
+            assert!(qi.token_action_key(contract_id).is_none(), "{case}");
+            assert_eq!(
+                qi.token_action_key_status(contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+        }
+
+        let bound_here = identity_holding(&[bound_to(
+            critical(1),
+            ContractBounds::SingleContract { id: contract_id },
+        )]);
+        assert!(bound_here.token_action_key(contract_id).is_some());
+        assert_eq!(
+            bound_here.token_action_key_status(contract_id),
+            SigningKeyStatus::Usable
+        );
+        for (case, qi) in [
+            (
+                "a HIGH key",
+                identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
+            ),
+            ("a transfer key", transfer_only),
+        ] {
+            assert_eq!(
+                qi.token_action_key_status(contract_id),
+                SigningKeyStatus::NoneHeld,
+                "{case}: a token action signs only with an authentication key"
+            );
+        }
     }
 
     /// Regression: the automatic username registration key was taken of any

@@ -207,7 +207,7 @@ pub struct KeyRequirements<'a> {
 }
 
 impl KeyRequirements<'_> {
-    fn matches(&self, key: &IdentityPublicKey) -> bool {
+    pub(crate) fn matches(&self, key: &IdentityPublicKey) -> bool {
         key.purpose() == self.purpose
             && self.security_levels.contains(&key.security_level())
             && self

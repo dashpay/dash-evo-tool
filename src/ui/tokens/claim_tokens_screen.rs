@@ -33,7 +33,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SingleTokenKeyStatus};
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -491,16 +491,16 @@ impl ScreenLike for ClaimTokensScreen {
             // Check if user has any auth keys
             let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
                 if identity.identity.public_keys().is_empty() {
-                    SingleTokenKeyStatus::NoneHeld
+                    SigningKeyStatus::NoneHeld
                 } else {
-                    SingleTokenKeyStatus::Usable
+                    SigningKeyStatus::Usable
                 }
             } else {
                 claim_key_status(identity, self.identity_token_basic_info.contract_id)
             };
 
-            if key_status != SingleTokenKeyStatus::Usable {
-                let message = if key_status == SingleTokenKeyStatus::HeldButUnusable {
+            if key_status != SigningKeyStatus::Usable {
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
                     "No key on this device can sign this token claim. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
                 } else {
                     format!(
@@ -782,14 +782,14 @@ impl ScreenLike for ClaimTokensScreen {
 fn claim_key_status(
     identity: &QualifiedIdentity,
     contract_id: dash_sdk::platform::Identifier,
-) -> SingleTokenKeyStatus {
+) -> SigningKeyStatus {
     match identity.identity_type {
         IdentityType::User => identity.single_token_transition_key_status(contract_id),
         IdentityType::Masternode | IdentityType::Evonode => {
             if identity.available_transfer_keys().is_empty() {
-                SingleTokenKeyStatus::NoneHeld
+                SigningKeyStatus::NoneHeld
             } else {
-                SingleTokenKeyStatus::Usable
+                SigningKeyStatus::Usable
             }
         }
     }
@@ -1053,7 +1053,7 @@ mod tests {
         let contract_id = Identifier::new([0x70; 32]);
         assert_eq!(
             claim_key_status(&identity, contract_id),
-            SingleTokenKeyStatus::Usable
+            SigningKeyStatus::Usable
         );
 
         assert_eq!(
@@ -1061,7 +1061,7 @@ mod tests {
                 &identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
                 contract_id
             ),
-            SingleTokenKeyStatus::NoneHeld
+            SigningKeyStatus::NoneHeld
         );
     }
 
@@ -1110,7 +1110,7 @@ mod tests {
             );
             assert_eq!(
                 claim_key_status(&identity, contract_id),
-                SingleTokenKeyStatus::HeldButUnusable,
+                SigningKeyStatus::HeldButUnusable,
                 "{case}"
             );
         }

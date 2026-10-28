@@ -925,6 +925,22 @@ pub fn add_contract_doc_type_chooser_with_filtering(
     );
 }
 
+/// Selects `contract` in the contract/document-type chooser and drops a
+/// document type that belongs to another contract.
+fn select_contract(
+    selected_contract: &mut Option<QualifiedContract>,
+    selected_doc_type: &mut Option<DocumentType>,
+    contract: &QualifiedContract,
+) {
+    if selected_doc_type
+        .as_ref()
+        .is_some_and(|doc_type| doc_type.data_contract_id() != contract.contract.id())
+    {
+        *selected_doc_type = None;
+    }
+    *selected_contract = Some(contract.clone());
+}
+
 /// Extremely compact chooser: just two combo-boxes (Contract ▸ Doc-Type)
 ///
 /// * No collapsible tree.
@@ -965,7 +981,7 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                                 .selectable_label(selected_contract.as_ref() == Some(qc), label)
                                 .clicked()
                             {
-                                *selected_contract = Some(qc.clone());
+                                select_contract(selected_contract, selected_doc_type, qc);
                             }
                         }
                     });
@@ -1443,6 +1459,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Switching contract drops a document type of the previous contract, so
+    /// no action pairs one contract with another contract's type; a type of
+    /// the newly selected contract stays selected.
+    #[test]
+    fn selecting_a_contract_drops_another_contracts_document_type() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let load = |c| QualifiedContract {
+            contract: load_system_data_contract(c, PlatformVersion::latest()).expect("contract"),
+            alias: None,
+        };
+        let dpns = load(SystemDataContract::DPNS);
+        let dashpay = load(SystemDataContract::Dashpay);
+        let domain = dpns.contract.document_type_cloned_for_name("domain").ok();
+
+        let mut contract = Some(dpns.clone());
+        let mut doc_type = domain.clone();
+        select_contract(&mut contract, &mut doc_type, &dpns);
+        assert_eq!(doc_type, domain, "a type of the selected contract stays");
+
+        select_contract(&mut contract, &mut doc_type, &dashpay);
+        assert_eq!(contract, Some(dashpay));
+        assert!(
+            doc_type.is_none(),
+            "the previous contract's type is dropped"
+        );
     }
 
     fn outside_press() -> egui::RawInput {

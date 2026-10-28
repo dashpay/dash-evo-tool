@@ -1180,10 +1180,14 @@ impl AppContext {
     /// nothing learned from the old endpoints except the bans of addresses
     /// that stay.
     ///
-    /// The new SDK is built over the old SDK's address list, moved in place to
-    /// the configured addresses first. Every clone of the old SDK shares that
-    /// list, the wallet backend's and the upstream wallet components'
-    /// included, so they reach the new addresses too.
+    /// The new SDK is built over the old SDK's address list, which is then
+    /// moved in place to the configured addresses. Every clone of the old SDK
+    /// shares that list, the wallet backend's and the upstream wallet
+    /// components' included, so they reach the new addresses too.
+    ///
+    /// All or nothing: every step that can fail runs before the list moves,
+    /// so a failed rebuild leaves the client, the SDK and the list as they
+    /// were.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         let _rebuild = self
             .connection_rebuild
@@ -1221,31 +1225,35 @@ impl AppContext {
 
         // One address list per context: the wallet backend, and the upstream
         // wallet components it feeds, hold clones of the SDK they were built
-        // with and are never given the new one. So the list they share with
-        // the current SDK moves to the new addresses in place, keeping the
-        // bans of addresses that stay, and the new SDK is built over it.
+        // with and are never given the new one. So the new SDK is built over
+        // the list they share with the current SDK, and that list moves to
+        // the new addresses in place, keeping the bans of addresses that stay.
         let shared_addresses = self.sdk.load().address_list().clone();
-        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
 
+        // Everything that can fail runs before the list moves, so a failed
+        // rebuild leaves every SDK on the old addresses. The SDK is built
+        // while the list still holds them; it shares the list, so it follows
+        // the move below.
         let provider = self.spv_context_provider.read()?.clone();
         // Like a cold start: the network minimum, raised by the new
         // connection's first proven response. Nothing learned from the old
         // endpoints is carried over except the bans of addresses that stay.
-        let new_sdk = initialize_sdk(shared_addresses, self.network, provider)
+        let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        let mut client_lock = self.core_client.write()?;
 
-        // 4. Swap in the new SDK and client
-        {
-            let mut client_lock = self.core_client.write()?;
-            *client_lock = new_client;
-        }
+        // 4. Nothing below can fail: move the list, swap in the new client
+        // and SDK.
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+        *client_lock = new_client;
+        drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
         // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK.
-        self.spv_context_provider
-            .read()?
-            .bind_app_context(self.clone());
+        // bind_app_context also registers the provider with the SDK. The
+        // clone shares the provider's state, so binding it binds the one the
+        // context holds.
+        provider.bind_app_context(self.clone());
 
         Ok(())
     }
@@ -1323,11 +1331,11 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
         proof_error: dash_sdk::Error,
-        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
-        use crate::app::TaskResult;
         use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
 
         // Give the network time to propagate the block before re-fetching.
@@ -1366,7 +1374,7 @@ impl AppContext {
     /// Subsequent calls are no-ops (first writer wins).
     pub async fn ensure_wallet_backend(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         // Fast path: already wired, no lock needed.
         if self.wallet_backend.load().is_some() {
@@ -1897,6 +1905,47 @@ mod tests {
         );
     }
 
+    /// A rebuild that fails leaves every SDK on the old addresses: the shared
+    /// list must not move to the new addresses unless the whole rebuild is
+    /// applied, or the wallet backend would talk to endpoints the app's
+    /// connection settings were never switched to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_rebuild_leaves_the_shared_addresses_untouched() {
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let sdk_before = ctx.sdk.load_full();
+        let before = addresses_of(sdk_before.address_list());
+        assert!(!before.is_empty(), "the fixture starts with addresses");
+        assert!(!before.iter().any(|uri| uri.contains("10.0.0.7")));
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.7:443".to_string());
+
+        // Fail the rebuild: a poisoned provider lock makes its read fail.
+        let poisoner = Arc::clone(&ctx);
+        std::thread::spawn(move || {
+            let _guard = poisoner.spv_context_provider.write().expect("provider");
+            panic!("poison the provider lock");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+
+        let result = Arc::clone(&ctx).reinit_core_client_and_sdk();
+
+        assert!(result.is_err(), "the rebuild must fail");
+        assert!(
+            Arc::ptr_eq(&sdk_before, &ctx.sdk.load_full()),
+            "the old SDK stays in place"
+        );
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), before);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), before);
+    }
+
     /// Without a wallet backend, a rebuild still moves the app to the new
     /// addresses.
     #[test]
@@ -2118,8 +2167,8 @@ mod tests {
     /// store is a real, writable DB the accessors read from. Returns the temp
     /// dir (kept alive by the caller) alongside the context.
     async fn offline_ctx() -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;

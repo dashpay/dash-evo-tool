@@ -679,6 +679,38 @@ impl MasternodesScreen {
 }
 
 impl ScreenLike for MasternodesScreen {
+    fn observe_backend_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        if crate::ui::dpns::dpns_contested_names_screen::DPNSScreen::handles_result(result) {
+            self.votes
+                .display_backend_task_result(context, result.clone());
+        }
+    }
+    fn observe_backend_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        error: &crate::backend_task::error::TaskError,
+    ) {
+        if context.is_dpns_vote_task() {
+            self.votes.display_backend_task_error(context, error);
+            self.votes.display_task_error(error);
+        }
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network {
+            return;
+        }
+        if matches!(update.domain, CacheDomain::Identities | CacheDomain::All) {
+            self.reload();
+        }
+        if matches!(update.domain, CacheDomain::Dpns | CacheDomain::All) {
+            self.votes.refresh();
+        }
+    }
     fn accepts_legacy_recovery_result(
         &self,
         context: &crate::backend_task::BackendTaskContext,
@@ -936,6 +968,7 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::QualifiedIdentity;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -1479,8 +1512,6 @@ mod tests {
 
     /// Write the voter association a completed restore stores for `node`.
     fn store_restored_voter_association(ctx: &Arc<AppContext>, node: Identifier) {
-        use dash_sdk::platform::IdentityPublicKey;
-
         let mut restored = ctx
             .get_local_qualified_identity(&node)
             .expect("read the node")
@@ -1491,17 +1522,12 @@ mod tests {
                 PlatformVersion::latest(),
             )
             .expect("voter identity"),
-            IdentityPublicKey::V0(
-                dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                    id: 0,
-                    purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                    security_level: dash_sdk::dpp::identity::SecurityLevel::HIGH,
-                    contract_bounds: None,
-                    key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
-                    read_only: false,
-                    data: dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
-                    disabled_at: None,
-                },
+            identity_public_key(
+                0,
+                dash_sdk::dpp::identity::Purpose::VOTING,
+                dash_sdk::dpp::identity::SecurityLevel::HIGH,
+                dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
             ),
         ));
         ctx.update_local_qualified_identity(&restored)

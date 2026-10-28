@@ -321,3 +321,30 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod pending_refresh_tests {
+    use super::PendingRefresh;
+    use crate::backend_task::{CacheDomain, CacheUpdate};
+    use dash_sdk::dpp::dashcore::Network;
+
+    /// Screens hear of a cache domain's change once per frame however many
+    /// tasks reported it; changes on another network stay apart.
+    #[test]
+    fn identical_cache_notifications_in_one_frame_collapse_into_one() {
+        let mut pending = PendingRefresh::default();
+        let identities = CacheUpdate {
+            network: Network::Testnet,
+            domain: CacheDomain::Identities,
+        };
+        pending.0.insert(identities);
+        pending.0.insert(identities);
+        pending.0.insert(CacheUpdate {
+            network: Network::Mainnet,
+            ..identities
+        });
+
+        assert_eq!(pending.0.len(), 2);
+        assert_eq!(pending.0.iter().filter(|u| **u == identities).count(), 1);
+    }
+}

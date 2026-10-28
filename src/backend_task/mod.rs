@@ -1933,6 +1933,14 @@ mod tests {
             !secret_access.is_session_cached(&scope),
             "cancellation teardown clears secrets on the registered backend"
         );
+        assert_eq!(
+            completed_context
+                .test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancellation teardown runs the bounded upstream shutdown"
+        );
     }
 
     fn dapi_connection_refused_error() -> TaskError {

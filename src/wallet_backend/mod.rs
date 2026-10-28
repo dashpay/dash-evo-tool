@@ -392,6 +392,8 @@ struct Inner {
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
+    bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
@@ -557,6 +559,17 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
+/// Test seam for pausing and observing a wallet backend build.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct BuildTestHooks {
+    /// When set, the build signals it once its upstream manager exists, then
+    /// waits for good, standing in for a slow initialization.
+    pub(crate) pause_initialization: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// Bounded teardowns that finished for backends built by this context.
+    pub(crate) bounded_shutdowns: Arc<std::sync::atomic::AtomicUsize>,
+}
+
 /// Upper bound for [`WalletBackend::shutdown_bounded`].
 const BOUNDED_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -681,6 +694,8 @@ impl WalletBackend {
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
+                bounded_shutdowns: Arc::clone(&ctx.test_wallet_backend_hooks.bounded_shutdowns),
+                #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
@@ -721,6 +736,19 @@ impl WalletBackend {
         };
 
         let initialize = async {
+            #[cfg(test)]
+            let pause = ctx
+                .test_wallet_backend_hooks
+                .pause_initialization
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            #[cfg(test)]
+            if let Some(reached) = pause {
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
+
             // Wire the upstream shielded coordinator into the manager.
             //
             // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
@@ -780,14 +808,17 @@ impl WalletBackend {
     /// what is left.
     pub(crate) async fn shutdown_bounded(&self) {
         self.forget_all_secrets();
-        if tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown())
-            .await
-            .is_err()
-        {
-            tracing::warn!(
+        match tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown()).await {
+            Ok(()) => {
+                #[cfg(test)]
+                self.inner
+                    .bounded_shutdowns
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => tracing::warn!(
                 timeout_secs = BOUNDED_SHUTDOWN_TIMEOUT.as_secs(),
                 "Wallet backend teardown timed out; continuing"
-            );
+            ),
         }
     }
 
@@ -3888,6 +3919,65 @@ mod tests {
             "unexpected error: {error:?}"
         );
         assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
+
+    /// The same holds when the app closes while the build is initializing:
+    /// it stops there, its manager goes through the upstream shutdown, and
+    /// the wallet database is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_mid_initialization_stops_and_shuts_down() {
+        use crate::context::test_support::test_app_context;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        *ctx.test_wallet_backend_hooks
+            .pause_initialization
+            .lock()
+            .expect("hooks lock") = Some(Arc::clone(&reached));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let mut build = Box::pin(ctx.ensure_wallet_backend(sender));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                _ = build.as_mut() => panic!("the build finished instead of pausing"),
+                () = reached.notified() => {}
+            }
+        })
+        .await
+        .expect("the build reaches its initialization");
+
+        ctx.subtasks.cancellation_token.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(10), build)
+            .await
+            .expect("closing the app stops the paused build")
+            .expect_err("a stopped build reports the exit");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        assert_eq!(
+            ctx.test_wallet_backend_hooks
+                .bounded_shutdowns
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the built manager went through the upstream shutdown"
+        );
         platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
             ctx.data_dir(),
             ctx.network,

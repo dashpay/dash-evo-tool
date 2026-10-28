@@ -274,6 +274,9 @@ pub struct AppContext {
     /// first. See [`AppContext::test_hold_network_switch`].
     #[cfg(feature = "testing")]
     pub(crate) test_network_switch_gate: tokio::sync::Mutex<()>,
+    /// Test seam: pause and observe the wallet backend build of this context.
+    #[cfg(test)]
+    pub(crate) test_wallet_backend_hooks: crate::wallet_backend::BuildTestHooks,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -628,6 +631,8 @@ impl AppContext {
             storage_prepared: AtomicBool::new(false),
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            test_wallet_backend_hooks: Default::default(),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             contact_info_writes: Default::default(),
             dpns_vote_operation_guard: Mutex::new(()),

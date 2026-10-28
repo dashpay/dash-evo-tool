@@ -95,6 +95,11 @@ pub struct MasternodeIdentityLoadOutput {
     payout_key_loaded: bool,
     /// Withdrawal key modes this identity supports ("owner" / "transfer").
     available_withdrawal_keys: Vec<String>,
+    /// Whether the node holds an owner or payout key on this device, so the
+    /// withdraw tool can use it. `false` loads the node without withdrawals.
+    withdrawals_available: bool,
+    /// Set when `withdrawals_available` is `false`: what to do to enable them.
+    note: Option<String>,
     /// Registered payout address (the OWNER-mode withdrawal destination), if
     /// any.
     payout_address: Option<String>,
@@ -115,8 +120,9 @@ impl ToolBase for MasternodeIdentityLoad {
             "Load a masternode or evonode identity by ProTxHash, binding its \
              owner/voting/payout private keys (WIF or hex) and persisting it \
              locally for the withdraw tool. A key left blank is taken from a \
-             wallet loaded in this app when one holds it; the load fails when \
-             the node ends up with neither an owner nor a payout key. The output reports which keys \
+             wallet loaded in this app when one holds it. A node with neither \
+             an owner nor a payout key still loads, with \
+             withdrawals_available=false and a note. The output reports which keys \
              loaded, the available withdrawal modes, and the registered payout \
              address. The 'network' parameter is required."
                 .into(),
@@ -147,8 +153,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
         // Blank keys are allowed: the backend looks them up in this device's
-        // wallets. Whether the node can sign a withdrawal is checked after the
-        // load, once that lookup ran.
+        // wallets. The output reports whether the node can withdraw.
         // S2: validate the ProTxHash format BEFORE the SPV wait so a malformed
         // hash is rejected immediately rather than after a 10-min sync.
         masternode_input::decode_identity_id(&param.pro_tx_hash)?;
@@ -226,9 +231,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             }
         }
 
-        if available_withdrawal_keys.is_empty() {
-            return Err(masternode_input::MasternodeInputError::NoSigningKey.into());
-        }
+        let withdrawals_available = !available_withdrawal_keys.is_empty();
 
         Ok(MasternodeIdentityLoadOutput {
             identity_id: qi.identity.id().to_string(Encoding::Base58),
@@ -238,12 +241,25 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             voting_key_loaded: qi.associated_voter_identity.is_some(),
             payout_key_loaded,
             available_withdrawal_keys,
+            withdrawals_available,
+            note: withdrawal_note(withdrawals_available),
             payout_address: qi
                 .masternode_payout_address(ctx.network())
                 .map(|addr| addr.to_string()),
             dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
         })
     }
+}
+
+/// The note a load reports when the node holds neither an owner nor a payout
+/// key on this device; `None` when it can withdraw.
+fn withdrawal_note(withdrawals_available: bool) -> Option<String> {
+    (!withdrawals_available).then(|| {
+        "The node was loaded without an owner or payout key, so it cannot withdraw \
+         yet. Load it again with the owner or payout private key, or load the \
+         wallet that holds one of them first."
+            .to_string()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +546,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn a_node_without_withdrawal_keys_gets_a_note() {
+        let note = withdrawal_note(false).expect("a note when withdrawals are unavailable");
+        assert!(note.contains("owner"), "names the owner key: {note}");
+        assert!(note.contains("payout"), "names the payout key: {note}");
+        assert!(note.contains("Load it again"), "says what to do: {note}");
+        assert_eq!(withdrawal_note(true), None);
+    }
 
     // ── Tool A param Debug redaction (TC-MN-010) ──────────────────────────
     //

@@ -26,15 +26,6 @@ pub enum MasternodeInputError {
     InvalidNodeType,
     #[error("The 'key_mode' must be \"owner\" or \"transfer\".")]
     InvalidKeyMode,
-    /// The load stored the node, but neither its owner nor its payout key was
-    /// supplied or held by one of this device's wallets.
-    #[error(
-        "The node was loaded, but it has no owner or payout key on this device, \
-         so it cannot withdraw. Load it again with the owner or payout private key. \
-         The owner key withdraws to the registered payout address; \
-         the payout key withdraws to any address."
-    )]
-    NoSigningKey,
     #[error(
         "Could not read the identity ID: {input}. \
          Provide a 64-character hex ProTxHash or the Base58 identity ID \
@@ -209,17 +200,6 @@ mod tests {
                 "for input {bad:?}"
             );
         }
-    }
-
-    #[test]
-    fn no_signing_key_names_both_keys_and_what_to_do() {
-        let msg = MasternodeInputError::NoSigningKey.to_string();
-        assert!(msg.contains("owner"), "message names owner key: {msg}");
-        assert!(msg.contains("payout"), "message names payout key: {msg}");
-        assert!(
-            msg.contains("Load it again"),
-            "message says what to do: {msg}"
-        );
     }
 
     // ── decode_identity_id — Base58/hex identifier parse (TC-MN-005/006/007) ──

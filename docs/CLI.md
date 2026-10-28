@@ -231,7 +231,9 @@ det-cli masternode-identity-load \
   payout-private-key=<WIF> \
   network=testnet
 # -> { "identity_id": "...", "available_withdrawal_keys": ["owner","transfer"],
-#      "payout_address": "y...", ... }
+#      "withdrawals_available": true, "payout_address": "y...", ... }
+#    A node with neither key on this device still loads, with
+#    "withdrawals_available": false and a "note" saying how to enable them.
 
 # 2a. Owner key — destination is forced to the registered payout address.
 #     Supplying to-address is rejected.

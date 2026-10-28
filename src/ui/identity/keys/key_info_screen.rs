@@ -1789,6 +1789,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::legacy_recovery::RecoveryPlan;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -1798,7 +1799,6 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
@@ -1855,16 +1855,13 @@ mod tests {
     }
 
     fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![id as u8; 20]),
+        )
     }
 
     fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
@@ -1999,16 +1996,13 @@ mod tests {
 
         // Same id, different keys: purpose is what tells them apart.
         let on_screen = public_key(0, Purpose::VOTING);
-        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xEE; 20]),
-            disabled_at: None,
-        });
+        let other = identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xEE; 20]),
+        );
 
         let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
         stored.private_keys.insert_at(
@@ -2368,16 +2362,13 @@ mod tests {
             .public_key()
             .to_bytes();
         (
-            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                BinaryData::new(data),
+            ),
             secret_bytes,
         )
     }
@@ -2729,6 +2720,44 @@ mod tests {
             !screen.recovery.is_restoring(),
             "this restore's own failure must return the offer so it can be retried",
         );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Pins the hex-or-WIF split of the Key Info paste: input that is valid
+    /// hex is decoded as hex, so a hex key of the wrong length says so rather
+    /// than being blamed on WIF, while anything else is tried as WIF.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paste_is_read_as_hex_when_it_is_hex_and_as_wif_otherwise() {
+        let (app_context, _dir) = offline_ctx().await;
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x5C, &[]);
+        let mut screen = KeyInfoScreen::new(stored, pasted, None, &app_context);
+
+        let not_32_bytes = "Private key not 32 bytes";
+        let not_hex_or_wif = "Invalid hex string or WIF for private key.";
+        for (input, expected) in [
+            // Valid hex, one byte short.
+            (hex::encode(&secret[..31]), not_32_bytes),
+            // Valid hex of a WIF key's length. It is not a valid WIF either,
+            // so this does not prove hex is tried first; it pins the message.
+            ("ab".repeat(26), not_32_bytes),
+            // Odd length and non-hex input fall through to WIF.
+            ("abc".to_owned(), not_hex_or_wif),
+            ("z".repeat(52), not_hex_or_wif),
+        ] {
+            MessageBanner::clear_all_global(app_context.egui_ctx());
+            screen.private_key_input.set_text(input.clone());
+            screen.validate_and_store_private_key();
+
+            let banner_texts =
+                crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+            assert_eq!(banner_texts, [expected], "input {input:?}");
+        }
 
         app_context
             .wallet_backend()

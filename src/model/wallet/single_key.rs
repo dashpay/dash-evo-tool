@@ -8,12 +8,13 @@
 //! [`crate::database::utxo`]). Not to be confused with the LIVE imported-key
 //! metadata sidecar in [`crate::model::single_key`], which is current code.
 
+use crate::model::key_input::decode_hex_secret;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit};
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use super::encryption::{EncryptionError, derive_password_key};
 
@@ -169,6 +170,22 @@ impl Drop for SingleKeyData {
     }
 }
 
+/// Without a password, `encrypted_private_key` holds the raw key bytes, so it
+/// is wiped like the open key. The salt and nonce are not secret.
+impl Zeroize for ClosedSingleKey {
+    fn zeroize(&mut self) {
+        self.encrypted_private_key.zeroize();
+    }
+}
+
+impl Drop for ClosedSingleKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for ClosedSingleKey {}
+
 impl ClosedSingleKey {
     /// Compute the hash of a private key
     pub fn compute_key_hash(private_key: &[u8; 32]) -> SingleKeyHash {
@@ -301,9 +318,8 @@ impl SingleKeyWallet {
     ) -> Result<Self, String> {
         let private_key = PrivateKey::from_wif(wif).map_err(|e| e.to_string())?;
         let network = private_key.network;
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&*private_key.inner.to_bytes());
-        Self::new(key_bytes, network, password, alias)
+        let key_bytes = private_key.inner.to_bytes();
+        Self::new(*key_bytes, network, password, alias)
     }
 
     /// Create from a hex-encoded private key string
@@ -313,16 +329,16 @@ impl SingleKeyWallet {
         password: Option<&str>,
         alias: Option<String>,
     ) -> Result<Self, String> {
-        let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
+        let bytes = decode_hex_secret(hex_str).map_err(|e| e.to_string())?;
         if bytes.len() != 32 {
             return Err(format!(
                 "Invalid private key length: expected 32 bytes, got {}",
                 bytes.len()
             ));
         }
-        let mut key_bytes = [0u8; 32];
+        let mut key_bytes = Zeroizing::new([0u8; 32]);
         key_bytes.copy_from_slice(&bytes);
-        Self::new(key_bytes, network, password, alias)
+        Self::new(*key_bytes, network, password, alias)
     }
 
     /// Returns true if the wallet is open (private key is decrypted)
@@ -480,6 +496,49 @@ mod tests {
 
         assert!(wallet.is_open());
         assert!(!wallet.address.to_string().is_empty());
+    }
+
+    /// The stored key bytes, raw when there is no password, are wiped by
+    /// `zeroize`, which `Drop` runs; the hash, salt and nonce are kept.
+    #[test]
+    fn closed_key_wipes_its_stored_key_bytes() {
+        fn wiped_on_drop<T: ZeroizeOnDrop>() {}
+        wiped_on_drop::<ClosedSingleKey>();
+
+        let mut closed = ClosedSingleKey {
+            key_hash: [1; 32],
+            encrypted_private_key: vec![0x2A; 32],
+            salt: vec![2; 16],
+            nonce: vec![3; 12],
+        };
+        closed.zeroize();
+
+        assert!(closed.encrypted_private_key.is_empty());
+        assert_eq!(closed.key_hash, [1; 32]);
+        assert_eq!(closed.salt, vec![2; 16]);
+        assert_eq!(closed.nonce, vec![3; 12]);
+    }
+
+    /// Bad hex keeps the messages it always had: `hex::decode`'s own error
+    /// text, or the byte count of valid hex that is not 32 bytes long.
+    #[test]
+    fn from_hex_rejections_keep_their_messages() {
+        for input in ["abc", "zz", &format!("{}g0", "0".repeat(62))] {
+            let error = SingleKeyWallet::from_hex(input, Network::Testnet, None, None)
+                .expect_err("bad hex is rejected");
+            assert_eq!(
+                error,
+                hex::decode(input).unwrap_err().to_string(),
+                "input {input:?}"
+            );
+        }
+
+        let error = SingleKeyWallet::from_hex(&"01".repeat(31), Network::Testnet, None, None)
+            .expect_err("31 bytes are rejected");
+        assert_eq!(
+            error,
+            "Invalid private key length: expected 32 bytes, got 31"
+        );
     }
 
     /// TS-DBG-01 — `ClosedSingleKey`'s `{:?}` exposes no raw 32 bytes, in

@@ -110,26 +110,21 @@ fn token_creator_defaults_to_app_scoped_identity() {
 /// A user identity with one CRITICAL authentication key — enough for the token
 /// action scaffold to render its form instead of the "no keys" notice.
 fn identity_with_critical_key(app_context: &Arc<AppContext>) -> QualifiedIdentity {
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::platform::IdentityPublicKey;
 
     let mut identity =
         Identity::create_basic_identity(Identifier::from([0xC3; 32]), PlatformVersion::latest())
             .expect("basic identity");
-    identity.add_public_key(
-        IdentityPublicKeyV0 {
-            id: 0,
-            key_type: KeyType::ECDSA_HASH160,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::CRITICAL,
-            read_only: false,
-            data: BinaryData::new(vec![1; 20]),
-            disabled_at: None,
-            contract_bounds: None,
-        }
-        .into(),
-    );
+    let mut key = IdentityPublicKey::default_versioned(PlatformVersion::latest())
+        .expect("identity key structure");
+    key.set_id(0);
+    key.set_purpose(Purpose::AUTHENTICATION);
+    key.set_security_level(SecurityLevel::CRITICAL);
+    key.set_key_type(KeyType::ECDSA_HASH160);
+    key.set_data(vec![1; 20].into());
+    identity.add_public_key(key);
     QualifiedIdentity {
         identity,
         associated_voter_identity: None,

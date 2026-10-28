@@ -616,6 +616,54 @@ fn a_foreign_same_contact_save_does_not_settle_the_hubs_note() {
     });
 }
 
+/// Another screen's write for the same contact succeeds while the hub is
+/// hidden. AppState passes it to the hub, so the note the hub saved earlier
+/// no longer covers the newer note the next list brings.
+#[test]
+fn a_foreign_same_contact_save_behind_another_screen_retires_the_hubs_note() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let mut app =
+            crate::support::mount_app(dash_evo_tool::ui::RootScreenType::RootScreenWalletsBalances);
+        let (mut hub, owner, own_context) = hub_saving_a_note(&app);
+        let updated = || BackendTaskSuccessResult::DashPayContactInfoUpdated {
+            identity: owner,
+            contact_id: Identifier::from(CONTACT),
+            published: true,
+        };
+        hub.state_mut()
+            .0
+            .display_backend_task_result(&own_context, updated());
+        hub.run_steps(2);
+        deliver(&mut hub, owner, bao(Some("Written elsewhere")));
+        hub.run_steps(2);
+        assert_eq!(
+            note_editor(&hub).value().as_deref(),
+            Some("Met at the meetup"),
+            "the hub's saved note covers a list read before it"
+        );
+
+        let foreign = foreign_write_context(&hub);
+        crate::identity_hub::loads::receive_task_results_behind_the_send_screen(
+            &runtime,
+            &mut app,
+            &mut hub,
+            vec![dash_evo_tool::app::TaskResult::Success {
+                context: foreign,
+                result: Box::new(updated()),
+            }],
+        );
+        deliver(&mut hub, owner, bao(Some("Written elsewhere")));
+        hub.run_steps(2);
+        assert_eq!(
+            note_editor(&hub).value().as_deref(),
+            Some("Written elsewhere"),
+            "another screen's newer write shows once the hub hears of it"
+        );
+    });
+}
+
 /// Likewise, another screen's failure for the same contact leaves the hub's
 /// queued note save running.
 #[test]

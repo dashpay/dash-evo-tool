@@ -38,6 +38,18 @@ use crate::ui::tokens::tokens_screen::{
 };
 
 impl TokensScreen {
+    /// The creator waits for its registration, under a progress banner.
+    pub(super) fn mark_token_registration_started(&mut self) {
+        self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Creating token...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.operation_banner = Some(handle);
+    }
+
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -1587,14 +1599,7 @@ impl TokensScreen {
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.token_creator_status = TokenCreatorStatus::WaitingForResult;
-                    let handle = MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Creating token...",
-                        MessageType::Info,
-                    );
-                    handle.with_elapsed();
-                    self.operation_banner = Some(handle);
+                    self.mark_token_registration_started();
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {

@@ -14,7 +14,7 @@ use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use dash_sdk::query_types::Documents;
 use futures::future::join_all;
-use platform_wallet::wallet::identity::crypto::{ContactInfoPrivateData, decode_private_data};
+use platform_wallet::wallet::identity::crypto::ContactInfoPrivateData;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -221,16 +221,17 @@ where
             );
             continue;
         };
-        // The DIP-15 codec platform-wallet writes with. A payload that is
-        // present but cannot be opened is not "no details": its hidden flag
-        // is unknown, so the contact stays hidden.
+        // Read with both the DIP-15 codec and the layout older versions of
+        // this client wrote. A payload that is present but cannot be opened
+        // is not "no details": its hidden flag is unknown, so the contact
+        // stays hidden.
         let private_data = match props.get("privateData") {
             None => Some(ContactInfoPrivateData::default()),
             Some(value) => value
                 .as_bytes_slice()
                 .ok()
                 .and_then(|encrypted| decrypt_private_data(encrypted, &private_data_key).ok())
-                .and_then(|plaintext| decode_private_data(&plaintext).ok()),
+                .and_then(|plaintext| super::contact_info::decode_contact_info_details(&plaintext)),
         };
         let details_unreadable = private_data.is_none();
         let private_data = private_data.unwrap_or(ContactInfoPrivateData {

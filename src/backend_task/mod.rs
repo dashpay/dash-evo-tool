@@ -1,4 +1,4 @@
-use crate::app::TaskResult;
+pub mod events;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
@@ -37,6 +37,7 @@ use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
+pub use events::{CacheDomain, CacheUpdate, TaskResult};
 use futures::future::join_all;
 use grovestark::GroveSTARKTask;
 use migration::MigrationTask;
@@ -474,6 +475,16 @@ impl BackendTaskContext {
         }
     }
 
+    /// The network a scheduled-vote sweep runs on, or `None` for every other
+    /// operation. The app starts sweeps itself, undispatched, so this is the
+    /// only record of the network their outcome belongs to.
+    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+        match self {
+            Self::ScheduledVoteSweep { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     /// The network a payment broadcast was dispatched on, or `None` for every
     /// other operation.
     pub(crate) fn payment_broadcast_network(&self) -> Option<Network> {
@@ -526,7 +537,10 @@ impl BackendTaskContext {
         }
     }
 
-    fn operation(&self) -> &Self {
+    /// The operation this context names, looking through its dispatch and
+    /// network wrappers. A screen that matches on what finished, rather than
+    /// on which of its own dispatches finished, compares this.
+    pub(crate) fn operation(&self) -> &Self {
         match self {
             Self::Dispatched { operation, .. }
             | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
@@ -814,7 +828,7 @@ impl From<&BackendTask> for BackendTaskContext {
 pub enum BackendTaskSuccessResult {
     // General results
     None,
-    Refresh,
+    CacheUpdated(CacheUpdate),
     NetworkDatabaseCleared {
         network: Network,
     },

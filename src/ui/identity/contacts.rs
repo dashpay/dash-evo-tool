@@ -256,20 +256,15 @@ pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsStat
                     }
                 }
             }));
-            let context = match kind {
-                // Its own dispatch, so an older load answering late is
-                // recognised as stale.
-                crate::model::dashpay::ContactsLoadKind::Contacts => {
-                    let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
-                    if let Some(dispatch_id) = context.dispatch_id() {
-                        state.record_contacts_load(dispatch_id);
-                    }
-                    context
-                }
-                crate::model::dashpay::ContactsLoadKind::Requests => {
-                    BackendTaskContext::for_task_on(&task, identity.network)
-                }
-            };
+            // Each load is the hub's own dispatch, so its outcome comes back
+            // to the hub even while another screen is in view.
+            let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
+            // A contact list answering after a newer one is recognised as stale.
+            if kind == crate::model::dashpay::ContactsLoadKind::Contacts
+                && let Some(dispatch_id) = context.dispatch_id()
+            {
+                state.record_contacts_load(dispatch_id);
+            }
             (task, context)
         })
         .collect();
@@ -1811,6 +1806,12 @@ mod tests {
                     if matches!(**task, DashPayTask::LoadContactRequests { .. })
             )),
             "the request lists must be loaded"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, context)| context.dispatch_id().is_some()),
+            "each load is the hub's own dispatch, so its outcome comes back to the hub"
         );
     }
 

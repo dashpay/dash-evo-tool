@@ -54,7 +54,7 @@ pub enum MigrationTask {
 
 impl AppContext {
     /// Dispatch a [`MigrationTask`]. Always returns
-    /// [`BackendTaskSuccessResult::Refresh`] on success so the UI can
+    /// [`BackendTaskSuccessResult::CacheUpdated`] on success so the UI can
     /// re-poll affected screens once the migration finishes. On
     /// failure, publishes [`MigrationState::Failed`] so the per-frame
     /// banner reconciliation in `AppState` can surface the error
@@ -69,20 +69,40 @@ impl AppContext {
         match task {
             MigrationTask::FinishUnwire => {
                 finish_unwire::run(self).await?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::All,
+                    },
+                ))
             }
             MigrationTask::AcknowledgeUnreadableAppData => {
                 finish_unwire::acknowledge_unreadable_app_data(self)?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::All,
+                    },
+                ))
             }
             MigrationTask::AcknowledgeUnreadableIdentities => {
                 finish_unwire::acknowledge_unreadable_identities(self)?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::All,
+                    },
+                ))
             }
             MigrationTask::AcknowledgeUnreadableData => {
                 finish_unwire::acknowledge_unreadable_app_data(self)?;
                 finish_unwire::acknowledge_unreadable_identities(self)?;
-                Ok(BackendTaskSuccessResult::Refresh)
+                Ok(BackendTaskSuccessResult::CacheUpdated(
+                    crate::backend_task::CacheUpdate {
+                        network: self.network,
+                        domain: crate::backend_task::CacheDomain::All,
+                    },
+                ))
             }
             MigrationTask::RestoreFromPreviousVersion => legacy_restore::run_task(self).await,
         }

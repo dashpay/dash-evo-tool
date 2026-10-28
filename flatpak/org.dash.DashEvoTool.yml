@@ -5,11 +5,10 @@
 
 app-id: org.dash.DashEvoTool
 runtime: org.freedesktop.Platform
-runtime-version: '25.08'
+runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
-  - org.freedesktop.Sdk.Extension.llvm21
+  - org.freedesktop.Sdk.Extension.llvm22
 
 command: dash-evo-tool
 
@@ -25,7 +24,7 @@ finish-args:
   - --device=dri
 
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
+  append-path: /usr/lib/sdk/llvm22/bin
   build-args:
     - --share=network
   env:
@@ -64,8 +63,16 @@ modules:
         sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
 
   # Module 3: Build dash-evo-tool from source
+  #
+  # Rust comes from rustup, not the SDK's rust-stable extension, so the
+  # toolchain is the one rust-toolchain.toml names, as in every other build.
+  # The extension trails Rust releases and would block a toolchain bump.
   - name: dash-evo-tool
     buildsystem: simple
+    build-options:
+      prepend-path: /run/build/dash-evo-tool/cargo/bin
+      env:
+        RUSTUP_HOME: /run/build/dash-evo-tool/rustup
     sources:
       - type: dir
         path: ..
@@ -74,7 +81,23 @@ modules:
           - build-dir
           - flatpak-repo
           - target
+      - type: file
+        only-arches:
+          - x86_64
+        dest-filename: rustup-init
+        url: https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
+        sha256: 5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
+      - type: file
+        only-arches:
+          - aarch64
+        dest-filename: rustup-init
+        url: https://static.rust-lang.org/rustup/archive/1.29.2/aarch64-unknown-linux-gnu/rustup-init
+        sha256: a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
     build-commands:
+      - chmod 755 rustup-init
+      - ./rustup-init -y --no-modify-path --profile minimal --default-toolchain none
+      # With no toolchain argument, rustup installs the one rust-toolchain.toml names.
+      - rustup toolchain install --no-self-update
       - cargo build --release --locked
       - install -Dm755 target/release/dash-evo-tool /app/bin/dash-evo-tool
       - install -Dm644 flatpak/org.dash.DashEvoTool.desktop /app/share/applications/org.dash.DashEvoTool.desktop

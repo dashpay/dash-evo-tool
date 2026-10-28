@@ -899,7 +899,7 @@ async fn tc_045_detect_incoming_contact_payment() {
     assert!(
         matches!(
             result,
-            BackendTaskSuccessResult::Refresh | BackendTaskSuccessResult::None
+            BackendTaskSuccessResult::CacheUpdated(_) | BackendTaskSuccessResult::None
         ),
         "TC-045: detection returns Refresh on a match or None on a miss, got: {:?}",
         result

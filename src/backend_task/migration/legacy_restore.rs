@@ -497,7 +497,7 @@ mod tests {
     }
 
     async fn wire_backend(ctx: &Arc<AppContext>) {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
         ctx.ensure_wallet_backend(sender)
             .await

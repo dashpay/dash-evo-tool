@@ -203,8 +203,8 @@ use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{TaskError, WalletTransactionHistoryError};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;

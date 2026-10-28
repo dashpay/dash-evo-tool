@@ -164,6 +164,41 @@ fn layout_token_info(app_context: &Arc<AppContext>) -> IdentityTokenInfo {
     }
 }
 
+/// Registers a fresh wallet, links `identity` to it at index 0 and waits until
+/// the wallet backend has loaded the wallet, so token actions are available
+/// for the identity.
+fn hold_in_a_loaded_wallet(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) {
+    use dash_evo_tool::model::wallet::Wallet;
+    use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+    use std::time::{Duration, Instant};
+    use zeroize::Zeroize;
+
+    let mut seed: [u8; 64] = rand::random();
+    let wallet = Wallet::new_from_seed(seed, app_context.network(), Some("Tokens".into()), None)
+        .expect("wallet fixture");
+    let (seed_hash, _) = app_context
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register wallet fixture");
+    seed.zeroize();
+    app_context
+        .insert_local_qualified_identity(identity, &Some((seed_hash, 0)))
+        .expect("link the identity to the wallet");
+
+    // Upstream registration runs in the background and is slow offline.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !app_context
+        .token_action_availability(&identity.identity.id())
+        .expect("availability")
+        .is_available()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the wallet holding the identity did not load"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Mint, burn, freeze, unfreeze, destroy-frozen-funds, pause and resume share
 /// one screen scaffold. Its "Advanced Options" checkbox must sit on the page
 /// heading's row and the first form step must follow right below — not be
@@ -181,6 +216,9 @@ fn token_action_forms_start_right_under_the_heading() {
         // so no private key material is needed.
         app_context.set_user_role(UserRole::Developer);
         let info = layout_token_info(&app_context);
+        // Token actions go through the wallet holding the identity; without
+        // one, the scaffold shows why instead of the form under test.
+        hold_in_a_loaded_wallet(&app_context, &info.identity);
 
         let screens = [
             ("Mint Tokens", ScreenType::MintTokensScreen(info.clone())),
@@ -327,6 +365,101 @@ fn simple_mode_shows_and_confirms_transferability() {
                 .next()
                 .is_some(),
             "the confirmation must state whether holders can send the token"
+        );
+    });
+}
+
+/// A contract holding one most-restrictive token at position 0, owned by
+/// `owner_id`.
+fn token_contract(owner_id: Identifier) -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::v1::DataContractV1;
+    let mut contract = DataContractV1 {
+        id: Identifier::from([0x7C; 32]),
+        version: 1,
+        owner_id,
+        document_types: BTreeMap::new(),
+        config: DataContractConfig::default_for_version(PlatformVersion::latest())
+            .expect("contract config"),
+        schema_defs: None,
+        groups: BTreeMap::new(),
+        tokens: BTreeMap::new(),
+        keywords: Vec::new(),
+        created_at: None,
+        updated_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        created_at_epoch: None,
+        updated_at_epoch: None,
+        description: None,
+    };
+    contract.tokens.insert(
+        0,
+        TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+    );
+    dash_sdk::platform::DataContract::V1(contract)
+}
+
+/// Token transactions go through the wallet that holds the identity, so for
+/// an identity no wallet holds the action screen explains why and offers no
+/// form to sign.
+#[test]
+fn token_action_screen_of_a_wallet_less_identity_offers_no_form() {
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::model::token::TOKEN_ACTIONS_NEED_WALLET;
+    use dash_evo_tool::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_evo_tool::ui::{RootScreenType, Screen};
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use egui_kittest::kittest::Queryable;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut harness = crate::support::mount_app(RootScreenType::RootScreenMyTokenBalances);
+        let ctx = harness.state().current_app_context().clone();
+
+        let identity_id = seed_token_identity(&ctx, 0xC3, "Token Gamma");
+        let identity = ctx
+            .load_local_qualified_identities()
+            .expect("load identities")
+            .into_iter()
+            .find(|qi| qi.identity.id() == identity_id)
+            .expect("the seeded identity");
+        let contract = token_contract(identity_id);
+        let token_config = contract.tokens()[&0].clone();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x7D; 32]),
+            token_alias: "Gamma".to_string(),
+            identity,
+            data_contract: QualifiedContract {
+                contract,
+                alias: None,
+            },
+            token_config,
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::MintTokensScreen(MintTokensScreen::new(info, &ctx)));
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness
+                .query_all_by_label_contains(TOKEN_ACTIONS_NEED_WALLET)
+                .count(),
+            1,
+            "the screen says why the identity cannot mint"
+        );
+        assert_eq!(
+            harness
+                .query_all_by_label_contains("Amount to mint")
+                .count(),
+            0,
+            "no mint form is offered"
         );
     });
 }

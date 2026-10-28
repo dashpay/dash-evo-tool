@@ -2,6 +2,7 @@ use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
+use crate::wallet_backend::{TokenActionCommon, TokenActor};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -241,6 +242,39 @@ impl AppContext {
     ///
     /// The platform does not report a settled fee for token ops, so the fee is
     /// always the pre-flight estimate (see [`FeeResult::estimated_only`]).
+    /// The wallet-held actor a token action of `identity` is sent through.
+    ///
+    /// # Errors
+    /// [`TaskError::TokenActionNeedsWallet`] when no wallet in this app holds
+    /// `identity`; the wallet-not-loaded errors when its wallet is not loaded.
+    async fn token_actor<'a>(
+        &self,
+        identity: &'a QualifiedIdentity,
+    ) -> Result<TokenActor<'a>, TaskError> {
+        let (seed_hash, _) = self
+            .stored_identity_wallet_link(&identity.identity.id())?
+            .ok_or(TaskError::TokenActionNeedsWallet)?;
+        self.wallet_backend()?
+            .token_actor(&seed_hash, identity)
+            .await
+    }
+
+    /// The arguments every token action shares, with the current signing
+    /// options.
+    fn token_action_common<'a>(
+        &self,
+        data_contract: Arc<DataContract>,
+        token_position: TokenContractPosition,
+        signing_key: &'a IdentityPublicKey,
+    ) -> TokenActionCommon<'a> {
+        TokenActionCommon {
+            data_contract,
+            token_position,
+            signing_key,
+            options: self.state_transition_options(),
+        }
+    }
+
     async fn execute_token_op<R>(
         &self,
         call: impl Future<Output = Result<R, TaskError>>,
@@ -249,7 +283,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let result = call.await?;
         post_broadcast(result);
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
+        let estimated_fee = self.fee_estimator().estimate_token_transition();
         Ok(make_success(FeeResult::estimated_only(estimated_fee)))
     }
 
@@ -340,7 +374,6 @@ impl AppContext {
                     amount,
                     recipient_id,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -366,7 +399,6 @@ impl AppContext {
                     token_position,
                     signing_key,
                     public_note,
-                    sdk,
                     sender,
                 )
                 .await
@@ -388,7 +420,6 @@ impl AppContext {
                     public_note,
                     amount,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -410,7 +441,6 @@ impl AppContext {
                     public_note,
                     frozen_identity,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -432,7 +462,6 @@ impl AppContext {
                     public_note,
                     freeze_identity,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -454,7 +483,6 @@ impl AppContext {
                     public_note,
                     unfreeze_identity,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -474,7 +502,6 @@ impl AppContext {
                     signing_key,
                     public_note,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -494,7 +521,6 @@ impl AppContext {
                     signing_key,
                     public_note,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -514,7 +540,6 @@ impl AppContext {
                     distribution_type,
                     signing_key,
                     public_note,
-                    sdk,
                 )
                 .await
             }
@@ -647,7 +672,6 @@ impl AppContext {
                     signing_key,
                     amount,
                     total_agreed_price,
-                    sdk,
                     sender,
                 )
                 .await
@@ -669,7 +693,6 @@ impl AppContext {
                     public_note,
                     token_pricing_schedule,
                     group_info,
-                    sdk,
                     sender,
                 )
                 .await
@@ -937,5 +960,357 @@ mod tests {
             .await
             .expect("the managed request must keep running")
             .expect("the managed request must report completion");
+    }
+}
+
+#[cfg(test)]
+mod token_action_routing_tests {
+    use super::*;
+    use crate::backend_task::error::TokenOperationKind;
+    use crate::context::test_support::{
+        mock_sdk_for, test_app_context, user_identity_with_signing_key,
+    };
+    use crate::model::wallet::WalletSeedHash;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::SecurityLevel;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    /// A contract holding one most-restrictive token at position 0.
+    fn token_contract(owner_id: Identifier) -> Arc<DataContract> {
+        let mut contract = DataContractV1 {
+            id: Identifier::random(),
+            version: 1,
+            owner_id,
+            document_types: BTreeMap::new(),
+            config: DataContractConfig::default_for_version(PlatformVersion::latest())
+                .expect("contract config"),
+            schema_defs: None,
+            groups: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+            keywords: Vec::new(),
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
+        };
+        contract.tokens.insert(
+            0,
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
+        );
+        Arc::new(DataContract::V1(contract))
+    }
+
+    /// An identity holding one CRITICAL authentication key, as token
+    /// transitions require.
+    fn actor_identity() -> (QualifiedIdentity, IdentityPublicKey) {
+        let mut identity =
+            user_identity_with_signing_key(Identifier::random(), Network::Testnet, true);
+        let mut key = identity.identity.public_keys()[&1].clone();
+        key.set_security_level(SecurityLevel::CRITICAL);
+        identity.identity.add_public_key(key.clone());
+        (identity, key)
+    }
+
+    /// Every token action `TokenTask` offers except the settings update (which
+    /// reads its contract from storage first), with the operation it is.
+    fn token_actions(
+        identity: &QualifiedIdentity,
+        key: &IdentityPublicKey,
+    ) -> Vec<(TokenOperationKind, TokenTask)> {
+        let contract = token_contract(identity.identity.id());
+        let other = Identifier::random();
+        let common = |identity: &QualifiedIdentity| {
+            (identity.clone(), Arc::clone(&contract), 0u16, key.clone())
+        };
+        let (actor, data_contract, token_position, signing_key) = common(identity);
+        vec![
+            (
+                TokenOperationKind::Mint,
+                TokenTask::MintTokens {
+                    sending_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    amount: 5,
+                    recipient_id: None,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Transfer,
+                TokenTask::TransferTokens {
+                    sending_identity: actor.clone(),
+                    recipient_id: other,
+                    amount: 5,
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                },
+            ),
+            (
+                TokenOperationKind::Burn,
+                TokenTask::BurnTokens {
+                    owner_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    amount: 5,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::DestroyFrozenFunds,
+                TokenTask::DestroyFrozenFunds {
+                    actor_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    frozen_identity: other,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Freeze,
+                TokenTask::FreezeTokens {
+                    actor_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    freeze_identity: other,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Unfreeze,
+                TokenTask::UnfreezeTokens {
+                    actor_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    unfreeze_identity: other,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Pause,
+                TokenTask::PauseTokens {
+                    actor_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Resume,
+                TokenTask::ResumeTokens {
+                    actor_identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                    group_info: None,
+                },
+            ),
+            (
+                TokenOperationKind::Claim,
+                TokenTask::ClaimTokens {
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    actor_identity: actor.clone(),
+                    distribution_type: TokenDistributionType::PreProgrammed,
+                    signing_key: signing_key.clone(),
+                    public_note: None,
+                },
+            ),
+            (
+                TokenOperationKind::Purchase,
+                TokenTask::PurchaseTokens {
+                    identity: actor.clone(),
+                    data_contract: Arc::clone(&data_contract),
+                    token_position,
+                    signing_key: signing_key.clone(),
+                    amount: 5,
+                    total_agreed_price: 500,
+                },
+            ),
+            (
+                TokenOperationKind::SetPrice,
+                TokenTask::SetDirectPurchasePrice {
+                    identity: actor,
+                    data_contract,
+                    token_position,
+                    signing_key,
+                    token_pricing_schedule: Some(TokenPricingSchedule::SinglePrice(100)),
+                    public_note: None,
+                    group_info: None,
+                },
+            ),
+        ]
+    }
+
+    /// A context whose SDK is a mock with no expectations, so any request that
+    /// reaches it fails, and whose wallet backend is wired.
+    async fn offline_context(
+        dir: &std::path::Path,
+    ) -> (
+        Arc<AppContext>,
+        SenderAsync<TaskResult>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+    ) {
+        let ctx = test_app_context(dir);
+        ctx.sdk.store(Arc::new(mock_sdk_for(&ctx)));
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wire the wallet backend offline");
+        (ctx, sender, rx)
+    }
+
+    /// Register an HD wallet with the upstream manager and return its hash.
+    async fn registered_wallet(ctx: &AppContext, seed_byte: u8) -> WalletSeedHash {
+        let seed = [seed_byte; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register the wallet upstream");
+        seed_hash
+    }
+
+    /// Token actions go through the wallet that holds the identity. With no
+    /// such wallet they are refused before anything is signed or sent, even
+    /// while another wallet is loaded: its handle is never borrowed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_actions_of_an_identity_no_wallet_holds_are_refused_before_sending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender, _rx) = offline_context(dir.path()).await;
+        registered_wallet(&ctx, 0x2C).await;
+        let (identity, key) = actor_identity();
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store the wallet-less identity");
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .expect("availability"),
+            crate::model::token::TokenActionAvailability::NeedsWallet
+        );
+
+        let sdk = ctx.sdk.load_full();
+        for (kind, task) in token_actions(&identity, &key) {
+            let err = ctx
+                .run_token_task(task, &sdk, sender.clone())
+                .await
+                .expect_err("a wallet-less identity cannot act");
+            assert!(
+                matches!(err, TaskError::TokenActionNeedsWallet),
+                "{kind:?}: {err:?}"
+            );
+        }
+    }
+
+    /// Each token action of a wallet-held identity runs through upstream's
+    /// token API on the wallet backend: the mock SDK's failure comes back
+    /// labelled with that action's operation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_actions_of_a_wallet_held_identity_go_through_platform_wallet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender, _rx) = offline_context(dir.path()).await;
+        let seed_hash = registered_wallet(&ctx, 0x3D).await;
+        let (identity, key) = actor_identity();
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("store the wallet-held identity");
+        assert!(
+            ctx.token_action_availability(&identity.identity.id())
+                .expect("availability")
+                .is_available()
+        );
+
+        let sdk = ctx.sdk.load_full();
+        for (kind, task) in token_actions(&identity, &key) {
+            let err = ctx
+                .run_token_task(task, &sdk, sender.clone())
+                .await
+                .expect_err("the mock SDK answers nothing");
+            assert!(
+                matches!(
+                    err,
+                    TaskError::TokenOperationFailed { operation, .. }
+                        | TaskError::TokenOperationRejected { operation, .. }
+                        if operation == kind
+                ),
+                "{kind:?}: {err:?}"
+            );
+        }
+    }
+
+    /// A completed token action reports the same fee estimate its
+    /// confirmation screens show (`estimate_token_transition`).
+    #[tokio::test]
+    async fn token_action_reports_the_fee_its_screens_show() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let result = ctx
+            .execute_token_op(
+                async { Ok::<_, TaskError>(()) },
+                |()| {},
+                BackendTaskSuccessResult::MintedTokens,
+            )
+            .await
+            .expect("a successful action");
+        let BackendTaskSuccessResult::MintedTokens(fee) = result else {
+            panic!("got {result:?}");
+        };
+        assert_eq!(
+            fee,
+            FeeResult::estimated_only(ctx.fee_estimator().estimate_token_transition())
+        );
+    }
+
+    /// An identity whose wallet is known but not loaded waits for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_actions_wait_for_the_identitys_wallet_to_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender, _rx) = offline_context(dir.path()).await;
+        let (identity, key) = actor_identity();
+        let unloaded: WalletSeedHash = [0x4E; 32];
+        ctx.insert_local_qualified_identity(&identity, &Some((unloaded, 0)))
+            .expect("store the identity of an unloaded wallet");
+        assert_eq!(
+            ctx.token_action_availability(&identity.identity.id())
+                .expect("availability"),
+            crate::model::token::TokenActionAvailability::WalletNotOpen
+        );
+
+        let sdk = ctx.sdk.load_full();
+        let (_, task) = token_actions(&identity, &key).remove(0);
+        let err = ctx
+            .run_token_task(task, &sdk, sender)
+            .await
+            .expect_err("the wallet is not loaded");
+        assert!(
+            matches!(
+                err,
+                TaskError::WalletNotLoaded { .. } | TaskError::WalletLockedNotLoaded { .. }
+            ),
+            "{err:?}"
+        );
     }
 }

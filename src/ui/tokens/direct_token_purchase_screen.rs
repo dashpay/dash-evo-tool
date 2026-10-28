@@ -52,6 +52,7 @@ pub enum PurchaseTokensStatus {
 /// A UI Screen for purchasing tokens from an existing token contract
 pub struct PurchaseTokenScreen {
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
 
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
@@ -99,6 +100,10 @@ impl PurchaseTokenScreen {
                     None
                 });
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info,
             selected_key: possible_key,
@@ -109,6 +114,7 @@ impl PurchaseTokenScreen {
             calculated_price_credits: None,
             pricing_fetch_attempted: false,
             status: PurchaseTokensStatus::NotStarted,
+            token_action_availability,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -388,6 +394,10 @@ impl ScreenLike for PurchaseTokenScreen {
     }
 
     fn refresh(&mut self) {
+        self.token_action_availability = super::load_token_action_availability(
+            &self.app_context,
+            &self.identity_token_info.identity.identity.id(),
+        );
         // If you need to reload local identity data or re-check keys:
         if let Ok(all_identities) = self.app_context.load_local_user_identities()
             && let Some(updated_identity) = all_identities
@@ -433,6 +443,10 @@ impl ScreenLike for PurchaseTokenScreen {
 
             ui.heading("Purchase Tokens");
             ui.add_space(10.0);
+
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {

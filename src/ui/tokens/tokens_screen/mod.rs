@@ -64,6 +64,7 @@ use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::token::TokenActionAvailability;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -1061,6 +1062,8 @@ pub struct TokensScreen {
     pub tokens_subscreen: TokensSubscreen,
     all_known_tokens: IndexMap<Identifier, TokenInfoWithDataContract>,
     identities: IndexMap<Identifier, QualifiedIdentity>,
+    /// Whether each identity in `identities` can send token transactions.
+    token_action_availability: BTreeMap<Identifier, TokenActionAvailability>,
     my_tokens: IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions>,
     pub selected_token: Option<Identifier>,
     token_pricing_data: IndexMap<
@@ -1418,6 +1421,22 @@ fn my_tokens(
         .collect()
 }
 
+/// Whether each of `identities` can send token transactions.
+fn token_action_availability(
+    app_context: &AppContext,
+    identities: &IndexMap<Identifier, QualifiedIdentity>,
+) -> BTreeMap<Identifier, TokenActionAvailability> {
+    identities
+        .keys()
+        .map(|id| {
+            (
+                *id,
+                crate::ui::tokens::load_token_action_availability(app_context, id),
+            )
+        })
+        .collect()
+}
+
 impl TokensScreen {
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let identities = app_context
@@ -1460,9 +1479,11 @@ impl TokensScreen {
             load_formula_image(LINEAR_FORMULA_PNG),
         );
 
+        let token_action_availability = token_action_availability(app_context, &identities);
         let mut screen = Self {
             app_context: app_context.clone(),
             identities,
+            token_action_availability,
             all_known_tokens,
             my_tokens,
             selected_token: None,
@@ -2666,6 +2687,8 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        self.token_action_availability =
+            token_action_availability(&self.app_context, &self.identities);
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice

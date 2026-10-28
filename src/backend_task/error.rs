@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::request_type::RequestType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -141,6 +142,64 @@ impl TokenOperationKind {
             }
             Self::Unrecognized { .. } => {
                 "The token operation did not complete. Check your connection and try again."
+            }
+        }
+    }
+
+    /// The user-facing sentence for Platform refusing this operation.
+    fn rejection_message(self) -> &'static str {
+        match self {
+            Self::Claim => {
+                "The platform did not accept this token claim. Check that this identity has \
+                 rewards to claim, then try again."
+            }
+            Self::Mint => {
+                "The platform did not accept this mint. Check the amount and that this identity is \
+                 allowed to mint this token, then try again."
+            }
+            Self::Burn => {
+                "The platform did not accept this burn. Check the amount against your balance and \
+                 that this identity is allowed to burn this token, then try again."
+            }
+            Self::Transfer => {
+                "The platform did not accept this token transfer. Check the recipient and the \
+                 amount against your balance, then try again."
+            }
+            Self::Freeze => {
+                "The platform did not accept this freeze. Check the identity to freeze and that \
+                 this identity is allowed to freeze this token, then try again."
+            }
+            Self::Unfreeze => {
+                "The platform did not accept this unfreeze. Check that the identity's tokens are \
+                 frozen and that this identity is allowed to unfreeze them, then try again."
+            }
+            Self::DestroyFrozenFunds => {
+                "The platform did not accept destroying the frozen tokens. Check that the \
+                 identity's tokens are frozen and that this identity is allowed to destroy them, \
+                 then try again."
+            }
+            Self::Pause => {
+                "The platform did not accept pausing this token. Check that the token is active \
+                 and that this identity is allowed to pause it, then try again."
+            }
+            Self::Resume => {
+                "The platform did not accept resuming this token. Check that the token is paused \
+                 and that this identity is allowed to resume it, then try again."
+            }
+            Self::SetPrice => {
+                "The platform did not accept the new token price. Check the price and that this \
+                 identity is allowed to set it, then try again."
+            }
+            Self::Purchase => {
+                "The platform did not accept this token purchase. Check the current price, the \
+                 amount and your credit balance, then try again."
+            }
+            Self::ConfigUpdate => {
+                "The platform did not accept this token settings change. Check the new value and \
+                 that this identity is allowed to change it, then try again."
+            }
+            Self::Unrecognized { .. } => {
+                "The platform did not accept this token action. Check your input, then try again."
             }
         }
     }
@@ -2746,12 +2805,25 @@ pub enum TaskError {
     )]
     NonTransferableTokenNotSupported,
 
-    /// A token operation run by the wallet runtime failed for a reason the
-    /// SDK error classification has no specific variant for. Built by
-    /// [`TaskError::from_token_operation_failure`], which prefers the specific
-    /// variant whenever there is one.
+    /// A token operation failed for a reason the SDK error classification has
+    /// no specific variant for. Built by [`TaskError::from_token_operation`],
+    /// which prefers the specific variant whenever there is one.
     #[error("{}", operation.failure_message())]
     TokenOperationFailed {
+        operation: TokenOperationKind,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A token action was requested for an identity no wallet in this app
+    /// holds; token transactions go through the identity's own wallet.
+    #[error("{}", crate::model::token::TOKEN_ACTIONS_NEED_WALLET)]
+    TokenActionNeedsWallet,
+
+    /// Platform refused a token operation for a reason with no dedicated
+    /// variant. Built by [`TaskError::from_token_operation`].
+    #[error("{}", operation.rejection_message())]
+    TokenOperationRejected {
         operation: TokenOperationKind,
         #[source]
         source_error: Box<SdkError>,
@@ -4183,21 +4255,58 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
-    /// The error for a token operation the wallet runtime reported as failed
-    /// (`PlatformWalletError::TokenOperationFailed`).
+    /// The error for a token operation of `operation` that failed with `source`.
     ///
-    /// The SDK source is classified exactly like any other SDK error, so a
-    /// rejection with a specific meaning (insufficient balance, a claim already
-    /// taken, …) keeps its specific message. Only an otherwise unclassified
-    /// failure becomes [`TaskError::TokenOperationFailed`], which at least names
-    /// the operation.
-    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
-        match TaskError::from(source) {
+    /// The source is classified like any broadcast error, so a proof failure is
+    /// logged and a rejection with a specific meaning (insufficient balance, a
+    /// claim already taken, …) keeps its specific message. Both generic
+    /// fallbacks keep the operation: an unclassified failure becomes
+    /// [`TaskError::TokenOperationFailed`], an unclassified Platform refusal
+    /// [`TaskError::TokenOperationRejected`].
+    pub fn from_token_operation(operation: TokenOperationKind, source: SdkError) -> Self {
+        match TaskError::from_broadcast_sdk_error(source, RequestType::BroadcastStateTransition) {
             TaskError::SdkError { source_error } => TaskError::TokenOperationFailed {
-                operation: TokenOperationKind::from_upstream_label(operation),
+                operation,
+                source_error,
+            },
+            TaskError::PlatformRejected { source_error } => TaskError::TokenOperationRejected {
+                operation,
                 source_error,
             },
             classified => classified,
+        }
+    }
+
+    /// [`Self::from_token_operation`] for a failure the wallet runtime reported
+    /// with its operation label (`PlatformWalletError::TokenOperationFailed`).
+    pub fn from_token_operation_failure(operation: &'static str, source: SdkError) -> Self {
+        Self::from_token_operation(TokenOperationKind::from_upstream_label(operation), source)
+    }
+
+    /// Classify an SDK error from a request to Platform, logging a failed
+    /// Drive proof check (with its proof size and block) before reporting it
+    /// as [`TaskError::ProofError`].
+    pub(crate) fn from_broadcast_sdk_error(error: SdkError, request_type: RequestType) -> Self {
+        match error {
+            SdkError::DriveProofError(proof_error, proof_bytes, block_info) => {
+                tracing::error!(
+                    target: "proof_log",
+                    request_type = ?request_type,
+                    height = block_info.height,
+                    time_ms = block_info.time_ms,
+                    proof_bytes_len = proof_bytes.len(),
+                    %proof_error,
+                    "drive proof verification failed",
+                );
+                TaskError::ProofError {
+                    source_error: Box::new(SdkError::DriveProofError(
+                        proof_error,
+                        proof_bytes,
+                        block_info,
+                    )),
+                }
+            }
+            error => TaskError::from(error),
         }
     }
 }
@@ -7541,6 +7650,146 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    const ALL_TOKEN_OPERATION_KINDS: [TokenOperationKind; 13] = [
+        TokenOperationKind::Claim,
+        TokenOperationKind::Mint,
+        TokenOperationKind::Burn,
+        TokenOperationKind::Transfer,
+        TokenOperationKind::Freeze,
+        TokenOperationKind::Unfreeze,
+        TokenOperationKind::DestroyFrozenFunds,
+        TokenOperationKind::Pause,
+        TokenOperationKind::Resume,
+        TokenOperationKind::SetPrice,
+        TokenOperationKind::Purchase,
+        TokenOperationKind::ConfigUpdate,
+        TokenOperationKind::Unrecognized { label: "new" },
+    ];
+
+    /// A broadcast rejection whose consensus cause has no dedicated variant.
+    fn unmapped_token_rejection() -> SdkError {
+        use dash_sdk::dpp::consensus::basic::UnsupportedVersionError;
+        SdkError::StateTransitionBroadcastError(dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "unsupported version".to_string(),
+            cause: Some(ConsensusError::from(UnsupportedVersionError::new(1, 2, 3))),
+        })
+    }
+
+    /// Platform refusing a token action for a reason with no dedicated
+    /// message still names the action, with rejection (not connection) advice.
+    #[test]
+    fn token_operation_rejection_without_a_specific_cause_names_the_operation() {
+        assert!(matches!(
+            TaskError::from(unmapped_token_rejection()),
+            TaskError::PlatformRejected { .. }
+        ));
+
+        let err = TaskError::from_token_operation_failure("mint", unmapped_token_rejection());
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenOperationRejected {
+                    operation: TokenOperationKind::Mint,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "The platform did not accept this mint. Check the amount and that this identity is \
+             allowed to mint this token, then try again."
+        );
+    }
+
+    /// The typed entry point and the upstream-label one agree for every
+    /// operation, on both generic fallbacks.
+    #[test]
+    fn token_operation_kind_survives_both_generic_fallbacks() {
+        for kind in ALL_TOKEN_OPERATION_KINDS {
+            let failed =
+                TaskError::from_token_operation(kind, SdkError::Generic("boom".to_string()));
+            assert!(
+                matches!(failed, TaskError::TokenOperationFailed { operation, .. } if operation == kind),
+                "{kind:?}: {failed:?}"
+            );
+            let rejected = TaskError::from_token_operation(kind, unmapped_token_rejection());
+            assert!(
+                matches!(rejected, TaskError::TokenOperationRejected { operation, .. } if operation == kind),
+                "{kind:?}: {rejected:?}"
+            );
+        }
+    }
+
+    /// Each operation has its own complete sentence per outcome, so the
+    /// banner never reads the same for a rejection and a lost connection.
+    #[test]
+    fn token_operation_messages_are_distinct_sentences() {
+        let mut seen = std::collections::BTreeSet::new();
+        for kind in ALL_TOKEN_OPERATION_KINDS {
+            for message in [kind.failure_message(), kind.rejection_message()] {
+                assert!(message.ends_with('.'), "{message}");
+                assert!(seen.insert(message), "repeated: {message}");
+            }
+        }
+    }
+
+    /// A failed proof check is logged and reported as unverified, not as a
+    /// failed operation the user might retry and pay for twice.
+    #[test]
+    fn token_operation_proof_failure_stays_a_proof_error() {
+        use dash_sdk::drive::error::proof::ProofError;
+        let err = TaskError::from_token_operation(
+            TokenOperationKind::Transfer,
+            SdkError::DriveProofError(
+                ProofError::CorruptedProof("bad".to_string()),
+                Vec::new(),
+                dash_sdk::dpp::block::block_info::BlockInfo::default(),
+            ),
+        );
+        assert!(matches!(err, TaskError::ProofError { .. }), "got {err:?}");
+    }
+
+    /// Dedicated outcomes keep their own message: an unconfirmed broadcast
+    /// and a refused once-per-identity claim are not folded into the
+    /// operation's generic sentence.
+    #[test]
+    fn token_operation_keeps_dedicated_outcomes() {
+        let unconfirmed = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 0,
+                message: "no result".to_string(),
+                cause: None,
+            },
+        );
+        let err = TaskError::from_token_operation(TokenOperationKind::Burn, unconfirmed);
+        assert!(
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "got {err:?}"
+        );
+
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let claimed = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(ConsensusError::from(
+                    TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                        Identifier::random(),
+                        Identifier::random(),
+                        1,
+                    ),
+                )),
+            },
+        );
+        let err = TaskError::from_token_operation(TokenOperationKind::Claim, claimed);
+        assert!(
+            matches!(err, TaskError::TokenOncePerIdentityAlreadyClaimed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

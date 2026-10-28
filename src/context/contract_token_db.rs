@@ -1,6 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
+use crate::model::token::TokenActionAvailability;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -143,6 +144,26 @@ fn token_err(source: KvAdapterError) -> TaskError {
 }
 
 impl AppContext {
+    /// Whether `identity_id` can send token transactions. They go through the
+    /// wallet that holds it (its DET wallet link), which must be loaded.
+    ///
+    /// # Errors
+    /// Fails when the identity record cannot be read.
+    pub fn token_action_availability(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<TokenActionAvailability, TaskError> {
+        let linked_wallet_open =
+            self.stored_identity_wallet_link(identity_id)?
+                .map(|(seed_hash, _)| {
+                    self.wallet_backend()
+                        .is_ok_and(|backend| backend.is_wallet_registered(&seed_hash))
+                });
+        Ok(TokenActionAvailability::from_wallet_link(
+            linked_wallet_open,
+        ))
+    }
+
     /// Retrieves all user-registered contracts from the per-network k/v
     /// store, prepended with the system contracts (DPNS, token history,
     /// withdrawals, keyword search, DashPay).

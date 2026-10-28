@@ -54,6 +54,7 @@ pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     pub change_item: TokenConfigurationChangeItem,
     update_text: String,
     text_input_error: String,
@@ -103,9 +104,14 @@ impl UpdateTokenConfigScreen {
                 .or_show_error(app_context.egui_ctx())
                 .unwrap_or(None);
 
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
         Self {
             identity_token_info: identity_token_info.clone(),
             update_status: UpdateTokenConfigStatus::NotUpdating,
+            token_action_availability,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
             update_text: "".to_string(),
@@ -923,6 +929,10 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
                 ui.heading("Update Token Configuration");
                 ui.add_space(10.0);
+
+            if super::show_token_actions_unavailable(ui, self.token_action_availability) {
+                return;
+            }
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {

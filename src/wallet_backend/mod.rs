@@ -63,6 +63,7 @@ pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
 mod token_balance;
+mod tokens;
 mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_context;
@@ -95,6 +96,7 @@ pub use secret_prompt::{
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 pub use secret_seam::SecretSeam;
+pub(crate) use tokens::{TokenActionCommon, TokenActor};
 
 use coordinator_gate::CoordinatorGate;
 use identity_ops::Funding;

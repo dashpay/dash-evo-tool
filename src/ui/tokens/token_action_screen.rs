@@ -141,6 +141,7 @@ pub struct TokenActionCommon {
     wallet_open_attempted: bool,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    token_action_availability: crate::model::token::TokenActionAvailability,
     app_context: Arc<AppContext>,
 }
 
@@ -197,6 +198,10 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 });
 
         let action = A::new(&identity_token_info, app_context);
+        let token_action_availability = super::load_token_action_availability(
+            app_context,
+            &identity_token_info.identity.identity.id(),
+        );
 
         Self {
             common: TokenActionCommon {
@@ -214,6 +219,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
                 wallet_open_attempted: false,
                 completed_fee_result: None,
                 refresh_banner: None,
+                token_action_availability,
                 app_context: app_context.clone(),
             },
             action,
@@ -324,7 +330,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
             .common
             .app_context
             .fee_estimator()
-            .estimate_document_batch(1);
+            .estimate_token_transition();
         let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
@@ -423,6 +429,10 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
     }
 
     fn refresh(&mut self) {
+        self.common.token_action_availability = super::load_token_action_availability(
+            &self.common.app_context,
+            &self.common.identity_token_info.identity.identity.id(),
+        );
         if let Ok(all) = self.common.app_context.load_local_user_identities()
             && let Some(updated) = all.into_iter().find(|id| {
                 id.identity.id() == self.common.identity_token_info.identity.identity.id()
@@ -464,6 +474,20 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         let central_panel_action = island_central_panel(ui, |ui| {
             if self.common.status == TokenActionStatus::Complete {
                 return self.show_success_screen(ui);
+            }
+
+            // An identity no wallet in this app holds cannot send token
+            // transactions: explain that under the heading instead of the form.
+            if self
+                .common
+                .token_action_availability
+                .unavailable_reason()
+                .is_some()
+            {
+                ui.heading(A::PAGE_HEADING);
+                ui.add_space(10.0);
+                super::show_token_actions_unavailable(ui, self.common.token_action_availability);
+                return AppAction::None;
             }
 
             let identity = &self.common.identity_token_info.identity;

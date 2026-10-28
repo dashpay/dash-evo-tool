@@ -406,6 +406,39 @@ mod tests {
         staged.ctx.wallet_backend().unwrap().shutdown().await;
     }
 
+    /// Loading an identity back by name after the user unloaded it is a
+    /// deliberate load: the observed insert retires the unload marker, as
+    /// every other deliberate load does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_observed_insert_retires_the_unload_marker() {
+        let (staged, identity) = staged_with_balance(100).await;
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        let mut reloaded = identity.clone();
+        staged
+            .ctx
+            .insert_local_qualified_identity_observed(
+                &mut reloaded,
+                &None,
+                BalanceProvenance::ObservedAt(10),
+            )
+            .expect("load it back");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        assert!(
+            !staged
+                .ctx
+                .is_identity_unloaded(&kv, &staged.id.to_buffer())
+                .expect("read the marker"),
+            "an explicit load must retire the marker",
+        );
+        assert!(staged.ctx.is_identity_listed(&staged.id).expect("roster"));
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
     /// The first record stored for an identity keeps the height its balance
     /// was observed at, so an older observation cannot replace it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

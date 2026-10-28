@@ -722,8 +722,8 @@ mod tests {
     /// two keys Tier-2, and skips the wallet-derived (`Absent`) key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protect_normal_opt_in_seals_vault_keys_and_skips_wallet_derived() {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -792,8 +792,8 @@ mod tests {
     /// success.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protect_loaded_identity_with_resident_plaintext_fails_closed() {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;

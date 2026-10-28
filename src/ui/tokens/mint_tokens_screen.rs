@@ -64,6 +64,34 @@ impl MintAction {
         parse_identity_id(&self.recipient_identity_id).map(Some)
     }
 
+    /// The identity the new tokens go to: the entered recipient, or the
+    /// token's configured destination when the mint leaves it to the token.
+    fn resolved_recipient(&self, ctx: &TokenActionCtx) -> Option<Identifier> {
+        match self.recipient()? {
+            Some(recipient) => Some(recipient),
+            None => ctx
+                .info
+                .token_config
+                .distribution_rules()
+                .new_tokens_destination_identity()
+                .copied(),
+        }
+    }
+
+    /// What a group co-signer is told about where the proposed tokens go.
+    fn proposed_recipient_text(&self, ctx: &TokenActionCtx) -> String {
+        match self.resolved_recipient(ctx) {
+            Some(recipient) => format!(
+                "Recipient: {recipient}",
+                recipient = recipient.to_string(Encoding::Base58)
+            ),
+            None if self.recipient_identity_id.trim().is_empty() => {
+                "This proposal does not name a recipient.".to_string()
+            }
+            None => format!("Recipient: {}", self.recipient_identity_id),
+        }
+    }
+
     fn render_amount_input(&mut self, ui: &mut Ui, ctx: &TokenActionCtx) {
         let amount_input = self.amount_input.get_or_insert_with(|| {
             let token_amount = Amount::from_token(ctx.info, 0);
@@ -116,18 +144,10 @@ impl TokenAction for MintAction {
     }
 
     fn confirm_message(&self, ctx: &TokenActionCtx) -> String {
-        let default_destination = ctx
-            .info
-            .token_config
-            .distribution_rules()
-            .new_tokens_destination_identity()
-            .copied();
-        let recipient = match self.recipient() {
-            Some(None) => default_destination,
-            recipient => recipient.flatten(),
-        }
-        .map(|id| id.to_string(Encoding::Base58))
-        .unwrap_or_default();
+        let recipient = self
+            .resolved_recipient(ctx)
+            .map(|id| id.to_string(Encoding::Base58))
+            .unwrap_or_default();
         format!(
             "Are you sure you want to mint {} tokens to {}?",
             self.amount.clone().unwrap_or(Amount::new(0, 0)),
@@ -171,7 +191,7 @@ impl TokenAction for MintAction {
                 "You are signing an existing group Mint so you are not allowed to choose the recipient.",
             );
             ui.add_space(5.0);
-            ui.label(format!("Recipient: {}", self.recipient_identity_id));
+            ui.label(self.proposed_recipient_text(ctx));
         } else if distribution_rules.minting_allow_choosing_destination()
             || ctx.app_context.user_role().at_least(UserRole::Power)
         {
@@ -407,6 +427,45 @@ mod tests {
 
         assert!(action.inputs_ready());
         assert_eq!(built_recipient(&mut action, &ctx), Some(chosen));
+    }
+
+    /// A proposal that leaves the recipient to the token's default
+    /// destination shows the co-signer that destination, not an empty name.
+    #[test]
+    fn a_co_signer_sees_the_default_destination_of_a_proposal_without_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let destination = Identifier::from([5; 32]);
+        let info = token_info(&context, Some(destination), true);
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: &context,
+            is_group_signing: true,
+        };
+        let mut action = MintAction::new(&info, &context);
+        assert_eq!(
+            action.proposed_recipient_text(&ctx),
+            format!("Recipient: {}", destination.to_string(Encoding::Base58))
+        );
+
+        let proposed = Identifier::from([6; 32]);
+        action.recipient_identity_id = proposed.to_string(Encoding::Base58);
+        assert_eq!(
+            action.proposed_recipient_text(&ctx),
+            format!("Recipient: {}", proposed.to_string(Encoding::Base58))
+        );
+
+        let without_destination = token_info(&context, None, true);
+        let ctx = TokenActionCtx {
+            info: &without_destination,
+            app_context: &context,
+            is_group_signing: true,
+        };
+        let action = MintAction::new(&without_destination, &context);
+        assert_eq!(
+            action.proposed_recipient_text(&ctx),
+            "This proposal does not name a recipient."
+        );
     }
 
     /// Without a configured destination the recipient stays required.

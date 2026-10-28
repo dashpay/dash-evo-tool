@@ -15,7 +15,7 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Button, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
+use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contested_names::{DpnsVotingPreference, RelativeScheduleLabels};
 use crate::backend_task::error::TaskError;
@@ -2803,7 +2803,7 @@ impl ScreenLike for DPNSScreen {
         }
         self.rebuild_scheduled_vote_rows();
         self.rebuild_cards();
-        scheduled_vote_sweep_is_quiet(error)
+        super::task_feedback::is_quiet(error)
     }
 
     fn display_backend_task_result(

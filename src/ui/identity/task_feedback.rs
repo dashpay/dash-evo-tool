@@ -1,9 +1,32 @@
 //! User notifications for identity and DashPay task outcomes.
+use super::top_up_identity_screen::finish_top_up;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::ui::{
     MessageType,
     components::{BannerHandle, MessageBanner},
 };
+
+/// Settle what the identity domain tracks about the task behind `result`
+/// and tell the user what it needs to know. `watched` says the screen that
+/// sent the task is in view, so a top-up it ended needs no confirmation
+/// banner. Returns whether `result` ended a tracked top-up.
+pub(crate) fn on_success(
+    ctx: &egui::Context,
+    watched: bool,
+    context: &BackendTaskContext,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    let tracked_top_up = finish_top_up(ctx, context, true, watched);
+    clear_profile_saving_banner_after_success(ctx, context, result);
+    show(ctx, result);
+    tracked_top_up
+}
+
+/// Settle what the identity domain tracks about a task that failed.
+pub(crate) fn on_error(ctx: &egui::Context, context: &BackendTaskContext) {
+    finish_top_up(ctx, context, false, true);
+    clear_profile_saving_banner_after_error(ctx, context);
+}
 
 pub(crate) fn show(ctx: &egui::Context, result: &BackendTaskSuccessResult) -> Option<BannerHandle> {
     let (message, kind) = match result {

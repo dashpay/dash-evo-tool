@@ -1,5 +1,6 @@
 //! User feedback and cache effects of completed vote operations.
 use super::copy::{DPNS_ALL_VOTES_ALREADY_CAST, dpns_vote_feedback, scheduled_vote_clear_feedback};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskSuccessResult, CacheDomain, CacheUpdate};
 use crate::context::AppContext;
 use crate::ui::{MessageType, components::MessageBanner};
@@ -70,5 +71,51 @@ pub(crate) fn show(
                 .collect()
         }
         _ => Vec::new(),
+    }
+}
+
+/// Whether a scheduled-vote sweep failure is expected and goes unreported:
+/// the sweep found no voting identity on this device.
+pub(crate) fn is_quiet(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::ScheduledVoteSweepFailed { source, .. }
+            if matches!(source.as_ref(), TaskError::NoVotingIdentity { .. })
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_local_identity_sweep_errors_are_quiet() {
+        let missing_identity = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::NoVotingIdentity {
+                identity_id: "voter-id".to_string(),
+            }),
+        };
+        assert!(is_quiet(&missing_identity));
+
+        let unavailable_result = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::DpnsCurrentVoteUnavailable),
+        };
+        assert!(!is_quiet(&unavailable_result));
+
+        let nested_sweep = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::ScheduledVoteSweepFailed {
+                network: Network::Regtest,
+                source: Box::new(TaskError::NoVotingIdentity {
+                    identity_id: "voter-id".to_string(),
+                }),
+            }),
+        };
+        assert!(!is_quiet(&nested_sweep));
+        assert!(!is_quiet(&TaskError::NoVotingIdentity {
+            identity_id: "voter-id".to_string(),
+        }));
     }
 }

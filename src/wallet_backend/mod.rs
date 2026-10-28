@@ -56,6 +56,7 @@ pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
 mod shielded;
+mod shielded_max_transfer;
 mod sidecar;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
@@ -109,6 +110,10 @@ pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
 pub use payments::AssetLockMaxAmountQuote;
+pub(crate) use shielded::{MaxTransferAttempt, MaxTransferOperation};
+#[cfg(test)]
+pub(crate) use shielded_max_transfer::plant_unreadable_record as plant_unreadable_max_transfer_record;
+pub(crate) use shielded_max_transfer::{MaxTransferClaim, ShieldedMaxTransferRecords};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{
@@ -470,6 +475,10 @@ struct Inner {
     /// per-backend lock covers every writer. Held only for a synchronous
     /// KV read/write — never across an `.await`.
     auth_pubkey_cache_lock: std::sync::Mutex<()>,
+    /// Serialises claims and releases of this network's Core-to-shielded
+    /// "Max" transfer records (see [`ShieldedMaxTransferRecords`]). Held only
+    /// for a synchronous KV read/write — never across an `.await`.
+    shielded_max_transfer_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
@@ -719,6 +728,7 @@ impl WalletBackend {
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 auth_pubkey_cache_lock: std::sync::Mutex::new(()),
+                shielded_max_transfer_lock: std::sync::Mutex::new(()),
                 secret_store,
                 wallet_context,
                 app_kv,
@@ -2434,6 +2444,13 @@ impl WalletBackend {
             &self.inner.auth_pubkey_cache_lock,
             &self.inner.wallet_context,
         )
+    }
+
+    /// Records of unsettled Core-to-shielded "Max" transfers, one per wallet.
+    /// Backed by the cross-network app-level k/v store; see
+    /// [`ShieldedMaxTransferRecords`] for the key schema.
+    pub(crate) fn shielded_max_transfer_records(&self) -> ShieldedMaxTransferRecords<'_> {
+        ShieldedMaxTransferRecords::new(&self.inner.app_kv, &self.inner.shielded_max_transfer_lock)
     }
 
     /// View over the DET-owned avatar image cache. Backed by the

@@ -22,6 +22,7 @@ use crate::model::fee_estimation::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
+use crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferQuote;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use crate::ui::components::amount_input::AmountInput;
@@ -349,6 +350,13 @@ pub struct WalletSendScreen {
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
+    /// The amount "Max" filled in on the Core-to-shielded route. While the
+    /// amount still equals it, the send moves the whole balance minus fees
+    /// rather than this estimate; any other amount ends that.
+    shield_max_amount: Option<Amount>,
+    /// The quote a Max transfer waits on before the user confirms it, and the
+    /// wallet it is for.
+    max_quote: PendingRequest<WalletSeedHash>,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -364,6 +372,19 @@ pub struct WalletSendScreen {
 const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
 /// Refusal of Core or Platform funds paying someone else's private address.
 const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into your own private balance. To pay this private address, choose Shielded Balance as the source.";
+
+/// Caption under the amount while a Core-to-shielded send is a "Max" transfer.
+const SHIELD_MAX_CAPTION: &str = "Max moves your whole available balance. The fees are taken from it, so the exact amount is known once the transfer is built.";
+
+/// Whether a Core-to-shielded send moves the whole balance: Max was chosen on
+/// that route and the amount has not changed since.
+fn shield_max_drain_selected(
+    core_to_shielded: bool,
+    max_amount: Option<&Amount>,
+    amount: Option<&Amount>,
+) -> bool {
+    core_to_shielded && max_amount.is_some() && max_amount == amount
+}
 
 /// Merge the confirmation dialog's action into the frame action. The dialog
 /// consumes the click and clears itself, so a confirmed send is one-shot: it
@@ -413,6 +434,8 @@ impl WalletSendScreen {
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
+            shield_max_amount: None,
+            max_quote: PendingRequest::default(),
             flow: SendFlow::General,
             identity_flow: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -599,9 +622,17 @@ impl WalletSendScreen {
         self.selected_identity = None;
         self.amount = None;
         self.amount_input = None;
+        self.forget_max_selection();
         self.invalidate_address_input();
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
+    }
+
+    /// Drop the Max choice and any quote waiting for it. Max is bound to the
+    /// wallet and amount it was chosen for, never carried to another.
+    fn forget_max_selection(&mut self) {
+        self.shield_max_amount = None;
+        self.max_quote.clear();
     }
 
     fn reset_form(&mut self) {
@@ -610,6 +641,7 @@ impl WalletSendScreen {
         self.validated_destination = None;
         self.amount = None;
         self.amount_input = None;
+        self.forget_max_selection();
         self.selected_source = Some(SourceSelection::CoreWallet);
         self.selected_identity = None;
         self.advanced_source_type = AdvancedSourceType::Core;
@@ -853,6 +885,21 @@ impl WalletSendScreen {
             .unwrap_or(0)
     }
 
+    fn is_core_to_shielded(&self) -> bool {
+        matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+            && self.destination_kind() == Some(AddressKind::Shielded)
+    }
+
+    /// Whether the next send is a "Max" transfer from the Core wallet to the
+    /// shielded balance.
+    fn is_shield_max_drain(&self) -> bool {
+        shield_max_drain_selected(
+            self.is_core_to_shielded(),
+            self.shield_max_amount.as_ref(),
+            self.amount.as_ref(),
+        )
+    }
+
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
         let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
         self.asset_lock_balance
@@ -1023,6 +1070,15 @@ impl WalletSendScreen {
             .as_ref()
             .map(|v| v.to_address_string())
             .unwrap_or_default()
+    }
+
+    /// Whether the destination is the Shield flow's own-pool marker, which has
+    /// no address to show.
+    fn destination_is_own_pool_marker(&self) -> bool {
+        matches!(
+            &self.validated_destination,
+            Some(ValidatedAddress::Shielded(address)) if address.is_empty()
+        )
     }
 
     /// Whether the shielded destination is the paying wallet's own private
@@ -2018,6 +2074,15 @@ impl WalletSendScreen {
             Some(ValidatedAddress::Shielded(_))
         ) {
             return Err("Please enter a valid shielded address".to_string());
+        }
+
+        // Max moves everything minus fees; the backend sizes it once the
+        // funding is built, so no estimated amount is validated here. The
+        // drain's own quote comes first, for the user to confirm.
+        if self.is_shield_max_drain() {
+            return Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::QuoteShieldMaxFromCore { seed_hash },
+            )));
         }
 
         let amount_duffs = self
@@ -3198,6 +3263,12 @@ impl WalletSendScreen {
             return;
         }
 
+        let core_to_shielded = self.is_core_to_shielded();
+        let max_hint = if self.is_shield_max_drain() {
+            Some(SHIELD_MAX_CAPTION.to_string())
+        } else {
+            max_hint
+        };
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(12, 10))
@@ -3218,6 +3289,10 @@ impl WalletSendScreen {
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
+                if response.inner.max_clicked {
+                    self.shield_max_amount =
+                        core_to_shielded.then(|| self.amount.clone()).flatten();
+                }
             });
 
         // Show transaction type hint
@@ -3675,15 +3750,26 @@ impl WalletSendScreen {
         let fee_preview = self.current_fee_preview();
         let fee = Self::confirmation_fee_sentence(fee_preview.map(|preview| preview.fee_credits));
 
+        let own_pool = self.destination_is_own_pool_marker();
         if let Some(recipient_receives_credits) =
             fee_preview.and_then(|preview| preview.recipient_receives_credits)
         {
             let recipient_amount = format_credits_as_dash(recipient_receives_credits);
+            if own_pool {
+                return format!(
+                    "You are about to shield an entered amount of {amount} into your own shielded balance. The network fee will be deducted from it, so your shielded balance will grow by {recipient_amount}. {fee} Confirm this transaction only if the amount and fee are correct."
+                );
+            }
             return format!(
                 "You are about to send an entered amount of {amount} to {destination}. The network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. {fee} Confirm this transaction only if the destination, amount, and fee are correct."
             );
         }
 
+        if own_pool {
+            return format!(
+                "You are about to shield {amount} into your own shielded balance. {fee} Confirm this transaction only if the amount and fee are correct."
+            );
+        }
         format!(
             "You are about to send {amount} to {destination}. {fee} Confirm this transaction only if the destination, amount, and fee are correct."
         )
@@ -3749,6 +3835,79 @@ impl WalletSendScreen {
         )
     }
 
+    /// Validate the simple send and ask the user to confirm it. A Max
+    /// transfer is quoted first: the confirmation opens with the drain's own
+    /// figures once the quote arrives.
+    fn request_simple_send(&mut self) -> Result<AppAction, String> {
+        let send_action = self.validate_and_send()?;
+        if let AppAction::BackendTask(
+            task @ BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::QuoteShieldMaxFromCore { seed_hash },
+            ),
+        ) = send_action
+        {
+            return Ok(self.max_quote.dispatch_on_with(
+                task,
+                self.app_context.network(),
+                seed_hash,
+            ));
+        }
+        let message = self.simple_send_confirmation_message();
+        self.open_send_confirmation(send_action, message);
+        Ok(AppAction::None)
+    }
+
+    /// Open the confirmation of the Max transfer `context` quoted, unless the
+    /// form moved on since. Returns whether the result was that quote.
+    fn take_max_quote(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &crate::backend_task::BackendTaskSuccessResult,
+    ) -> bool {
+        let crate::backend_task::BackendTaskSuccessResult::ShieldedMaxTransferQuote {
+            seed_hash,
+            quote,
+        } = result
+        else {
+            return false;
+        };
+        let Some(quoted_for) = self.max_quote.settle(context) else {
+            return true;
+        };
+        if quoted_for == *seed_hash
+            && self.selected_wallet_seed_hash == Some(*seed_hash)
+            && self.is_shield_max_drain()
+        {
+            let message = self.shield_max_confirmation_message(quote);
+            self.open_send_confirmation(
+                AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldMaxFromCore {
+                        seed_hash: *seed_hash,
+                        confirmed_balance_duffs: quote.balance_duffs,
+                    },
+                )),
+                message,
+            );
+        }
+        true
+    }
+
+    fn shield_max_confirmation_message(&self, quote: &ShieldedMaxTransferQuote) -> String {
+        // "Spendable": CoinJoin and unconfirmed funds stay in the wallet.
+        let balance = format_duffs_as_dash(quote.balance_duffs);
+        let fees = format_credits_as_dash(quote.fee_credits);
+        let received = format_credits_as_dash(quote.recipient_credits);
+        if self.destination_is_own_pool_marker() {
+            return format!(
+                "You are about to move your spendable Core balance of about {balance} into your own shielded balance. Fees of about {fees} are taken from it, so your shielded balance will grow by about {received}. Confirm this transfer only if these amounts are what you expect."
+            );
+        }
+        let destination = self.destination_address_string();
+        format!(
+            "You are about to move your spendable Core balance of about {balance} to the shielded address {destination}. Fees of about {fees} are taken from it, so about {received} will arrive at that address. Confirm this transfer only if the destination is correct."
+        )
+    }
+
     fn open_send_confirmation(&mut self, action: AppAction, message: String) {
         self.send_confirmation = Some(PendingSendConfirmation {
             dialog: ConfirmationDialog::new("Confirm this send.", message)
@@ -3796,7 +3955,12 @@ impl WalletSendScreen {
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
         let source_ready =
             matches!(self.selected_source, Some(SourceSelection::Identity(_))) || wallet_open;
-        let can_send = source_ready && !is_sending && has_destination && has_amount && has_source;
+        let can_send = source_ready
+            && !is_sending
+            && !self.max_quote.is_pending()
+            && has_destination
+            && has_amount
+            && has_source;
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -3812,11 +3976,8 @@ impl WalletSendScreen {
             };
 
             if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
-                match self.validate_and_send() {
-                    Ok(send_action) => {
-                        let message = self.simple_send_confirmation_message();
-                        self.open_send_confirmation(send_action, message);
-                    }
+                match self.request_simple_send() {
+                    Ok(request) => action |= request,
                     Err(e) => {
                         MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         self.send_status = SendStatus::Error;
@@ -5126,6 +5287,9 @@ impl ScreenLike for WalletSendScreen {
         // this screen waits on its own send, such a result may refresh what
         // the form offers, but it neither completes that send nor ends its
         // progress banner.
+        if self.take_max_quote(context, &backend_task_success_result) {
+            return;
+        }
         if self.awaits_own_send() && !self.awaits_send(context) {
             self.refresh_form_inputs(&backend_task_success_result);
             return;
@@ -5146,6 +5310,8 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        // The global banner says why the quote failed; the form stays as is.
+        self.max_quote.settle(context);
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
             self.pending_send.clear();
@@ -6300,6 +6466,253 @@ mod tests {
             },
         ]);
         harness.step();
+    }
+
+    /// A Core-to-shielded send in Max mode, as the user leaves it after
+    /// clicking Max: the amount still equals the Max value.
+    fn shield_max_drain_screen() -> (WalletSendScreen, tempfile::TempDir, WalletSeedHash) {
+        let (mut screen, temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let max = Amount::dash_from_duffs(5_000_000);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(max.clone());
+        screen.shield_max_amount = Some(max);
+        assert!(screen.is_shield_max_drain());
+        (screen, temp_dir, seed_hash)
+    }
+
+    /// 5 DASH spent, 0.002 DASH in fees, 4.998 DASH shielded.
+    const QUOTE: ShieldedMaxTransferQuote = ShieldedMaxTransferQuote {
+        balance_duffs: 500_000_000,
+        fee_credits: 200_000_000,
+        recipient_credits: 499_800_000_000,
+    };
+
+    fn quote_result(seed_hash: WalletSeedHash) -> BackendTaskSuccessResult {
+        BackendTaskSuccessResult::ShieldedMaxTransferQuote {
+            seed_hash,
+            quote: QUOTE,
+        }
+    }
+
+    /// Ask for a Max send; returns the quote request's context.
+    fn request_max_quote(screen: &mut WalletSendScreen) -> BackendTaskContext {
+        let request = screen.request_simple_send();
+        let Ok(AppAction::BackendTaskWithContext { task, context }) = request else {
+            panic!("expected a quote request, got {request:?}");
+        };
+        assert!(matches!(
+            task,
+            BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::QuoteShieldMaxFromCore { .. }
+            )
+        ));
+        context
+    }
+
+    /// The form's Max figure covers fewer coins than the drain spends, so the
+    /// confirmation waits for the drain's own quote, shows its figures, and
+    /// binds the transfer to the balance the user saw.
+    #[test]
+    fn shield_max_send_is_confirmed_with_the_drain_quote() {
+        use crate::backend_task::shielded::ShieldedTask;
+        let (mut screen, _temp_dir, seed_hash) = shield_max_drain_screen();
+        let context = request_max_quote(&mut screen);
+        assert!(
+            screen.send_confirmation.is_none(),
+            "the confirmation opened with the form's estimate"
+        );
+
+        screen.display_backend_task_result(&context, quote_result(seed_hash));
+
+        let pending = screen
+            .send_confirmation
+            .as_ref()
+            .expect("the quote opens the confirmation");
+        assert_eq!(
+            *pending.action,
+            AppAction::BackendTask(BackendTask::ShieldedTask(ShieldedTask::ShieldMaxFromCore {
+                seed_hash,
+                confirmed_balance_duffs: 500_000_000,
+            }))
+        );
+        // The Shield flow's own-pool marker has no address to name.
+        assert_eq!(
+            pending.dialog.message_text(),
+            "You are about to move your spendable Core balance of about 5 DASH into your own shielded balance. Fees of about 0.002 DASH are taken from it, so your shielded balance will grow by about 4.998 DASH. Confirm this transfer only if these amounts are what you expect."
+        );
+    }
+
+    #[test]
+    fn shield_max_confirmation_names_a_typed_shielded_address() {
+        let (mut screen, _temp_dir, _seed_hash) = shield_max_drain_screen();
+        screen.validated_destination = Some(ValidatedAddress::Shielded(
+            "tdash1zexampleaddress".to_string(),
+        ));
+        assert_eq!(
+            screen.shield_max_confirmation_message(&QUOTE),
+            "You are about to move your spendable Core balance of about 5 DASH to the shielded address tdash1zexampleaddress. Fees of about 0.002 DASH are taken from it, so about 4.998 DASH will arrive at that address. Confirm this transfer only if the destination is correct."
+        );
+    }
+
+    /// An exact-amount shield into the own pool names no empty address either.
+    #[test]
+    fn an_exact_shield_into_the_own_pool_names_no_empty_address() {
+        let (mut screen, _temp_dir, _seed_hash) = shield_max_drain_screen();
+        screen.shield_max_amount = None;
+        screen.amount = Some(Amount::dash_from_duffs(1_000_000));
+        let fee = WalletSendScreen::confirmation_fee_sentence(
+            screen
+                .current_fee_preview()
+                .map(|preview| preview.fee_credits),
+        );
+        assert_eq!(
+            screen.simple_send_confirmation_message(),
+            format!(
+                "You are about to shield 0.01 DASH into your own shielded balance. {fee} Confirm this transaction only if the amount and fee are correct."
+            )
+        );
+    }
+
+    /// A quote that arrives after the amount was edited opens nothing: the
+    /// send is no longer a Max transfer.
+    #[test]
+    fn a_late_quote_after_an_edit_is_ignored() {
+        let (mut screen, _temp_dir, seed_hash) = shield_max_drain_screen();
+        let context = request_max_quote(&mut screen);
+        screen.amount = Some(Amount::dash_from_duffs(1_000));
+
+        screen.display_backend_task_result(&context, quote_result(seed_hash));
+
+        assert!(screen.send_confirmation.is_none());
+        assert!(!screen.max_quote.is_pending());
+    }
+
+    /// A quote for the wallet or network the form has left opens nothing,
+    /// even once Max is chosen again on the new one.
+    #[test]
+    fn a_late_quote_after_a_wallet_or_network_change_is_ignored() {
+        for network_switch in [false, true] {
+            let (mut screen, _temp_dir, seed_hash) = shield_max_drain_screen();
+            let context = request_max_quote(&mut screen);
+            let wallet = screen.selected_wallet.clone();
+            if network_switch {
+                screen.reset_for_network_switch();
+            } else {
+                screen.reset_form();
+            }
+            assert!(!screen.max_quote.is_pending());
+            // Max chosen again for the same figure on the form it returned to.
+            let max = Amount::dash_from_duffs(5_000_000);
+            screen.selected_wallet = wallet;
+            screen.selected_wallet_seed_hash = Some(seed_hash);
+            screen.selected_source = Some(SourceSelection::CoreWallet);
+            screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+            screen.amount = Some(max.clone());
+            screen.shield_max_amount = Some(max);
+
+            screen.display_backend_task_result(&context, quote_result(seed_hash));
+
+            assert!(
+                screen.send_confirmation.is_none(),
+                "a stale quote opened a confirmation (network switch: {network_switch})"
+            );
+        }
+    }
+
+    /// Max chosen for one wallet must not drain another one later.
+    #[test]
+    fn a_reset_form_forgets_the_max_selection() {
+        let (mut screen, _temp_dir, _seed_hash) = shield_max_drain_screen();
+        let max = screen.amount.clone();
+        screen.reset_form();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = max;
+        assert!(!screen.is_shield_max_drain());
+    }
+
+    #[test]
+    fn shield_max_drain_needs_the_route_and_the_untouched_max_amount() {
+        let max = Amount::dash_from_duffs(5_000);
+        let edited = Amount::dash_from_duffs(4_999);
+        assert!(shield_max_drain_selected(true, Some(&max), Some(&max)));
+        assert!(!shield_max_drain_selected(true, Some(&max), Some(&edited)));
+        assert!(!shield_max_drain_selected(true, Some(&max), None));
+        assert!(!shield_max_drain_selected(true, None, Some(&max)));
+        assert!(!shield_max_drain_selected(false, Some(&max), Some(&max)));
+    }
+
+    /// Max on Core-to-shielded moves the whole balance through the backend's
+    /// drain; typing a different amount afterwards goes back to an exact send.
+    #[test]
+    fn core_to_shielded_max_drains_until_the_amount_is_edited() {
+        const BUILDER_MAX_DUFFS: u64 = 10_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen.seed_asset_lock_max_amount_for_test(seed_hash, BUILDER_MAX_DUFFS);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+
+        assert!(harness.state().is_shield_max_drain());
+        assert!(
+            harness
+                .get_all_by_label(SHIELD_MAX_CAPTION)
+                .next()
+                .is_some(),
+            "the caption must say the amount is the whole balance minus fees"
+        );
+        let Ok(AppAction::BackendTask(task)) = harness.state_mut().send_core_to_shielded(seed_hash)
+        else {
+            panic!("Max must dispatch a backend task");
+        };
+        assert_eq!(
+            task,
+            BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::QuoteShieldMaxFromCore { seed_hash }
+            )
+        );
+
+        let input = harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .expect("amount input");
+        input.focus();
+        harness.run();
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .expect("amount input")
+            .type_text("1");
+        harness.run();
+
+        assert!(
+            !harness.state().is_shield_max_drain(),
+            "a typed amount must end the whole-balance transfer"
+        );
+        assert!(
+            !matches!(
+                harness.state_mut().send_core_to_shielded(seed_hash),
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::QuoteShieldMaxFromCore { .. },
+                )))
+            ),
+            "an edited amount must not drain the wallet"
+        );
     }
 
     #[test]

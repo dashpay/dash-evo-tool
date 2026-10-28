@@ -1272,6 +1272,18 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
+    /// What a "Max" transfer from the Core wallet would move, for the user to
+    /// confirm.
+    ShieldedMaxTransferQuote {
+        seed_hash: WalletSeedHash,
+        quote: crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferQuote,
+    },
+    /// Where the wallet's "Max" transfer from the Core wallet stands; `None`
+    /// when the wallet has none.
+    ShieldedMaxTransferStatus {
+        seed_hash: WalletSeedHash,
+        state: Option<crate::model::wallet::shielded_max_transfer::ShieldedMaxTransferState>,
+    },
 
     /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
     CoreClientReinitialized,

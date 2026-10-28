@@ -6,6 +6,7 @@ pub mod encryption;
 pub mod meta;
 pub mod passphrase;
 pub mod seed_envelope;
+pub mod shielded_max_transfer;
 pub mod single_key;
 
 use crate::database::WalletError;

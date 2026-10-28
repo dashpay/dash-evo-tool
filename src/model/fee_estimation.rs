@@ -1420,6 +1420,14 @@ pub fn shield_from_balance_fee_headroom(
     base_fee.saturating_mul(multiplier) / 1000
 }
 
+/// The fees a Max transfer to the shielded balance takes from the Core
+/// balance: the funding transaction's network fee plus the shielding fee.
+pub const fn shield_max_fee_credits(network_fee_duffs: u64, pool_fee_credits: Credits) -> Credits {
+    network_fee_duffs
+        .saturating_mul(CREDITS_PER_DUFF)
+        .saturating_add(pool_fee_credits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1486,6 +1494,12 @@ mod tests {
             PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(),
             estimator.estimate_contact_info_write().saturating_mul(2),
         );
+    }
+
+    #[test]
+    fn shield_max_fees_add_the_network_fee_to_the_shielding_fee() {
+        assert_eq!(shield_max_fee_credits(400, 12_345_678), 12_745_678);
+        assert_eq!(shield_max_fee_credits(u64::MAX, 1), u64::MAX);
     }
 
     #[test]

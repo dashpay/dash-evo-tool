@@ -458,7 +458,9 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 
 - Select Core Wallet source and enter a shielded address as destination.
 - System creates an asset lock, waits for proof, and shields the credits.
-- The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
+- The amount entered is the amount shielded: the fee the network takes is paid on top and shown before sending. When the wallet cannot cover that fee, the form says so instead of offering an amount.
+- Max moves the whole available balance: the fees are taken from it, so the exact amount is known only once the transfer is built. Before the user confirms, the confirmation shows the spendable balance the transfer spends, the fees and the expected shielded amount, quoted over every Core account the transfer draws from. If that balance changes before the transfer starts, it is not started and the user is asked to confirm again. Editing the amount, switching wallet or network, or resetting the form returns to an exact-amount send.
+- An interrupted Max transfer stays visible after a restart: the Shielded tab says it has not finished yet and offers "Finish now", which continues with the same funds and never moves them twice. A new Max transfer waits until the earlier one is settled.
 - Progress banner shows multi-step operation status.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 

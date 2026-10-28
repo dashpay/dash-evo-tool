@@ -25,10 +25,10 @@ pub(crate) async fn as_request<F: Future>(request: BackendTaskContext, future: F
 /// spawns: a task-local does not cross `tokio::spawn`, so an interim report
 /// built inside a spawned subtask would otherwise lose its request.
 pub(crate) fn in_current_request<F: Future>(future: F) -> impl Future<Output = F::Output> {
-    CURRENT_REQUEST.scope(
-        current_request().unwrap_or(BackendTaskContext::Unknown),
-        future,
-    )
+    match current_request() {
+        Some(request) => futures::future::Either::Left(CURRENT_REQUEST.scope(request, future)),
+        None => futures::future::Either::Right(future),
+    }
 }
 
 /// The running request, or `None` outside a dispatch.

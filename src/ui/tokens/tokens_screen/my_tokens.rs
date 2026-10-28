@@ -20,7 +20,7 @@ use crate::ui::tokens::tokens_screen::{
     RefreshingStatus, SortColumn, SortOrder, TokenInfoWithDataContract, TokensScreen,
     TokensSubscreen, get_available_token_actions_for_identity,
 };
-use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
+use crate::ui::tokens::transfer_tokens_screen::{SEND_LABEL, TransferTokensScreen};
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
@@ -694,28 +694,23 @@ impl TokensScreen {
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {
-                if let Some(balance) = itb.balance {
-                    // Transfer
-                    if ui.button("Transfer").clicked() {
-                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
-                            TransferTokensScreen::new(
-                                itb.to_token_balance(balance),
-                                &self.app_context,
-                            ),
-                        ));
-                    }
+                if let Some(balance) = itb.balance
+                    && ui.button(SEND_LABEL).clicked()
+                {
+                    action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                        TransferTokensScreen::new(itb.to_token_balance(balance), &self.app_context),
+                    ));
                 }
             } else {
-                // Disabled, grayed-out Transfer button
                 let reason = if token_info.token_configuration.is_transferable() {
-                    "Transfer not available"
+                    "This identity holds none of this token to send."
                 } else {
                     "This token cannot be sent to other identities."
                 };
                 ui.add_enabled(
                     false,
                     egui::Button::new(
-                        RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
+                        RichText::new(SEND_LABEL).color(DashColors::muted_color(dark_mode)),
                     ),
                 )
                 .disabled_tooltip(reason);

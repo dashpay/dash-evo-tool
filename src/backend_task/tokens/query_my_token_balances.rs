@@ -185,6 +185,13 @@ impl AppContext {
             .collect())
     }
 
+    /// Whether a token balance refresh is running anywhere in the app. The
+    /// guard is app-wide, so a second surface asking now would be refused
+    /// with [`TaskError::TokenBalanceRefreshInProgress`].
+    pub fn token_balance_refresh_in_flight(&self) -> bool {
+        self.token_balance_refresh_in_flight.load(Ordering::Acquire)
+    }
+
     fn begin_token_balance_refresh(
         self: &Arc<Self>,
     ) -> Result<TokenBalanceRefreshGuard, TaskError> {

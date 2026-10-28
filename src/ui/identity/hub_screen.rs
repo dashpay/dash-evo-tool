@@ -22,6 +22,7 @@ use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionB
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
+use crate::ui::state::identity_tokens::IdentityTokensState;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -59,6 +60,9 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// Tokens-tab state: the selected identity's token rows, the balance
+    /// refresh it waits on, and the list controls. Also feeds the tab badge.
+    tokens_state: IdentityTokensState,
     /// When a username status refresh was last dispatched (Unix ms). The cadence
     /// keys off dispatch time, so a result routed elsewhere never stalls it.
     usernames_refreshed_at: Option<u64>,
@@ -172,6 +176,7 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            tokens_state: IdentityTokensState::default(),
             usernames_refreshed_at: None,
             usernames_arriving: true,
             pending_unloads: BTreeSet::new(),
@@ -284,6 +289,7 @@ impl IdentityHubScreen {
             ),
         );
         self.home_state = HomeState::default();
+        self.tokens_state.reset_for_identity_change();
         self.contacts_state.reset_for_identity_change();
         // A write still running keeps its guard across the change, so it keeps
         // the records its outcome is matched against too.
@@ -344,6 +350,7 @@ impl IdentityHubScreen {
             self.avatar_cache.invalidate();
         }
         self.home_state.refresh_payments();
+        self.tokens_state.invalidate_rows();
         self.selection.clear_searches();
         self.pending_avatars.clear();
     }
@@ -354,6 +361,7 @@ impl IdentityHubScreen {
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.settings_tab = SettingsTab::new();
+        self.tokens_state = IdentityTokensState::default();
         self.profile_cache.reset();
         self.selection.clear_picker_override();
         self.selection.clear_searches();
@@ -560,8 +568,12 @@ impl IdentityHubScreen {
 }
 
 impl ScreenLike for IdentityHubScreen {
+    /// A token task of the Tokens tab reports through a screen-wide refresh
+    /// before its own result; that refresh keeps the profile and contacts on
+    /// screen instead of blanking them for a balance change.
     fn refresh(&mut self) {
-        self.reload(false);
+        let keep_shown = self.tokens_state.take_expected_screen_refresh();
+        self.reload(keep_shown);
     }
 
     /// Returning keeps the profile and contacts already shown and reloads them
@@ -569,6 +581,7 @@ impl ScreenLike for IdentityHubScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload(true);
         self.usernames_arriving = true;
+        self.tokens_state.arrive();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -697,7 +710,20 @@ impl ScreenLike for IdentityHubScreen {
                         ui.add_space(16.0);
                         // Hub tab bar; selection state lives on the screen so
                         // refreshes and deep links can update it from outside.
-                        let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
+                        let pending_claims = match &selected {
+                            Some(identity) => {
+                                self.tokens_state.rows(&self.app_context, identity);
+                                self.tokens_state.pending_claims()
+                            }
+                            None => 0,
+                        };
+                        let tab_response = IdentityHubTabBar::new(self.selected_tab)
+                            .with_badge(
+                                IdentityHubTab::Tokens,
+                                pending_claims,
+                                super::tokens_tab::pending_claims_text(pending_claims),
+                            )
+                            .show(ui);
                         if let Some(clicked) = tab_response.clicked() {
                             if clicked != self.selected_tab {
                                 // Tab-entry transition: reset per-tab load guards
@@ -746,6 +772,13 @@ impl ScreenLike for IdentityHubScreen {
                                 &mut self.profile_cache,
                                 &mut self.avatar_cache,
                                 &mut self.pending_avatars,
+                            ),
+                            IdentityHubTab::Tokens => super::tokens_tab::render(
+                                ui,
+                                &self.app_context,
+                                selected.as_ref(),
+                                &mut self.tokens_state,
+                                &mut self.home_state,
                             ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)
@@ -836,6 +869,9 @@ impl ScreenLike for IdentityHubScreen {
                     &mut self.contacts_state,
                     &mut self.profile_cache,
                 ),
+                Some(IdentityHubTab::Tokens) => {
+                    super::tokens_tab::load_action(&self.app_context, &mut self.tokens_state)
+                }
                 _ => AppAction::None,
             };
         }
@@ -877,6 +913,12 @@ impl ScreenLike for IdentityHubScreen {
     ) {
         if let Some((network, identity_id, _)) = context.contacts_load()
             && !self.contacts_state.owns_load((network, identity_id))
+        {
+            return;
+        }
+        if self
+            .tokens_state
+            .record_result(context, &result, crate::utils::time::now_ms())
         {
             return;
         }
@@ -951,6 +993,15 @@ impl ScreenLike for IdentityHubScreen {
             if self.is_waiting_for_avatar(&url) {
                 self.avatar_cache.store(url, bytes);
             }
+            return;
+        }
+        // Another screen's token task changed the balances the hub shows.
+        if matches!(
+            result,
+            BackendTaskSuccessResult::FetchedTokenBalances
+                | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
+        ) {
+            self.tokens_state.balances_changed();
             return;
         }
 
@@ -1041,6 +1092,7 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        self.tokens_state.record_error(context, error);
         self.foreign_contact_info_error = context.dashpay_contact_info_target().is_some()
             && !self.is_own_contact_info_dispatch(context);
         // Wrapped errors retain the unreadable-details confirmation flow.
@@ -1090,6 +1142,10 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        // The Tokens tab shows its own refresh failures inline.
+        if self.tokens_state.take_swallowed_error() {
+            return true;
+        }
         // The status refresh runs in the background; a failure keeps the stored
         // status and retries on the next cadence tick instead of raising a banner.
         if matches!(error, TaskError::UsernameRequestRefreshFailed { .. }) {

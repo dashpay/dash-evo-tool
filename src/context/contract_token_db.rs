@@ -1,6 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
+use crate::model::token::IdentityTokensViewPrefs;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -735,6 +736,42 @@ impl AppContext {
             .into_iter()
             .map(|(t, i)| (Identifier::from(t), Identifier::from(i)))
             .collect())
+    }
+
+    /// How the Identity Hub's Tokens tab lists tokens on this device. A
+    /// missing or unreadable blob yields the defaults; the read failure is
+    /// logged, never shown.
+    pub fn identity_tokens_view_prefs(&self) -> IdentityTokensViewPrefs {
+        match self.try_identity_tokens_view_prefs() {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    "Could not read the Identity Hub token list preferences; using defaults"
+                );
+                IdentityTokensViewPrefs::default()
+            }
+        }
+    }
+
+    fn try_identity_tokens_view_prefs(
+        &self,
+    ) -> std::result::Result<IdentityTokensViewPrefs, TaskError> {
+        let kv = self.det_kv()?;
+        Ok(kv
+            .get(DetScope::Global, IdentityTokensViewPrefs::KV_KEY)
+            .map_err(token_err)?
+            .unwrap_or_default())
+    }
+
+    /// Remember how the Identity Hub's Tokens tab lists tokens on this device.
+    pub fn save_identity_tokens_view_prefs(
+        &self,
+        prefs: &IdentityTokensViewPrefs,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        kv.put(DetScope::Global, IdentityTokensViewPrefs::KV_KEY, prefs)
+            .map_err(token_err)
     }
 
     /// Devnet-only sweep: drop the token registry, every balance entry,

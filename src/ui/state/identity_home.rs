@@ -15,6 +15,9 @@ use dash_sdk::platform::Identifier;
 pub struct HomeState {
     pub dismissed_checklist: bool,
     pub receive_open: bool,
+    /// The Receive dialog was opened from the Tokens tab, so it also explains
+    /// how received tokens appear.
+    pub receive_tokens_hint: bool,
     pub receive_qr: Option<QrCodeImage>,
     pub payments: Vec<(String, String, u64, bool, String)>,
     requested_payments: bool,

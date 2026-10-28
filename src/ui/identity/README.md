@@ -11,6 +11,7 @@ Promote a widget to `src/ui/components/` only if a second, non-hub consumer appe
 | `hub_screen.rs` | Root screen, tab selection, landing resolution |
 | `home.rs` | Shared summary and Home (send · receive · top up · setup · payments · contacts) |
 | `contacts.rs` | Contacts tab (gated / populated shell, contact detail pane with private note) |
+| `tokens_tab.rs` | Tokens tab (this identity's tracked tokens: Send · Claim · check · stop tracking; state in `ui/state/identity_tokens.rs`) |
 | `activity.rs` | Hidden activity shell (retained for internal links) |
 | `settings.rs` | Profile tab (social profile · usernames · advanced) |
 | `onboarding.rs` | Onboarding empty state |
@@ -38,7 +39,7 @@ Pushed onto the screen stack from the hub (or the left nav), not tabs.
 
 | Module | Used by | Notes |
 |---|---|---|
-| `identity_hub_tab_bar.rs` | `hub_screen` | Horizontal tab strip (Home · Contacts · Profile) |
+| `identity_hub_tab_bar.rs` | `hub_screen` | Horizontal tab strip (Home · Contacts · Tokens · Profile) with a pending-claims badge |
 | `identity_hero_card.rs` | legacy component tests | Standalone identity hero |
 | `onboarding_checklist.rs` | `home` | Pick username · set display name · add first contact |
 | `identity_pill.rs` | `identity_picker_card` | Thin wrapper over `components::breadcrumb_pill::BreadcrumbPill` with the identity label priority rule (Display name → DPNS → shortened ID) |

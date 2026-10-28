@@ -47,6 +47,26 @@ pub enum TransferTokensStatus {
     Complete,
 }
 
+/// The holder verb for moving tokens, matching Home's Send and the hub.
+pub const SEND_LABEL: &str = "Send";
+/// Title of the confirmation before tokens are sent.
+pub const CONFIRM_SEND_TITLE: &str = "Send tokens?";
+
+/// "Send {amount} to {recipient}?"
+pub fn send_question(amount: &Amount, recipient: &str) -> String {
+    format!("Send {amount} to {recipient}?")
+}
+
+/// "Sending {amount}…"
+pub fn sending_text(amount: &Amount) -> String {
+    format!("Sending {amount}…")
+}
+
+/// "Sent {amount} to {recipient}."
+pub fn sent_text(amount: &Amount, recipient: &str) -> String {
+    format!("Sent {amount} to {recipient}.")
+}
+
 pub struct TransferTokensScreen {
     identity: Option<QualifiedIdentity>,
     pub identity_token_balance: IdentityTokenBalance,
@@ -87,7 +107,7 @@ impl TransferTokensScreen {
             .or_else(|| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    "Identity not found in local store — cannot open Transfer screen",
+                    "This identity is not on this device, so tokens cannot be sent from it. Load the identity and try again.",
                     MessageType::Error,
                 );
                 None
@@ -194,15 +214,14 @@ impl TransferTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let msg = format!(
-            "Are you sure you want to transfer {} tokens to {}?",
-            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-            self.receiver_identity_id
+        let msg = send_question(
+            &self.amount.clone().unwrap_or(Amount::new(0, 0)),
+            &self.receiver_identity_id,
         );
 
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new("Confirm Transfer", msg)
-                .confirm_text(Some("Transfer"))
+            ConfirmationDialog::new(CONFIRM_SEND_TITLE, msg)
+                .confirm_text(Some(SEND_LABEL))
                 .cancel_text(Some("Cancel"))
         });
 
@@ -271,7 +290,7 @@ impl TransferTokensScreen {
         let Some(identity) = self.identity.clone() else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                "No identity loaded — cannot transfer tokens",
+                "No identity is loaded. Load the identity and try again.",
                 MessageType::Error,
             );
             return AppAction::None;
@@ -280,7 +299,7 @@ impl TransferTokensScreen {
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
-            "Transferring tokens...",
+            sending_text(&self.amount.clone().unwrap_or(Amount::new(0, 0))),
             MessageType::Info,
         );
         handle.with_elapsed();
@@ -301,8 +320,11 @@ impl TransferTokensScreen {
     pub fn show_success(&self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Transfer Successful!".to_string(),
-            vec![("Back to Tokens".to_string(), AppAction::PopScreenAndRefresh)],
+            sent_text(
+                &self.amount.clone().unwrap_or(Amount::new(0, 0)),
+                &self.receiver_identity_id,
+            ),
+            vec![("Back to tokens".to_string(), AppAction::PopScreenAndRefresh)],
             None,
         )
     }
@@ -388,7 +410,7 @@ impl ScreenLike for TransferTokensScreen {
                     &self.identity_token_balance.token_alias,
                     AppAction::PopScreen,
                 ),
-                ("Transfer", AppAction::None),
+                (SEND_LABEL, AppAction::None),
             ],
             vec![],
         );
@@ -421,10 +443,7 @@ impl ScreenLike for TransferTokensScreen {
                 return AppAction::None;
             };
 
-            ui.heading(format!(
-                "Transfer {}",
-                self.identity_token_balance.token_alias
-            ));
+            ui.heading(format!("Send {}", self.identity_token_balance.token_alias));
             ui.add_space(10.0);
 
             let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
@@ -503,7 +522,7 @@ impl ScreenLike for TransferTokensScreen {
 
                 // Header with Advanced Options checkbox
                 ui.horizontal(|ui| {
-                    ui.heading("Transfer Tokens");
+                    ui.heading("Send tokens");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
                     });
@@ -528,9 +547,8 @@ impl ScreenLike for TransferTokensScreen {
                     ui.add_space(10.0);
                 }
 
-                // Input the amount to transfer
                 let step_num = if self.show_advanced_options { "2" } else { "1" };
-                ui.heading(format!("{}. Input the amount to transfer", step_num));
+                ui.heading(format!("{}. Input the amount to send", step_num));
                 ui.add_space(5.0);
 
                 self.render_amount_input(ui);
@@ -539,9 +557,8 @@ impl ScreenLike for TransferTokensScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Input the ID of the identity to transfer to
                 let step_num = if self.show_advanced_options { "3" } else { "2" };
-                ui.heading(format!("{}. ID of the identity to transfer to", step_num));
+                ui.heading(format!("{}. ID of the identity to send to", step_num));
                 ui.add_space(5.0);
                 self.render_to_identity_input(ui);
 
@@ -590,8 +607,6 @@ impl ScreenLike for TransferTokensScreen {
 
                 ui.add_space(10.0);
 
-                // Transfer button
-
                 let identity = self.identity.as_ref().expect("checked above");
                 let has_enough_balance = identity.identity.balance() > estimated_fee;
                 let ready = self.amount.is_some()
@@ -607,7 +622,7 @@ impl ScreenLike for TransferTokensScreen {
                     "Please ensure all fields are filled correctly".to_string()
                 };
 
-                if ComponentStyles::add_primary_button_enabled(ui, ready, "Transfer")
+                if ComponentStyles::add_primary_button_enabled(ui, ready, SEND_LABEL)
                     .disabled_tooltip(&hover_text)
                     .clicked()
                 {
@@ -627,14 +642,13 @@ impl ScreenLike for TransferTokensScreen {
                             MessageType::Error,
                         );
                     } else {
-                        let msg = format!(
-                            "Are you sure you want to transfer {} tokens to {}?",
-                            self.amount.clone().unwrap_or(Amount::new(0, 0)),
-                            self.receiver_identity_id
+                        let msg = send_question(
+                            &self.amount.clone().unwrap_or(Amount::new(0, 0)),
+                            &self.receiver_identity_id,
                         );
                         self.confirmation_dialog = Some(
-                            ConfirmationDialog::new("Confirm Transfer", msg)
-                                .confirm_text(Some("Transfer"))
+                            ConfirmationDialog::new(CONFIRM_SEND_TITLE, msg)
+                                .confirm_text(Some(SEND_LABEL))
                                 .cancel_text(Some("Cancel")),
                         );
                     }

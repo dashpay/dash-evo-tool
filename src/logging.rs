@@ -192,9 +192,10 @@ enum PanicMessage {
 }
 
 impl PanicMessage {
-    /// Classifies a panic payload. std passes a `&'static str` only for a
-    /// message without format arguments; anything formatted arrives as a
-    /// `String`, whatever it contains.
+    /// Classifies a panic payload. `panic!` passes a `&'static str` only for
+    /// a message without format arguments; anything formatted arrives as a
+    /// `String`, whatever it contains. (`panic_any` with a leaked runtime
+    /// `&'static str` would defeat this; nothing in DET does that.)
     fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
         if let Some(literal) = payload.downcast_ref::<&'static str>() {
             Self::Literal(literal)

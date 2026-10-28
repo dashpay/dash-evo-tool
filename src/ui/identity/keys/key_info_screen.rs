@@ -1107,9 +1107,8 @@ impl KeyInfoScreen {
         let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
                 // From a slice: the error then holds no key bytes to print.
-                let bytes = <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
-                    .expect("invariant: length checked to be 32 in the match guard");
-                bytes
+                <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
+                    .expect("invariant: length checked to be 32 in the match guard")
             }
             Ok(_) => {
                 MessageBanner::set_global(

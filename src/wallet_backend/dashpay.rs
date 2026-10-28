@@ -1073,6 +1073,14 @@ impl WalletBackend {
         };
         let identity = wallet.identity();
         let dashpay = identity.dashpay();
+        // TODO(dashpay auto-accept): `sync_contact_requests` queues an
+        // `AutoAccept` op for every incoming request that carries a DIP-0015
+        // `autoAcceptProof`, but DET never drains that queue, so requests
+        // from scanned contact QR codes wait for a manual accept. Wire
+        // `PlatformWallet::drain_pending_contact_crypto_verified(provider,
+        // Some(signer), deadline)` after this sync; it needs a full
+        // seed-backed `ContactCryptoProvider` (receiving xpub, ECDH,
+        // accountReference), not the narrow `AutoAcceptKeyExport`.
         dashpay.sync_contact_requests().await.map_err(|e| {
             crate::backend_task::error::TaskError::WalletBackend {
                 source: Arc::new(e),

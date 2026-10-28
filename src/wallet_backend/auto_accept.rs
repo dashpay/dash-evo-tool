@@ -16,7 +16,7 @@ use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOpti
 use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::wallet::identity::crypto::auto_accept::{
-    auto_accept_derivation_path, derive_auto_accept_private_key,
+    AUTO_ACCEPT_TTL_SECS, auto_accept_derivation_path, derive_auto_accept_private_key,
 };
 use platform_wallet::wallet::identity::network::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed,
@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
+use crate::model::dashpay_contact_qr::ContactQrUri;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{SecretScope, WalletBackend};
 
@@ -45,7 +46,7 @@ impl WalletBackend {
         &self,
         identity: &QualifiedIdentity,
         username: &str,
-    ) -> Result<String, TaskError> {
+    ) -> Result<ContactQrUri, TaskError> {
         let owner = identity.identity.id();
         let seed_hash = identity
             .dashpay_wallet_seed_hash()
@@ -65,6 +66,7 @@ impl WalletBackend {
                 dashpay
                     .build_auto_accept_qr(&owner, username, &provider)
                     .await
+                    .map(ContactQrUri::new)
                     .map_err(|source| {
                         DashPayError::ContactQrBuildFailed {
                             source: Arc::new(source),
@@ -76,6 +78,10 @@ impl WalletBackend {
     }
 }
 
+/// How far the device clock may lag platform-wallet's when it picks a QR
+/// expiry, in seconds.
+const CLOCK_SKEW_SECS: u64 = 300;
+
 /// Serves platform-wallet the DIP-0015 auto-accept key, and nothing else.
 ///
 /// Holds a borrow of the seed for one operation only; it never copies the
@@ -83,37 +89,80 @@ impl WalletBackend {
 pub(crate) struct AutoAcceptKeyExport<'a> {
     seed: &'a [u8; 64],
     network: Network,
+    /// The latest expiry (Unix seconds) a key is exported for: one QR
+    /// lifetime from now, plus [`CLOCK_SKEW_SECS`]. A key for a later expiry
+    /// would be a bearer credential that outlives the code it was built for.
+    latest_expiry: u64,
+}
+
+/// Why [`AutoAcceptKeyExport`] refused a request. Crosses platform-wallet's
+/// `ContactCryptoProvider` boundary as [`PlatformWalletError::InvalidParameter`],
+/// the only shape that trait allows; the user sees
+/// [`DashPayError::ContactQrBuildFailed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AutoAcceptKeyRefusal {
+    /// The request is not for this network's `m/9'/coin'/16'/expiry'`.
+    #[error("this crypto provider serves the DashPay auto-accept key only")]
+    NotServed,
+    /// The requested key would stay valid longer than one QR lifetime.
+    #[error("an auto-accept key expiring at {expiry} outlives the latest allowed {latest}")]
+    ExpiryTooFar { expiry: u32, latest: u64 },
+}
+
+impl From<AutoAcceptKeyRefusal> for PlatformWalletError {
+    fn from(refusal: AutoAcceptKeyRefusal) -> Self {
+        PlatformWalletError::InvalidParameter(refusal.to_string())
+    }
 }
 
 impl<'a> AutoAcceptKeyExport<'a> {
     pub(crate) fn new(seed: &'a [u8; 64], network: Network) -> Self {
-        Self { seed, network }
+        // A clock before 1970 refuses every key rather than any key.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        Self::at(seed, network, now)
+    }
+
+    /// The provider as it would be at Unix time `now_secs`.
+    fn at(seed: &'a [u8; 64], network: Network, now_secs: u64) -> Self {
+        Self {
+            seed,
+            network,
+            latest_expiry: now_secs
+                .saturating_add(u64::from(AUTO_ACCEPT_TTL_SECS))
+                .saturating_add(CLOCK_SKEW_SECS),
+        }
     }
 
     /// The expiry index of `path` when it is exactly this network's
-    /// auto-accept path `m/9'/coin'/16'/expiry'`, all hardened.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ContactCryptoProvider fixes PlatformWalletError as the error type"
-    )]
-    fn auto_accept_expiry(&self, path: &DerivationPath) -> Result<u32, PlatformWalletError> {
-        let expected = auto_accept_derivation_path(self.network, 0)?;
+    /// auto-accept path `m/9'/coin'/16'/expiry'`, all hardened, and the expiry
+    /// is no later than [`Self::latest_expiry`](AutoAcceptKeyExport).
+    fn auto_accept_expiry(&self, path: &DerivationPath) -> Result<u32, AutoAcceptKeyRefusal> {
+        let expected = auto_accept_derivation_path(self.network, 0)
+            .map_err(|_| AutoAcceptKeyRefusal::NotServed)?;
         let (path, expected) = (path.as_ref(), expected.as_ref());
-        match path {
+        let expiry = match path {
             [feature @ .., ChildNumber::Hardened { index }]
                 if path.len() == expected.len() && feature == &expected[..expected.len() - 1] =>
             {
-                Ok(*index)
+                *index
             }
-            _ => Err(not_auto_accept()),
+            _ => return Err(AutoAcceptKeyRefusal::NotServed),
+        };
+        if u64::from(expiry) > self.latest_expiry {
+            return Err(AutoAcceptKeyRefusal::ExpiryTooFar {
+                expiry,
+                latest: self.latest_expiry,
+            });
         }
+        Ok(expiry)
     }
 }
 
 fn not_auto_accept() -> PlatformWalletError {
-    PlatformWalletError::InvalidParameter(
-        "this crypto provider serves the DashPay auto-accept key only".to_string(),
-    )
+    AutoAcceptKeyRefusal::NotServed.into()
 }
 
 #[async_trait::async_trait]
@@ -197,15 +246,19 @@ mod tests {
     use super::*;
     use crate::model::dashpay_contact_qr::ContactQrCode;
     use dash_sdk::platform::Identifier;
-    use platform_wallet::wallet::identity::crypto::auto_accept::{
-        AUTO_ACCEPT_TTL_SECS, verify_auto_accept_proof_with_pubkey,
-    };
+    use platform_wallet::wallet::identity::crypto::auto_accept::verify_auto_accept_proof_with_pubkey;
     use std::str::FromStr;
 
     /// Generated each run, so no seed bytes are committed.
     static SEED: std::sync::LazyLock<[u8; 64]> = std::sync::LazyLock::new(rand::random);
     const NETWORK: Network = Network::Testnet;
     const EXPIRY: u32 = 1_900_000_000;
+    /// A moment at which a QR built now expires at [`EXPIRY`].
+    const NOW: u64 = EXPIRY as u64 - AUTO_ACCEPT_TTL_SECS as u64;
+
+    fn provider() -> AutoAcceptKeyExport<'static> {
+        AutoAcceptKeyExport::at(&SEED, NETWORK, NOW)
+    }
 
     /// The key the wallet seed itself yields at `expiry`, derived by
     /// platform-wallet with no DET code in between.
@@ -217,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn exports_the_key_the_wallet_seed_derives() {
-        let provider = AutoAcceptKeyExport::new(&SEED, NETWORK);
+        let provider = provider();
         let path = auto_accept_derivation_path(NETWORK, EXPIRY).expect("path");
         let key = provider
             .export_auto_accept_private_key(&path)
@@ -230,7 +283,7 @@ mod tests {
     /// feature, coin, depth or a non-hardened expiry.
     #[tokio::test]
     async fn refuses_every_path_but_the_auto_accept_one() {
-        let provider = AutoAcceptKeyExport::new(&SEED, NETWORK);
+        let provider = provider();
         for path in [
             "m",
             "m/9'/1'/16'",
@@ -253,9 +306,43 @@ mod tests {
         }
     }
 
+    /// A key that would outlive one QR lifetime (plus clock skew) is refused,
+    /// so the provider cannot mint a long-lived bearer credential.
+    #[tokio::test]
+    async fn refuses_a_key_that_outlives_one_qr_lifetime() {
+        let provider = provider();
+        let latest = NOW + u64::from(AUTO_ACCEPT_TTL_SECS) + CLOCK_SKEW_SECS;
+        let latest_index = u32::try_from(latest).expect("index");
+        let at = |expiry| auto_accept_derivation_path(NETWORK, expiry).expect("path");
+
+        assert_eq!(
+            provider.auto_accept_expiry(&at(latest_index)),
+            Ok(latest_index)
+        );
+        assert!(
+            provider
+                .export_auto_accept_private_key(&at(latest_index))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            provider.auto_accept_expiry(&at(latest_index + 1)),
+            Err(AutoAcceptKeyRefusal::ExpiryTooFar {
+                expiry: latest_index + 1,
+                latest,
+            })
+        );
+        assert!(
+            provider
+                .export_auto_accept_private_key(&at(latest_index + 1))
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn refuses_every_other_crypto_request() {
-        let provider = AutoAcceptKeyExport::new(&SEED, NETWORK);
+        let provider = provider();
         let path = auto_accept_derivation_path(NETWORK, EXPIRY).expect("path");
         assert!(provider.receiving_xpub(&path).await.is_err());
         let peer = PublicKey::from_secret_key(&seed_key(&SEED, NETWORK, EXPIRY));
@@ -312,9 +399,9 @@ mod tests {
             .dashpay_build_contact_qr(&identity, "alice")
             .await
             .expect("build QR");
-        let qr = ContactQrCode::parse(&uri).expect("parse");
+        let qr = ContactQrCode::parse(uri.as_str()).expect("parse");
 
-        assert!(uri.starts_with("dash:?du=alice&dapk="), "{uri}");
+        assert!(uri.as_str().starts_with("dash:?du=alice&dapk="));
         assert_eq!(qr.username(), "alice");
         let expiry = u64::from(qr.expires_at());
         let ttl = u64::from(AUTO_ACCEPT_TTL_SECS);

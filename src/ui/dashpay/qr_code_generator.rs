@@ -23,11 +23,12 @@ use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
-    QR codes allow instant mutual contact establishment.\n\n\
+    A contact QR code lets someone send you a contact request without typing your username.\n\n\
     Someone who scans your code sends you a contact request that proves you invited them.\n\n\
     Each QR code is valid for 1 hour. Create a new one when it expires.\n\n\
     The code shows your username, so your identity needs a username.\n\n\
-    WARNING: Anyone with this QR code can automatically become your contact until it expires.";
+    Other Dash apps that use this identity may accept such requests automatically. Dash Evo Tool does not yet accept them automatically, so requests from your code wait for you to accept them.\n\n\
+    WARNING: Share this code only with people you want as contacts. Anyone who has it can use it until it expires.";
 
 /// How long a contact QR code stays valid, in plain words. platform-wallet
 /// fixes it (`AUTO_ACCEPT_TTL_SECS`): the code carries a usable key.
@@ -278,14 +279,14 @@ impl QRCodeGeneratorScreen {
                     );
                     ui.label(
                         RichText::new(
-                            "Share this QR code with someone to establish a mutual contact",
+                            "Share this QR code with someone you want as a contact.",
                         )
                         .small()
                         .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(
-                            "WARNING: Anyone with this QR code can automatically become your contact",
+                            "WARNING: Anyone who has this QR code can use it until it expires.",
                         )
                         .small()
                         .color(DashColors::warning_color(dark_mode)),
@@ -370,8 +371,8 @@ impl ScreenLike for QRCodeGeneratorScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr_string) = result {
-            self.generated_qr_data = Some(qr_string);
+        if let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr) = result {
+            self.generated_qr_data = Some(qr.as_str().to_string());
         }
     }
 }

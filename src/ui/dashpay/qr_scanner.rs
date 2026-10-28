@@ -310,8 +310,8 @@ impl QRScannerScreen {
 
                     ui.add_space(10.0);
 
-                    ui.label(RichText::new("ℹ️ This will send a contact request that will be automatically accepted").small());
-                    ui.label(RichText::new("⚡ Both you and the contact will become mutual contacts instantly").small());
+                    ui.label(RichText::new("This sends a contact request that proves your contact invited you.").small());
+                    ui.label(RichText::new("Your contact's app can accept it automatically. Otherwise, your contact accepts it like any other request.").small());
                 });
             }
 
@@ -321,10 +321,10 @@ impl QRScannerScreen {
             ui.group(|ui| {
                 ui.label(RichText::new("ℹ️ About QR Code Scanning").strong());
                 ui.separator();
-                ui.label("• QR codes enable instant mutual contact establishment");
-                ui.label("• The contact request is automatically accepted by both parties");
-                ui.label("• No manual approval is needed when using valid QR codes");
-                ui.label("• Contact QR codes are valid for 1 hour after they are created");
+                ui.label("• Scanning a contact QR code sends a contact request to the person who shared it.");
+                ui.label("• Their app can accept the request automatically, without asking them.");
+                ui.label("• Dash Evo Tool does not yet accept such requests automatically. Requests you receive this way wait for you to accept them.");
+                ui.label("• Contact QR codes are valid for 1 hour after they are created.");
             });
         });
 

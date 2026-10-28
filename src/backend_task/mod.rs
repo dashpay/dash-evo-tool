@@ -975,9 +975,10 @@ pub enum BackendTaskSuccessResult {
     /// fire; the app responds by calling
     /// [`queue_all_wallets_identity_discovery`](crate::context::AppContext::queue_all_wallets_identity_discovery).
     PlatformReadyDiscoverIdentities,
-    /// Auto-accept contact QR payload, ready to render. The proof is built
-    /// through the JIT chokepoint in the backend so the UI never touches a seed.
-    DashPayAutoAcceptQrCode(String),
+    /// Contact QR code (DIP-0015 auto-accept), ready to render. The key comes
+    /// from the wallet seed through the secret seam in the backend, so the UI
+    /// never touches a seed; `Debug` hides the code, which carries that key.
+    DashPayAutoAcceptQrCode(crate::model::dashpay_contact_qr::ContactQrUri),
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {

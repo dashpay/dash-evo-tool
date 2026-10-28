@@ -35,11 +35,12 @@ pub enum ContactQrCodeError {
         #[source]
         source: Arc<PlatformWalletError>,
     },
-    /// The code names something that is not a Dash username.
+    /// The code's `du` is not a DPNS label (`[a-zA-Z0-9-]`, 3 to 63
+    /// characters, no leading or trailing hyphen), with or without `.dash`.
     #[error(
-        "This QR code does not name a valid Dash username. Ask your contact for a new code and try again."
+        "This QR code does not contain a valid Dash username. Ask your contact for a new code and try again."
     )]
-    InvalidUsername,
+    NotADashUsername,
 }
 
 impl ContactQrCode {
@@ -49,10 +50,9 @@ impl ContactQrCode {
             source: Arc::new(source),
         };
         let (username, key_blob) = parse_dashpay_contact_uri(text.trim()).map_err(unreadable)?;
-        let username = username.trim().to_string();
-        if username.is_empty() || crate::model::dpns::validate_dpns_input(&username).is_err() {
-            return Err(ContactQrCodeError::InvalidUsername);
-        }
+        let username = dpns_label(&username)
+            .ok_or(ContactQrCodeError::NotADashUsername)?
+            .to_string();
         let (key, expires_at) = decode_auto_accept_key_blob(&key_blob).map_err(unreadable)?;
         Ok(Self {
             username,
@@ -61,7 +61,7 @@ impl ContactQrCode {
         })
     }
 
-    /// The QR owner's Dash username, as written in the code.
+    /// The QR owner's Dash username, without the `.dash` suffix.
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -69,11 +69,7 @@ impl ContactQrCode {
     /// The username in its full `.dash` form, so a lookup always resolves it
     /// through DPNS and never mistakes it for an identity ID.
     pub fn full_username(&self) -> String {
-        if crate::model::dpns::has_dash_suffix(&self.username) {
-            self.username.clone()
-        } else {
-            format!("{}.dash", self.username)
-        }
+        format!("{}.dash", self.username)
     }
 
     /// The Unix time (seconds) after which the code no longer auto-accepts.
@@ -101,6 +97,45 @@ impl ContactQrCode {
             account_reference,
             self.expires_at,
         )
+    }
+}
+
+/// The DPNS label `username` names, with an optional `.dash` suffix
+/// (any case) removed; `None` unless the label is a valid DPNS label.
+fn dpns_label(username: &str) -> Option<&str> {
+    const SUFFIX: &str = ".dash";
+    let label = match username.len().checked_sub(SUFFIX.len()) {
+        Some(at)
+            if username.is_char_boundary(at) && username[at..].eq_ignore_ascii_case(SUFFIX) =>
+        {
+            &username[..at]
+        }
+        _ => username,
+    };
+    (crate::model::dpns::validate_dpns_name(label)
+        == crate::model::dpns::DpnsNameValidationResult::Valid)
+        .then_some(label)
+}
+
+/// A contact QR code built for this app's identity. The text carries the
+/// owner's auto-accept key, so `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContactQrUri(String);
+
+impl ContactQrUri {
+    pub fn new(uri: String) -> Self {
+        Self(uri)
+    }
+
+    /// The code's text, to render as a QR image or copy.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ContactQrUri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContactQrUri(<redacted>)")
     }
 }
 
@@ -202,13 +237,32 @@ mod tests {
         }
     }
 
+    /// Only a DPNS label (`[a-zA-Z0-9-]`, 3 to 63 characters) is accepted, so
+    /// a hostile code cannot smuggle bidi overrides, invisible or control
+    /// characters, or a huge string into the screen and the name lookup.
     #[test]
     fn a_code_without_a_dash_username_is_refused() {
-        for username in ["", "  ", "alice.com"] {
+        let too_long = "a".repeat(64);
+        for username in [
+            "",
+            "  ",
+            " alice",
+            "ab",
+            "-alice",
+            "alice-",
+            "alice.com",
+            "a.b.dash",
+            "ali\u{202E}ce",
+            "ali\u{200B}ce",
+            "ali\nce",
+            "alice\u{0}",
+            "äli",
+            too_long.as_str(),
+        ] {
             assert!(
                 matches!(
                     ContactQrCode::parse(&uri(username, &key())),
-                    Err(ContactQrCodeError::InvalidUsername)
+                    Err(ContactQrCodeError::NotADashUsername)
                 ),
                 "{username:?}"
             );
@@ -216,9 +270,31 @@ mod tests {
     }
 
     #[test]
-    fn a_full_username_is_kept_as_is() {
-        let qr = ContactQrCode::parse(&uri("alice.dash", &key())).expect("parse");
-        assert_eq!(qr.full_username(), "alice.dash");
+    fn the_longest_dpns_label_is_accepted() {
+        let longest = "a".repeat(63);
+        let qr = ContactQrCode::parse(&uri(&longest, &key())).expect("parse");
+        assert_eq!(qr.username(), longest);
+    }
+
+    #[test]
+    fn a_full_username_is_read_as_its_label() {
+        for username in ["alice.dash", "alice.DASH"] {
+            let qr = ContactQrCode::parse(&uri(username, &key())).expect("parse");
+            assert_eq!(qr.username(), "alice");
+            assert_eq!(qr.full_username(), "alice.dash");
+        }
+    }
+
+    /// The built code reaches results and logs only through `ContactQrUri`,
+    /// whose `Debug` hides it.
+    #[test]
+    fn a_built_code_is_hidden_from_debug_output() {
+        let text = uri("alice", &key());
+        let built = ContactQrUri::new(text.clone());
+        assert_eq!(built.as_str(), text);
+        let debug = format!("{built:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("dapk"));
     }
 
     #[test]

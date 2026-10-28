@@ -55,10 +55,11 @@ where
 
 /// Run a single backend task and return its result.
 ///
-/// Creates a throwaway channel because `run_backend_task` requires a sender
-/// for the GUI event loop. In MCP/CLI mode there is no GUI consuming the
-/// receiver, so it is intentionally dropped. The task result is returned
-/// directly from the async call rather than through the channel.
+/// `run_backend_task` reports progress and cache changes to the GUI frame
+/// loop as it runs. In MCP/CLI mode no frame loop exists, so those reports
+/// are read and dropped by a drain that lives as long as the task's senders
+/// do; a task is never failed by a report nobody listens to. The outcome is
+/// the result returned by the async call alone.
 ///
 /// Uses TaskManager-tracked blocking work plus `block_on` to avoid `Send`
 /// bound issues with platform SDK types across await points. This matches
@@ -85,7 +86,8 @@ where
     let handle = tokio::runtime::Handle::current();
     run_blocking_dispatch(app_context.subtasks.clone(), move || {
         handle.block_on(async move {
-            let (tx, _) = tokio::sync::mpsc::channel::<TaskResult>(32);
+            let (tx, mut frame_loop_reports) = tokio::sync::mpsc::channel::<TaskResult>(32);
+            tokio::spawn(async move { while frame_loop_reports.recv().await.is_some() {} });
             let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
             let result = app_context.run_backend_task(task, sender).await?;
             Ok(lifecycle_tail(result).await)
@@ -135,6 +137,29 @@ mod tests {
         assert_eq!(
             shutdown.await.expect("shutdown outcome"),
             TaskShutdownOutcome::Complete
+        );
+    }
+
+    /// An MCP dispatch has no frame loop, yet a task still reports cache
+    /// changes to one as it runs. Those reports are dropped unread, and the
+    /// task keeps its result instead of failing on a channel nobody reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_reporting_cache_changes_keeps_its_result_under_mcp() {
+        use crate::backend_task::identity::IdentityTask;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context =
+            crate::context::test_support::wired_test_app_context(temp_dir.path()).await;
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+            ),
+            "{result:?}"
         );
     }
 

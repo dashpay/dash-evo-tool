@@ -261,20 +261,6 @@ mod tests {
         assert_eq!(prompt.ask_count(), 1, "one prompt for the whole operation");
     }
 
-    /// A pinned `(seed, path) → compressed pubkey` derivation vector for the
-    /// HD parity test. A change to the BIP-32 derivation, the secp256k1
-    /// primitive, or the seed handling would break this exact hex — catching a
-    /// silent derivation regression that a self-consistent parity check alone
-    /// could miss. Computed from [`PARITY_SEED`] at `m/44'/1'/0'/0/0` on
-    /// Testnet (coin-type 1' = the network-independent BIP-44 testnet path).
-    const PINNED_TESTNET_PUBKEY_HEX: &str =
-        "03a9a554ad52bd61203ceee0c8ad65f60d019a1c43a73f657f1a080d9f321730f3";
-
-    /// The deterministic seed both parity vectors derive from. Fixed on
-    /// purpose: [`PINNED_TESTNET_PUBKEY_HEX`] is derived from it, so it is a
-    /// golden vector, exempt from runtime key generation.
-    const PARITY_SEED: [u8; 64] = [0x5A; 64];
-
     /// FUND-SAFETY PARITY: `DetSigner::sign_ecdsa` (the HD signer surface that
     /// authorises every payment / asset-lock / identity sign) must produce a
     /// byte-identical signature AND public key to an independent reference
@@ -285,11 +271,13 @@ mod tests {
     /// Mirrors the platform-signer parity test
     /// (`det_platform_signer::tests::platform_signer_parity_with_reference`):
     /// the reference recomputes the result without going through `DetSigner`,
-    /// so the test proves genuine parity, not self-consistency. A pinned
-    /// `(seed, path) → pubkey` vector additionally guards the derivation itself
-    /// against a regression that would still be internally consistent.
+    /// so the test proves genuine parity, not self-consistency. The pinned
+    /// `(seed, path) → pubkey` vector in [`hd_derivation_matches_pinned_vector`]
+    /// additionally guards the derivation itself against a regression that
+    /// would still be internally consistent.
     #[tokio::test]
     async fn hd_signer_parity_with_reference() {
+        let seed = crate::test_support::keys::seed();
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
         let sighash = [0x3Cu8; 32];
 
@@ -302,7 +290,7 @@ mod tests {
             // `ecdsa::sign` differs in about half of all signatures.
             let reference_sk = secp256k1::SecretKey::from_secret_bytes(
                 *path
-                    .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
                     .expect("reference derive")
                     .private_key
                     .to_bytes(),
@@ -315,7 +303,7 @@ mod tests {
 
             // The JIT signer over the same seed, held open through the
             // chokepoint, must match byte-for-byte.
-            let held = Zeroizing::new(PARITY_SEED);
+            let held = Zeroizing::new(seed);
             let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), network);
             let (det_sig, det_pk) = signer.sign_ecdsa(&path, sighash).await.expect("det sign");
 
@@ -346,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn hd_signer_signatures_are_valid_and_standard() {
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
-        let held = Zeroizing::new(PARITY_SEED);
+        let held = Zeroizing::new(crate::test_support::keys::seed());
         let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), Network::Testnet);
 
         for i in 0..32u8 {
@@ -397,17 +385,18 @@ mod tests {
     /// agree with `public_key` at the same path.
     #[tokio::test]
     async fn hd_signer_extended_public_key_parity_with_reference() {
+        let seed = crate::test_support::keys::seed();
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
 
         for network in [Network::Testnet, Network::Mainnet] {
             // Independent reference: derive the xprv straight from the seed at
             // the path, then convert to the xpub with the same primitive.
             let reference_xprv = path
-                .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
                 .expect("reference derive");
             let reference_xpub = ExtendedPubKey::from_priv(&reference_xprv);
 
-            let held = Zeroizing::new(PARITY_SEED);
+            let held = Zeroizing::new(seed);
             let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), network);
             let det_xpub = signer
                 .extended_public_key(&path)
@@ -439,10 +428,16 @@ mod tests {
     }
 
     /// Pin the exact derived public key so a BIP-32 / coin-type / primitive
-    /// regression is caught even if it stays internally consistent. Testnet
-    /// path `m/44'/1'/0'/0/0` over [`PARITY_SEED`].
+    /// regression is caught even if it stays internally consistent: Testnet
+    /// path `m/44'/1'/0'/0/0` (coin-type 1', the network-independent BIP-44
+    /// testnet path) over a fixed seed.
     #[test]
     fn hd_derivation_matches_pinned_vector() {
+        // Fixed on purpose: the expected public key is derived from this seed,
+        // so it is a golden vector, exempt from runtime key generation.
+        const PARITY_SEED: [u8; 64] = [0x5A; 64];
+        const PINNED_TESTNET_PUBKEY_HEX: &str =
+            "03a9a554ad52bd61203ceee0c8ad65f60d019a1c43a73f657f1a080d9f321730f3";
         let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
         let pk = path
             .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, Network::Testnet)

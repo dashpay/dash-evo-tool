@@ -8,6 +8,7 @@
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::{AppState, BootPhase, TaskResult};
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::model::legacy_restore::LegacyRestoreSummary;
@@ -161,43 +162,61 @@ fn chooser(harness: &mut App) -> &mut NetworkChooserScreen {
 }
 
 /// A restore from the previous version started on the Settings screen is
-/// settled there even while another screen is in view: the Restore button is
-/// freed, the dispatch is forgotten, and one banner reports the outcome.
+/// settled there even while another screen is in view, whether it succeeds
+/// or fails: the Restore button is freed, the dispatch is forgotten, and one
+/// banner reports the outcome.
 #[test]
 fn a_hidden_chooser_settles_its_own_restore() {
-    in_app(|| {
-        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
-        harness.state_mut().test_capture_dispatches();
-        let action = chooser(&mut harness).begin_restore_for_test();
-        harness.state_mut().test_dispatch_screen_action(action);
-        let restore = harness
-            .state()
-            .test_captured_dispatches()
-            .last()
-            .map(|(_, context)| context.clone())
-            .expect("the restore is dispatched");
+    for fail in [false, true] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+            harness.state_mut().test_capture_dispatches();
+            let action = chooser(&mut harness).begin_restore_for_test();
+            harness.state_mut().test_dispatch_screen_action(action);
+            let restore = harness
+                .state()
+                .test_captured_dispatches()
+                .last()
+                .map(|(_, context)| context.clone())
+                .expect("the restore is dispatched");
 
-        harness.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
-        harness.run_steps(3);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+            harness.run_steps(3);
 
-        let summary = LegacyRestoreSummary::default();
-        let message = summary.user_message();
-        deliver(
-            &mut harness,
-            TaskResult::Success {
-                context: restore,
-                result: Box::new(BackendTaskSuccessResult::PreviousVersionRestored(summary)),
-            },
-        );
-        assert!(
-            !chooser(&mut harness).restore_in_progress_for_test(),
-            "the hidden chooser's own result frees its button"
-        );
-        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
-        assert_eq!(
-            count(&harness, &message),
-            1,
-            "one banner reports the outcome"
-        );
-    });
+            let (result, message) = if fail {
+                let error = TaskError::TaskManagerShuttingDown;
+                let message = error.to_string();
+                (
+                    TaskResult::Error {
+                        context: restore,
+                        error,
+                    },
+                    message,
+                )
+            } else {
+                let summary = LegacyRestoreSummary::default();
+                let message = summary.user_message();
+                (
+                    TaskResult::Success {
+                        context: restore,
+                        result: Box::new(BackendTaskSuccessResult::PreviousVersionRestored(
+                            summary,
+                        )),
+                    },
+                    message,
+                )
+            };
+            deliver(&mut harness, result);
+            assert!(
+                !chooser(&mut harness).restore_in_progress_for_test(),
+                "the hidden chooser's own result frees its button"
+            );
+            assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+            assert_eq!(
+                count(&harness, &message),
+                1,
+                "one banner reports the outcome"
+            );
+        });
+    }
 }

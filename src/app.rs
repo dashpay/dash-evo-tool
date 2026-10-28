@@ -903,17 +903,6 @@ pub enum AppAction {
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
-/// Whether results of the task behind `context` belong to the network chooser (settings)
-/// screen whichever screen is visible: it tracks the task and must hear how it ended.
-fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
-    matches!(
-        context.operation(),
-        BackendTaskContext::ClearNetworkDatabase
-            | BackendTaskContext::UpdateBackupRetention
-            | BackendTaskContext::RestoreFromPreviousVersion
-    )
-}
-
 impl BitOrAssign for AppAction {
     fn bitor_assign(&mut self, rhs: Self) {
         if matches!(rhs, AppAction::None) {
@@ -2381,57 +2370,12 @@ impl App for AppState {
                             &unboxed_message,
                         ));
                     crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
+                    crate::ui::network_chooser_screen::task_feedback::show(ctx, &unboxed_message);
                     self.dpns_background.record_vote_result(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::CacheUpdated(update) => {
                             pending_refresh.0.insert(update);
-                        }
-                        BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
-                            let network_label = chooser_network_label(network);
-                            MessageBanner::set_global(
-                                ctx,
-                                format!(
-                                    "Cleared {network_label} database. Restart or resync to rebuild state."
-                                ),
-                                MessageType::Success,
-                            );
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(
-                                    &context,
-                                    BackendTaskSuccessResult::NetworkDatabaseCleared { network },
-                                );
-                            }
-                        }
-                        BackendTaskSuccessResult::PreviousVersionRestored(summary) => {
-                            let message_type = if summary.has_problems() {
-                                MessageType::Warning
-                            } else {
-                                MessageType::Success
-                            };
-                            MessageBanner::set_global(ctx, summary.user_message(), message_type);
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(
-                                    &context,
-                                    BackendTaskSuccessResult::PreviousVersionRestored(summary),
-                                );
-                            }
-                        }
-                        result @ BackendTaskSuccessResult::UpdatedBackupRetention { .. } => {
-                            // The settings form waits for this answer even after the user
-                            // navigates away, so it goes to the chooser, not the visible screen.
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(&context, result);
-                            }
                         }
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
@@ -2642,27 +2586,17 @@ impl App for AppState {
                     clear_profile_saving_banner_after_error(ctx, &context);
                     self.dpns_background.sweep_failed(&context, &err);
                     self.route_error_to_observers(route, &context, &err);
-                    let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is
                     // closed, did not come from the screen in view: the banner
                     // alone reports it.
                     let foreign_top_up = tracked_top_up && owner.is_none();
-                    let screen_owned = !chooser_owned
-                        && !recovery_delivered
-                        && !foreign_top_up
-                        && !route.sender_gone();
+                    let screen_owned =
+                        !recovery_delivered && !foreign_top_up && !route.sender_gone();
                     let suppress_stale_error = screen_owned
                         && self.result_screen_mut(route).is_some_and(|screen| {
                             screen.should_suppress_backend_task_error(&context, &err)
                         });
-                    if chooser_owned {
-                        if let Some(screen) = self
-                            .main_screens
-                            .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                        {
-                            screen.display_backend_task_error(&context, &err);
-                        }
-                    } else if screen_owned && let Some(screen) = self.result_screen_mut(route) {
+                    if screen_owned && let Some(screen) = self.result_screen_mut(route) {
                         screen.display_backend_task_error(&context, &err);
                     }
                     // Let the screen handle specific error types first.
@@ -3714,30 +3648,6 @@ mod dpns_result_routing_tests {
                 "No scheduled votes were removed.".to_owned(),
                 MessageType::Info
             )
-        );
-    }
-}
-
-#[cfg(test)]
-mod network_chooser_routing_tests {
-    use super::*;
-    use crate::backend_task::system_task::SystemTask;
-    use crate::model::backup_retention::BackupRetention;
-
-    /// A retention save outlives navigation: its result and error must reach the
-    /// chooser even when another screen is visible, or its form stays disabled.
-    #[test]
-    fn backup_retention_task_results_route_to_network_chooser() {
-        let task = BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
-            BackupRetention::KeepForever,
-        ));
-        let context = BackendTaskContext::from(&task);
-        assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
-        assert!(network_chooser_owns_task(&context));
-        let dispatched = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
-        assert!(
-            network_chooser_owns_task(&dispatched),
-            "the chooser's own dispatch is still the chooser's task"
         );
     }
 }

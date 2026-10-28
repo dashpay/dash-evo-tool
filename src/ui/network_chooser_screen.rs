@@ -1864,6 +1864,35 @@ impl ScreenLike for NetworkChooserScreen {
     }
 }
 
+/// User notifications for Settings task outcomes, raised wherever the
+/// screen is, and for a task of a network no longer active.
+pub(crate) mod task_feedback {
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::ui::{MessageType, components::MessageBanner};
+
+    pub(crate) fn show(ctx: &egui::Context, result: &BackendTaskSuccessResult) {
+        match result {
+            BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
+                let network = super::chooser_network_label(*network);
+                MessageBanner::set_global(
+                    ctx,
+                    format!("Cleared {network} database. Restart or resync to rebuild state."),
+                    MessageType::Success,
+                );
+            }
+            BackendTaskSuccessResult::PreviousVersionRestored(summary) => {
+                let message_type = if summary.has_problems() {
+                    MessageType::Warning
+                } else {
+                    MessageType::Success
+                };
+                MessageBanner::set_global(ctx, summary.user_message(), message_type);
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::identity_name::shorten_id;
 use crate::model::user_role::UserRole;
@@ -17,9 +18,10 @@ use crate::ui::tokens::pause_tokens_screen::PauseTokensScreen;
 use crate::ui::tokens::resume_tokens_screen::ResumeTokensScreen;
 use crate::ui::tokens::set_token_price_screen::SetTokenPriceScreen;
 use crate::ui::tokens::tokens_screen::{
-    IdentityTokenIdentifier, IdentityTokenInfo, IdentityTokenMaybeBalanceWithActions,
-    RefreshingStatus, SortColumn, SortOrder, TokenInfoWithDataContract, TokensScreen,
-    TokensSubscreen, get_available_token_actions_for_identity,
+    IdentityTokenAvailableActions, IdentityTokenIdentifier, IdentityTokenInfo,
+    IdentityTokenMaybeBalanceWithActions, RefreshingStatus, SortColumn, SortOrder,
+    TokenInfoWithDataContract, TokensScreen, TokensSubscreen,
+    get_available_token_actions_for_identity,
 };
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
@@ -39,6 +41,7 @@ use eframe::epaint::Color32;
 use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Get the minimum price for purchasing one token from a pricing schedule
 fn get_min_token_price(pricing_schedule: &TokenPricingSchedule) -> u64 {
@@ -675,6 +678,9 @@ impl TokensScreen {
         action
     }
 
+    /// Renders the actions of `itb`'s row whose slots (see
+    /// [`token_row_actions`]) fall in `range`: the inline actions, or the
+    /// "..." menu's.
     fn render_actions(
         &mut self,
         itb: &IdentityTokenMaybeBalanceWithActions,
@@ -682,337 +688,261 @@ impl TokensScreen {
         range: Range<usize>,
         ui: &mut Ui,
     ) -> AppAction {
-        let mut pos = 0;
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
         let dark_mode = ui.style().visuals.dark_mode;
 
-        if range.contains(&pos) {
-            if itb.available_actions.can_transfer {
-                if let Some(balance) = itb.balance {
-                    // Transfer
-                    if ui.button("Transfer").clicked() {
-                        action = AppAction::AddScreen(Screen::TransferTokensScreen(
-                            TransferTokensScreen::new(
-                                itb.to_token_balance(balance),
-                                &self.app_context,
+        for (pos, row_action) in token_row_actions(&itb.available_actions)
+            .into_iter()
+            .enumerate()
+        {
+            if !range.contains(&pos) {
+                continue;
+            }
+            match row_action {
+                TokenRowAction::Transfer => {
+                    if itb.available_actions.can_transfer {
+                        if let Some(balance) = itb.balance
+                            && ui.button("Transfer").clicked()
+                        {
+                            action = AppAction::AddScreen(Screen::TransferTokensScreen(
+                                TransferTokensScreen::new(
+                                    itb.to_token_balance(balance),
+                                    &self.app_context,
+                                ),
+                            ));
+                        }
+                    } else {
+                        // Disabled, grayed-out Transfer button
+                        let reason = if token_info.token_configuration.is_transferable() {
+                            "Transfer not available"
+                        } else {
+                            "This token cannot be sent to other identities."
+                        };
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new(
+                                RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
                             ),
-                        ));
+                        )
+                        .disabled_tooltip(reason);
                     }
                 }
-            } else {
-                // Disabled, grayed-out Transfer button
-                let reason = if token_info.token_configuration.is_transferable() {
-                    "Transfer not available"
-                } else {
-                    "This token cannot be sent to other identities."
-                };
-                ui.add_enabled(
-                    false,
-                    egui::Button::new(
-                        RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
-                    ),
-                )
-                .disabled_tooltip(reason);
-            }
-        }
-
-        pos += 1;
-
-        // Claim
-        if itb.available_actions.can_claim {
-            if range.contains(&pos) && ui.button("Claim").clicked() {
-                match self.app_context.get_contract_by_token_id(&itb.token_id) {
-                    Ok(Some(contract)) => {
-                        action = AppAction::AddScreen(Screen::ClaimTokensScreen(
-                            ClaimTokensScreen::new(
-                                itb.into(),
-                                contract,
-                                token_info.token_configuration.clone(),
-                                &self.app_context,
-                            ),
+                TokenRowAction::Claim => {
+                    if ui.button("Claim").clicked() {
+                        match self.app_context.get_contract_by_token_id(&itb.token_id) {
+                            Ok(Some(contract)) => {
+                                action = AppAction::AddScreen(Screen::ClaimTokensScreen(
+                                    ClaimTokensScreen::new(
+                                        itb.into(),
+                                        contract,
+                                        token_info.token_configuration.clone(),
+                                        &self.app_context,
+                                    ),
+                                ));
+                                ui.close_kind(egui::UiKind::Menu);
+                            }
+                            Ok(None) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Token contract not found",
+                                    MessageType::Error,
+                                );
+                            }
+                            Err(error) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "The token contract could not be loaded. Refresh and try again.",
+                                    MessageType::Error,
+                                )
+                                .with_details(error);
+                            }
+                        }
+                    }
+                }
+                TokenRowAction::Mint => {
+                    if ui.button("Mint").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::MintTokensScreen(MintTokensScreen::new(info, app_context))
+                        });
+                    }
+                }
+                TokenRowAction::Burn => {
+                    if ui.button("Burn").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::BurnTokensScreen(BurnTokensScreen::new(info, app_context))
+                        });
+                    }
+                }
+                TokenRowAction::Freeze => {
+                    if ui.button("Freeze").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, app_context))
+                        });
+                    }
+                }
+                TokenRowAction::DestroyFrozenFunds => {
+                    if ui.button("Destroy Frozen Identity Tokens").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(
+                                info,
+                                app_context,
+                            ))
+                        });
+                    }
+                }
+                TokenRowAction::Unfreeze => {
+                    if ui.button("Unfreeze").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(
+                                info,
+                                app_context,
+                            ))
+                        });
+                    }
+                }
+                TokenRowAction::Pause => {
+                    if ui.button("Pause").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::PauseTokensScreen(PauseTokensScreen::new(info, app_context))
+                        });
+                    }
+                }
+                TokenRowAction::Resume => {
+                    if ui.button("Resume").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::ResumeTokensScreen(ResumeTokensScreen::new(info, app_context))
+                        });
+                    }
+                }
+                TokenRowAction::ViewClaims => {
+                    if ui.button("View Claims").clicked() {
+                        action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
+                            ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
                         ));
                         ui.close_kind(egui::UiKind::Menu);
                     }
-                    Ok(None) => {
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "Token contract not found",
-                            MessageType::Error,
-                        );
-                    }
-                    Err(error) => {
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "The token contract could not be loaded. Refresh and try again.",
-                            MessageType::Error,
-                        )
-                        .with_details(error);
+                }
+                TokenRowAction::UpdateConfig => {
+                    if ui.button("Update Config").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::UpdateTokenConfigScreen(Box::new(UpdateTokenConfigScreen::new(
+                                info,
+                                app_context,
+                            )))
+                        });
                     }
                 }
-            }
-            pos += 1;
-        }
-
-        if itb.available_actions.can_mint {
-            if range.contains(&pos) && ui.button("Mint").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::MintTokensScreen(MintTokensScreen::new(info, &self.app_context)),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_burn {
-            if range.contains(&pos) && ui.button("Burn").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::BurnTokensScreen(
-                                    BurnTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_freeze {
-            if range.contains(&pos) && ui.button("Freeze").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, &self.app_context)),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_destroy {
-            if range.contains(&pos) && ui.button("Destroy Frozen Identity Tokens").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(info, &self.app_context)),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_unfreeze {
-            if range.contains(&pos) && ui.button("Unfreeze").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(info, &self.app_context)),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_do_emergency_action {
-            if range.contains(&pos) {
-                if ui.button("Pause").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::PauseTokensScreen(
-                                        PauseTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                            }
-                        };
-                    ui.close_kind(egui::UiKind::Menu);
+                TokenRowAction::Purchase => {
+                    action |= self.render_purchase_action(itb, dark_mode, ui);
                 }
-                pos += 1;
-            }
-
-            if range.contains(&pos) {
-                if ui.button("Resume").clicked() {
-                    match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                            Ok(info) => {
-                                action = AppAction::AddScreen(
-                                    Screen::ResumeTokensScreen(
-                                        ResumeTokensScreen::new(
-                                            info,
-                                            &self.app_context,
-                                        ),
-                                    ),
-                                );
-                            }
-                            Err(e) => {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                            }
-                        };
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                pos += 1;
-            }
-        }
-        if itb.available_actions.can_claim {
-            if range.contains(&pos) && ui.button("View Claims").clicked() {
-                action = AppAction::AddScreen(Screen::ViewTokenClaimsScreen(
-                    ViewTokenClaimsScreen::new(itb.into(), &self.app_context),
-                ));
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_update_config {
-            if range.contains(&pos) && ui.button("Update Config").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::UpdateTokenConfigScreen(Box::new(
-                                    UpdateTokenConfigScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                )),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-                ui.close_kind(egui::UiKind::Menu);
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_maybe_purchase {
-            if range.contains(&pos) {
-                // Check if we have pricing data
-                let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
-                let is_loading = self
-                    .pricing_loading_state
-                    .get(&itb.token_id)
-                    .copied()
-                    .unwrap_or(false);
-
-                if is_loading {
-                    // Show loading spinner
-                    ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                } else if has_pricing_data {
-                    // Check if identity has enough credits for at least one token
-                    let has_credits = self
-                        .app_context
-                        .get_identity_by_id(&itb.identity_id)
-                        .map(|identity_opt| {
-                            identity_opt
-                                .map(|identity| {
-                                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                                    // Check if identity has enough credits for the minimum token price
-                                    if let Some(Some(pricing)) =
-                                        self.token_pricing_data.get(&itb.token_id)
-                                    {
-                                        let min_price = get_min_token_price(pricing);
-                                        identity.identity.balance() >= min_price
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-
-                    if has_credits {
-                        // Purchase button enabled
-                        if ui.button("Purchase").clicked() {
-                            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                                    Ok(info) => {
-                                        action = AppAction::AddScreen(
-                                            Screen::PurchaseTokenScreen(
-                                                PurchaseTokenScreen::new(
-                                                    info,
-                                                    &self.app_context,
-                                                ),
-                                            ),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                                    }
-                                };
-                            ui.close_kind(egui::UiKind::Menu);
-                        }
-                    } else {
-                        // Disabled, grayed-out Purchase button
-                        ui.add_enabled(
-                                false,
-                                egui::Button::new(RichText::new("Purchase").color(DashColors::muted_color(dark_mode))),
-                            )
-                            .disabled_tooltip({
-                                if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
-                                    let min_price = get_min_token_price(pricing);
-                                    format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
-                                } else {
-                                    "No credits available for purchase".to_string()
-                                }
-                            });
+                TokenRowAction::SetPrice => {
+                    if ui.button("Set Price").clicked() {
+                        action = self.open_with_token_info(itb, ui, |info, app_context| {
+                            Screen::SetTokenPriceScreen(SetTokenPriceScreen::new(info, app_context))
+                        });
                     }
                 }
-            }
-            pos += 1;
-        }
-        if itb.available_actions.can_set_price && range.contains(&pos) {
-            // Set Price
-            if ui.button("Set Price").clicked() {
-                match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
-                        Ok(info) => {
-                            action = AppAction::AddScreen(
-                                Screen::SetTokenPriceScreen(
-                                    SetTokenPriceScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
-                    };
-
-                ui.close_kind(egui::UiKind::Menu);
             }
         }
         action
+    }
+
+    /// Opens the screen `screen` builds for `itb`'s token and identity, once
+    /// a row action is clicked, and closes the "..." menu; shows a banner
+    /// when the token's identity or contract cannot be loaded.
+    fn open_with_token_info(
+        &self,
+        itb: &IdentityTokenMaybeBalanceWithActions,
+        ui: &mut Ui,
+        screen: impl FnOnce(IdentityTokenInfo, &Arc<AppContext>) -> Screen,
+    ) -> AppAction {
+        let action =
+            match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(
+                itb,
+                &self.app_context,
+            ) {
+                Ok(info) => AppAction::AddScreen(screen(info, &self.app_context)),
+                Err(e) => {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    AppAction::None
+                }
+            };
+        ui.close_kind(egui::UiKind::Menu);
+        action
+    }
+
+    /// The Purchase row action: a spinner while the token's prices load, then
+    /// the Purchase button, disabled when the identity cannot afford one
+    /// token. Nothing while no prices have been requested.
+    fn render_purchase_action(
+        &self,
+        itb: &IdentityTokenMaybeBalanceWithActions,
+        dark_mode: bool,
+        ui: &mut Ui,
+    ) -> AppAction {
+        // Check if we have pricing data
+        let has_pricing_data = self.token_pricing_data.contains_key(&itb.token_id);
+        let is_loading = self
+            .pricing_loading_state
+            .get(&itb.token_id)
+            .copied()
+            .unwrap_or(false);
+
+        if is_loading {
+            // Show loading spinner
+            ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+        } else if has_pricing_data {
+            // Check if identity has enough credits for at least one token
+            let has_credits = self
+                .app_context
+                .get_identity_by_id(&itb.identity_id)
+                .map(|identity_opt| {
+                    identity_opt
+                        .map(|identity| {
+                            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                            // Check if identity has enough credits for the minimum token price
+                            if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id)
+                            {
+                                let min_price = get_min_token_price(pricing);
+                                identity.identity.balance() >= min_price
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            if has_credits {
+                // Purchase button enabled
+                if ui.button("Purchase").clicked() {
+                    return self.open_with_token_info(itb, ui, |info, app_context| {
+                        Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(info, app_context))
+                    });
+                }
+            } else {
+                // Disabled, grayed-out Purchase button
+                ui.add_enabled(
+                    false,
+                    egui::Button::new(
+                        RichText::new("Purchase").color(DashColors::muted_color(dark_mode)),
+                    ),
+                )
+                .disabled_tooltip({
+                    if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
+                        let min_price = get_min_token_price(pricing);
+                        format!(
+                            "Insufficient credits. Need at least {} credits to purchase one token",
+                            min_price
+                        )
+                    } else {
+                        "No credits available for purchase".to_string()
+                    }
+                });
+            }
+        }
+        AppAction::None
     }
 
     /// Renders the top-level token list (one row per unique token).
@@ -1131,6 +1061,48 @@ fn short_id_cell(ui: &mut Ui, id: Identifier, is_contract_owner: bool) {
     }
 }
 
+/// One action in a token row, in the order the row offers them. The first
+/// three go inline, the rest in the "..." menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenRowAction {
+    Transfer,
+    Claim,
+    Mint,
+    Burn,
+    Freeze,
+    DestroyFrozenFunds,
+    Unfreeze,
+    Pause,
+    Resume,
+    ViewClaims,
+    UpdateConfig,
+    Purchase,
+    SetPrice,
+}
+
+/// The actions a token row offers for `actions`, one slot each, in order.
+/// Transfer always has a slot: it is shown disabled when unavailable.
+fn token_row_actions(actions: &IdentityTokenAvailableActions) -> Vec<TokenRowAction> {
+    [
+        (true, TokenRowAction::Transfer),
+        (actions.can_claim, TokenRowAction::Claim),
+        (actions.can_mint, TokenRowAction::Mint),
+        (actions.can_burn, TokenRowAction::Burn),
+        (actions.can_freeze, TokenRowAction::Freeze),
+        (actions.can_destroy, TokenRowAction::DestroyFrozenFunds),
+        (actions.can_unfreeze, TokenRowAction::Unfreeze),
+        (actions.can_do_emergency_action, TokenRowAction::Pause),
+        (actions.can_do_emergency_action, TokenRowAction::Resume),
+        (actions.can_claim, TokenRowAction::ViewClaims),
+        (actions.can_update_config, TokenRowAction::UpdateConfig),
+        (actions.can_maybe_purchase, TokenRowAction::Purchase),
+        (actions.can_set_price, TokenRowAction::SetPrice),
+    ]
+    .into_iter()
+    .filter_map(|(offered, row_action)| offered.then_some(row_action))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1171,6 +1143,127 @@ mod tests {
         assert_eq!(
             crate::ui::components::message_banner::global_banner_texts(&harness.ctx),
             vec![ID_COPIED.to_string()]
+        );
+    }
+
+    /// The buttons `render_actions` draws for `actions` within `range`, in
+    /// order.
+    fn rendered_action_labels(
+        actions: IdentityTokenAvailableActions,
+        range: Range<usize>,
+    ) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let screen = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        let token_id = Identifier::from([42; 32]);
+        let token_configuration: dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration =
+            TokenConfigurationV0::default_most_restrictive().into();
+        let contract = context.dpns_contract().as_ref().clone();
+        let token_info = TokenInfoWithDataContract {
+            token_id,
+            token_name: "Test token".into(),
+            data_contract: contract.clone(),
+            token_position: 0,
+            token_configuration: token_configuration.clone(),
+            description: None,
+        };
+        let itb = IdentityTokenMaybeBalanceWithActions {
+            token_id,
+            token_alias: "Test token".into(),
+            token_config: token_configuration,
+            identity_id: Identifier::from([1; 32]),
+            identity_name: None,
+            balance: Some(10),
+            estimated_unclaimed_rewards: None,
+            data_contract_id: contract.id(),
+            token_position: 0,
+            available_actions: actions,
+        };
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 600.0))
+            .build_ui_state(
+                move |ui, screen: &mut TokensScreen| {
+                    ui.horizontal(|ui| {
+                        let _ = screen.render_actions(&itb, &token_info, range.clone(), ui);
+                    });
+                },
+                screen,
+            );
+        harness.run();
+        use egui_kittest::kittest::NodeT;
+        harness
+            .query_all_by_role(egui::accesskit::Role::Button)
+            .filter_map(|button| button.accesskit_node().label())
+            .collect()
+    }
+
+    /// Regression: Pause and Resume took a position only when shown, so with
+    /// Transfer, Claim and the emergency actions the overflow menu skipped
+    /// Resume and it was reachable nowhere. Every action has one slot: the
+    /// inline actions and the "..." menu together show each exactly once.
+    #[test]
+    fn every_token_row_action_is_shown_once_inline_or_in_the_menu() {
+        let none = IdentityTokenAvailableActions {
+            can_claim: false,
+            can_estimate: false,
+            can_mint: false,
+            can_burn: false,
+            can_freeze: false,
+            can_unfreeze: false,
+            can_destroy: false,
+            can_do_emergency_action: false,
+            can_maybe_purchase: false,
+            can_set_price: false,
+            can_transfer: false,
+            can_update_config: false,
+        };
+        let claim_and_emergency = IdentityTokenAvailableActions {
+            can_transfer: true,
+            can_claim: true,
+            can_do_emergency_action: true,
+            ..none
+        };
+        assert_eq!(
+            rendered_action_labels(claim_and_emergency, 0..3),
+            ["Transfer", "Claim", "Pause"]
+        );
+        assert_eq!(
+            rendered_action_labels(claim_and_emergency, 3..128),
+            ["Resume", "View Claims"]
+        );
+
+        let all = IdentityTokenAvailableActions {
+            can_claim: true,
+            can_mint: true,
+            can_burn: true,
+            can_freeze: true,
+            can_unfreeze: true,
+            can_destroy: true,
+            can_do_emergency_action: true,
+            can_set_price: true,
+            can_transfer: true,
+            can_update_config: true,
+            ..none
+        };
+        let mut shown = rendered_action_labels(all, 0..3);
+        assert_eq!(shown, ["Transfer", "Claim", "Mint"]);
+        shown.extend(rendered_action_labels(all, 3..128));
+        assert_eq!(
+            shown,
+            [
+                "Transfer",
+                "Claim",
+                "Mint",
+                "Burn",
+                "Freeze",
+                "Destroy Frozen Identity Tokens",
+                "Unfreeze",
+                "Pause",
+                "Resume",
+                "View Claims",
+                "Update Config",
+                "Set Price",
+            ]
         );
     }
 

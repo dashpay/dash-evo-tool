@@ -5,7 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::SigningScope;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{QualifiedIdentity, SingleTokenKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -422,13 +422,19 @@ impl ScreenLike for TransferTokensScreen {
             ));
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !identity.identity.public_keys().is_empty()
+            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
+                if identity.identity.public_keys().is_empty() {
+                    SingleTokenKeyStatus::NoneHeld
+                } else {
+                    SingleTokenKeyStatus::Usable
+                }
             } else {
-                identity.holds_single_token_transition_key()
+                identity.single_token_transition_key_status(
+                    self.identity_token_balance.data_contract_id,
+                )
             };
 
-            if !has_keys {
+            if key_status != SingleTokenKeyStatus::Usable {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
                 let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]
@@ -442,12 +448,14 @@ impl ScreenLike for TransferTokensScreen {
                         )
                     })
                     .cloned();
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
+                let message = if key_status == SingleTokenKeyStatus::HeldButUnusable {
+                    "No key on this device can sign this token transfer. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                } else {
                     format!(
                         "You do not have a CRITICAL authentication or transfer key loaded for this {identity_type} identity."
-                    ),
-                );
+                    )
+                };
+                ui.colored_label(DashColors::error_color(dark_mode), message);
                 ui.add_space(10.0);
 
                 if let Some(key) = key {

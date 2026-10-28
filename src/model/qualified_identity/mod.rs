@@ -591,6 +591,23 @@ pub const DASHPAY_SIGNING_KEY_TYPES: &[KeyType] =
 /// (`BatchTransitionV1::purpose_requirement`; TRANSFER requires CRITICAL).
 const SINGLE_TOKEN_TRANSITION_PURPOSES: [Purpose; 2] = [Purpose::AUTHENTICATION, Purpose::TRANSFER];
 
+/// Whether an identity can sign a batch of one token transfer or claim on a
+/// contract on this device, as
+/// [`QualifiedIdentity::single_token_transition_key_status`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleTokenKeyStatus {
+    /// [`QualifiedIdentity::single_token_transition_key`] picks a key.
+    Usable,
+    /// A private key of a purpose, level and key type the transition takes
+    /// is filed, but none can sign it now: each is disabled or expired, bound
+    /// to another contract, or its private half is not readable on this
+    /// device.
+    HeldButUnusable,
+    /// No private key of a purpose, level and key type the transition takes
+    /// is filed.
+    NoneHeld,
+}
+
 /// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
 /// Pulled into its own function (rather than inlined at the one call site) so
 /// the decode-limit regression test below exercises the *exact* configuration
@@ -1295,12 +1312,29 @@ impl QualifiedIdentity {
             })
     }
 
+    /// Whether this device can sign a batch of one token transfer or claim on
+    /// `contract_id`: the gate in front of the token transfer form, and of
+    /// the claim form for a user identity. It opens exactly when
+    /// [`Self::single_token_transition_key`] picks a key, so an open form can
+    /// always sign; when closed, it tells a missing key apart from keys that
+    /// cannot sign here, which need different guidance.
+    pub fn single_token_transition_key_status(
+        &self,
+        contract_id: dash_sdk::platform::Identifier,
+    ) -> SingleTokenKeyStatus {
+        if self.single_token_transition_key(contract_id).is_some() {
+            SingleTokenKeyStatus::Usable
+        } else if self.holds_single_token_transition_key() {
+            SingleTokenKeyStatus::HeldButUnusable
+        } else {
+            SingleTokenKeyStatus::NoneHeld
+        }
+    }
+
     /// Whether a private key of a purpose, level and key type
-    /// [`Self::single_token_transition_key`] takes is filed for the identity:
-    /// the gate in front of the token transfer form, and of the claim form
-    /// for a user identity. Expiry and contract bounds are left to the key
-    /// chooser's warnings, as for every other form.
-    pub fn holds_single_token_transition_key(&self) -> bool {
+    /// [`Self::single_token_transition_key`] takes is filed for the identity,
+    /// whether or not it can sign now.
+    fn holds_single_token_transition_key(&self) -> bool {
         self.private_keys
             .identity_public_keys()
             .iter()
@@ -3796,6 +3830,74 @@ mod protocol_v14_compat_tests {
         assert!(
             identity_holding(&[bls]).holds_single_token_transition_key(),
             "Platform verifies BLS signatures"
+        );
+    }
+
+    /// Regression: the token transfer and claim gate counted any filed
+    /// CRITICAL key, while the transition signs only with a live key valid
+    /// for the contract whose private half this device can read, so an
+    /// identity holding only an expired, elsewhere-bound or unreadable key got
+    /// a form it could not send. The gate opens exactly when the key choice
+    /// picks a key.
+    #[test]
+    fn the_single_token_gate_opens_exactly_when_a_key_is_picked() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let critical = |id| auth_key(id, SecurityLevel::CRITICAL);
+        let expired = identity_holding(&[critical(1).with_limits(None, Some(1))]);
+        let elsewhere = identity_holding(&[bound_to(
+            critical(1),
+            ContractBounds::SingleContract {
+                id: Identifier::new([0x09; 32]),
+            },
+        )]);
+        let mut unreadable = identity_holding(&[critical(1)]);
+        unreadable.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (
+                QualifiedIdentityPublicKey {
+                    identity_public_key: critical(1),
+                    in_wallet_at_derivation_path: None,
+                },
+                PrivateKeyData::Encrypted(vec![1; 48]),
+            ),
+        );
+        for (case, qi) in [
+            ("expired", &expired),
+            ("bound elsewhere", &elsewhere),
+            ("not readable here", &unreadable),
+        ] {
+            assert!(
+                qi.single_token_transition_key(contract_id).is_none(),
+                "{case}"
+            );
+            assert_eq!(
+                qi.single_token_transition_key_status(contract_id),
+                SingleTokenKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+        }
+
+        let bound_here = identity_holding(&[bound_to(
+            critical(1),
+            ContractBounds::SingleContract { id: contract_id },
+        )]);
+        assert!(
+            bound_here
+                .single_token_transition_key(contract_id)
+                .is_some()
+        );
+        assert_eq!(
+            bound_here.single_token_transition_key_status(contract_id),
+            SingleTokenKeyStatus::Usable
+        );
+        assert_eq!(
+            identity_holding(&[auth_key(1, SecurityLevel::HIGH)])
+                .single_token_transition_key_status(contract_id),
+            SingleTokenKeyStatus::NoneHeld
         );
     }
 

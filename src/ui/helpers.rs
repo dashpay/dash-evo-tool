@@ -361,6 +361,7 @@ impl TransactionType {
 
     /// The key types this transaction type is signed with, or `None` when
     /// every key type is accepted: the ones its automatic key choice takes.
+    /// Never a type Platform refuses.
     pub fn allowed_key_types(&self) -> Option<&'static [KeyType]> {
         match self {
             TransactionType::ContactRequest => {
@@ -369,15 +370,16 @@ impl TransactionType {
             TransactionType::UsernameRegistration => {
                 Some(crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES)
             }
-            TransactionType::TokenTransfer | TransactionType::TokenClaim => {
-                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
-            }
-            TransactionType::RegisterContract
+            TransactionType::TokenTransfer
+            | TransactionType::TokenClaim
+            | TransactionType::RegisterContract
             | TransactionType::UpdateContract
             | TransactionType::Transfer
             | TransactionType::Withdraw
             | TransactionType::DocumentAction
-            | TransactionType::TokenAction => None,
+            | TransactionType::TokenAction => {
+                Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
+            }
         }
     }
 
@@ -1384,7 +1386,7 @@ mod tests {
     }
 
     /// DashPay and username registration choosers offer the key types their
-    /// automatic choice takes; other transactions accept every key type.
+    /// automatic choice takes; other transactions the types Platform verifies.
     #[test]
     fn document_choosers_offer_the_key_types_their_writes_sign_with() {
         use crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES;
@@ -1397,7 +1399,10 @@ mod tests {
             TransactionType::UsernameRegistration.allowed_key_types(),
             Some(DPNS_SIGNING_KEY_TYPES)
         );
-        assert_eq!(TransactionType::DocumentAction.allowed_key_types(), None);
+        assert_eq!(
+            TransactionType::DocumentAction.allowed_key_types(),
+            Some(crate::model::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES)
+        );
         for token in [TransactionType::TokenTransfer, TransactionType::TokenClaim] {
             assert_eq!(
                 token.allowed_key_types(),
@@ -1409,6 +1414,35 @@ mod tests {
             TransactionType::UsernameRegistration.allowed_purposes(),
             vec![Purpose::AUTHENTICATION]
         );
+    }
+
+    /// Regression: every chooser except the token, DashPay and username ones
+    /// offered keys of any type, including EdDSA and BIP13 keys Platform
+    /// refuses for every identity-signed transition.
+    #[test]
+    fn no_chooser_offers_a_key_type_platform_refuses() {
+        for transaction_type in [
+            TransactionType::RegisterContract,
+            TransactionType::UpdateContract,
+            TransactionType::Transfer,
+            TransactionType::Withdraw,
+            TransactionType::DocumentAction,
+            TransactionType::TokenAction,
+            TransactionType::TokenTransfer,
+            TransactionType::TokenClaim,
+            TransactionType::ContactRequest,
+            TransactionType::UsernameRegistration,
+        ] {
+            let types = transaction_type
+                .allowed_key_types()
+                .unwrap_or_else(|| panic!("{transaction_type:?} accepts every key type"));
+            for refused in [KeyType::EDDSA_25519_HASH160, KeyType::BIP13_SCRIPT_HASH] {
+                assert!(
+                    !types.contains(&refused),
+                    "{transaction_type:?}: {refused:?}"
+                );
+            }
+        }
     }
 
     fn outside_press() -> egui::RawInput {

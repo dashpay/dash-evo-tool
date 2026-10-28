@@ -628,6 +628,7 @@ impl WalletBackend {
         let coordinator_gate = Arc::new(CoordinatorGate::default());
 
         let bridge = Arc::new(EventBridge::new(
+            network,
             connection_status,
             task_result_sender.clone(),
             Arc::clone(&snapshots),
@@ -1978,6 +1979,7 @@ impl WalletBackend {
         // is provably reachable. Cloning the sender avoids capturing any
         // `Weak<AppContext>` in this run-loop closure.
         let task_result_sender = self.inner.task_result_sender.clone();
+        let network = self.inner.network;
         self.inner.coordinator_gate.arm(Box::new(move || {
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
@@ -2005,7 +2007,8 @@ impl WalletBackend {
             // (single-winner gate): a full 256-deep channel would drop this and
             // the sweep would not run until a reconnect re-arms the gate, but the
             // user can always run discovery manually, so the drop is tolerated.
-            let _ = task_result_sender.try_send(TaskResult::unattributed_success(
+            let _ = task_result_sender.try_send(TaskResult::wallet_event(
+                network,
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
             ));
         }));

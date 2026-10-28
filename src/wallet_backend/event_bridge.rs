@@ -30,6 +30,7 @@ use crate::context::connection_status::{
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
 /// Maximum number of bytes of an upstream SPV error message kept for the UI
@@ -41,6 +42,9 @@ const SPV_ERROR_SNIPPET_MAX: usize = 200;
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
 /// and clone-free on the event hot path.
 pub struct EventBridge {
+    /// The network of the backend this bridge forwards for. Every forwarded
+    /// result names it, since the backend outlives a switch to another network.
+    network: Network,
     connection_status: Arc<ConnectionStatus>,
     task_result_sender: SenderAsync<TaskResult>,
     snapshots: Arc<SnapshotStore>,
@@ -70,6 +74,7 @@ pub struct EventBridge {
 
 impl EventBridge {
     pub(super) fn new(
+        network: Network,
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
         snapshots: Arc<SnapshotStore>,
@@ -79,6 +84,7 @@ impl EventBridge {
         platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
     ) -> Self {
         Self {
+            network,
             connection_status,
             task_result_sender,
             snapshots,
@@ -130,7 +136,7 @@ impl EventBridge {
                 );
                 let _ = self
                     .task_result_sender
-                    .try_send(TaskResult::unattributed_success(result));
+                    .try_send(TaskResult::wallet_event(self.network, result));
             }
         }
     }
@@ -158,7 +164,7 @@ impl EventBridge {
         let result = BackendTaskSuccessResult::DashPayIncomingDetected(candidates);
         let _ = self
             .task_result_sender
-            .try_send(TaskResult::unattributed_success(result));
+            .try_send(TaskResult::wallet_event(self.network, result));
     }
 
     fn apply_status(&self, status: SpvStatus) {
@@ -433,7 +439,7 @@ impl PlatformEventHandler for EventBridge {
             let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
             let _ = self
                 .task_result_sender
-                .try_send(TaskResult::unattributed_success(result));
+                .try_send(TaskResult::wallet_event(self.network, result));
         }
 
         self.nudge_refresh();
@@ -607,9 +613,10 @@ mod tests {
     type ShieldedBalancesHandle = Arc<Mutex<HashMap<WalletSeedHash, u64>>>;
     /// Shorthand for the platform sync-cursor snapshot handle the helpers wire.
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
+    use crate::backend_task::BackendTaskContext;
     use crate::utils::egui_mpsc::EguiMpscAsync;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
+    use dash_sdk::dpp::dashcore::{Address, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
@@ -640,6 +647,7 @@ mod tests {
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
         let gate = Arc::new(CoordinatorGate::default());
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
@@ -665,6 +673,7 @@ mod tests {
         let gate = Arc::new(CoordinatorGate::default());
         let balances = Arc::new(Mutex::new(HashMap::new()));
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
@@ -693,6 +702,7 @@ mod tests {
         let platform_balances = Arc::new(Mutex::new(HashMap::new()));
         let platform_sync_cursors = Arc::new(Mutex::new(HashMap::new()));
         let bridge = EventBridge::new(
+            Network::Testnet,
             Arc::clone(&cs),
             tx,
             Arc::new(SnapshotStore::new()),
@@ -1111,6 +1121,38 @@ mod tests {
             .expect("a confirmed-first received output yields a candidate");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].amount_duffs, 33_000);
+    }
+
+    /// Every event the bridge forwards names the network of the backend that
+    /// raised it: the frame loop keeps a previous network's events off the
+    /// active network's screens by that name.
+    #[test]
+    fn forwarded_events_name_the_bridges_network() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        bridge.on_wallet_event(&transaction_detected(received_record(
+            &funding_address(),
+            100_000,
+        )));
+
+        let mut contexts = Vec::new();
+        while let Ok(result) = rx.try_recv() {
+            if let TaskResult::Success { context, .. } = result {
+                contexts.push(context);
+            }
+        }
+        assert_eq!(
+            contexts.len(),
+            2,
+            "a received payment forwards the UTXO and the DashPay candidate"
+        );
+        for context in contexts {
+            assert_eq!(
+                context,
+                BackendTaskContext::WalletSync {
+                    network: Network::Testnet
+                }
+            );
+        }
     }
 
     #[test]

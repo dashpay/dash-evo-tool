@@ -422,6 +422,11 @@ pub enum BackendTaskContext {
         network: Network,
         operation: Box<BackendTaskContext>,
     },
+    /// An event one network's wallet backend raised from chain sync — a
+    /// received payment, a balance push, Platform becoming reachable — rather
+    /// than from a request. The backend outlives a switch away from its
+    /// network, so this is the only record of the network the event belongs to.
+    WalletSync { network: Network },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -470,12 +475,16 @@ impl BackendTaskContext {
         }
     }
 
-    /// The network a scheduled-vote sweep runs on, or `None` for every other
-    /// operation. The app starts sweeps itself, undispatched, so this is the
-    /// only record of the network their outcome belongs to.
-    pub(crate) fn scheduled_vote_sweep_network(&self) -> Option<Network> {
+    /// The network an operation no screen dispatched runs on, or `None` when
+    /// the context does not name one. The app's own sweeps and background
+    /// refreshes, and the wallet backend's chain-sync events, have no sender
+    /// on record, so this is the only record of the network their results
+    /// belong to.
+    pub(crate) fn undispatched_network(&self) -> Option<Network> {
         match self {
-            Self::ScheduledVoteSweep { network } => Some(*network),
+            Self::ScheduledVoteSweep { network }
+            | Self::DpnsBackgroundRefresh { network }
+            | Self::WalletSync { network } => Some(*network),
             _ => None,
         }
     }

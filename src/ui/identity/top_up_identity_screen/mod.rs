@@ -438,6 +438,25 @@ impl TopUpIdentityScreen {
         self.top_up_context.context().cloned()
     }
 
+    /// Test seam: wait for a deposit to `address`, as choosing Receive Deposit
+    /// does once its address is ready, without deriving one.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn await_deposit_for_test(&mut self, address: Address) {
+        if let Ok(mut method) = self.funding_method.write() {
+            *method = FundingMethod::ReceiveDeposit;
+        }
+        self.funding_address = Some(address);
+        self.set_step(WalletFundedScreenStep::WaitingOnFunds);
+    }
+
+    /// Test seam: whether the form still waits for its deposit.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn is_waiting_on_funds_for_test(&self) -> bool {
+        self.current_step() == WalletFundedScreenStep::WaitingOnFunds
+    }
+
     /// Test seam: age the blocking overlay of the running top-up by `by`.
     #[cfg(feature = "testing")]
     #[doc(hidden)]

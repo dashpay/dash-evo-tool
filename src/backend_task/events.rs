@@ -62,4 +62,14 @@ impl TaskResult {
             error,
         }
     }
+
+    /// An event one network's wallet backend raised from chain sync, not from
+    /// a request. It belongs to `network` whether or not that network is the
+    /// active one.
+    pub(crate) fn wallet_event(network: Network, result: BackendTaskSuccessResult) -> Self {
+        Self::Success {
+            context: BackendTaskContext::WalletSync { network },
+            result: Box::new(result),
+        }
+    }
 }

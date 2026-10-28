@@ -119,6 +119,21 @@ impl AppState {
         }
     }
 
+    /// The network context an undispatched result's data belongs to: the one
+    /// its context names, while the app still holds it, else the active one.
+    /// A wallet event applies to its own network's wallets whether or not
+    /// that network is active; only screens are kept to the active network.
+    pub(super) fn network_context_of(
+        &self,
+        context: &BackendTaskContext,
+    ) -> std::sync::Arc<crate::context::AppContext> {
+        context
+            .undispatched_network()
+            .and_then(|network| self.network_contexts.get(&network))
+            .unwrap_or_else(|| self.current_app_context())
+            .clone()
+    }
+
     /// Tell the open screen that dispatched a task that the task failed, for an
     /// error the general error path does not deliver. A screen waiting on its
     /// own task would otherwise wait for good.
@@ -152,10 +167,11 @@ impl AppState {
             }
             Some((owner, _)) if self.has_screen(owner) => ResultRoute::Owner(owner),
             Some(_) => ResultRoute::ClosedOwner,
-            // The app's own sweep names its network in its context, and a
-            // contest refresh names it in the result it sends mid-task: a
-            // late one is the previous network's, like a late dispatch.
-            None => match context.scheduled_vote_sweep_network().or_else(|| {
+            // The app's own sweeps and the wallet backend's events name their
+            // network in their context, and a contest refresh names it in the
+            // result it sends mid-task: a late one is the previous network's,
+            // like a late dispatch.
+            None => match context.undispatched_network().or_else(|| {
                 result.and_then(BackendTaskSuccessResult::dpns_contests_refresh_network)
             }) {
                 Some(network) if network != active_network => ResultRoute::PreviousNetwork(None),

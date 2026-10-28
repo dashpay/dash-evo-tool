@@ -13,10 +13,15 @@
 //! reaches screens only while that network is active: one arriving after a
 //! switch to another network ([`ResultRoute::PreviousNetwork`]) reaches no
 //! screen and no observer, and banners report it as for a closed sender. A
-//! switch back before it arrives delivers it as usual. Two results without a
-//! dispatch id name their network and are held to the same rule: the app's
-//! own scheduled-vote sweeps, in their context, and a contest refresh's
-//! mid-task `RefreshedDpnsContests`, in the result itself.
+//! switch back before it arrives delivers it as usual. Results without a
+//! dispatch id that name their network are held to the same rule: the app's
+//! own scheduled-vote sweeps and background refreshes, and the wallet
+//! backend's chain-sync events (a received payment, a balance push, Platform
+//! becoming reachable), in their context
+//! ([`BackendTaskContext::undispatched_network`]); a contest refresh's mid-task
+//! `RefreshedDpnsContests`, in the result itself. A wallet event's data still
+//! applies to the wallets of the network it came from; only screens and
+//! banners are kept to the active network.
 //!
 //! Known limitation: other results without a dispatch id — undispatched app
 //! tasks and mid-task `Progress` updates — carry no network and still go to

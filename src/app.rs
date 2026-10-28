@@ -1743,13 +1743,25 @@ impl AppState {
         tasks: Vec<(BackendTask, BackendTaskContext)>,
         mode: BackendTasksExecutionMode,
     ) {
+        let app_context = self.current_app_context().clone();
+        self.execute_requests_on(app_context, tasks, mode);
+    }
+
+    /// Run `tasks` on `app_context`, which need not be the active network's:
+    /// a wallet event is followed up on the network it came from.
+    fn execute_requests_on(
+        &mut self,
+        app_context: Arc<AppContext>,
+        tasks: Vec<(BackendTask, BackendTaskContext)>,
+        mode: BackendTasksExecutionMode,
+    ) {
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.extend(tasks);
             return;
         }
         self.rejected_requests.extend(task_dispatch::spawn(
-            self.current_app_context().clone(),
+            app_context,
             &self.subtasks,
             self.task_result_sender.clone(),
             tasks,
@@ -2454,18 +2466,31 @@ impl App for AppState {
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
                             // freshly-seen wallet transaction. Run the owner-
-                            // scoped detect-match-record off the frame thread;
-                            // matches come back as a `Refresh` to repaint the
-                            // payment history, misses as `None`.
-                            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
-                                DashPayTask::DetectIncomingContactPayments { outputs },
-                            )));
+                            // scoped detect-match-record off the frame thread,
+                            // on the network the payment arrived on, under the
+                            // event's context so a late outcome stays off the
+                            // new network's screens. Matches come back as a
+                            // `Refresh` to repaint the payment history, misses
+                            // as `None`.
+                            let event_context = self.network_context_of(&context);
+                            self.execute_requests_on(
+                                event_context,
+                                vec![(
+                                    BackendTask::DashPayTask(Box::new(
+                                        DashPayTask::DetectIncomingContactPayments { outputs },
+                                    )),
+                                    context,
+                                )],
+                                BackendTasksExecutionMode::Sequential,
+                            );
                         }
                         BackendTaskSuccessResult::PlatformReadyDiscoverIdentities => {
-                            // Platform is reachable: run the automatic all-wallets
-                            // identity discovery sweep. The latch inside makes it a
-                            // no-op if it already ran this session.
-                            active_context.queue_all_wallets_identity_discovery();
+                            // Platform is reachable on the event's network: run
+                            // its automatic all-wallets identity discovery sweep.
+                            // The latch inside makes it a no-op if it already ran
+                            // this session.
+                            self.network_context_of(&context)
+                                .queue_all_wallets_identity_discovery();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
                             // TODO: Some screens inspect Message text for error
@@ -2540,9 +2565,11 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::PlatformAddressSyncPushed { updates } => {
                             // Coordinator push: populate per-address platform_address_info
-                            // for all loaded wallets so the per-address tab stays current
-                            // without a manual Refresh. No banner — this fires every 15 s.
-                            active_context.apply_platform_address_push(updates);
+                            // for the loaded wallets of the network it synced, so the
+                            // per-address tab stays current without a manual Refresh.
+                            // No banner — this fires every 15 s.
+                            self.network_context_of(&context)
+                                .apply_platform_address_push(updates);
                         }
                         BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
                             MessageBanner::set_global(

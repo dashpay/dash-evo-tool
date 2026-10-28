@@ -676,8 +676,7 @@ impl UpdateTokenConfigScreen {
         );
 
         if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
-            && token_change_item_is_supported(&self.change_item)
-            && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
+            && change_item_can_be_submitted(&self.change_item, &self.text_input_error)
         {
             ui.add_space(20.0);
             if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
@@ -1041,6 +1040,22 @@ impl ScreenLike for UpdateTokenConfigScreen {
     }
 }
 
+/// Whether `item` can be sent as a configuration update.
+///
+/// The conventions editor keeps the last valid conventions while its text
+/// does not parse, so `conventions_parse_error` must be empty before
+/// conventions are sent: otherwise the update would carry the earlier value
+/// instead of what the editor shows.
+fn change_item_can_be_submitted(
+    item: &TokenConfigurationChangeItem,
+    conventions_parse_error: &str,
+) -> bool {
+    token_change_item_is_supported(item)
+        && *item != TokenConfigurationChangeItem::TokenConfigurationNoChange
+        && (!matches!(item, TokenConfigurationChangeItem::Conventions(_))
+            || conventions_parse_error.is_empty())
+}
+
 /// Returns a simple label for UI display
 fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str {
     match item {
@@ -1130,6 +1145,30 @@ mod sdk_adapter_tests {
         }
         assert!(token_change_item_is_supported(
             &TokenConfigurationChangeItem::MaxSupply(Some(17))
+        ));
+    }
+
+    /// While the conventions text does not parse, the editor still holds the
+    /// earlier conventions, so they must not be sent.
+    #[test]
+    fn conventions_with_invalid_json_cannot_be_submitted() {
+        let conventions = TokenConfigurationChangeItem::Conventions(
+            TokenConfigurationConvention::V0(Default::default()),
+        );
+        assert!(!change_item_can_be_submitted(
+            &conventions,
+            "Invalid JSON: expected value"
+        ));
+        assert!(change_item_can_be_submitted(&conventions, ""));
+        // A parse error left over from the conventions editor does not block
+        // other items, which do not use that editor.
+        assert!(change_item_can_be_submitted(
+            &TokenConfigurationChangeItem::MaxSupply(Some(17)),
+            "Invalid JSON: expected value"
+        ));
+        assert!(!change_item_can_be_submitted(
+            &TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            ""
         ));
     }
 }

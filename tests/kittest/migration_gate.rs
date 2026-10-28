@@ -1307,9 +1307,15 @@ fn a_switch_that_stops_without_a_result_releases_the_app() {
                 error: TaskError::NetworkSwitchedBeforeResult,
             })
             .expect("queue the retry's end");
+        // The last painted frame predates the retry, so it has no overlay yet.
+        harness.step();
         step_until_painted(&mut harness, "the retry's overlay to close", |h| {
             h.query_by_label_contains(switching).is_none()
         });
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "the retry's end clears the blocking overlay"
+        );
         assert_eq!(harness.state().current_app_context().network(), first);
     });
 }

@@ -22,6 +22,7 @@ use dash_sdk::dpp::data_contract::{TokenConfiguration, TokenContractPosition};
 use dash_sdk::dpp::group::action_taker::{ActionGoal, ActionTaker};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier};
 
 /// One `(identity, token)` pair.
@@ -162,6 +163,11 @@ pub struct IdentityTokenBalance {
 }
 
 impl IdentityTokenMaybeBalanceWithActions {
+    /// `value` in the token's decimals, with the alias as unit.
+    pub fn amount_of(&self, value: TokenAmount) -> Amount {
+        token_amount(&self.token_config, &self.token_alias, value)
+    }
+
     /// The same token with a now-known `balance`.
     pub fn to_token_balance(&self, balance: TokenAmount) -> IdentityTokenBalance {
         IdentityTokenBalance {
@@ -212,7 +218,8 @@ impl IdentityTokenBalance {
     ///
     /// `in_dev_mode` is a *display* override that lights up every button
     /// regardless of the token's rules; never derive authorisation from the
-    /// result when it is set — use [`identity_has_token_admin_permission`].
+    /// result when it is set — compute with `false` and ask
+    /// [`IdentityTokenAvailableActions::has_admin_permission`].
     pub fn into_with_actions(
         self,
         identity: &QualifiedIdentity,
@@ -258,7 +265,7 @@ pub struct IdentityTokenBalanceWithActions {
 }
 
 /// The actions one identity may take on one token.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct IdentityTokenAvailableActions {
     pub can_claim: bool,
     pub can_estimate: bool,
@@ -319,8 +326,9 @@ impl IdentityTokenAvailableActions {
 
     /// Whether any administrative action (mint, burn, freeze, unfreeze,
     /// destroy frozen funds, emergency action, set price, update config) is
-    /// available. Only meaningful for actions computed without the dev-mode
-    /// display override; see [`identity_has_token_admin_permission`].
+    /// available. Answers the real permission question only for actions
+    /// computed with `in_dev_mode = false`, because the developer display
+    /// override turns every flag on.
     pub fn has_admin_permission(&self) -> bool {
         self.can_mint
             || self.can_burn
@@ -333,25 +341,6 @@ impl IdentityTokenAvailableActions {
     }
 }
 
-/// Whether `identity` holds at least one administrative permission on the
-/// token, as authorised by the token configuration's change-control rules.
-/// Independent of the user's role and of the dev-mode display override.
-pub fn identity_has_token_admin_permission(
-    identity: &QualifiedIdentity,
-    token_configuration: &TokenConfiguration,
-    contract: &DataContract,
-) -> bool {
-    get_available_token_actions_for_identity(
-        None,
-        identity,
-        token_configuration,
-        contract,
-        false,
-        None,
-    )
-    .has_admin_permission()
-}
-
 /// Whether the identity can transfer the token: it holds some, and the token
 /// lets holders move it to another identity (Platform refuses every transfer
 /// of a non-transferable token).
@@ -362,38 +351,43 @@ fn transfer_available(
     token_configuration.is_transferable() && known_balance.is_some_and(|b| b > 0)
 }
 
-/// Whether `identity` may receive the perpetual distribution paid to `recipient`.
-pub fn validate_perpetual_distribution_recipient(
+/// Whether `identity` is who the perpetual distribution pays: the contract
+/// owner, a named identity, or any evonode.
+pub fn is_perpetual_distribution_recipient(
     contract_owner_id: Identifier,
     recipient: TokenDistributionRecipient,
     identity: &QualifiedIdentity,
-) -> Result<(), String> {
+) -> bool {
     match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
+        TokenDistributionRecipient::ContractOwner => contract_owner_id == identity.identity.id(),
+        TokenDistributionRecipient::Identity(identifier) => identifier == identity.identity.id(),
         TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
+            identity.identity_type == IdentityType::Evonode
         }
     }
+}
+
+/// The registry name of a token as shown to the user: control and bidi
+/// characters removed, so a look-alike name cannot hide its difference or
+/// reorder the text around it. A name with nothing left falls back to the
+/// shortened token ID.
+pub fn token_display_name(name: &str, token_id: &Identifier) -> String {
+    let cleaned = crate::model::identity_name::clean_display_text(name);
+    if cleaned.is_empty() {
+        crate::model::identity_name::shorten_id(&token_id.to_string(Encoding::Base58))
+    } else {
+        cleaned
+    }
+}
+
+/// `value` in the token's decimals with `alias` as the unit — the one place
+/// a token amount is formatted from its configuration.
+pub fn token_amount(
+    token_configuration: &TokenConfiguration,
+    alias: &str,
+    value: TokenAmount,
+) -> Amount {
+    Amount::new(value, token_configuration.conventions().decimals()).with_unit_name(alias)
 }
 
 /// Whether `identity_id` is owed anything by the token's pre-programmed
@@ -459,12 +453,11 @@ pub fn get_available_token_actions_for_identity(
             .distribution_rules()
             .perpetual_distribution()
             .is_some_and(|dist| {
-                validate_perpetual_distribution_recipient(
+                is_perpetual_distribution_recipient(
                     contract_owner_id,
                     dist.distribution_recipient(),
                     identity,
                 )
-                .is_ok()
             });
         perpetual_recipient || is_pre_programmed_recipient(token_configuration, &identity_id)
     };
@@ -475,12 +468,11 @@ pub fn get_available_token_actions_for_identity(
             .perpetual_distribution()
         {
             in_dev_mode
-                || validate_perpetual_distribution_recipient(
+                || is_perpetual_distribution_recipient(
                     contract_owner_id,
                     dist.distribution_recipient(),
                     identity,
                 )
-                .is_ok()
         } else {
             in_dev_mode
         }
@@ -549,8 +541,11 @@ pub fn get_available_token_actions_for_identity(
 impl From<&IdentityTokenBalance> for Amount {
     /// Uses the token configuration's decimals and the token alias as the unit name.
     fn from(token_balance: &IdentityTokenBalance) -> Self {
-        let decimal_places = token_balance.token_config.conventions().decimals();
-        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+        token_amount(
+            &token_balance.token_config,
+            &token_balance.token_alias,
+            token_balance.balance,
+        )
     }
 }
 
@@ -563,8 +558,11 @@ impl From<IdentityTokenBalance> for Amount {
 impl From<&IdentityTokenBalanceWithActions> for Amount {
     /// Uses the token configuration's decimals and the token alias as the unit name.
     fn from(token_balance: &IdentityTokenBalanceWithActions) -> Self {
-        let decimal_places = token_balance.token_config.conventions().decimals();
-        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+        token_amount(
+            &token_balance.token_config,
+            &token_balance.token_alias,
+            token_balance.balance,
+        )
     }
 }
 
@@ -663,21 +661,66 @@ mod tests {
         let stranger = identity(2);
         let (contract, config) = owner_administered_contract(owner.identity.id());
 
-        assert!(identity_has_token_admin_permission(
-            &owner, &config, &contract
-        ));
-        assert!(!identity_has_token_admin_permission(
-            &stranger, &config, &contract
-        ));
+        let real = |who: &QualifiedIdentity| {
+            get_available_token_actions_for_identity(None, who, &config, &contract, false, None)
+                .has_admin_permission()
+        };
+        assert!(real(&owner));
+        assert!(!real(&stranger));
 
         // The display override lights every admin button up for the stranger…
         let displayed = get_available_token_actions_for_identity(
             None, &stranger, &config, &contract, true, None,
         );
         assert!(displayed.can_mint && displayed.has_admin_permission());
-        // …which is exactly what the permission check must not be fooled by.
-        assert!(!identity_has_token_admin_permission(
-            &stranger, &config, &contract
+        // …which is why the hub computes permissions with the override off.
+        assert!(!real(&stranger));
+    }
+
+    #[test]
+    fn a_token_name_is_shown_without_control_or_bidi_characters() {
+        let token_id = Identifier::from([7; 32]);
+        assert_eq!(
+            token_display_name("Dash\u{200B}Coffee", &token_id),
+            "DashCoffee"
+        );
+        assert_eq!(
+            token_display_name("\u{202E}eeffoChsaD", &token_id),
+            "eeffoChsaD",
+            "a direction override is dropped, not obeyed"
+        );
+        assert_eq!(token_display_name("  Grit ", &token_id), "Grit");
+        assert_eq!(
+            token_display_name("\u{202E}\u{200F}", &token_id),
+            crate::model::identity_name::shorten_id(&token_id.to_string(Encoding::Base58)),
+            "nothing visible left: the ID stands in"
+        );
+    }
+
+    #[test]
+    fn the_perpetual_recipient_rule_names_owner_identity_or_evonode() {
+        let owner = identity(1);
+        let other = identity(2);
+        let owner_id = owner.identity.id();
+        assert!(is_perpetual_distribution_recipient(
+            owner_id,
+            TokenDistributionRecipient::ContractOwner,
+            &owner
+        ));
+        assert!(!is_perpetual_distribution_recipient(
+            owner_id,
+            TokenDistributionRecipient::ContractOwner,
+            &other
+        ));
+        assert!(is_perpetual_distribution_recipient(
+            owner_id,
+            TokenDistributionRecipient::Identity(other.identity.id()),
+            &other
+        ));
+        assert!(!is_perpetual_distribution_recipient(
+            owner_id,
+            TokenDistributionRecipient::EvonodesByParticipation,
+            &other
         ));
     }
 
@@ -721,10 +764,16 @@ mod tests {
     fn a_most_restrictive_token_grants_nobody_admin_permission() {
         let owner = identity(1);
         let (contract, _) = owner_administered_contract(owner.identity.id());
-        assert!(!identity_has_token_admin_permission(
-            &owner,
-            &transferable(),
-            &contract
-        ));
+        assert!(
+            !get_available_token_actions_for_identity(
+                None,
+                &owner,
+                &transferable(),
+                &contract,
+                false,
+                None
+            )
+            .has_admin_permission()
+        );
     }
 }

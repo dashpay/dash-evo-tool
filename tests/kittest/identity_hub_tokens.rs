@@ -13,9 +13,7 @@ use dash_evo_tool::model::token::{
     IdentityTokenIdentifier, distribution_rules_with_once_per_identity,
 };
 use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::identity::{
-    IdentityHubScreen, IdentityHubTab, home, token_detail, tokens_tab,
-};
+use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab, token_copy};
 use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
     CONFIRM_SEND_TITLE, send_question, sending_text, sent_text,
 };
@@ -216,7 +214,7 @@ fn the_tokens_tab_sits_between_contacts_and_profile() {
             xs.windows(2).all(|pair| pair[0] < pair[1]),
             "tabs must read Home · Contacts · Tokens · Profile, got {xs:?}"
         );
-        assert!(hub.query_by_label(tokens_tab::SUBTITLE).is_none());
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_none());
         let tokens_tab = tab_center("Tokens");
         hub.get_all_by_role_and_label(Role::Button, "Tokens")
             .find(|node| node.rect().center() == tokens_tab)
@@ -224,7 +222,7 @@ fn the_tokens_tab_sits_between_contacts_and_profile() {
             .click();
         hub.run_steps(3);
         assert!(
-            hub.query_by_label(tokens_tab::SUBTITLE).is_some(),
+            hub.query_by_label(token_copy::SUBTITLE).is_some(),
             "clicking the tab shows the Tokens tab"
         );
     });
@@ -249,16 +247,16 @@ fn rows_show_balance_zero_and_checking_states_with_send_only_where_held() {
         );
         assert!(hub.query_by_label("Tester").is_some());
         assert!(
-            hub.query_by_label(tokens_tab::STATUS_CHECKING).is_some(),
+            hub.query_by_label(token_copy::STATUS_CHECKING).is_some(),
             "an unsynced balance is never shown as zero"
         );
         assert_eq!(
-            hub.query_all_by_label(tokens_tab::SEND_LABEL).count(),
+            hub.query_all_by_label(token_copy::SEND_LABEL).count(),
             1,
             "only the held token offers Send"
         );
         assert!(
-            hub.query_by_label(tokens_tab::REFRESH_LABEL).is_some(),
+            hub.query_by_label(token_copy::REFRESH_LABEL).is_some(),
             "the Refresh button is present (disabled while the arrival refresh runs)"
         );
         assert!(
@@ -282,17 +280,20 @@ fn hide_zero_hides_only_fetched_zeros_and_is_remembered() {
         seed_three_tokens(&app_context, identity);
         let mut hub = mount_tokens_tab(&app_context);
 
-        hub.get_by_label(tokens_tab::HIDE_ZERO_LABEL).click();
+        hub.get_by_label(token_copy::HIDE_ZERO_LABEL).click();
         hub.run_steps(3);
         assert!(
             hub.query_by_label("0 Grit").is_none(),
             "a fetched zero is hidden"
         );
         assert!(
-            hub.query_by_label(tokens_tab::STATUS_CHECKING).is_some(),
+            hub.query_by_label(token_copy::STATUS_CHECKING).is_some(),
             "an unknown balance is never hidden"
         );
-        assert!(hub.query_by_label("1 hidden").is_some());
+        assert!(
+            hub.query_by_label(&token_copy::hidden_count_text(1))
+                .is_some()
+        );
         assert!(app_context.identity_tokens_view_prefs().hide_zero_balances);
 
         let again = mount_tokens_tab(&app_context);
@@ -309,10 +310,10 @@ fn an_empty_registry_offers_both_ways_to_add_a_token() {
         let (_runtime, app_context) = fresh_app_context();
         seed_signing_identity(&app_context, 0xA4);
         let mut hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(tokens_tab::EMPTY_HEADING).is_some());
-        assert!(hub.query_by_label(tokens_tab::EMPTY_BODY).is_some());
+        assert!(hub.query_by_label(token_copy::EMPTY_HEADING).is_some());
+        assert!(hub.query_by_label(token_copy::EMPTY_BODY).is_some());
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::ADD_BY_ID_LABEL).click();
+        hub.get_by_label(token_copy::ADD_BY_ID_LABEL).click();
         hub.run_steps(2);
         assert!(
             hub.state()
@@ -334,7 +335,7 @@ fn stop_tracking_asks_first_then_dispatches_and_drops_the_row() {
 
         hub.get_by_label("More actions for DashCoffee").click();
         hub.run_steps(2);
-        hub.get_by_label(tokens_tab::STOP_TRACKING_LABEL).click();
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
         hub.run_steps(2);
         assert!(
             hub.query_by_label_contains("Stop tracking DashCoffee for")
@@ -346,7 +347,7 @@ fn stop_tracking_asks_first_then_dispatches_and_drops_the_row() {
             "nothing changes before confirming"
         );
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::STOP_TRACKING_LABEL).click();
+        hub.get_by_label(token_copy::STOP_TRACKING_LABEL).click();
         hub.run_steps(3);
 
         let pair = IdentityTokenIdentifier {
@@ -397,7 +398,7 @@ fn a_once_per_identity_claim_opens_the_claim_screen() {
             "the once-per-identity amount is shown in the token's decimals"
         );
         assert!(
-            hub.query_by_label(tokens_tab::SEND_LABEL).is_none(),
+            hub.query_by_label(token_copy::SEND_LABEL).is_none(),
             "nothing to send"
         );
         let tab_row_y = hub
@@ -411,7 +412,7 @@ fn a_once_per_identity_claim_opens_the_claim_screen() {
             "the tab badge on the tab row counts the pending claim"
         );
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::CLAIM_LABEL).click();
+        hub.get_by_label(token_copy::CLAIM_LABEL).click();
         hub.run_steps(2);
         assert!(
             hub.state()
@@ -449,23 +450,23 @@ fn the_manage_link_needs_a_real_admin_permission_not_a_role() {
         let mut hub = mount_tokens_tab(&app_context);
 
         assert!(
-            hub.query_by_label(tokens_tab::ISSUED_BY_YOU_BADGE)
+            hub.query_by_label(token_copy::ISSUED_BY_YOU_BADGE)
                 .is_some(),
             "the identity issued one of the tokens"
         );
         hub.get_by_label("More actions for Theirs").click();
         hub.run_steps(2);
         assert!(
-            hub.query_by_label(tokens_tab::MANAGE_LABEL).is_none(),
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_none(),
             "a Power user without permission gets no Manage link"
         );
-        hub.get_by_label(tokens_tab::COPY_ID_LABEL).click();
+        hub.get_by_label(token_copy::COPY_ID_LABEL).click();
         hub.run_steps(2);
 
         hub.get_by_label("More actions for Mine").click();
         hub.run_steps(2);
         assert!(
-            hub.query_by_label(tokens_tab::MANAGE_LABEL).is_some(),
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_some(),
             "the issuer holds admin permissions, so Manage is offered"
         );
         assert!(
@@ -522,11 +523,23 @@ fn a_failed_refresh_shows_inline_and_keeps_the_rows() {
             "the tab shows the failure itself, not a global banner"
         );
         hub.run_steps(2);
-        assert!(hub.query_by_label(tokens_tab::ERROR_REFRESH_SLOW).is_some());
-        assert!(hub.query_by_label(tokens_tab::TRY_AGAIN_LABEL).is_some());
+        assert!(hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_some());
+        assert!(
+            hub.query_all_by_label(token_copy::TRY_AGAIN_LABEL).count() >= 1,
+            "the notice offers a retry"
+        );
         assert!(
             hub.query_by_label("1250 DashCoffee").is_some(),
             "known balances stay"
+        );
+        assert!(
+            hub.query_by_label(token_copy::STATUS_COULD_NOT_CHECK)
+                .is_some(),
+            "an unknown balance is 'could not check' after a failed refresh, not 'checking'"
+        );
+        assert!(
+            hub.query_by_label(token_copy::FIRST_LOAD).is_none(),
+            "the first-load line never shows next to a failure"
         );
 
         // A refresh already running elsewhere is not a failure to the user.
@@ -559,7 +572,7 @@ fn the_list_scrolls_under_a_fixed_header_on_a_short_window() {
         }
         let hub = mount_hub(&app_context, egui::vec2(1280.0, 800.0));
 
-        for label in [tokens_tab::REFRESH_LABEL, tokens_tab::HIDE_ZERO_LABEL] {
+        for label in [token_copy::REFRESH_LABEL, token_copy::HIDE_ZERO_LABEL] {
             let rect = hub.get_by_label(label).rect();
             assert!(
                 rect.max.y < 800.0,
@@ -572,7 +585,8 @@ fn the_list_scrolls_under_a_fixed_header_on_a_short_window() {
             "the first row is visible, got {first:?}"
         );
         assert!(
-            hub.query_by_label("12 tokens").is_some(),
+            hub.query_by_label(&token_copy::tracked_count_text(12))
+                .is_some(),
             "a long list shows its count"
         );
     });
@@ -602,7 +616,7 @@ fn the_send_screen_uses_send_wording() {
         harness.run();
         assert!(harness.query_by_label("Send DashCoffee").is_some());
         assert!(
-            harness.query_all_by_label(tokens_tab::SEND_LABEL).count() >= 1,
+            harness.query_all_by_label(token_copy::SEND_LABEL).count() >= 1,
             "the breadcrumb and the primary button say Send"
         );
         assert!(
@@ -623,7 +637,10 @@ fn the_home_card_shows_only_with_a_balance_or_a_claim() {
             egui::vec2(1280.0, 900.0),
             IdentityHubTab::Home,
         );
-        assert!(hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_some());
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_some()
+        );
         assert!(
             hub.query_by_label("1250 DashCoffee").is_some(),
             "the card lists what the identity holds"
@@ -632,7 +649,7 @@ fn the_home_card_shows_only_with_a_balance_or_a_claim() {
             hub.query_by_label("0 Grit").is_none(),
             "zero balances are not worth a glance"
         );
-        hub.get_by_label(home::SEE_ALL_TOKENS_LABEL).click();
+        hub.get_by_label(token_copy::SEE_ALL_TOKENS_LABEL).click();
         hub.run_steps(3);
         assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Tokens);
 
@@ -644,7 +661,8 @@ fn the_home_card_shows_only_with_a_balance_or_a_claim() {
             IdentityHubTab::Home,
         );
         assert!(
-            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_none(),
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
             "an empty card would only advertise a feature"
         );
     });
@@ -660,13 +678,13 @@ fn the_detail_page_opens_from_the_row_and_goes_back() {
 
         hub.get_by_label("More actions for DashCoffee").click();
         hub.run_steps(2);
-        hub.get_by_label(tokens_tab::DETAILS_LABEL).click();
+        hub.get_by_label(token_copy::DETAILS_LABEL).click();
         hub.run_steps(3);
-        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
         assert!(hub.query_by_label_contains("Held by").is_some());
         assert!(hub.query_by_label("1250 DashCoffee").is_some());
-        assert!(hub.query_by_label(token_detail::CAN_BE_SENT_YES).is_some());
-        assert!(hub.query_by_label(token_detail::REWARDS_NONE).is_some());
+        assert!(hub.query_by_label(token_copy::CAN_BE_SENT_YES).is_some());
+        assert!(hub.query_by_label(token_copy::REWARDS_NONE).is_some());
         assert!(
             hub.query_by_label(
                 &tokens[0]
@@ -675,24 +693,24 @@ fn the_detail_page_opens_from_the_row_and_goes_back() {
             .is_some(),
             "the full token ID is shown for copying"
         );
-        assert!(hub.query_by_label(tokens_tab::SEND_LABEL).is_some());
+        assert!(hub.query_by_label(token_copy::SEND_LABEL).is_some());
         assert!(
-            hub.query_by_label(tokens_tab::MANAGE_LABEL).is_none(),
+            hub.query_by_label(token_copy::MANAGE_LABEL).is_none(),
             "no admin permission, no Manage link"
         );
         assert!(
-            hub.query_by_label(tokens_tab::SUBTITLE).is_none(),
+            hub.query_by_label(token_copy::SUBTITLE).is_none(),
             "the list is replaced by the page"
         );
 
-        hub.get_by_label(token_detail::BACK_LABEL).click();
+        hub.get_by_label(token_copy::BACK_LABEL).click();
         hub.run_steps(3);
-        assert!(hub.query_by_label(tokens_tab::SUBTITLE).is_some());
+        assert!(hub.query_by_label(token_copy::SUBTITLE).is_some());
 
         // The row name opens the page too.
         hub.get_by_label("Grit").click();
         hub.run_steps(3);
-        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
         assert!(hub.query_by_label("0 Grit").is_some());
     });
 }
@@ -709,7 +727,7 @@ fn check_balance_now_waits_for_the_masternode_list() {
         hub.state_mut().1.clear();
         hub.get_by_label("More actions for DashCoffee").click();
         hub.run_steps(2);
-        hub.get_by_label(tokens_tab::CHECK_NOW_LABEL).click();
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
         hub.run_steps(2);
         let dispatched = hub.state().1.iter().any(|action| {
             matches!(
@@ -723,7 +741,7 @@ fn check_balance_now_waits_for_the_masternode_list() {
             "a proof-verifying balance read went out before the masternode list synced"
         );
         assert!(
-            hub.get_by_label(tokens_tab::REFRESH_LABEL)
+            hub.get_by_label(token_copy::REFRESH_LABEL)
                 .accesskit_node()
                 .is_disabled(),
             "Refresh stays visible, disabled until sync finishes"
@@ -761,12 +779,13 @@ fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
             IdentityHubTab::Home,
         );
         assert!(
-            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_none(),
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
             "nothing held and nothing to claim: no Home card"
         );
         let hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(tokens_tab::CLAIM_LABEL).is_none());
-        assert!(hub.query_by_label(tokens_tab::STATUS_REWARDS).is_none());
+        assert!(hub.query_by_label(token_copy::CLAIM_LABEL).is_none());
+        assert!(hub.query_by_label(token_copy::STATUS_REWARDS).is_none());
     });
 }
 
@@ -807,7 +826,7 @@ fn the_remembered_filter_does_not_hide_rows_while_its_box_is_hidden() {
             hub.query_by_label("0 Grit").is_some(),
             "a filter the user cannot see or clear hides nothing"
         );
-        assert!(hub.query_by_label_contains(" hidden").is_none());
+        assert!(hub.query_by_label_contains("hidden.").is_none());
     });
 }
 
@@ -826,9 +845,12 @@ fn filter_and_sort_appear_from_eight_tokens_and_the_filter_applies() {
             )
             .expect("prefs");
         let hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label("8 tokens").is_some());
         assert!(
-            hub.query_by_label(tokens_tab::SORT_LABEL).is_some(),
+            hub.query_by_label(&token_copy::tracked_count_text(8))
+                .is_some()
+        );
+        assert!(
+            hub.query_by_label(token_copy::SORT_LABEL).is_some(),
             "the sort control shows for a long list"
         );
         assert!(hub.query_by_label("1 Alpha").is_some());
@@ -837,7 +859,7 @@ fn filter_and_sort_appear_from_eight_tokens_and_the_filter_applies() {
             "the filter applies while its box is shown"
         );
         assert!(
-            hub.query_by_label(&tokens_tab::hidden_count_text(7))
+            hub.query_by_label(&token_copy::hidden_count_text(7))
                 .is_some()
         );
     });
@@ -851,9 +873,9 @@ fn a_view_only_identity_is_told_to_add_a_key_and_cannot_send() {
         let identity = seed_identity_with_id(&app_context, 0xD5, vec![auth], vec![]);
         seed_three_tokens(&app_context, identity);
         let hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(tokens_tab::STATUS_ADD_KEY).is_some());
+        assert!(hub.query_by_label(token_copy::STATUS_ADD_KEY).is_some());
         assert!(
-            hub.get_by_label(tokens_tab::SEND_LABEL)
+            hub.get_by_label(token_copy::SEND_LABEL)
                 .accesskit_node()
                 .is_disabled(),
             "nothing can be signed on this device"
@@ -876,9 +898,9 @@ fn a_token_that_cannot_be_sent_shows_the_badge_and_a_disabled_send() {
         );
         set_balance(&app_context, identity, tokens[0], 500);
         let hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(tokens_tab::CANT_BE_SENT_BADGE).is_some());
+        assert!(hub.query_by_label(token_copy::CANT_BE_SENT_BADGE).is_some());
         assert!(
-            hub.get_by_label(tokens_tab::SEND_LABEL)
+            hub.get_by_label(token_copy::SEND_LABEL)
                 .accesskit_node()
                 .is_disabled(),
             "Send stays visible for a held token but cannot be used"
@@ -905,11 +927,11 @@ fn track_tokens_again_sends_one_request_this_tab_waits_on() {
                 .expect("dismiss");
         }
         let mut hub = mount_tokens_tab(&app_context);
-        assert!(hub.query_by_label(tokens_tab::DISMISSED_HEADING).is_some());
+        assert!(hub.query_by_label(token_copy::DISMISSED_HEADING).is_some());
 
         // The arrival refresh is still running: nothing else may ask the network.
         assert!(
-            hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL)
+            hub.get_by_label(token_copy::TRACK_AGAIN_LABEL)
                 .accesskit_node()
                 .is_disabled()
         );
@@ -932,7 +954,7 @@ fn track_tokens_again_sends_one_request_this_tab_waits_on() {
         );
         hub.run_steps(2);
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL).click();
+        hub.get_by_label(token_copy::TRACK_AGAIN_LABEL).click();
         hub.run_steps(2);
         let tracked = hub.state().1.iter().find_map(|action| match action {
             AppAction::BackendTaskWithContext {
@@ -954,7 +976,7 @@ fn track_tokens_again_sends_one_request_this_tab_waits_on() {
         app_context.connection_status().set_masternodes_ready(false);
         hub.run_steps(2);
         assert!(
-            hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL)
+            hub.get_by_label(token_copy::TRACK_AGAIN_LABEL)
                 .accesskit_node()
                 .is_disabled()
         );
@@ -968,9 +990,12 @@ fn the_receive_link_opens_receive_with_the_tokens_hint() {
         let identity = seed_signing_identity(&app_context, 0xD8);
         seed_three_tokens(&app_context, identity);
         let mut hub = mount_tokens_tab(&app_context);
-        hub.get_by_label(tokens_tab::RECEIVE_LINK).click();
+        hub.get_by_label(token_copy::RECEIVE_LINK).click();
         hub.run_steps(3);
-        assert!(hub.query_by_label(home::RECEIVE_TOKENS_HINT).is_some());
+        assert!(
+            hub.query_by_label(token_copy::RECEIVE_TOKENS_HINT)
+                .is_some()
+        );
     });
 }
 
@@ -981,11 +1006,10 @@ fn find_a_token_by_name_opens_token_search() {
         let identity = seed_signing_identity(&app_context, 0xD9);
         seed_three_tokens(&app_context, identity);
         let mut hub = mount_tokens_tab(&app_context);
-        hub.get_by_label(&format!("{} ▾", tokens_tab::ADD_TOKEN_LABEL))
-            .click();
+        hub.get_by_label(token_copy::ADD_TOKEN_LABEL).click();
         hub.run_steps(2);
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::FIND_BY_NAME_LABEL).click();
+        hub.get_by_label(token_copy::FIND_BY_NAME_LABEL).click();
         hub.run_steps(2);
         assert!(hub.state().1.iter().any(|action| matches!(
             action,
@@ -1018,7 +1042,8 @@ fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
             IdentityHubTab::Home,
         );
         assert!(
-            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_some(),
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_some(),
             "a pending claim alone earns the card"
         );
         assert!(
@@ -1026,7 +1051,7 @@ fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
                 .is_some()
         );
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::CLAIM_LABEL).click();
+        hub.get_by_label(token_copy::CLAIM_LABEL).click();
         hub.run_steps(2);
         assert!(
             hub.state()
@@ -1048,7 +1073,7 @@ fn clicking_anywhere_on_a_row_opens_its_detail_page() {
         let mut hub = mount_tokens_tab(&app_context);
         hub.get_by_label("1250 DashCoffee").click();
         hub.run_steps(3);
-        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
         assert!(hub.query_by_label_contains("Held by").is_some());
     });
 }
@@ -1069,7 +1094,7 @@ fn manage_opens_my_tokens_on_this_token() {
         hub.get_by_label("More actions for Mine").click();
         hub.run_steps(2);
         hub.state_mut().1.clear();
-        hub.get_by_label(tokens_tab::MANAGE_LABEL).click();
+        hub.get_by_label(token_copy::MANAGE_LABEL).click();
         hub.run_steps(2);
         assert!(hub.state().1.iter().any(|action| matches!(
             action,
@@ -1141,7 +1166,7 @@ fn the_send_screen_confirms_sends_and_reports_in_send_wording() {
         // The breadcrumb's current item is a "Send" button too; the primary
         // button comes last.
         harness
-            .get_all_by_role_and_label(Role::Button, tokens_tab::SEND_LABEL)
+            .get_all_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
             .rfind(|node| !node.accesskit_node().is_disabled())
             .expect("an enabled Send button")
             .click();

@@ -48,4 +48,39 @@ pub struct IdentityTokensViewPrefs {
 impl IdentityTokensViewPrefs {
     /// Global-scope k/v key of the persisted blob.
     pub const KV_KEY: &'static str = "det:identity_tokens_view:v1";
+
+    /// The longest filter kept: a Base58 token ID is 44 characters, so this
+    /// fits any ID with room, and a stray paste never lands in the database.
+    pub const MAX_FILTER_CHARS: usize = 64;
+
+    /// Cut the filter to [`Self::MAX_FILTER_CHARS`] characters.
+    pub fn clamp_filter(&mut self) {
+        if let Some((end, _)) = self.filter.char_indices().nth(Self::MAX_FILTER_CHARS) {
+            self.filter.truncate(end);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filter_is_cut_at_the_cap_on_a_character_boundary() {
+        let mut prefs = IdentityTokensViewPrefs {
+            filter: "é".repeat(IdentityTokensViewPrefs::MAX_FILTER_CHARS + 3),
+            ..Default::default()
+        };
+        prefs.clamp_filter();
+        assert_eq!(
+            prefs.filter.chars().count(),
+            IdentityTokensViewPrefs::MAX_FILTER_CHARS
+        );
+        let mut short = IdentityTokensViewPrefs {
+            filter: "dcf".into(),
+            ..Default::default()
+        };
+        short.clamp_filter();
+        assert_eq!(short.filter, "dcf");
+    }
 }

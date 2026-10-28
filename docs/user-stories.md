@@ -1199,10 +1199,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1341,7 +1341,7 @@ As a token creator, I want to create a token that holders cannot send to other i
 
 - The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
 - A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
 
 ### TOK-021: See and use my identity's tokens in the Identity Hub [Implemented]
@@ -1358,6 +1358,8 @@ As an identity owner, I want to see the tokens this identity holds — with bala
 - Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again", one request). Adding a token (by name or ID) sits in the header; checking a balance now, copying the ID, the detail page and stop tracking (with confirmation) are in the row menu; the Receive dialog explains how a received token appears. Every network read waits for the masternode list and says so.
 - Home shows a Tokens card only when a balance is above zero or a claim is pending. A single pending claim can be taken from the card; "See all tokens" opens the Tokens tab.
 - Clicking a row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule (opening Tokens › My Tokens on that token), and Stop tracking.
+- Token names from the chain are shown without control, direction-override or invisible characters; a name with nothing visible left shows the short token ID.
+- After a failed refresh every unchecked balance says "Couldn't check this balance." with Try again; a check refused because a refresh is already running is retried when it ends.
 - Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
 ## Contracts and Documents (DOC)

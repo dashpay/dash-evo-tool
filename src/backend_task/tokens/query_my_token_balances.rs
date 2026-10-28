@@ -13,7 +13,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::model::token::IdentityTokenIdentifier;
 use crate::wallet_backend::TokenBalanceSyncOutcome;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -115,11 +115,6 @@ impl AppContext {
         pairs: Vec<IdentityTokenIdentifier>,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        for pair in &pairs {
-            self.clear_untracked_token_balance(*pair)?;
-        }
-        // The upstream watch list is per-identity and replaced wholesale, so
-        // register each identity's whole watch set rather than single pairs.
         let identity_ids: Vec<Identifier> = pairs
             .iter()
             .map(|pair| pair.identity_id)
@@ -129,8 +124,15 @@ impl AppContext {
         if identity_ids.is_empty() {
             return Ok(BackendTaskSuccessResult::FetchedTokenBalances);
         }
-        let watch_sets = self.token_watch_sets(identity_ids)?;
+        // Take the guard first: a refusal must leave the dismissals as they
+        // were, or the rows would reappear with no refresh to fill them.
         let refresh_guard = self.begin_token_balance_refresh()?;
+        for pair in &pairs {
+            self.clear_untracked_token_balance(*pair)?;
+        }
+        // The upstream watch list is per-identity and replaced wholesale, so
+        // register each identity's whole watch set rather than single pairs.
+        let watch_sets = self.token_watch_sets(identity_ids)?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),

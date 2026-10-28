@@ -1,10 +1,8 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
-use crate::model::token::IdentityTokensViewPrefs;
-use crate::ui::tokens::tokens_screen::{
-    IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
-};
+use crate::model::token::{IdentityTokenBalance, IdentityTokenIdentifier, IdentityTokensViewPrefs};
+use crate::ui::tokens::tokens_screen::{TokenInfo, TokenInfoWithDataContract};
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;

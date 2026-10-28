@@ -8,7 +8,10 @@ price, update config, token creator, distributions) stays in the Tokens screen
 untouched.
 
 Companion wireframes: [`wireframes.html`](wireframes.html) (T0–T9, light and
-dark). Design only; no Rust changed by this note. The user's answers to the
+dark). Status: **implemented** (`src/ui/identity/tokens_tab.rs`,
+`token_detail.rs`, `token_copy.rs`, `src/ui/state/identity_tokens.rs`); where
+the code departs from this note, the checklist's "Accepted deviations and
+additions" section records it. The user's answers to the
 open questions are recorded in §11 (Decisions) and, item by item, in
 [`implementation-checklist.md`](implementation-checklist.md) — **the
 checklist is the authoritative list of what gets built**; where this note and
@@ -48,9 +51,12 @@ Claim screens pre-scoped to the identity; the Transfer screen and My Tokens'
 "Transfer" button adopt **Send** wording (D2). A "Hide tokens with zero
 balance" checkbox sits above the list from day one (D4). Phase 2 adds a Home
 card (only when there is something to show), a token detail page and
-filter/sort controls. No data model or backend change is needed for the MVP:
-the balance snapshot, registry, dismissals and refresh task already exist and
-are identity-keyed.
+filter/sort controls. The balance snapshot, registry, dismissals and refresh
+task already existed and are identity-keyed; the backend grew three small
+pieces: `TokenTask::TrackTokenBalancesAgain(pairs)` (one request re-tracking
+every dismissed pair of an identity), the `AppContext::{set,take}_pending_token_selection`
+courier that opens Tokens › My Tokens on a token, and `IdentityTokensViewPrefs`
+persisted at the k/v key `det:identity_tokens_view:v1`.
 
 ## 2. Personas and jobs
 
@@ -152,10 +158,13 @@ Everything the MVP reads already exists and is identity-keyed:
 |---|---|---|
 | Rows | `AppContext::get_all_known_tokens()` (registry, global per device) minus `untracked_token_balances()` for `(identity, token)` | registry is device-wide; dismissals are per pair |
 | Balance | `AppContext::identity_token_balances()` → `IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>`; underneath `WalletBackend::token_balances()` (`UpstreamTokenBalances`, lock-free, frame-safe) | `None` = identity not synced / token not in its synced set → "Checking balance…"; `Some(0)` = real zero (TB2–TB4 in `token_balance.rs`) |
-| Actions | `IdentityTokenBalance::into_with_actions(identity, contract, in_dev_mode, pricing)` → `can_transfer`, `can_claim`, `can_maybe_purchase` for the row buttons | needs `get_contract_by_token_id`. The admin flags feed **only** the "Manage in Tokens screen" link, through a helper that answers "does this identity hold any admin permission per the token's config rules" and ignores the dev-mode display override (checklist P0.2) — never pass `in_dev_mode = true` to decide the link |
+| Actions | `IdentityTokenBalance::into_with_actions(identity, contract, in_dev_mode, pricing)` → `can_transfer`, `can_claim`, `can_maybe_purchase` for the row buttons | needs `get_contract_by_token_id`. The admin flags feed **only** the "Manage in Tokens screen" link: the hub computes the actions once with `in_dev_mode = false` and asks `IdentityTokenAvailableActions::has_admin_permission()` — never pass `in_dev_mode = true` to decide the link |
 | Once-per-identity | `model::token::once_per_identity_amount(config)`, `AppContext::once_per_identity_claimed_at(token, identity)` | drives "You can claim {amount} once." / "Claimed on {date}." |
 | Issuer badge | `contract.owner_id() == identity.id()` | My Tokens colours the ID dark green; the hub uses a text badge |
-| Refresh | `TokenTask::QueryMyTokenBalances` (all identities, single-flight; `TokenBalanceRefreshInProgress`, `TokenBalanceRefreshTimeout`), `TokenTask::QueryIdentityTokenBalance(pair)` (also re-tracks), `TokenTask::StopTrackingTokenBalance(pair)` | success sends `TaskResult::Refresh`; in-flight flag `AppContext::token_balance_refresh_in_flight` (crate-visible) |
+| Refresh | `TokenTask::QueryMyTokenBalances` (all identities, single-flight; `TokenBalanceRefreshInProgress`, `TokenBalanceRefreshTimeout`), `TokenTask::QueryIdentityTokenBalance(pair)` (also re-tracks), `TokenTask::StopTrackingTokenBalance(pair)`, `TokenTask::TrackTokenBalancesAgain(pairs)` (re-tracks every dismissed pair of an identity in one request; takes the refresh guard before touching the dismissals) | a fetch sends `TaskResult::Refresh` before its typed result; in-flight flag `AppContext::token_balance_refresh_in_flight` (crate-visible) |
+| Manage link | `AppContext::set_pending_token_selection(token_id)` then `AppAction::SetMainScreen(RootScreenMyTokenBalances)`; `TokensScreen::refresh_on_arrival` takes the courier on every Tokens subscreen and selects the token only on My Tokens | mirrors `pending_identity_selection` |
+| List controls | `IdentityTokensViewPrefs` (hide-zero, sort, filter ≤ 64 chars) at k/v `det:identity_tokens_view:v1`, global scope | hide-zero and sort are saved as they change; the filter when its box loses focus |
+| Token names | `model::token::token_display_name(name, token_id)` — `identity_name::clean_display_text` (controls, bidi directives, invisible spaces removed), falling back to the short ID | on-chain names are untrusted |
 | Send | `TransferTokensScreen::new(IdentityTokenBalance, ctx)` | identity fixed by the balance record |
 | Claim | `ClaimTokensScreen::new(IdentityTokenBasicInfo, QualifiedContract, TokenConfiguration, ctx)` — the MN-009 pattern in `masternodes/detail_screen.rs` | contract missing → info banner + fallback |
 | Add | `ScreenType::AddTokenById`; `RootScreenType::RootScreenTokenSearch` | after import, `clear_untracked_token` re-tracks for all identities |
@@ -177,7 +186,11 @@ Constraints found:
   last snapshot, actions disabled with "Available after sync finishes."
 - Refresh is single-flight across the app: the hub and My Tokens share the
   guard. The hub treats `TokenBalanceRefreshInProgress` as "already
-  refreshing", never as an error banner.
+  refreshing", never as an error banner; a check or "Track tokens again"
+  refused for that reason is sent again once the running refresh ends.
+- Row checks, stop-tracking requests and the refresh each have their own
+  pending-request bookkeeping (`PendingRequest` / `PendingRequests`), so two
+  quick checks on different rows are both still the tab's when they answer.
 
 ## 7. Flows
 
@@ -189,7 +202,7 @@ Success: balances with "Last updated {time}" | Errors: inline banner, stale rows
 ```
 
 ```
-Flow: Claim | Entry: row Claim (or Home card Claim, P2)
+Flow: Claim | Entry: row Claim (or Home card Claim when exactly one claim is pending, P2; several pending claims show a count and "See all tokens")
 Steps: 1. Push ClaimTokensScreen pre-scoped to (identity, token) -> 2. confirm -> blocking progress -> 3. back to hub, success banner, row balance updated
 Errors: contract not loadable → "This token's details aren't available yet. Refresh and try again."; network refusal explained by the existing screen (TOK-019)
 Edge: once-per-identity already taken → row shows "Claimed on {date}", Claim hidden; view-only identity → Claim disabled with reason
@@ -211,7 +224,7 @@ Edge: token previously dismissed for this identity → import re-tracks it (exis
 ```
 Flow: Stop tracking | Entry: ••• Stop tracking (row or detail)
 Steps: ConfirmationDialog "Stop tracking {token} for {identity}? You can add it again at any time." -> StopTrackingTokenBalance(pair) -> row leaves
-Edge: last row → T2 right empty state with "Track tokens again"
+Edge: last row → T2 right empty state with "Track tokens again" (TrackTokenBalancesAgain, one request)
 ```
 
 ## 8. Component and interaction specs
@@ -224,12 +237,12 @@ States: rows default/hover/focus (a fetched zero balance is a normal row, not mu
 Props: &AppContext, &QualifiedIdentity, &mut IdentityTokensState, ProfileCache not needed
 Accessibility: rows are focusable (Tab), Enter opens detail, ••• is a real button with aria-label naming the token;
   status is text; disabled buttons carry disabled_tooltip and the same sentence appears in detail; count badge has a title
-Responsive: grid 40|1.4fr|1fr|auto|30; below 640 px the balance+status drop under the name and actions move into ••• 
+Responsive: grid 40|1.4fr|1fr|auto|30; below 640 px the balance+status drop under the name (implemented); actions stay as buttons — folding them into ••• was not built
 ```
 
 ```
 State: IdentityTokensState (ui/state/identity_tokens.rs) | renders nothing
-Holds: last_refresh_dispatched_at, arriving flag, per-pair last error, hide-zero (MVP, persisted per device), sort/filter (P2, persisted alongside), pending stop-tracking confirmation
+Holds: rows (`Arc<[TokenRow]>`, re-read every 5 s or on invalidation), the owning identity, pending refresh / row checks / stop-tracking / track-again requests, retries owed after an in-flight refusal, last refresh time and failure, failed row checks, view prefs (hide-zero, sort, filter; persisted per device), the open detail page and stop-tracking confirmation
 Returns: BackendTask for arrival/manual refresh via the hub's single dispatch slot (same rule as home::load_action)
 ```
 
@@ -242,13 +255,17 @@ Errors per AGENTS.md: what happened + what to do, no jargon, details via
 
 Accessibility (WCAG 2.2 AA): text-first status, 4.5:1 on all badge text in both
 themes, focus ring `BORDER_WIDTH_THICK`, every disabled control has a reason,
-menu is a real menu with Escape to close and focus return to the ••• button,
-single-key `/` filter shortcut only when the list has focus (2.1.4).
+menu is a real menu with Escape to close and focus return to the ••• button.
+The single-key `/` filter shortcut was not built. The sort offers Claimable
+first · Balance · Name; the wireframe's "Recently updated" is not offered (no
+per-pair update time exists).
 
 Design tokens: `Spacing::MD` row padding, `Shape::RADIUS_MD` list and card,
 `DashColors::surface/border/text_secondary`, `DashColors::SUCCESS` for claim
-status text, `DashColors::DASH_BLUE` for the count badge; avatar hue derived
-from token ID (deterministic), initials from alias. No new colour constants.
+status text; avatar hue derived from token ID (deterministic), initials from
+alias. Two pill tints were added for badges that must read at 4.5:1 on their
+own 12 % fill in both themes: `DashColors::pill_accent` (count badge, "Issued
+by you") and `DashColors::pill_neutral` ("Can't be sent").
 
 ## 9. Superseded and related docs
 
@@ -311,14 +328,14 @@ override (D3; checklist P0.2).
 9. `docs/user-stories.md`: TOK-021 `[Gap]` → `[Implemented]`.
 
 **Phase 2 (≈2 days).** Home Tokens card (shown iff any balance > 0 or a claim
-is pending, D5; Claim reachable from the card), Token detail page (Send/Claim,
+is pending, D5; Claim reachable from the card when exactly one claim is pending), Token detail page (Send/Claim,
 Manage under the D3 rule, Stop tracking), many-token controls (filter and
 sort, remembered per device together with hide-zero).
 
 **Phase 3 — OUT OF SCOPE (≈3+ days, needs backend).** Token activity on
 detail (token history contract queries), Buy from row when priced
 (`QueryTokenPricing` per token), inline reward estimate. Not part of this
-design's delivery; T5's "Recent activity" placeholder may be omitted.
+design's delivery; T5's "Recent activity" and "Tracked since" are omitted.
 
 Risks:
 - Snapshot granularity (per identity) means the whole tab skeletons while any
@@ -331,7 +348,8 @@ Risks:
   TransferTokensScreen tests; update them in the same change.
 - Manage link (D3): the existing `in_dev_mode` path of `into_with_actions`
   flips every admin flag on for Power+ roles; deriving the link from those
-  flags would show it to every Power user. Use the P0.2 helper.
+  flags would show it to every Power user. Compute with `in_dev_mode = false`
+  and ask `has_admin_permission()`.
 - 800 px window height (known hub constraint): the list must scroll inside the
   island; header and controls stay fixed (T4).
 
@@ -373,12 +391,12 @@ design.
 
 | ID | Sev | Finding |
 |---|---|---|
-| UX-001 | Medium | `my_tokens.rs:265` empty state "No Tracked Tokens — You don't have any tokens yet." conflates *tracked* with *owned*; a user who was just sent tokens reads it as "you have nothing". |
-| UX-002 | Medium | `my_tokens.rs:478` bare "Check" button for an unknown balance — no object, no explanation; Everyday persona cannot tell it from a checkbox. |
-| UX-003 | Low | `my_tokens.rs:744` "Token contract not found" — states a cause with no action; violates error rule 2. |
-| UX-004 | Low | `my_tokens.rs:711` disabled-Transfer reason "Transfer not available" is circular. |
-| UX-005 | Low | `my_tokens.rs:466` contract-owner marker is a hardcoded dark-green `Color32::from_rgb(0,100,0)` on the ID text — colour-only signal, not theme-aware, outside `DashColors`. |
-| UX-006 | Low | Holder and issuer actions share one row (`render_actions`): Transfer/Claim next to Mint/Burn/Freeze/Destroy for the same user; progressive disclosure not applied. |
-| UX-007 | Info | Vocabulary split: Home says "Send", My Tokens says "Transfer", Masternodes says "Claim token rewards ›" — same operations, three verbs. Resolved for tokens by D2. |
+| UX-001 | Medium | `my_tokens.rs` `render_no_owned_tokens`: empty state "No Tracked Tokens — You don't have any tokens yet." conflates *tracked* with *owned*; a user who was just sent tokens reads it as "you have nothing". |
+| UX-002 | Medium | `my_tokens.rs` `render_token_details`: bare "Check" button for an unknown balance — no object, no explanation; Everyday persona cannot tell it from a checkbox. |
+| UX-003 | Low | `my_tokens.rs` `render_actions`: "Token contract not found" — states a cause with no action; violates error rule 2. |
+| UX-004 | Low | Resolved: the disabled Send reason in My Tokens now names the cause (`send_disabled_reason` — not transferable, balance still being checked, or nothing held) instead of the circular "not available". |
+| UX-005 | Low | `my_tokens.rs` `render_token_details`: contract-owner marker is a hardcoded dark-green `Color32::from_rgb(0,100,0)` on the ID text — colour-only signal, not theme-aware, outside `DashColors`. |
+| UX-006 | Low | Holder and issuer actions share one row (`render_actions`): Send/Claim next to Mint/Burn/Freeze/Destroy for the same user; progressive disclosure not applied. |
+| UX-007 | Info | Resolved for tokens by D2: Home, the hub, the pushed send screen and My Tokens all say "Send"; Masternodes still says "Claim token rewards ›". |
 
-Tally: 0 Critical · 0 High · 2 Medium · 4 Low · 1 Info — 7 candies.
+Tally: 0 Critical · 0 High · 2 Medium · 4 Low · 1 Info — 7 candies, 2 resolved.

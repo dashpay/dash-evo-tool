@@ -42,11 +42,15 @@ pub fn clean_display_text(text: &str) -> String {
     cleaned.trim().to_owned()
 }
 
-/// Keep visible text and normal Unicode shaping while excluding controls and bidi directives.
+/// Keep visible text and normal Unicode shaping while excluding controls,
+/// bidi directives and the invisible joiners/spaces (ZWSP, word joiner, BOM)
+/// that make two names look identical. ZWNJ and ZWJ stay: scripts and emoji
+/// sequences need them.
 pub(super) fn is_safe_display_character(character: char) -> bool {
     !character.is_control()
         && !matches!(character,
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            '\u{061c}' | '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
+            | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
         )
 }
 
@@ -86,6 +90,17 @@ mod tests {
         assert_eq!(
             display_label(Some("李雷 👩‍💻 العربية"), Some("username"), "abcdefghijk"),
             "李雷 👩‍💻 العربية"
+        );
+    }
+
+    #[test]
+    fn invisible_spaces_are_dropped_but_joiners_shape_text() {
+        assert_eq!(clean_display_text("Dash\u{200b}Coffee"), "DashCoffee");
+        assert_eq!(clean_display_text("\u{feff}Grit\u{2060}"), "Grit");
+        assert_eq!(
+            clean_display_text("\u{1F468}\u{200d}\u{1F4BB}"),
+            "\u{1F468}\u{200d}\u{1F4BB}",
+            "an emoji sequence keeps its joiner"
         );
     }
 

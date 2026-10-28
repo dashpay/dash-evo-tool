@@ -711,17 +711,16 @@ impl ScreenLike for IdentityHubScreen {
                         // Hub tab bar; selection state lives on the screen so
                         // refreshes and deep links can update it from outside.
                         let pending_claims = match &selected {
-                            Some(identity) => {
-                                self.tokens_state.rows(&self.app_context, identity);
-                                self.tokens_state.pending_claims()
-                            }
+                            Some(identity) => self
+                                .tokens_state
+                                .badge_pending_claims(&self.app_context, identity),
                             None => 0,
                         };
                         let tab_response = IdentityHubTabBar::new(self.selected_tab)
                             .with_badge(
                                 IdentityHubTab::Tokens,
                                 pending_claims,
-                                super::tokens_tab::pending_claims_text(pending_claims),
+                                super::token_copy::pending_claims_text(pending_claims),
                             )
                             .show(ui);
                         if let Some(clicked) = tab_response.clicked() {

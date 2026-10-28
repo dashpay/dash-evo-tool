@@ -13,6 +13,10 @@ use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
+use crate::ui::identity::token_copy::{
+    ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, TOKENS_CARD_HEADING,
+    can_claim_once_text, pending_claims_text,
+};
 use crate::ui::identity::tokens_tab::{RowContext, render_claim_button};
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::identity_tokens::{
@@ -27,11 +31,6 @@ use dash_sdk::platform::Identifier;
 use egui::{self, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
-/// Receive dialog, when opened from the Tokens tab.
-pub const RECEIVE_TOKENS_HINT: &str = "A token you receive shows under Tokens once you add it.";
-/// The Home Tokens card.
-pub const TOKENS_CARD_HEADING: &str = "Tokens";
-pub const SEE_ALL_TOKENS_LABEL: &str = "See all tokens";
 /// How many held tokens the Home card lists.
 const TOKENS_CARD_ROWS: usize = 3;
 
@@ -404,22 +403,18 @@ fn render_tokens_card(
     identity: &QualifiedIdentity,
     tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
-    let mut rows = tokens.rows(app_context, identity).to_vec();
+    let rows = tokens.rows(app_context, identity);
     if !home_card_shows(&rows) {
         return (AppAction::None, HomeOutcome::None);
     }
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     let dark = ui.visuals().dark_mode;
-    sort_rows(&mut rows, TokenListSort::BalanceHighToLow);
+    let mut held: Vec<&TokenRow> = rows.iter().filter(|row| row.holds_some()).collect();
+    sort_rows(&mut held, TokenListSort::BalanceHighToLow);
     let claimable: Vec<&TokenRow> = rows.iter().filter(|row| row.claim_available()).collect();
     let pending_claims = claimable.len();
-    let identity_label = app_context.identity_display_label(identity);
-    let context = RowContext {
-        synced: app_context.connection_status().masternodes_ready(),
-        view_only: identity.private_keys.is_empty(),
-        identity_label: &identity_label,
-    };
+    let context = RowContext::new(app_context, identity);
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong(TOKENS_CARD_HEADING);
@@ -429,15 +424,11 @@ fn render_tokens_card(
                 }
             });
         });
-        for row in rows
-            .iter()
-            .filter(|row| row.holds_some())
-            .take(TOKENS_CARD_ROWS)
-        {
+        for row in held.iter().take(TOKENS_CARD_ROWS) {
             ui.horizontal(|ui| {
-                ui.label(&row.name);
+                ui.label(row.name());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(balance) = row.balance {
+                    if let Some(balance) = row.balance() {
                         ui.label(RichText::new(row.amount(balance).to_string()).monospace());
                     }
                 });
@@ -446,15 +437,15 @@ fn render_tokens_card(
         if let [only] = claimable.as_slice() {
             ui.horizontal_wrapped(|ui| {
                 let text = match &only.once_claim {
-                    Some(once) => super::tokens_tab::can_claim_once_text(&only.amount(once.amount)),
-                    None => super::tokens_tab::pending_claims_text(1),
+                    Some(once) => can_claim_once_text(&only.amount(once.amount)),
+                    None => pending_claims_text(1),
                 };
                 ui.label(RichText::new(text).color(DashColors::success_color(dark)));
-                action |= render_claim_button(ui, app_context, only, context);
+                action |= render_claim_button(ui, app_context, only, &context);
             });
         } else if pending_claims > 1 {
             ui.label(
-                RichText::new(super::tokens_tab::pending_claims_text(pending_claims))
+                RichText::new(pending_claims_text(pending_claims))
                     .color(DashColors::success_color(dark)),
             );
         }
@@ -602,7 +593,7 @@ pub(super) fn render_receive(
         if tokens_hint {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RECEIVE_TOKENS_HINT);
-                if ui.link(super::tokens_tab::ADD_TOKEN_LABEL).clicked() {
+                if ui.link(ADD_TOKEN_LABEL).clicked() {
                     action =
                         AppAction::AddScreen(ScreenType::AddTokenById.create_screen(app_context));
                     state.receive_open = false;

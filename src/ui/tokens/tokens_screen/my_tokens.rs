@@ -5,6 +5,9 @@ use crate::model::amount::Amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::clicked_outside_window_after_open;
+use crate::ui::identity::token_copy::{
+    DISABLED_BALANCE_UNKNOWN, DISABLED_NOT_TRANSFERABLE, DISABLED_NOTHING_TO_SEND,
+};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -25,6 +28,7 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
+use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
@@ -702,11 +706,10 @@ impl TokensScreen {
                     ));
                 }
             } else {
-                let reason = if token_info.token_configuration.is_transferable() {
-                    "This identity holds none of this token to send."
-                } else {
-                    "This token cannot be sent to other identities."
-                };
+                let reason = send_disabled_reason(
+                    itb.balance,
+                    token_info.token_configuration.is_transferable(),
+                );
                 ui.add_enabled(
                     false,
                     egui::Button::new(
@@ -1109,15 +1112,102 @@ impl TokensScreen {
     }
 }
 
+/// Why a holder cannot send this token right now. An unknown balance is
+/// never called zero: it is still being checked.
+fn send_disabled_reason(balance: Option<TokenAmount>, transferable: bool) -> &'static str {
+    if !transferable {
+        DISABLED_NOT_TRANSFERABLE
+    } else if balance.is_none() {
+        DISABLED_BALANCE_UNKNOWN
+    } else {
+        DISABLED_NOTHING_TO_SEND
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::qualified_identity::QualifiedIdentity;
     use crate::ui::tokens::tokens_screen::IdentityTokenBalance;
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     use dash_sdk::platform::Identifier;
     use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn a_disabled_send_never_calls_an_unknown_balance_zero() {
+        assert_eq!(send_disabled_reason(None, true), DISABLED_BALANCE_UNKNOWN);
+        assert_eq!(
+            send_disabled_reason(Some(0), true),
+            DISABLED_NOTHING_TO_SEND
+        );
+        assert_eq!(send_disabled_reason(None, false), DISABLED_NOT_TRANSFERABLE);
+        assert_eq!(
+            send_disabled_reason(Some(5), false),
+            DISABLED_NOT_TRANSFERABLE
+        );
+    }
+
+    /// My Tokens shares the claim rule with the hub: a pre-programmed schedule
+    /// offers Claim only to an identity it names.
+    #[test]
+    fn claim_is_offered_only_to_a_named_pre_programmed_recipient() {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+        use std::collections::BTreeMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = context.dpns_contract().as_ref().clone();
+        let identity = |byte: u8| {
+            crate::context::test_support::bare_user_identity(
+                Identifier::from([byte; 32]),
+                dash_sdk::dpp::dashcore::Network::Testnet,
+            )
+        };
+        let recipient = identity(2);
+        let bystander = identity(3);
+        let mut config: TokenConfiguration =
+            TokenConfigurationV0::default_most_restrictive().into();
+        let TokenDistributionRules::V0(mut rules) = config.distribution_rules().clone() else {
+            panic!("the most restrictive preset is version 0");
+        };
+        rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+            TokenPreProgrammedDistributionV0 {
+                distributions: BTreeMap::from([(
+                    1_000u64,
+                    BTreeMap::from([(recipient.identity.id(), 500u64)]),
+                )]),
+            },
+        ));
+        config.set_distribution_rules(TokenDistributionRules::V0(rules));
+        let balance = |who: &QualifiedIdentity| IdentityTokenBalance {
+            token_id: Identifier::from([42; 32]),
+            token_alias: "Vest".into(),
+            token_config: config.clone(),
+            identity_id: who.identity.id(),
+            balance: 0,
+            estimated_unclaimed_rewards: None,
+            data_contract_id: contract.id(),
+            token_position: 0,
+        };
+        assert!(
+            balance(&recipient)
+                .into_with_actions(&recipient, &contract, false, None)
+                .available_actions
+                .can_claim
+        );
+        assert!(
+            !balance(&bystander)
+                .into_with_actions(&bystander, &contract, false, None)
+                .available_actions
+                .can_claim,
+            "My Tokens hides Claim for an identity the schedule does not name"
+        );
+    }
 
     #[test]
     fn token_detail_headers_sort_displayed_names_ids_and_numeric_balances() {

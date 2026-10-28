@@ -3,16 +3,19 @@
 //! Tokens › My Tokens; the only link there is "Manage in Tokens screen", shown
 //! when the identity actually holds an admin permission on the token.
 //!
+//! Copy lives in `token_copy.rs`; state in `ui/state/identity_tokens.rs`.
 //! Design: `docs/ai-design/2026-10-28-identity-tokens/` (frames T1–T4, T7, T9).
 
 use super::home::HomeState;
+use super::token_copy::*;
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::datetime;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::IdentityTokensViewPrefs;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::inline_notice::InlineNotice;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill::accent_pill;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
@@ -20,58 +23,12 @@ use crate::ui::state::identity_tokens::{
     IdentityTokensState, RefreshFailure, RowStatus, TokenRow, filter_shown, row_is_listed,
     row_status, sort_rows,
 };
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing, Typography};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenType};
+use egui::containers::menu::MenuButton;
 use egui::{self, RichText, Sense, Ui, UiBuilder};
 use std::sync::Arc;
-
-pub const HEADING: &str = "Tokens";
-pub const SUBTITLE: &str = "Tokens this identity holds or keeps an eye on.";
-pub const REFRESH_LABEL: &str = "Refresh";
-pub const REFRESHING_TOOLTIP: &str = "Balances are being checked.";
-pub const ADD_TOKEN_LABEL: &str = "Add a token";
-pub const FIND_BY_NAME_LABEL: &str = "Find a token by name";
-pub const ADD_BY_ID_LABEL: &str = "Add by token or contract ID";
-pub const RECEIVE_LINK: &str = "How do I receive tokens?";
-pub const HIDE_ZERO_LABEL: &str = "Hide tokens with zero balance";
-pub const HIDE_ZERO_TOOLTIP: &str =
-    "Hides tokens whose balance is 0. Tokens still being checked always stay visible.";
-pub const FILTER_HINT: &str = "Filter by name or ID";
-pub const SORT_LABEL: &str = "Sort";
-pub const SEND_LABEL: &str = "Send";
-pub const CLAIM_LABEL: &str = "Claim";
-pub const MENU_LABEL: &str = "•••";
-pub const CHECK_NOW_LABEL: &str = "Check balance now";
-pub const DETAILS_LABEL: &str = "Token details";
-pub const COPY_ID_LABEL: &str = "Copy token ID";
-pub const OPEN_DETAILS_TOOLTIP: &str = "Show this token's details.";
-pub const STOP_TRACKING_LABEL: &str = "Stop tracking";
-pub const STOP_TRACKING_TITLE: &str = "Stop tracking this token?";
-pub const MANAGE_LABEL: &str = "Manage in Tokens screen";
-pub const TRY_AGAIN_LABEL: &str = "Try again";
-pub const DISMISS_LABEL: &str = "Dismiss";
-pub const TRACK_AGAIN_LABEL: &str = "Track tokens again";
-pub const ISSUED_BY_YOU_BADGE: &str = "Issued by you";
-pub const CANT_BE_SENT_BADGE: &str = "Can't be sent";
-pub const STATUS_CHECKING: &str = "Checking balance…";
-pub const STATUS_COULD_NOT_CHECK: &str = "Couldn't check this balance.";
-pub const STATUS_REWARDS: &str = "Rewards may be waiting for you.";
-pub const STATUS_ADD_KEY: &str = "Add a key to this identity to send or claim tokens.";
-pub const DISABLED_NOT_TRANSFERABLE: &str = "This token cannot be sent to other identities.";
-pub const DISABLED_NOT_SYNCED: &str = "Available after sync finishes.";
-pub const EMPTY_HEADING: &str = "No tokens yet";
-pub const EMPTY_BODY: &str = "Tokens are assets issued on Dash Platform. A token shows here once you add it, so when someone sends you one, add it to see your balance.";
-pub const DISMISSED_HEADING: &str = "Nothing tracked for this identity";
-pub const FIRST_LOAD: &str =
-    "Checking balances for the first time. This usually takes a few seconds.";
-pub const FOOTNOTE: &str = "Balances are checked in the background. A token you don't see here can be added with Add a token.";
-pub const ERROR_REFRESH_FAILED: &str =
-    "Token balances couldn't be updated. Check your internet connection and try again.";
-pub const ERROR_REFRESH_SLOW: &str =
-    "Updating token balances is taking longer than usual. Try again in a moment.";
-pub const ERROR_CONTRACT_MISSING: &str =
-    "This token's details aren't available yet. Refresh and try again.";
 
 /// A wide row lays the balance and the actions out as columns beside the
 /// name; a narrow one stacks them under it.
@@ -79,83 +36,49 @@ const WIDE_ROW_MIN_WIDTH: f32 = 640.0;
 const ACTIONS_COLUMN_WIDTH: f32 = 220.0;
 const BALANCE_COLUMN_WIDTH: f32 = 200.0;
 const NAME_COLUMN_MIN_WIDTH: f32 = 120.0;
-const ROW_MONOGRAM_SIZE: f32 = 36.0;
+const FILTER_WIDTH: f32 = 200.0;
+/// The token monogram on a row and on the detail page.
+pub(super) const ROW_MONOGRAM_SIZE: f32 = 36.0;
+pub(super) const DETAIL_MONOGRAM_SIZE: f32 = 56.0;
 
-/// Every complete sentence of the tab, for the copy test.
-#[cfg(test)]
-const SENTENCES: &[&str] = &[
-    SUBTITLE,
-    REFRESHING_TOOLTIP,
-    HIDE_ZERO_TOOLTIP,
-    OPEN_DETAILS_TOOLTIP,
-    STATUS_COULD_NOT_CHECK,
-    STATUS_REWARDS,
-    STATUS_ADD_KEY,
-    DISABLED_NOT_TRANSFERABLE,
-    DISABLED_NOT_SYNCED,
-    EMPTY_BODY,
-    FIRST_LOAD,
-    FOOTNOTE,
-    ERROR_REFRESH_FAILED,
-    ERROR_REFRESH_SLOW,
-    ERROR_CONTRACT_MISSING,
-];
-
-/// "Last updated {time}."
-pub fn last_updated_text(time_ms: u64) -> String {
-    format!(
-        "Last updated {}.",
-        datetime::local_date_time_from_unix_millis(time_ms)
-    )
+/// What every row needs to know about the identity and the network.
+pub(super) struct RowContext {
+    pub(super) synced: bool,
+    /// The identity can sign nothing on this device.
+    pub(super) view_only: bool,
+    pub(super) identity_label: String,
 }
 
-/// "Showing balances from {time}." — after a failed refresh.
-pub fn stale_since_text(time_ms: u64) -> String {
-    format!(
-        "Showing balances from {}.",
-        datetime::local_date_time_from_unix_millis(time_ms)
-    )
-}
+impl RowContext {
+    pub(super) fn new(app_context: &AppContext, identity: &QualifiedIdentity) -> Self {
+        Self {
+            synced: app_context.connection_status().masternodes_ready(),
+            view_only: identity.private_keys.is_empty(),
+            identity_label: app_context.identity_display_label(identity),
+        }
+    }
 
-/// "You can claim {amount} once."
-pub fn can_claim_once_text(amount: &crate::model::amount::Amount) -> String {
-    format!("You can claim {amount} once.")
-}
-
-/// "Claimed on {date}."
-pub fn claimed_on_text(date: &str) -> String {
-    format!("Claimed on {date}.")
-}
-
-/// "{count} hidden"
-pub fn hidden_count_text(count: usize) -> String {
-    format!("{count} hidden")
-}
-
-/// "You stopped tracking every token for {identity}. …"
-pub fn dismissed_body_text(identity: &str) -> String {
-    format!(
-        "You stopped tracking every token for {identity}. Tokens you track on other identities are unaffected."
-    )
-}
-
-/// "Stop tracking {token} for {identity}? …"
-pub fn stop_tracking_question(token: &str, identity: &str) -> String {
-    format!("Stop tracking {token} for {identity}? You can add it again at any time.")
-}
-
-/// Tooltip of the tab badge and the Home card's claim line.
-pub fn pending_claims_text(count: usize) -> String {
-    if count == 1 {
-        "1 token has something to claim.".to_string()
-    } else {
-        format!("{count} tokens have something to claim.")
+    /// Why Send and Claim are blocked for this identity right now, if they are.
+    fn holder_action_block(&self) -> Option<&'static str> {
+        if !self.synced {
+            Some(DISABLED_NOT_SYNCED)
+        } else if self.view_only {
+            Some(STATUS_ADD_KEY)
+        } else {
+            None
+        }
     }
 }
 
-/// Whether the identity can sign nothing on this device.
-fn view_only(identity: &QualifiedIdentity) -> bool {
-    identity.private_keys.is_empty()
+/// The token's monogram: its initial on a hue derived from its ID.
+pub(super) fn paint_token_monogram(ui: &mut Ui, row: &TokenRow, size: f32) {
+    super::avatar::paint_identity_monogram(
+        ui,
+        size,
+        HeroIdentityKind::User,
+        row.name().chars().next(),
+        DashColors::pastel_gradient(row.token.token_id.as_bytes()[0] as usize),
+    );
 }
 
 /// The tab's content below the hub header. Data loads are not part of
@@ -171,11 +94,11 @@ pub fn render(
         return AppAction::None;
     };
     let mut action = AppAction::None;
-    let rows: Vec<TokenRow> = state.rows(app_context, identity).to_vec();
+    let rows = state.rows(app_context, identity);
 
     if let Some(pair) = state.detail {
         // The row can leave while its page is open (stopped tracking elsewhere).
-        action |= match rows.iter().find(|row| row.pair == pair) {
+        action |= match rows.iter().find(|row| row.pair() == pair) {
             Some(row) => super::token_detail::render(ui, app_context, identity, row, state),
             None => {
                 state.detail = None;
@@ -205,16 +128,16 @@ pub fn render(
             render_no_tokens(ui, app_context)
         };
     } else {
-        action |= render_controls(ui, app_context, state, &rows);
+        render_controls(ui, app_context, state, &rows);
         ui.add_space(Spacing::SM);
-        if rows.iter().all(|row| row.balance.is_none()) && state.last_refreshed_at_ms().is_none() {
+        if state.first_load_shown(&rows, state.refreshing(app_context)) {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new());
                 ui.label(FIRST_LOAD);
             });
             ui.add_space(Spacing::SM);
         }
-        action |= render_list(ui, app_context, identity, state, rows);
+        action |= render_list(ui, app_context, identity, state, &rows);
     }
 
     action |= render_stop_tracking_dialog(ui, state);
@@ -242,24 +165,21 @@ fn render_header(
         ui.label(RichText::new(HEADING).size(Typography::SCALE_XL).strong());
         if filter_shown(rows.len()) {
             ui.label(
-                RichText::new(format!("{} tokens", rows.len()))
+                RichText::new(tracked_count_text(rows.len()))
                     .color(DashColors::text_secondary(dark)),
             );
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             action |= render_add_menu(ui, app_context);
-            let refreshing =
-                state.refresh_pending() || app_context.token_balance_refresh_in_flight();
+            let refreshing = state.refreshing(app_context);
             let refresh = ui.add_enabled(
                 synced && !refreshing,
                 ComponentStyles::secondary_button(REFRESH_LABEL, dark),
             );
-            let reason = if synced {
-                REFRESHING_TOOLTIP
-            } else {
-                DISABLED_NOT_SYNCED
-            };
-            if refresh.disabled_tooltip(reason).clicked() {
+            if refresh
+                .disabled_tooltip(refresh_block_reason(synced))
+                .clicked()
+            {
                 action |= state.refresh_action(app_context);
             }
             if refreshing {
@@ -270,19 +190,32 @@ fn render_header(
     action
 }
 
+/// Why a refresh control is disabled: the network, or a refresh already running.
+fn refresh_block_reason(synced: bool) -> &'static str {
+    if synced {
+        REFRESHING_TOOLTIP
+    } else {
+        DISABLED_NOT_SYNCED
+    }
+}
+
 /// "Add a token ▾": find by name in Tokens › Search, or add by ID.
 fn render_add_menu(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let mut action = AppAction::None;
-    ui.menu_button(format!("{ADD_TOKEN_LABEL} ▾"), |ui| {
-        if ui.button(FIND_BY_NAME_LABEL).clicked() {
-            action = AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch);
-            ui.close();
-        }
-        if ui.button(ADD_BY_ID_LABEL).clicked() {
-            action = AppAction::AddScreen(ScreenType::AddTokenById.create_screen(app_context));
-            ui.close();
-        }
-    });
+    let (button, _) = MenuButton::from_button(egui::Button::new(ADD_TOKEN_LABEL).right_text("▾"))
+        .ui(ui, |ui| {
+            if ui.button(FIND_BY_NAME_LABEL).clicked() {
+                action = AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch);
+                ui.close();
+            }
+            if ui.button(ADD_BY_ID_LABEL).clicked() {
+                action = AppAction::AddScreen(ScreenType::AddTokenById.create_screen(app_context));
+                ui.close();
+            }
+        });
+    // The glyph is decoration; the accessible name is the label alone.
+    button
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, ADD_TOKEN_LABEL));
     action
 }
 
@@ -315,61 +248,49 @@ fn render_failure(
     let Some(failure) = state.refresh_failure() else {
         return AppAction::None;
     };
-    let mut action = AppAction::None;
-    let dark = ui.visuals().dark_mode;
     let synced = app_context.connection_status().masternodes_ready();
+    let text = match failure {
+        RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,
+        RefreshFailure::Failed => ERROR_REFRESH_FAILED,
+    };
     ui.add_space(Spacing::SM);
-    egui::Frame::new()
-        .fill(DashColors::message_background_color(
-            MessageType::Error,
-            dark,
-        ))
-        .corner_radius(Shape::RADIUS_MD)
-        .inner_margin(egui::Margin::same(Spacing::SM_I8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("▲").color(DashColors::message_color(MessageType::Error, dark)),
-                );
-                ui.label(match failure {
-                    RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,
-                    RefreshFailure::Failed => ERROR_REFRESH_FAILED,
-                });
-                if ui
-                    .add_enabled(synced, egui::Link::new(TRY_AGAIN_LABEL))
-                    .disabled_tooltip(DISABLED_NOT_SYNCED)
-                    .clicked()
-                {
-                    action |= state.refresh_action(app_context);
-                }
-                if ui.link(DISMISS_LABEL).clicked() {
-                    state.failure_dismissed = true;
-                }
-            });
-        });
+    let response = InlineNotice::new(MessageType::Error, text)
+        .with_link_unless(TRY_AGAIN_LABEL, (!synced).then_some(DISABLED_NOT_SYNCED))
+        .with_link(DISMISS_LABEL)
+        .show(ui);
     ui.add_space(Spacing::SM);
-    action
+    match response.clicked {
+        Some(0) => state.refresh_action(app_context),
+        Some(_) => {
+            state.failure_dismissed = true;
+            AppAction::None
+        }
+        None => AppAction::None,
+    }
 }
 
-/// Hide-zero (always), plus filter and sort once the list is long.
+/// Hide-zero (always), plus filter and sort once the list is long. Hide-zero
+/// and sort are saved as they change; the filter when its box loses focus.
 fn render_controls(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut IdentityTokensState,
     rows: &[TokenRow],
-) -> AppAction {
+) {
     let mut prefs = state.prefs(app_context).clone();
     let before = prefs.clone();
     let dark = ui.visuals().dark_mode;
     let filter_shown = filter_shown(rows.len());
+    let mut filter_done = false;
     ui.horizontal_wrapped(|ui| {
         if filter_shown {
-            ui.add(
+            let filter = ui.add(
                 egui::TextEdit::singleline(&mut prefs.filter)
                     .hint_text(FILTER_HINT)
-                    .desired_width(200.0),
+                    .char_limit(IdentityTokensViewPrefs::MAX_FILTER_CHARS)
+                    .desired_width(FILTER_WIDTH),
             );
+            filter_done = filter.lost_focus();
             egui::ComboBox::from_id_salt("identity_tokens_sort")
                 .selected_text(prefs.sort.label())
                 .show_ui(ui, |ui| {
@@ -394,10 +315,15 @@ fn render_controls(
             );
         }
     });
+    let only_the_filter_changed = prefs.filter != before.filter
+        && prefs.hide_zero_balances == before.hide_zero_balances
+        && prefs.sort == before.sort;
     if prefs != before {
-        state.set_prefs(app_context, prefs);
+        state.edit_prefs(prefs);
     }
-    AppAction::None
+    if filter_done || (state.prefs_dirty() && !only_the_filter_changed) {
+        state.save_prefs(app_context);
+    }
 }
 
 fn render_list(
@@ -405,20 +331,18 @@ fn render_list(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut IdentityTokensState,
-    mut rows: Vec<TokenRow>,
+    rows: &[TokenRow],
 ) -> AppAction {
     let prefs = state.prefs(app_context).clone();
-    sort_rows(&mut rows, prefs.sort);
     let filter_shown = filter_shown(rows.len());
-    let listed: Vec<TokenRow> = rows
-        .into_iter()
+    let mut listed: Vec<&TokenRow> = rows
+        .iter()
         .filter(|row| row_is_listed(row, &prefs, filter_shown))
         .collect();
+    sort_rows(&mut listed, prefs.sort);
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
-    let synced = app_context.connection_status().masternodes_ready();
-    let view_only = view_only(identity);
-    let identity_label = app_context.identity_display_label(identity);
+    let context = RowContext::new(app_context, identity);
     // The list scrolls on its own so the heading and controls stay put on a
     // short window.
     egui::ScrollArea::vertical()
@@ -430,17 +354,7 @@ fn render_list(
                     if index > 0 {
                         ui.separator();
                     }
-                    action |= render_row(
-                        ui,
-                        app_context,
-                        state,
-                        row,
-                        RowContext {
-                            synced,
-                            view_only,
-                            identity_label: &identity_label,
-                        },
-                    );
+                    action |= render_row(ui, app_context, state, row, &context);
                 }
             });
             ui.add_space(Spacing::SM);
@@ -453,20 +367,12 @@ fn render_list(
     action
 }
 
-/// What every row needs to know about the identity and the network.
-#[derive(Clone, Copy)]
-pub(super) struct RowContext<'a> {
-    pub(super) synced: bool,
-    pub(super) view_only: bool,
-    pub(super) identity_label: &'a str,
-}
-
 fn render_row(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut IdentityTokensState,
     row: &TokenRow,
-    context: RowContext<'_>,
+    context: &RowContext,
 ) -> AppAction {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
@@ -478,13 +384,7 @@ fn render_row(
         ui.style_mut().interaction.selectable_labels = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = Spacing::SM;
-            super::avatar::paint_identity_monogram(
-                ui,
-                ROW_MONOGRAM_SIZE,
-                HeroIdentityKind::User,
-                row.name.chars().next(),
-                DashColors::pastel_gradient(row.pair.token_id.as_bytes()[0] as usize),
-            );
+            paint_token_monogram(ui, row, ROW_MONOGRAM_SIZE);
             let actions_width = if wide { ACTIONS_COLUMN_WIDTH } else { 0.0 };
             let balance_width = if wide { BALANCE_COLUMN_WIDTH } else { 0.0 };
             let name_width =
@@ -498,20 +398,25 @@ fn render_row(
                     ui.horizontal_wrapped(|ui| {
                         // The name opens the detail page; Enter works once focused.
                         if ui
-                            .add(egui::Button::new(RichText::new(&row.name).strong()).frame(false))
+                            .add(egui::Button::new(RichText::new(row.name()).strong()).frame(false))
                             .clickable_tooltip(OPEN_DETAILS_TOOLTIP)
                             .clicked()
                         {
-                            state.detail = Some(row.pair);
+                            state.detail = Some(row.pair());
                         }
                         if row.issued_by_me {
-                            accent_pill(ui, ISSUED_BY_YOU_BADGE, DashColors::DASH_BLUE, None);
+                            accent_pill(
+                                ui,
+                                ISSUED_BY_YOU_BADGE,
+                                DashColors::pill_accent(dark),
+                                None,
+                            );
                         }
-                        if !row.transferable {
+                        if !row.transferable() {
                             accent_pill(
                                 ui,
                                 CANT_BE_SENT_BADGE,
-                                DashColors::text_secondary(dark),
+                                DashColors::pill_neutral(dark),
                                 None,
                             );
                         }
@@ -523,13 +428,12 @@ fn render_row(
                             .color(DashColors::text_secondary(dark)),
                     );
                     if !wide {
-                        render_balance_and_status(
+                        action |= render_balance_and_status(
                             ui,
                             app_context,
                             row,
                             &status,
                             context,
-                            &mut action,
                             state,
                         );
                     }
@@ -541,13 +445,12 @@ fn render_row(
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(balance_width);
-                        render_balance_and_status(
+                        action |= render_balance_and_status(
                             ui,
                             app_context,
                             row,
                             &status,
                             context,
-                            &mut action,
                             state,
                         );
                     },
@@ -560,7 +463,7 @@ fn render_row(
         });
     });
     if row_response.response.clicked() {
-        state.detail = Some(row.pair);
+        state.detail = Some(row.pair());
     }
     action
 }
@@ -570,14 +473,13 @@ fn render_balance_and_status(
     app_context: &Arc<AppContext>,
     row: &TokenRow,
     status: &RowStatus,
-    context: RowContext<'_>,
-    action: &mut AppAction,
+    context: &RowContext,
     state: &mut IdentityTokensState,
-) {
-    if let Some(balance) = row.balance {
+) -> AppAction {
+    if let Some(balance) = row.balance() {
         ui.label(RichText::new(row.amount(balance).to_string()).monospace());
     }
-    render_row_status(ui, app_context, row, status, context, action, state);
+    render_row_status(ui, app_context, row, status, context, state)
 }
 
 /// The row's one status line; "Try again" re-checks a failed pair once the
@@ -587,12 +489,12 @@ pub(super) fn render_row_status(
     app_context: &Arc<AppContext>,
     row: &TokenRow,
     status: &RowStatus,
-    context: RowContext<'_>,
-    action: &mut AppAction,
+    context: &RowContext,
     state: &mut IdentityTokensState,
-) {
+) -> AppAction {
     let dark = ui.visuals().dark_mode;
     let secondary = DashColors::text_secondary(dark);
+    let mut action = AppAction::None;
     match status {
         RowStatus::None => {}
         RowStatus::Checking => {
@@ -610,7 +512,7 @@ pub(super) fn render_row_status(
                     .disabled_tooltip(DISABLED_NOT_SYNCED)
                     .clicked()
                 {
-                    *action |= state.check_pair_action(app_context, row.pair);
+                    action = state.check_pair_action(app_context, row.pair());
                 }
             });
         }
@@ -639,6 +541,7 @@ pub(super) fn render_row_status(
             );
         }
     }
+    action
 }
 
 /// Send and Claim, laid out right to left. Both wait for the masternode list
@@ -647,13 +550,12 @@ pub(super) fn render_row_actions(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     row: &TokenRow,
-    context: RowContext<'_>,
+    context: &RowContext,
 ) -> AppAction {
     let mut action = render_claim_button(ui, app_context, row, context);
-    let blocked_reason = holder_action_block(context);
     if row.holds_some() {
-        let send_reason = if row.transferable {
-            blocked_reason
+        let send_reason = if row.transferable() {
+            context.holder_action_block()
         } else {
             Some(DISABLED_NOT_TRANSFERABLE)
         };
@@ -674,29 +576,18 @@ pub(super) fn render_row_actions(
     action
 }
 
-/// Why Send and Claim are blocked for this identity right now, if they are.
-fn holder_action_block(context: RowContext<'_>) -> Option<&'static str> {
-    if !context.synced {
-        Some(DISABLED_NOT_SYNCED)
-    } else if context.view_only {
-        Some(STATUS_ADD_KEY)
-    } else {
-        None
-    }
-}
-
 /// The Claim button, when `row` has something to claim; disabled with its
 /// reason until the network is synced and the identity can sign.
 pub(super) fn render_claim_button(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     row: &TokenRow,
-    context: RowContext<'_>,
+    context: &RowContext,
 ) -> AppAction {
     if !row.claim_available() {
         return AppAction::None;
     }
-    let blocked_reason = holder_action_block(context);
+    let blocked_reason = context.holder_action_block();
     let claim = ui.add_enabled(
         blocked_reason.is_none(),
         ComponentStyles::secondary_button(CLAIM_LABEL, ui.visuals().dark_mode),
@@ -711,17 +602,13 @@ pub(super) fn render_claim_button(
 }
 
 /// Push the Claim screen for `row`, or explain why not.
-pub(super) fn claim_action(
-    ctx: &egui::Context,
-    app_context: &Arc<AppContext>,
-    row: &TokenRow,
-) -> AppAction {
-    match app_context.get_contract_by_token_id(&row.pair.token_id) {
+fn claim_action(ctx: &egui::Context, app_context: &Arc<AppContext>, row: &TokenRow) -> AppAction {
+    match app_context.get_contract_by_token_id(&row.token.token_id) {
         Ok(Some(contract)) => {
             AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
                 row.basic_info(),
                 contract,
-                row.token_config.clone(),
+                row.token.token_config.clone(),
                 app_context,
             )))
         }
@@ -743,7 +630,7 @@ fn render_row_menu(
     app_context: &Arc<AppContext>,
     state: &mut IdentityTokensState,
     row: &TokenRow,
-    context: RowContext<'_>,
+    context: &RowContext,
 ) -> AppAction {
     let mut action = AppAction::None;
     let response = ui.menu_button(MENU_LABEL, |ui| {
@@ -752,11 +639,11 @@ fn render_row_menu(
             .disabled_tooltip(DISABLED_NOT_SYNCED)
             .clicked()
         {
-            action |= state.check_pair_action(app_context, row.pair);
+            action |= state.check_pair_action(app_context, row.pair());
             ui.close();
         }
         if ui.button(DETAILS_LABEL).clicked() {
-            state.detail = Some(row.pair);
+            state.detail = Some(row.pair());
             ui.close();
         }
         if ui.button(COPY_ID_LABEL).clicked() {
@@ -764,7 +651,7 @@ fn render_row_menu(
             ui.close();
         }
         if ui.button(STOP_TRACKING_LABEL).clicked() {
-            open_stop_tracking_dialog(state, row, context.identity_label);
+            open_stop_tracking_dialog(state, row, &context.identity_label);
             ui.close();
         }
         if row.has_admin_permission {
@@ -779,7 +666,7 @@ fn render_row_menu(
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("More actions for {}", row.name),
+            more_actions_label(row.name()),
         )
     });
     action
@@ -788,7 +675,7 @@ fn render_row_menu(
 /// Open Tokens › My Tokens on this token, where the administrative actions
 /// live.
 pub(super) fn manage_action(app_context: &Arc<AppContext>, row: &TokenRow) -> AppAction {
-    app_context.set_pending_token_selection(row.pair.token_id);
+    app_context.set_pending_token_selection(row.token.token_id);
     AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances)
 }
 
@@ -801,11 +688,11 @@ pub(super) fn open_stop_tracking_dialog(
     state.stop_tracking_dialog = Some((
         ConfirmationDialog::new(
             STOP_TRACKING_TITLE,
-            stop_tracking_question(&row.name, identity_label),
+            stop_tracking_question(row.name(), identity_label),
         )
         .confirm_text(Some(STOP_TRACKING_LABEL))
-        .cancel_text(Some("Cancel")),
-        row.pair,
+        .cancel_text(Some(CANCEL_LABEL)),
+        row.pair(),
     ));
 }
 
@@ -872,7 +759,7 @@ fn render_all_dismissed(
     let dark = ui.visuals().dark_mode;
     let identity_label = app_context.identity_display_label(identity);
     let synced = app_context.connection_status().masternodes_ready();
-    let refreshing = state.refresh_pending() || app_context.token_balance_refresh_in_flight();
+    let refreshing = state.refreshing(app_context);
     super::home::card(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(Spacing::MD);
@@ -892,12 +779,10 @@ fn render_all_dismissed(
                     synced && !refreshing,
                     ComponentStyles::primary_button(TRACK_AGAIN_LABEL),
                 );
-                let reason = if synced {
-                    REFRESHING_TOOLTIP
-                } else {
-                    DISABLED_NOT_SYNCED
-                };
-                if track_again.disabled_tooltip(reason).clicked() {
+                if track_again
+                    .disabled_tooltip(refresh_block_reason(synced))
+                    .clicked()
+                {
                     action = state.track_again_action(app_context, identity);
                 }
                 action |= render_add_menu(ui, app_context);
@@ -906,57 +791,4 @@ fn render_all_dismissed(
         });
     });
     action
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_sentence_is_complete() {
-        for sentence in SENTENCES {
-            assert!(
-                sentence.ends_with('.'),
-                "'{sentence}' must be a complete sentence"
-            );
-        }
-        assert!(STATUS_CHECKING.ends_with('…'));
-        assert!(
-            last_updated_text(0).starts_with("Last updated ")
-                && last_updated_text(0).ends_with('.')
-        );
-        assert!(stale_since_text(0).ends_with('.'));
-        assert!(claimed_on_text("2026-10-20").ends_with('.'));
-        assert!(stop_tracking_question("DCF", "Alice").ends_with('.'));
-        assert!(dismissed_body_text("Alice").ends_with('.'));
-        assert_eq!(pending_claims_text(1), "1 token has something to claim.");
-        assert_eq!(pending_claims_text(2), "2 tokens have something to claim.");
-        assert_eq!(hidden_count_text(3), "3 hidden");
-    }
-
-    #[test]
-    fn no_hub_copy_uses_token_jargon() {
-        for text in SENTENCES.iter().copied().chain([
-            HEADING,
-            EMPTY_HEADING,
-            DISMISSED_HEADING,
-            CHECK_NOW_LABEL,
-            STOP_TRACKING_LABEL,
-            MANAGE_LABEL,
-            SEND_LABEL,
-        ]) {
-            let lower = text.to_lowercase();
-            for banned in [
-                "transfer",
-                "contract",
-                "perpetual",
-                "pre-programmed",
-                "contract owner",
-                "state transition",
-                "nonce",
-            ] {
-                assert!(!lower.contains(banned), "'{text}' uses '{banned}'");
-            }
-        }
-    }
 }

@@ -10,8 +10,6 @@ use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::{TokenConfiguration, TokenContractPosition};
 use dash_sdk::platform::{DataContract, Identifier};
 
@@ -110,7 +108,6 @@ impl Amount {
     /// Creates an [`Amount`] for a token, taking decimals and unit name from
     /// the token configuration.
     pub fn from_token(token_info: &IdentityTokenInfo, value: TokenAmount) -> Self {
-        let decimal_places = token_info.token_config.conventions().decimals();
-        Self::new(value, decimal_places).with_unit_name(&token_info.token_alias)
+        crate::model::token::token_amount(&token_info.token_config, &token_info.token_alias, value)
     }
 }

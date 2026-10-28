@@ -1180,8 +1180,8 @@ fn a_pending_switch_blocks_the_app_behind_a_progress_overlay() {
 }
 
 /// A switch whose task stops without a result, as a panic does, must not leave
-/// the app blocked: the overlay closes, the failure is shown, and the app stays
-/// on the network it was on.
+/// the app blocked: the overlay closes, the failure is shown with its details,
+/// and the app stays on the network it was on.
 #[test]
 fn a_switch_that_stops_without_a_result_releases_the_app() {
     use dash_evo_tool::app::TaskResult;
@@ -1192,8 +1192,9 @@ fn a_switch_that_stops_without_a_result_releases_the_app() {
         let _guard = rt.enter();
 
         let (mut harness, first, second) = mount_on_chooser_with_auto_start();
-        let outgoing_context = harness.state().current_app_context().clone();
-        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        // The switch's own task is captured instead of run, so it never lands:
+        // the only way it ends is the failure delivered below.
+        harness.state_mut().test_capture_dispatches();
         harness.state_mut().change_network(second);
         let switching = match second {
             Network::Mainnet => "Switching to Mainnet…",
@@ -1202,20 +1203,36 @@ fn a_switch_that_stops_without_a_result_releases_the_app() {
         step_until_painted(&mut harness, "the switch's progress overlay", |h| {
             h.query_by_label_contains(switching).is_some()
         });
+        let switch_context = {
+            let switches: Vec<_> = harness
+                .state()
+                .test_captured_dispatches()
+                .iter()
+                .filter(|(task, _)| matches!(task, BackendTask::SwitchNetwork { .. }))
+                .collect();
+            assert_eq!(switches.len(), 1, "the switch dispatched its task once");
+            let (task, context) = switches[0];
+            assert!(
+                matches!(task, BackendTask::SwitchNetwork { network, .. } if *network == second),
+                "the captured task switches to the destination: {task:?}"
+            );
+            assert!(
+                matches!(context, BackendTaskContext::NetworkSwitch { .. }),
+                "the switch runs under its own context: {context:?}"
+            );
+            context.clone()
+        };
 
-        // What the join watcher reports for a switch task that panicked.
+        // What the join watcher reports, under the switch's own context, for
+        // a switch task that panicked.
         let panicked = rt
             .block_on(tokio::spawn(async { panic!("the switch task panicked") }))
             .expect_err("the stand-in task panics");
-        let switch = BackendTask::SwitchNetwork {
-            network: second,
-            start_spv: false,
-        };
         harness
             .state()
             .task_result_sender
             .try_send(TaskResult::Error {
-                context: BackendTaskContext::from(&switch),
+                context: switch_context,
                 error: TaskError::BackendTaskFailed {
                     source: panicked.into(),
                 },
@@ -1231,14 +1248,35 @@ fn a_switch_that_stops_without_a_result_releases_the_app() {
                 .is_some(),
             "the failure is shown"
         );
-        assert_eq!(harness.state().current_app_context().network(), first);
-
-        // Let the held stand-in switch finish so teardown has nothing in flight.
-        drop(pending_switch);
-        poll_until(&mut harness, "the held switch to finish", |state| {
-            state.current_app_context().network() == second
-                && state.boot_phase() == BootPhase::Ready
+        harness.get_by_label("Show details").click();
+        step_until_painted(&mut harness, "the failure's details to open", |h| {
+            h.query_by_label_contains("BackendTaskFailed").is_some()
         });
+
+        // The switch is over: the app stays where it was, and no switch lands
+        // later.
+        for _ in 0..10 {
+            harness.step();
+        }
+        assert_eq!(harness.state().current_app_context().network(), first);
+        assert!(
+            harness.query_by_label_contains(switching).is_none(),
+            "the overlay stays closed"
+        );
+        assert_eq!(
+            harness
+                .state()
+                .test_captured_dispatches()
+                .iter()
+                .filter(|(task, _)| matches!(task, BackendTask::SwitchNetwork { .. }))
+                .count(),
+            1,
+            "nothing retried the switch"
+        );
+        assert!(
+            !harness.state().test_spv_start_in_flight(),
+            "nothing is left in flight at teardown"
+        );
     });
 }
 

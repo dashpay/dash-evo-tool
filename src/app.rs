@@ -46,7 +46,7 @@ use crate::model::spv_status::SpvStatus;
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{
-    BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay,
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay,
 };
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -2643,8 +2643,12 @@ impl App for AppState {
                     {
                         screen.change_context(current_context);
                     }
-                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
-                        .disable_auto_dismiss();
+                    let handle =
+                        MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                    handle.disable_auto_dismiss();
+                    // TaskError Debug output is shown to users, deliberately.
+                    // Ensure inner error types don't expose secrets.
+                    handle.with_details(&err);
                 }
                 TaskResult::Error {
                     context,

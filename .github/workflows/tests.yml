@@ -1,13 +1,11 @@
 name: Tests
 
-# Path filters below fire on any change that can affect a build or test result,
-# plus the migration fixture tooling. `**/*.rs` includes build.rs; fixture
-# documentation changes also exercise the migration gate.
+# Pushes keep path filters; PRs report required checks even for docs-only changes.
 on:
   push:
     branches:
       - "v*-dev"
-    paths: &code_paths
+    paths:
       - "**/*.rs" # includes build.rs
       - "**/Cargo.toml"
       - "Cargo.lock"
@@ -24,7 +22,6 @@ on:
       - ".github/workflows/migration-fixture-capture.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths: *code_paths
   # Allows a manual run against a branch. Draft PRs are suppressed by the
   # `draft != true` guard below and otherwise have no way to run CI at all; a
   # manual run covers them. Note it tests the branch head, not the PR merge
@@ -45,15 +42,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  scope:
+    name: Determine PR scope
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      needed: ${{ steps.scope.outputs.needed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        run: python3 scripts/ci/pr_scope.py --suite tests
+
   pin-ancestry:
+    needs: [scope]
     name: Platform pin guard
-    if: github.event.pull_request.draft != true
+    if: ${{ !cancelled() && github.event.pull_request.draft != true && (github.event_name != 'pull_request' || needs.scope.result != 'success' || needs.scope.outputs.needed != 'false') }}
     runs-on: ${{ vars.DASH_LIGHT_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Check fixture scripts
         env:
@@ -71,8 +87,9 @@ jobs:
         run: scripts/migration-fixtures/check-pin-ancestry.sh
 
   test:
+    needs: [scope]
     name: Test Suite
-    if: github.event_name != 'schedule' && github.event.pull_request.draft != true
+    if: github.event_name != 'schedule' && !cancelled() && github.event.pull_request.draft != true && (github.event_name != 'pull_request' || needs.scope.result != 'success' || needs.scope.outputs.needed != 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -82,7 +99,9 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -174,7 +193,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Check fixture coverage against published releases
         env:

@@ -1339,7 +1339,8 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.

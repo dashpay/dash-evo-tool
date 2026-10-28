@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::LazyLock;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
@@ -33,13 +34,26 @@ use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use crate::ui::tokens::tokens_screen::{
-    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
+    TokenPresetSelection, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
     TokenNameLanguage, TokensScreen,
 };
 
 impl TokensScreen {
+    /// The creator waits for its registration, under a progress banner.
+    pub(super) fn mark_token_registration_started(&mut self) {
+        self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Creating token...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.operation_banner = Some(handle);
+    }
+
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        self.reconcile_selected_preset();
 
         // 1) If we've successfully completed contract creation, show a success UI
         if self.token_creator_status == TokenCreatorStatus::Complete {
@@ -381,42 +395,22 @@ impl TokensScreen {
                                     });
                                     ComboBox::from_id_salt("simple_preset_selector")
                                         .width(200.0)
-                                        .selected_text(
-                                            self.selected_token_preset
-                                                .map(|p| match p {
-                                                    MostRestrictive => "Most Restrictive",
-                                                    WithOnlyEmergencyAction => "Only Emergency Action",
-                                                    WithMintingAndBurningActions => "Minting and Burning",
-                                                    WithAllAdvancedActions => "Advanced Actions",
-                                                    WithExtremeActions => "All Allowed",
-                                                })
-                                                .unwrap_or("Select a preset..."),
-                                        )
+                                        .selected_text(self.preset_selection_label())
                                         .show_ui(ui, |ui| {
-                                            for variant in [
-                                                MostRestrictive,
-                                                WithOnlyEmergencyAction,
-                                                WithMintingAndBurningActions,
-                                                WithAllAdvancedActions,
-                                                WithExtremeActions,
-                                            ] {
-                                                let (text, description) = match variant {
-                                                    MostRestrictive => ("Most Restrictive", "No actions allowed after creation"),
-                                                    WithOnlyEmergencyAction => ("Only Emergency Action", "Can pause/unpause token"),
-                                                    WithMintingAndBurningActions => ("Minting and Burning", "Can mint and burn tokens"),
-                                                    WithAllAdvancedActions => ("Advanced Actions", "Mint, burn, freeze, and more"),
-                                                    WithExtremeActions => ("All Allowed", "All actions enabled"),
+                                            for variant in CREATOR_PRESETS {
+                                                let text = preset_label(variant);
+                                                let description = match variant {
+                                                    MostRestrictive => "No actions allowed after creation",
+                                                    WithOnlyEmergencyAction => "Can pause/unpause token",
+                                                    WithMintingAndBurningActions => "Can mint and burn tokens",
+                                                    WithAllAdvancedActions => "Mint, burn, freeze, and more",
+                                                    WithExtremeActions => "All actions enabled",
                                                 };
-                                                if ui.selectable_value(
-                                                    &mut self.selected_token_preset,
-                                                    Some(variant),
+                                                if ui.selectable_label(
+                                                    self.selected_token_preset == TokenPresetSelection::Preset(variant),
                                                     format!("{text} - {description}"),
                                                 ).clicked() {
-                                                    let preset = TokenConfigurationPreset {
-                                                        features: variant,
-                                                        action_taker: AuthorizedActionTakers::ContractOwner,
-                                                    };
-                                                    self.change_to_preset(preset);
+                                                    self.change_to_preset(creator_preset(variant));
                                                 }
                                             }
                                         });
@@ -426,19 +420,19 @@ impl TokensScreen {
                             ui.add_space(20.0);
 
                             // Create Token button
-                            let can_create = !self.token_names_input[0].0.trim().is_empty()
-                                && self.base_supply_amount.is_some()
-                                && self.selected_token_preset.is_some()
-                                && self.creation_blocked_reason().is_none();
+                            let blocked_reason = self.simple_mode_blocked_reason();
 
                             ui.horizontal(|ui| {
-                                if ComponentStyles::add_primary_button_enabled(
+                                let mut response = ComponentStyles::add_primary_button_enabled(
                                     ui,
-                                    can_create,
+                                    blocked_reason.is_none(),
                                     "Create Token",
-                                )
-                                .clicked()
-                                {
+                                );
+                                if let Some(reason) = &blocked_reason {
+                                    response = response.disabled_tooltip(reason.as_str());
+                                    Self::render_blocked_hint(ui, reason);
+                                }
+                                if response.clicked() {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
@@ -458,23 +452,6 @@ impl TokensScreen {
                                 }
                             });
 
-                            if !can_create {
-                                ui.add_space(5.0);
-                                let hint = if self.token_names_input[0].0.trim().is_empty() {
-                                    "Enter a token name to continue.".to_string()
-                                } else if self.base_supply_amount.is_none() {
-                                    "Enter an initial supply to continue.".to_string()
-                                } else if self.selected_token_preset.is_none() {
-                                    "Choose a preset to create the token.".to_string()
-                                } else {
-                                    self.creation_blocked_reason().unwrap_or_default()
-                                };
-                                ui.label(
-                                    RichText::new(hint)
-                                        .color(egui::Color32::GRAY)
-                                        .italics(),
-                                );
-                            }
                         } else {
                             // =====================================================
                             // ADVANCED MODE - Full options
@@ -699,49 +676,22 @@ impl TokensScreen {
                                 ui.label("Preset:");
 
                                 ComboBox::from_id_salt("preset_selector")
-                                    .selected_text(
-                                        self.selected_token_preset
-                                            .map(|p| match p {
-                                                MostRestrictive => "Most Restrictive",
-                                                WithOnlyEmergencyAction => "Only Emergency Action",
-                                                WithMintingAndBurningActions => "Minting And Burning",
-                                                WithAllAdvancedActions => "Advanced Actions",
-                                                WithExtremeActions => "All Allowed",
-                                            })
-                                            .unwrap_or("Custom"),
-                                    )
+                                    .selected_text(self.preset_selection_label())
                                     .show_ui(ui, |ui| {
-                                        // First, the "Custom" option
-                                        ui.selectable_value(
-                                            &mut self.selected_token_preset,
-                                            None,
-                                            "Custom",
-                                        );
+                                        // "Custom" keeps the current rules and lets the user edit them one by one.
+                                        if ui.selectable_label(
+                                            self.selected_token_preset == TokenPresetSelection::Custom,
+                                            CUSTOM_PRESET_LABEL,
+                                        ).clicked() {
+                                            self.selected_token_preset = TokenPresetSelection::Custom;
+                                        }
 
-                                        for variant in [
-                                            MostRestrictive,
-                                            WithOnlyEmergencyAction,
-                                            WithMintingAndBurningActions,
-                                            WithAllAdvancedActions,
-                                            WithExtremeActions,
-                                        ] {
-                                            let text = match variant {
-                                                MostRestrictive => "Most Restrictive",
-                                                WithOnlyEmergencyAction => "Only Emergency Action",
-                                                WithMintingAndBurningActions => "Minting And Burning",
-                                                WithAllAdvancedActions => "Advanced Actions",
-                                                WithExtremeActions => "All Allowed",
-                                            };
-                                            if ui.selectable_value(
-                                                &mut self.selected_token_preset,
-                                                Some(variant),
-                                                text,
+                                        for variant in CREATOR_PRESETS {
+                                            if ui.selectable_label(
+                                                self.selected_token_preset == TokenPresetSelection::Preset(variant),
+                                                preset_label(variant),
                                             ).clicked() {
-                                                let preset = TokenConfigurationPreset {
-                                                    features: variant,
-                                                    action_taker: AuthorizedActionTakers::ContractOwner, // Or from a field the user selects
-                                                };
-                                                self.change_to_preset(preset);
+                                                self.change_to_preset(creator_preset(variant));
                                             }
                                         }
                                     });
@@ -881,15 +831,15 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            let blocked_reason = self.creation_blocked_reason();
+                            let blocked_reason = self.advanced_mode_blocked_reason();
                             let mut register = ComponentStyles::add_primary_button_enabled(
                                 ui,
                                 blocked_reason.is_none(),
                                 "Register Token Contract",
                             );
                             if let Some(reason) = &blocked_reason {
-                                register = register.disabled_tooltip(reason.clone());
-                                Self::render_blocked_reason(ui, reason);
+                                register = register.disabled_tooltip(reason.as_str());
+                                Self::render_blocked_hint(ui, reason);
                             }
                             if register.clicked() {
                                 match self.parse_token_build_args() {
@@ -1253,7 +1203,7 @@ impl TokensScreen {
             crate::ui::helpers::info_icon_button(ui, "When turned off, holders cannot send the token to other identities. It can still be minted, claimed, bought, burned, frozen and destroyed as configured. This cannot be changed after the token is created.");
         });
         if let Some(reason) = self.creation_blocked_reason() {
-            Self::render_blocked_reason(ui, &reason);
+            Self::render_blocked_hint(ui, &reason);
         }
     }
 
@@ -1270,17 +1220,6 @@ impl TokensScreen {
         } else {
             "Holders cannot send this token to other identities. This cannot be changed later."
         }
-    }
-
-    /// A visible explanation next to a blocked control, so the reason does not
-    /// depend on hovering.
-    fn render_blocked_reason(ui: &mut Ui, reason: &str) {
-        let dark_mode = ui.style().visuals.dark_mode;
-        ui.label(
-            RichText::new(reason)
-                .color(DashColors::muted_color(dark_mode))
-                .italics(),
-        );
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {
@@ -1422,59 +1361,143 @@ impl TokensScreen {
     }
 
     pub fn change_to_preset(&mut self, preset: TokenConfigurationPreset) {
-        let basic_rules = preset.default_basic_change_control_rules_v0();
-        let advanced_rules = preset.default_advanced_change_control_rules_v0();
-        let emergency_rules = preset.default_emergency_action_change_control_rules_v0();
+        let rules = PresetRules::from_preset(&preset);
 
-        self.manual_minting_rules = basic_rules.clone().into();
-        self.manual_burning_rules = basic_rules.clone().into();
-        self.freeze_rules = advanced_rules.clone().into();
-        self.unfreeze_rules = advanced_rules.clone().into();
-        self.destroy_frozen_funds_rules = advanced_rules.clone().into();
-        self.emergency_action_rules = emergency_rules.clone().into();
-        self.max_supply_change_rules = advanced_rules.clone().into();
-        self.conventions_change_rules = basic_rules.clone().into();
-        self.perpetual_distribution_rules = advanced_rules.clone().into();
-        self.new_tokens_destination_identity_rules = basic_rules.clone().into();
-        self.minting_allow_choosing_destination_rules = basic_rules.clone().into();
-        self.authorized_main_control_group_change =
-            preset.default_main_control_group_can_be_modified();
-
-        // Marketplace settings
-        self.marketplace_rules =
-            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-                // Most restrictive = no one can change marketplace rules
-                ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                    admin_action_takers: AuthorizedActionTakers::NoOne,
-                    changing_authorized_action_takers_to_no_one_allowed: false,
-                    changing_admin_action_takers_to_no_one_allowed: false,
-                    self_changing_admin_action_takers_allowed: false,
-                })
-            } else {
-                advanced_rules.clone().into()
-            };
-
-        // Direct purchase pricing rules follow the same pattern as marketplace rules
-        self.change_direct_purchase_pricing_rules =
-            if preset.features == TokenConfigurationPresetFeatures::MostRestrictive {
-                ChangeControlRulesUI::from(ChangeControlRulesV0 {
-                    authorized_to_make_change: AuthorizedActionTakers::NoOne,
-                    admin_action_takers: AuthorizedActionTakers::NoOne,
-                    changing_authorized_action_takers_to_no_one_allowed: false,
-                    changing_admin_action_takers_to_no_one_allowed: false,
-                    self_changing_admin_action_takers_allowed: false,
-                })
-            } else {
-                advanced_rules.clone().into()
-            };
+        self.manual_minting_rules = rules.manual_minting.into();
+        self.manual_burning_rules = rules.manual_burning.into();
+        self.freeze_rules = rules.freeze.into();
+        self.unfreeze_rules = rules.unfreeze.into();
+        self.destroy_frozen_funds_rules = rules.destroy_frozen_funds.into();
+        self.emergency_action_rules = rules.emergency_action.into();
+        self.max_supply_change_rules = rules.max_supply_change.into();
+        self.conventions_change_rules = rules.conventions_change.into();
+        self.perpetual_distribution_rules = rules.perpetual_distribution.into();
+        self.new_tokens_destination_identity_rules = rules.new_tokens_destination_identity.into();
+        self.minting_allow_choosing_destination_rules =
+            rules.minting_allow_choosing_destination.into();
+        self.minting_allow_choosing_destination = rules.minting_may_choose_destination;
+        self.marketplace_rules = rules.marketplace.into();
+        self.change_direct_purchase_pricing_rules = rules.direct_purchase_pricing.into();
+        self.authorized_main_control_group_change = rules.main_control_group_change;
 
         // Reset optional identity/group inputs related to control group modification
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
 
-        // Set `selected_token_preset` so UI shows current preset (Optional)
-        self.selected_token_preset = Some(preset.features);
+        self.selected_token_preset = TokenPresetSelection::Preset(preset.features);
+    }
+
+    /// Whether every rule a preset controls currently holds exactly `expected`.
+    fn rules_match(&self, expected: &PresetRules) -> bool {
+        let PresetRules {
+            manual_minting,
+            manual_burning,
+            freeze,
+            unfreeze,
+            destroy_frozen_funds,
+            emergency_action,
+            max_supply_change,
+            conventions_change,
+            perpetual_distribution,
+            new_tokens_destination_identity,
+            minting_allow_choosing_destination,
+            minting_may_choose_destination,
+            marketplace,
+            direct_purchase_pricing,
+            main_control_group_change,
+        } = expected;
+
+        self.manual_minting_rules.rules == *manual_minting
+            && self.manual_burning_rules.rules == *manual_burning
+            && self.freeze_rules.rules == *freeze
+            && self.unfreeze_rules.rules == *unfreeze
+            && self.destroy_frozen_funds_rules.rules == *destroy_frozen_funds
+            && self.emergency_action_rules.rules == *emergency_action
+            && self.max_supply_change_rules.rules == *max_supply_change
+            && self.conventions_change_rules.rules == *conventions_change
+            && self.perpetual_distribution_rules.rules == *perpetual_distribution
+            && self.new_tokens_destination_identity_rules.rules == *new_tokens_destination_identity
+            && self.minting_allow_choosing_destination_rules.rules
+                == *minting_allow_choosing_destination
+            && self.minting_allow_choosing_destination == *minting_may_choose_destination
+            && self.marketplace_rules.rules == *marketplace
+            && self.change_direct_purchase_pricing_rules.rules == *direct_purchase_pricing
+            && self.authorized_main_control_group_change == *main_control_group_change
+    }
+
+    /// Keeps the preset selector truthful. Once the rules stop matching what it
+    /// shows — a rule edited in Advanced mode after picking a preset, or before
+    /// picking any — it shows "Custom", and the token is built from those rules.
+    pub(super) fn reconcile_selected_preset(&mut self) {
+        let still_accurate = match self.selected_token_preset {
+            TokenPresetSelection::Unselected => self.rules_match(PresetRules::initial()),
+            TokenPresetSelection::Preset(features) => {
+                self.rules_match(PresetRules::for_creator_preset(features))
+            }
+            TokenPresetSelection::Custom => true,
+        };
+        if !still_accurate {
+            self.selected_token_preset = TokenPresetSelection::Custom;
+        }
+    }
+
+    /// Whether Simple mode's "Create Token" is enabled: a name, an initial supply
+    /// and a preset — or individually chosen ("Custom") rules — are required.
+    #[cfg(test)]
+    pub(super) fn can_create_in_simple_mode(&self) -> bool {
+        self.simple_mode_blocked_reason().is_none()
+    }
+
+    /// Why Simple mode's "Create Token" is blocked, shown next to the button:
+    /// missing inputs first, then the preset, then a setting the network does
+    /// not accept.
+    pub(super) fn simple_mode_blocked_reason(&self) -> Option<String> {
+        if self.token_names_input[0].0.trim().is_empty() {
+            Some("Enter a token name to continue.".to_owned())
+        } else if self.base_supply_amount.is_none() {
+            Some("Enter an initial supply to continue.".to_owned())
+        } else if !self.preset_chosen() {
+            Some(SIMPLE_PRESET_HINT.to_owned())
+        } else {
+            self.creation_blocked_reason()
+        }
+    }
+
+    /// Why Advanced mode's "Register Token Contract" is blocked, shown next to
+    /// the button: the preset first, then a setting the network does not accept.
+    pub(super) fn advanced_mode_blocked_reason(&self) -> Option<String> {
+        if !self.preset_chosen() {
+            Some(ADVANCED_PRESET_HINT.to_owned())
+        } else {
+            self.creation_blocked_reason()
+        }
+    }
+
+    /// Visible explanation next to a blocked control, so the reason does not
+    /// depend on hovering.
+    fn render_blocked_hint(ui: &mut Ui, reason: &str) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(reason)
+                .color(DashColors::muted_color(dark_mode))
+                .italics(),
+        );
+    }
+
+    /// Whether a preset or individually chosen ("Custom") rules were picked. Both
+    /// Simple and Advanced mode refuse to create a token before that, so nobody
+    /// registers the all-"no one" starting rules without choosing them.
+    pub(super) fn preset_chosen(&self) -> bool {
+        self.selected_token_preset != TokenPresetSelection::Unselected
+    }
+
+    /// The text the preset selector shows for the current selection.
+    pub(super) fn preset_selection_label(&self) -> &'static str {
+        match self.selected_token_preset {
+            TokenPresetSelection::Unselected => "Select a preset...",
+            TokenPresetSelection::Preset(features) => preset_label(features),
+            TokenPresetSelection::Custom => CUSTOM_PRESET_LABEL,
+        }
     }
 
     fn close_token_creator_confirmation_popup(&mut self) {
@@ -1587,14 +1610,7 @@ impl TokensScreen {
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.token_creator_status = TokenCreatorStatus::WaitingForResult;
-                    let handle = MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Creating token...",
-                        MessageType::Info,
-                    );
-                    handle.with_elapsed();
-                    self.operation_banner = Some(handle);
+                    self.mark_token_registration_started();
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {
@@ -1739,5 +1755,180 @@ impl TokensScreen {
                 self.reset_token_creator();
             }
         });
+    }
+}
+
+/// Why Simple mode's "Create Token" is blocked until a preset is chosen.
+const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";
+
+/// Why Advanced mode's "Register Token Contract" is blocked until a preset or
+/// "Custom" is chosen; editing a rule below also switches to "Custom".
+const ADVANCED_PRESET_HINT: &str = "Choose a preset, or Custom to use the rules below.";
+
+/// Every preset the creator offers, in selector order.
+const CREATOR_PRESETS: [TokenConfigurationPresetFeatures; 5] = [
+    MostRestrictive,
+    WithOnlyEmergencyAction,
+    WithMintingAndBurningActions,
+    WithAllAdvancedActions,
+    WithExtremeActions,
+];
+
+/// Selector text for rules that are not exactly one preset's.
+const CUSTOM_PRESET_LABEL: &str = "Custom";
+
+/// Selector text for a preset.
+fn preset_label(features: TokenConfigurationPresetFeatures) -> &'static str {
+    match features {
+        MostRestrictive => "Most Restrictive",
+        WithOnlyEmergencyAction => "Only Emergency Action",
+        WithMintingAndBurningActions => "Minting and Burning",
+        WithAllAdvancedActions => "Advanced Actions",
+        WithExtremeActions => "All Allowed",
+    }
+}
+
+/// The preset the Token Creator offers for `features`: the contract owner is the
+/// one authorized for every action the preset allows.
+fn creator_preset(features: TokenConfigurationPresetFeatures) -> TokenConfigurationPreset {
+    TokenConfigurationPreset {
+        features,
+        action_taker: AuthorizedActionTakers::ContractOwner,
+    }
+}
+
+/// Every rule a Token Creator preset sets, taken from the Platform preset
+/// definition. The single mapping used both to apply a preset and to check that
+/// the rules on screen still match it.
+#[derive(PartialEq)]
+struct PresetRules {
+    manual_minting: ChangeControlRulesV0,
+    manual_burning: ChangeControlRulesV0,
+    freeze: ChangeControlRulesV0,
+    unfreeze: ChangeControlRulesV0,
+    destroy_frozen_funds: ChangeControlRulesV0,
+    emergency_action: ChangeControlRulesV0,
+    max_supply_change: ChangeControlRulesV0,
+    conventions_change: ChangeControlRulesV0,
+    perpetual_distribution: ChangeControlRulesV0,
+    new_tokens_destination_identity: ChangeControlRulesV0,
+    minting_allow_choosing_destination: ChangeControlRulesV0,
+    /// Whether a mint may send the new tokens to an identity other than the default.
+    minting_may_choose_destination: bool,
+    marketplace: ChangeControlRulesV0,
+    direct_purchase_pricing: ChangeControlRulesV0,
+    main_control_group_change: AuthorizedActionTakers,
+}
+
+impl PresetRules {
+    /// The rules of a freshly opened creator, before any preset or rule is chosen.
+    /// Built once: the selector compares against it every frame.
+    fn initial() -> &'static Self {
+        static INITIAL: LazyLock<PresetRules> = LazyLock::new(PresetRules::initial_rules);
+        &INITIAL
+    }
+
+    /// The rules of `features` as the creator offers it (owner-authorized).
+    /// Built once per preset: the selector compares against them every frame,
+    /// and deriving them builds Platform's whole token configuration.
+    fn for_creator_preset(features: TokenConfigurationPresetFeatures) -> &'static Self {
+        static TABLE: LazyLock<[PresetRules; CREATOR_PRESETS.len()]> = LazyLock::new(|| {
+            CREATOR_PRESETS.map(|features| PresetRules::from_preset(&creator_preset(features)))
+        });
+        let index = CREATOR_PRESETS
+            .iter()
+            .position(|preset| *preset == features)
+            .expect("every preset feature set is offered by the creator");
+        &TABLE[index]
+    }
+
+    fn initial_rules() -> Self {
+        Self {
+            manual_minting: ChangeControlRulesV0::default(),
+            manual_burning: ChangeControlRulesV0::default(),
+            freeze: ChangeControlRulesV0::default(),
+            unfreeze: ChangeControlRulesV0::default(),
+            destroy_frozen_funds: ChangeControlRulesV0::default(),
+            emergency_action: ChangeControlRulesV0::default(),
+            max_supply_change: ChangeControlRulesV0::default(),
+            conventions_change: ChangeControlRulesV0::default(),
+            perpetual_distribution: ChangeControlRulesV0::default(),
+            new_tokens_destination_identity: ChangeControlRulesV0::default(),
+            minting_allow_choosing_destination: ChangeControlRulesV0::default(),
+            minting_may_choose_destination: false,
+            marketplace: ChangeControlRulesV0::default(),
+            direct_purchase_pricing: ChangeControlRulesV0::default(),
+            main_control_group_change: AuthorizedActionTakers::NoOne,
+        }
+    }
+
+    /// Takes every value straight from Platform's own configuration for the preset,
+    /// built "with direct pricing" so whoever may manage the token may also set its
+    /// direct purchase price.
+    fn from_preset(preset: &TokenConfigurationPreset) -> Self {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+        use dash_sdk::dpp::data_contract::associated_token::token_marketplace_rules::TokenMarketplaceRules;
+
+        fn v0(rules: &ChangeControlRules) -> ChangeControlRulesV0 {
+            let ChangeControlRules::V0(rules) = rules;
+            rules.clone()
+        }
+
+        let config = preset.token_configuration_v0(
+            TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
+                localizations: Default::default(),
+                decimals: 8,
+            }),
+            0,
+            None,
+            true,
+            true,
+        );
+        let distribution = &config.distribution_rules;
+        let TokenMarketplaceRules::V0(marketplace) = &config.marketplace_rules;
+
+        Self {
+            manual_minting: v0(&config.manual_minting_rules),
+            manual_burning: v0(&config.manual_burning_rules),
+            freeze: v0(&config.freeze_rules),
+            unfreeze: v0(&config.unfreeze_rules),
+            destroy_frozen_funds: v0(&config.destroy_frozen_funds_rules),
+            emergency_action: v0(&config.emergency_action_rules),
+            max_supply_change: v0(&config.max_supply_change_rules),
+            conventions_change: v0(&config.conventions_change_rules),
+            perpetual_distribution: v0(distribution.perpetual_distribution_rules()),
+            new_tokens_destination_identity: v0(
+                distribution.new_tokens_destination_identity_rules()
+            ),
+            minting_allow_choosing_destination: v0(
+                distribution.minting_allow_choosing_destination_rules()
+            ),
+            minting_may_choose_destination: distribution.minting_allow_choosing_destination(),
+            marketplace: v0(&marketplace.trade_mode_change_rules),
+            direct_purchase_pricing: v0(distribution.change_direct_purchase_pricing_rules()),
+            main_control_group_change: config.main_control_group_can_be_modified,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The selector reconciles every frame, so each creator preset's rules are
+    /// derived once and reused, and they equal what applying the preset sets.
+    #[test]
+    fn creator_preset_rules_are_built_once_and_match_the_preset() {
+        for features in CREATOR_PRESETS {
+            let cached = PresetRules::for_creator_preset(features);
+            assert!(std::ptr::eq(
+                cached,
+                PresetRules::for_creator_preset(features)
+            ));
+            assert!(*cached == PresetRules::from_preset(&creator_preset(features)));
+        }
+        assert!(std::ptr::eq(PresetRules::initial(), PresetRules::initial()));
     }
 }

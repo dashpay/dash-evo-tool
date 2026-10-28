@@ -786,6 +786,14 @@ pub(crate) fn status_line(ui: &mut Ui, tone: Tone, text: &str, dark_mode: bool) 
 }
 
 impl ScreenLike for RegisterDpnsNameScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.reload_identity();
+        }
+    }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         self.registration_error_handled = false;
         if self.registration_context.settle(context).is_none() {

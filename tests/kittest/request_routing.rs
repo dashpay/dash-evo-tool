@@ -461,6 +461,152 @@ fn a_closed_send_form_result_leaves_a_running_query_alone() {
     });
 }
 
+#[test]
+fn a_closed_batch_purchase_does_not_complete_the_next_form() {
+    use dash_evo_tool::app::{AppAction, BackendTasksExecutionMode};
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    use dash_evo_tool::backend_task::{BackendTask, FeeResult};
+    use dash_evo_tool::model::qualified_contract::QualifiedContract;
+    use dash_evo_tool::ui::tokens::direct_token_purchase_screen::PurchaseTokenScreen;
+    use dash_evo_tool::ui::tokens::tokens_screen::IdentityTokenInfo;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::identity::Purpose;
+    use std::sync::Arc;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+        harness.state_mut().test_capture_dispatches();
+        let context = harness.state().current_app_context().clone();
+        let key = crate::identity_home::key(0, Purpose::AUTHENTICATION);
+        let id = crate::identity_home::seed_identity(&context, vec![key.clone()], vec![]);
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([0x23; 32]),
+            token_alias: "Test token".into(),
+            identity: context.get_identity_by_id(&id).unwrap().unwrap(),
+            data_contract: QualifiedContract {
+                contract: dash_sdk::dpp::system_data_contracts::load_system_data_contract(
+                    dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS,
+                    dash_sdk::dpp::version::PlatformVersion::latest(),
+                )
+                .unwrap(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(
+                info.clone(),
+                &context,
+            )));
+        harness
+            .state_mut()
+            .test_dispatch_screen_action(AppAction::BackendTasks(
+                vec![
+                    BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
+                        identity: info.identity.clone(),
+                        data_contract: Arc::new(info.data_contract.contract.clone()),
+                        token_position: 0,
+                        signing_key: key,
+                        amount: 1,
+                        total_agreed_price: 1,
+                    })),
+                    BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                ],
+                BackendTasksExecutionMode::Sequential,
+            ));
+        let dispatch = harness.state().test_captured_dispatches()[0].1.clone();
+        harness.state_mut().screen_stack.pop();
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::PurchaseTokenScreen(PurchaseTokenScreen::new(
+                info, &context,
+            )));
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: dispatch,
+                result: Box::new(BackendTaskSuccessResult::PurchasedTokens(FeeResult::new(
+                    1, 1,
+                ))),
+            },
+        );
+        assert!(
+            harness.query_by_label("Purchase Successful!").is_none(),
+            "the newly opened form did not make the previous form's purchase"
+        );
+    });
+}
+
+#[test]
+fn a_balance_cache_notification_keeps_a_document_query_pending() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        harness.state_mut().test_capture_dispatches();
+        let query = documents(&mut harness).begin_fetch_for_test().unwrap();
+        harness.state_mut().test_record_visible_dispatch(&query);
+        // The notification emitted when QueryMyTokenBalances updates its cache.
+        let network = harness.state().current_app_context().network();
+        deliver(
+            &mut harness,
+            TaskResult::CacheUpdated(dash_evo_tool::backend_task::CacheUpdate {
+                network,
+                domain: dash_evo_tool::backend_task::CacheDomain::Tokens,
+            }),
+        );
+        assert!(
+            documents(&mut harness).fetch_pending_for_test(),
+            "a balance cache update must not reset an unrelated query"
+        );
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: query,
+                result: Box::new(BackendTaskSuccessResult::PageDocuments(
+                    Default::default(),
+                    None,
+                )),
+            },
+        );
+        assert!(!documents(&mut harness).fetch_pending_for_test());
+    });
+}
+
+#[test]
+fn rejected_dispatch_settles_its_owner_even_when_the_result_channel_is_full() {
+    use dash_evo_tool::app::AppAction;
+    use dash_evo_tool::backend_task::{BackendTask, system_task::SystemTask};
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        tokio::runtime::Handle::current()
+            .block_on(harness.state().subtasks.shutdown_async())
+            .unwrap();
+        while harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Repaint)
+            .is_ok()
+        {}
+        harness
+            .state_mut()
+            .test_dispatch_screen_action(AppAction::BackendTask(BackendTask::SystemTask(
+                SystemTask::WipePlatformData,
+            )));
+        assert_eq!(harness.state().test_dispatch_owner_count(), 1);
+        harness.run_steps(3);
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+        let message = TaskError::TaskManagerShuttingDown.to_string();
+        assert!(
+            harness
+                .query_all_by_label_contains(&message)
+                .next()
+                .is_some()
+        );
+    });
+}
+
 /// The contact-list reads Home dispatched while it was in view.
 fn home_contact_list_reads(harness: &App) -> Vec<BackendTaskContext> {
     harness
@@ -515,4 +661,392 @@ fn home_retries_a_contact_read_that_failed_while_covered() {
             "the hub heard of the failure and retries once the network is ready"
         );
     });
+}
+
+/// The tasks dispatched since capture began that satisfy `pick`.
+fn captured_contexts(
+    harness: &App,
+    pick: impl Fn(&BackendTask) -> bool,
+) -> Vec<BackendTaskContext> {
+    harness
+        .state()
+        .test_captured_dispatches()
+        .iter()
+        .filter(|(task, _)| pick(task))
+        .map(|(_, context)| context.clone())
+        .collect()
+}
+
+/// A balance refresh started from My Tokens settles when its own result
+/// arrives through the production dispatch, so its progress banner goes away
+/// and the next Refresh is sent instead of being taken for a duplicate.
+#[test]
+fn token_balance_refresh_settles_on_its_dispatched_result() {
+    use dash_evo_tool::backend_task::tokens::TokenTask;
+    let is_refresh = |task: &BackendTask| {
+        matches!(task, BackendTask::TokenTask(task)
+            if matches!(**task, TokenTask::QueryMyTokenBalances))
+    };
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMyTokenBalances);
+        harness.state_mut().test_capture_dispatches();
+        harness.get_by_label("Refresh").click();
+        harness.run_steps(3);
+        let refreshes = captured_contexts(&harness, is_refresh);
+        assert_eq!(refreshes.len(), 1, "Refresh sends one balance query");
+        assert!(
+            harness
+                .query_all_by_label_contains("Refreshing tokens")
+                .next()
+                .is_some()
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: refreshes[0].clone(),
+                result: Box::new(BackendTaskSuccessResult::FetchedTokenBalances),
+            },
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Refreshing tokens")
+                .next()
+                .is_none(),
+            "the refresh's own result ends it"
+        );
+
+        harness.get_by_label("Refresh").click();
+        harness.run_steps(3);
+        assert_eq!(
+            captured_contexts(&harness, is_refresh).len(),
+            2,
+            "a finished refresh does not block the next one"
+        );
+    });
+}
+
+/// A restore from the previous version that fails through the production
+/// dispatch frees the Restore button again.
+#[test]
+fn failed_restore_from_previous_version_frees_its_button() {
+    fn chooser(
+        harness: &mut App,
+    ) -> &mut dash_evo_tool::ui::network_chooser_screen::NetworkChooserScreen {
+        match harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenNetworkChooser)
+        {
+            Some(Screen::NetworkChooserScreen(screen)) => screen,
+            _ => panic!("the network chooser is open"),
+        }
+    }
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+        harness.state_mut().test_capture_dispatches();
+        let action = chooser(&mut harness).begin_restore_for_test();
+        harness.state_mut().test_dispatch_screen_action(action);
+        let restores = captured_contexts(&harness, |_| true);
+        assert_eq!(restores.len(), 1, "the restore is dispatched once");
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: restores[0].clone(),
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(
+            !chooser(&mut harness).restore_in_progress_for_test(),
+            "the failed restore releases the button"
+        );
+    });
+}
+
+/// A document query sent on one network whose page arrives after a switch to
+/// another reaches none of the new network's screens: the Documents screen,
+/// back in view, neither shows the old page nor keeps waiting for it.
+#[test]
+fn a_result_sent_before_a_network_switch_stays_off_the_new_network() {
+    use dash_evo_tool::app::BootPhase;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+    use std::time::{Duration, Instant};
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        let query = documents(&mut harness).begin_fetch_for_test().unwrap();
+        harness.state_mut().test_record_visible_dispatch(&query);
+
+        let first = harness.state().current_app_context().network();
+        let second = if first == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+        harness.state_mut().change_network(second);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while harness.state().current_app_context().network() != second
+            || harness.state().boot_phase() != BootPhase::Ready
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the switch did not finish in time"
+            );
+            harness.step();
+        }
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenDocumentQuery;
+        harness.run_steps(3);
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: query,
+                result: Box::new(BackendTaskSuccessResult::PageDocuments(
+                    Default::default(),
+                    Some(Start::StartAfter(vec![1])),
+                )),
+            },
+        );
+        assert!(
+            harness.query_by_label("Next Page").is_none(),
+            "the previous network's page is not shown on the new network"
+        );
+        assert!(
+            !documents(&mut harness).fetch_pending_for_test(),
+            "the query that ended with the previous network is no longer awaited"
+        );
+    });
+}
+
+fn token_creator(harness: &mut App) -> &mut dash_evo_tool::ui::tokens::tokens_screen::TokensScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenTokenCreator)
+    {
+        Some(Screen::TokensScreen(screen)) => screen,
+        _ => panic!("the Token Creator is open"),
+    }
+}
+
+/// Switch to the other of Testnet and Mainnet and wait until it is ready.
+fn switch_network(harness: &mut App) {
+    use dash_evo_tool::app::BootPhase;
+    use dash_sdk::dpp::dashcore::Network;
+    use std::time::{Duration, Instant};
+    let first = harness.state().current_app_context().network();
+    let second = if first == Network::Testnet {
+        Network::Mainnet
+    } else {
+        Network::Testnet
+    };
+    harness.state_mut().change_network(second);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while harness.state().current_app_context().network() != second
+        || harness.state().boot_phase() != BootPhase::Ready
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the switch did not finish in time"
+        );
+        harness.step();
+    }
+}
+
+/// A token registration sent on one network whose outcome arrives after a
+/// switch, while the Token Creator registers another token on the new
+/// network, leaves that registration alone: a success neither completes it
+/// nor raises a banner, and a failure neither ends its progress nor reaches
+/// its screen. The failure is still reported by a banner, as for a closed
+/// sender.
+#[test]
+fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alone() {
+    use dash_evo_tool::ui::components::message_banner::MessageBanner;
+    use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    for fails in [false, true] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+            let previous = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenTokenCreator;
+            harness.run_steps(3);
+            let ctx = harness.ctx.clone();
+            MessageBanner::clear_all_global(&ctx);
+            let current = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            harness.run_steps(3);
+
+            let late = if fails {
+                TaskResult::Error {
+                    context: previous,
+                    error: TaskError::TaskManagerShuttingDown,
+                }
+            } else {
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::RegisteredTokenContract),
+                }
+            };
+            deliver(&mut harness, late);
+
+            let creator = token_creator(&mut harness);
+            assert_eq!(
+                *creator.token_creator_status_for_test(),
+                TokenCreatorStatus::WaitingForResult,
+                "the new network's registration is still waiting (fails: {fails})"
+            );
+            assert!(
+                creator.registration_banner_live_for_test(),
+                "its progress banner stays (fails: {fails})"
+            );
+            let failure_reported = harness
+                .query_all_by_label_contains(&TaskError::TaskManagerShuttingDown.to_string())
+                .next()
+                .is_some();
+            assert_eq!(
+                failure_reported, fails,
+                "only the failure raises a banner, as for a closed sender"
+            );
+        });
+    }
+}
+
+/// A scheduled-vote sweep that ran on the previous network reaches no screen
+/// of the new one when it ends after a switch. The Token Creator, in view and
+/// registering a token on the new network, keeps its progress banner through
+/// the sweep's failure and its completion. The failure is still reported by
+/// a banner.
+#[test]
+fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() {
+    use dash_evo_tool::ui::components::message_banner::MessageBanner;
+    use dash_evo_tool::ui::tokens::tokens_screen::TokenCreatorStatus;
+    for fails in [false, true] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenTokenCreator);
+            let previous_network = harness.state().current_app_context().network();
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenTokenCreator;
+            harness.run_steps(3);
+            let ctx = harness.ctx.clone();
+            MessageBanner::clear_all_global(&ctx);
+            let current = token_creator(&mut harness).begin_token_registration_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            harness.run_steps(3);
+
+            let context = BackendTaskContext::ScheduledVoteSweep {
+                network: previous_network,
+            };
+            let failure = || TaskError::ScheduledVoteSweepFailed {
+                network: previous_network,
+                source: Box::new(TaskError::TaskManagerShuttingDown),
+            };
+            let late = if fails {
+                TaskResult::Error {
+                    context,
+                    error: failure(),
+                }
+            } else {
+                TaskResult::Success {
+                    context,
+                    result: Box::new(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                        network: previous_network,
+                        preserve_eligibility_since_ms: None,
+                    }),
+                }
+            };
+            deliver(&mut harness, late);
+
+            let creator = token_creator(&mut harness);
+            assert_eq!(
+                *creator.token_creator_status_for_test(),
+                TokenCreatorStatus::WaitingForResult,
+                "the new network's registration is still waiting (fails: {fails})"
+            );
+            assert!(
+                creator.registration_banner_live_for_test(),
+                "its progress banner stays (fails: {fails})"
+            );
+            let failure_reported = harness
+                .query_all_by_label_contains(&failure().to_string())
+                .next()
+                .is_some();
+            assert_eq!(failure_reported, fails, "only the failure raises a banner");
+        });
+    }
+}
+
+fn votes_panel(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::dpns::dpns_contested_names_screen::DPNSScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenMasternodes)
+    {
+        Some(Screen::MasternodesScreen(screen)) => screen.votes_mut(),
+        _ => panic!("the Masternodes screen is open"),
+    }
+}
+
+/// A contest refresh the voting panel sent on the previous network ends
+/// with that network: when its result arrives after a switch, the panel's
+/// own refresh on the new network keeps running, whether the panel is in
+/// view or hidden behind another root screen. That refresh still ends on
+/// its own failure.
+#[test]
+fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the previous network's refresh leaves the new one running (in view: {in_view})"
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "the new refresh keeps its progress banner (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: current,
+                    error: TaskError::TaskManagerShuttingDown,
+                },
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the new refresh still ends on its own failure (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "its own failure takes its progress banner down (in view: {in_view})"
+            );
+        });
+    }
 }

@@ -3296,8 +3296,16 @@ mod tests {
 
     /// Register an HD wallet derived from a distinct seed, returning its hash.
     fn seed_hd_wallet(ctx: &Arc<AppContext>, seed_byte: u8) -> WalletSeedHash {
-        let wallet =
-            Wallet::new_from_seed([seed_byte; 64], ctx.network(), None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(
+            crate::test_support::keys::labelled_seed(
+                "ui::wallets::wallets_screen::seed_hd_wallet",
+                seed_byte.into(),
+            ),
+            ctx.network(),
+            None,
+            None,
+        )
+        .expect("wallet");
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));

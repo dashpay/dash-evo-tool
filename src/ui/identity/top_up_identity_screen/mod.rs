@@ -1523,7 +1523,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([seed_byte; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(
+                crate::test_support::keys::labelled_seed(
+                    "ui::identity::top_up_identity_screen::wallet",
+                    seed_byte.into(),
+                ),
+                Network::Testnet,
+                None,
+                None,
+            )
+            .expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);

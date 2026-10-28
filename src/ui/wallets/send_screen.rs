@@ -5241,7 +5241,11 @@ mod tests {
     }
 
     fn testnet_core_address(key_byte: u8) -> Address {
-        let secret_key = SecretKey::from_secret_bytes([key_byte; 32]).expect("valid secret key");
+        let secret_key = SecretKey::from_secret_bytes(crate::test_support::keys::labelled_secret(
+            "ui::wallets::send_screen::testnet_core_address",
+            key_byte.into(),
+        ))
+        .expect("valid secret key");
         let private_key =
             PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
                 .expect("valid secret key");

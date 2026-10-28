@@ -223,7 +223,11 @@ mod tests {
     }
 
     fn pubkey(seed: u8) -> PublicKey {
-        let sk = SecretKey::from_secret_bytes([seed.max(1); 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(crate::test_support::keys::labelled_secret(
+            "wallet_backend::auth_pubkey_cache::pubkey",
+            seed.into(),
+        ))
+        .expect("valid secret key");
         PublicKey::new(Secp256k1PublicKey::from_secret_key(&sk))
     }
 

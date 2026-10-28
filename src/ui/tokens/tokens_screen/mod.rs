@@ -184,7 +184,8 @@ fn is_duplicate_balance_refresh(
     action: &AppAction,
 ) -> bool {
     *status == RefreshingStatus::Refreshing
-        && pending_context == Some(&BackendTaskContext::TokenBalanceRefresh)
+        && pending_context.map(BackendTaskContext::operation)
+            == Some(&BackendTaskContext::TokenBalanceRefresh)
         && matches!(
             action,
             AppAction::BackendTask(BackendTask::TokenTask(task))
@@ -204,13 +205,13 @@ fn completes_pending_operation(
     match result {
         BackendTaskSuccessResult::FetchedTokenBalances
         | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
-            *result_context == BackendTaskContext::TokenBalanceRefresh
+            *result_context.operation() == BackendTaskContext::TokenBalanceRefresh
         }
         BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
             identity_token_id,
             ..
         ) => {
-            *result_context == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
+            *result_context.operation() == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
         }
         _ => false,
     }
@@ -1386,6 +1387,32 @@ fn my_tokens(
 }
 
 impl TokensScreen {
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Starts a registration as the creator's confirmation does, without
+    /// building a contract, and returns a dispatch standing in for it.
+    pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
+        self.mark_token_registration_started();
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        BackendTaskContext::for_dispatch_on(&task, self.app_context.network)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Where the Token Creator's registration stands.
+    pub fn token_creator_status_for_test(&self) -> &TokenCreatorStatus {
+        &self.token_creator_status
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the registration's progress banner is still shown.
+    pub fn registration_banner_live_for_test(&self) -> bool {
+        self.operation_banner
+            .as_ref()
+            .is_some_and(|banner| banner.is_live())
+    }
+
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let identities = app_context
             .load_local_qualified_identities()
@@ -2620,6 +2647,34 @@ impl TokensScreen {
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network
+            || !matches!(
+                update.domain,
+                CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
+            )
+        {
+            return;
+        }
+        self.all_known_tokens = self
+            .app_context
+            .get_all_known_tokens_with_data_contract()
+            .unwrap_or_default();
+        self.identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| (identity.identity.id(), identity))
+            .collect();
+        self.my_tokens = my_tokens(
+            &self.app_context,
+            &self.identities,
+            &self.all_known_tokens,
+            &self.token_pricing_data,
+        );
+    }
     fn refresh(&mut self) {
         self.all_known_tokens = self
             .app_context
@@ -2850,17 +2905,21 @@ impl ScreenLike for TokensScreen {
             self.pending_operation_context.as_ref(),
             &action,
         );
+        // A tracked operation is sent under a dispatch context of its own, so
+        // only its own result or failure settles it.
+        let mut dispatch_context = None;
         if duplicate_balance_refresh {
             action = AppAction::None;
-        } else if let AppAction::BackendTask(task) = &action {
-            let context = BackendTaskContext::from(task);
-            if matches!(
-                context,
+        } else if let AppAction::BackendTask(task) = &action
+            && matches!(
+                BackendTaskContext::from(task),
                 BackendTaskContext::TokenBalanceRefresh
                     | BackendTaskContext::TokenRewardEstimate(_)
-            ) {
-                self.pending_operation_context = Some(context);
-            }
+            )
+        {
+            let context = BackendTaskContext::for_dispatch_on(task, self.app_context.network);
+            self.pending_operation_context = Some(context.clone());
+            dispatch_context = Some(context);
         }
 
         // Post-processing on user actions
@@ -2901,6 +2960,12 @@ impl ScreenLike for TokensScreen {
             _ => {
                 // No extra processing needed
             }
+        }
+
+        if let Some(context) = dispatch_context
+            && let AppAction::BackendTask(task) = std::mem::replace(&mut action, AppAction::None)
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
         }
 
         if action == AppAction::None
@@ -3208,6 +3273,52 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn token_cache_updates_reload_only_the_matching_network_and_keep_form_state() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        let tmp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        let marker = Identifier::from([0x32; 32]);
+        screen.token_pricing_data.insert(marker, None);
+        screen.selected_token = Some(marker);
+        // A removed local identity cache entry must disappear only for this network.
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(marker, context.platform_version()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network,
+        };
+        screen.identities.insert(marker, identity);
+        let foreign = if context.network == dash_sdk::dpp::dashcore::Network::Mainnet {
+            dash_sdk::dpp::dashcore::Network::Testnet
+        } else {
+            dash_sdk::dpp::dashcore::Network::Mainnet
+        };
+        screen.cached_data_changed(CacheUpdate {
+            network: foreign,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(screen.identities.contains_key(&marker));
+        screen.cached_data_changed(CacheUpdate {
+            network: context.network,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(!screen.identities.contains_key(&marker));
+        assert_eq!(screen.selected_token, Some(marker));
+        assert!(screen.token_pricing_data.contains_key(&marker));
     }
 
     impl ChangeControlRulesUI {

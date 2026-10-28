@@ -1620,9 +1620,26 @@ pub enum TaskError {
         source: BackendTaskJoinError,
     },
 
+    /// A caught task panic. The payload is kept out of this error, whose
+    /// `Debug` reaches the banner's details panel. The process panic hook in
+    /// `logging.rs` still logs the payload, as it does for every panic, so a
+    /// panic message must never contain secrets.
+    #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
+    BackendTaskPanicked,
+
+    /// Later sequential work is not started after an uncertain task outcome.
+    #[error("This action was not started because an earlier action stopped. Check the earlier action before trying again.")]
+    BackendTaskBatchAborted,
+
     /// A backend task reached the app after the shutdown admission barrier closed.
     #[error("This action could not start because the app is closing. Reopen the app and try again.")]
     TaskManagerShuttingDown,
+
+    /// A screen's task was dispatched on a network the user has since switched
+    /// away from. Ends that screen's wait without delivering the previous
+    /// network's result; the original outcome is reported separately.
+    #[error("The network changed before this action finished. Run it again on this network.")]
+    NetworkSwitchedBeforeResult,
 
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]

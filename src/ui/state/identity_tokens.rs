@@ -579,19 +579,17 @@ impl IdentityTokensState {
             && self.refresh_failure().is_none()
     }
 
-    /// Whether a hub-wide `refresh()` arriving now is a token task of this
-    /// tab reporting, so the hub keeps its other content on screen. A token
-    /// task sends `TaskResult::Refresh` before its typed result and the app
-    /// runs that refresh first, so while any request of this tab is
-    /// outstanding the refresh is taken as its nudge; once every request has
-    /// settled, a refresh is somebody else's. Nothing is counted, so a nudge
-    /// that went to a screen covering the hub, or two nudges the app merged
-    /// into one refresh, leave nothing behind.
-    pub fn expects_screen_refresh(&self) -> bool {
-        self.refresh.is_pending()
-            || self.track_again.is_pending()
-            || self.pair_checks.is_pending()
-            || self.stop_tracking.is_pending()
+    /// Cached data changed under a task of any screen: re-read the rows on
+    /// the next frame when they may be affected. Token balances and the
+    /// identities that own them both feed the rows.
+    pub fn cached_data_changed(&mut self, domain: crate::backend_task::CacheDomain) {
+        use crate::backend_task::CacheDomain;
+        if matches!(
+            domain,
+            CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
+        ) {
+            self.invalidate_rows();
+        }
     }
 
     /// Proof-verifying reads sent before the masternode list is synced fail
@@ -1067,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refresh_result_records_the_time_and_keeps_the_hub_content() {
+    fn a_refresh_result_records_the_time() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh());
         assert!(state.refresh_pending());
@@ -1076,17 +1074,14 @@ mod tests {
             &BackendTaskSuccessResult::FetchedTokenBalances,
             7,
         ));
-        // The screen refresh the task sends first keeps the hub's content…
-        assert!(state.expects_screen_refresh());
-        // …and its typed result settles the request, so nothing is expected after.
+        assert!(state.refresh_pending(), "another dispatch settles nothing");
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7));
         assert_eq!(state.last_refreshed_at_ms(), Some(7));
         assert!(!state.refresh_pending());
-        assert!(!state.expects_screen_refresh());
     }
 
     #[test]
-    fn a_settled_task_expects_no_screen_refresh_whatever_it_returned() {
+    fn a_settled_task_is_no_longer_pending_whatever_it_returned() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh());
         state.record_result(
@@ -1094,21 +1089,12 @@ mod tests {
             &BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight,
             7,
         );
-        assert!(!state.expects_screen_refresh());
+        assert!(!state.refresh_pending());
         assert_eq!(state.last_refreshed_at_ms(), None);
 
         let context = dispatched(state.dispatch_refresh());
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(!state.expects_screen_refresh());
-    }
-
-    #[test]
-    fn a_pair_check_keeps_the_hub_content_while_it_is_outstanding() {
-        let mut state = IdentityTokensState::default();
-        let context = dispatched(state.dispatch_pair_check(row("T", None).pair()));
-        assert!(state.expects_screen_refresh());
-        state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
-        assert!(!state.expects_screen_refresh());
+        assert!(!state.refresh_pending());
     }
 
     #[test]
@@ -1224,7 +1210,7 @@ mod tests {
     }
 
     /// Two quick checks on different rows are both this tab's: neither error
-    /// becomes a global banner and no screen refresh stays expected.
+    /// becomes a global banner and no check stays outstanding.
     #[test]
     fn a_second_pair_check_does_not_orphan_the_first() {
         let mut state = IdentityTokensState::default();
@@ -1238,7 +1224,7 @@ mod tests {
         state.record_error(&second_ctx, &TaskError::NoIdentitiesFound);
         assert!(state.take_swallowed_error());
         assert!(
-            !state.expects_screen_refresh(),
+            !state.pair_checks.is_pending(),
             "nothing of this tab is outstanding"
         );
     }
@@ -1321,38 +1307,22 @@ mod tests {
         assert!(!state.prefs_dirty(), "an unchanged edit is not dirty");
     }
 
-    /// The Refresh nudge goes to the visible screen. When the user pushed
-    /// another screen over the hub while a refresh ran, the hub never saw the
-    /// nudge; a later unrelated refresh must not be mistaken for this tab's.
+    /// A token cache notification re-reads the rows on the next frame, from
+    /// this tab's task or another screen's; other domains leave them alone.
     #[test]
-    fn a_nudge_lost_to_a_covering_screen_does_not_linger() {
+    fn a_token_cache_update_rereads_the_rows() {
+        use crate::backend_task::CacheDomain;
         let mut state = IdentityTokensState::default();
-        let context = dispatched(state.dispatch_refresh());
-        state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
-        assert!(
-            !state.expects_screen_refresh(),
-            "an unrelated later hub refresh would keep stale content"
-        );
-    }
-
-    /// app.rs merges adjacent Refresh nudges into one `refresh()` call; two
-    /// concurrent tasks of this tab must not leave one nudge outstanding.
-    #[test]
-    fn two_nudges_coalesced_into_one_refresh_leave_nothing_behind() {
-        let mut state = IdentityTokensState {
-            rows: vec![row("A", Some(1))].into(),
-            ..Default::default()
-        };
-        let first = dispatched(state.dispatch_refresh());
-        let pair = state.rows[0].pair();
-        let second = dispatched(state.stop_tracking_action(pair));
-        assert!(state.expects_screen_refresh(), "one coalesced refresh");
-        state.record_result(&first, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
-        assert!(
-            state.expects_screen_refresh(),
-            "the stop-tracking request is still outstanding"
-        );
-        state.record_result(&second, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
-        assert!(!state.expects_screen_refresh());
+        for (domain, rereads) in [
+            (CacheDomain::Tokens, true),
+            (CacheDomain::Identities, true),
+            (CacheDomain::All, true),
+            (CacheDomain::ContactPayments, false),
+            (CacheDomain::Dpns, false),
+        ] {
+            state.rows_read_at = Some(Instant::now());
+            state.cached_data_changed(domain);
+            assert_eq!(state.rows_read_at.is_none(), rereads, "{domain:?}");
+        }
     }
 }

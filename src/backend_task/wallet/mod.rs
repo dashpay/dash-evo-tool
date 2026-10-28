@@ -378,8 +378,8 @@ pub enum WalletTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};

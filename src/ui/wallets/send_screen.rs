@@ -1966,7 +1966,6 @@ impl WalletSendScreen {
         let recipient_bytes = crate::model::address::parse_shielded_recipient(&recipient)
             .ok_or_else(|| "Invalid shielded address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
@@ -1995,7 +1994,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_platform().copied())
             .ok_or_else(|| "Invalid platform address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
@@ -3895,6 +3893,20 @@ impl WalletSendScreen {
     /// Renders the production simple-send button in a headless harness.
     pub fn render_simple_send_button_for_test(&mut self, ui: &mut Ui) -> AppAction {
         self.render_send_button(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Renders the production send confirmation in a headless harness.
+    pub fn render_send_confirmation_for_test(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_send_confirmation(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether a send confirmation is waiting for an answer.
+    pub fn has_send_confirmation_for_test(&self) -> bool {
+        self.send_confirmation.is_some()
     }
 
     /// Render the advanced send UI with multiple inputs/outputs

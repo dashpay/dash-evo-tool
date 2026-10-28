@@ -1344,15 +1344,20 @@ As a token creator, I want to create a token that holders cannot send to other i
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
 
-### TOK-021: See and use my identity's tokens in the Identity Hub [Gap]
+### TOK-021: See and use my identity's tokens in the Identity Hub [Implemented]
 **Persona:** Alex, Priya
 
 As an identity owner, I want to see the tokens this identity holds — with balances, rewards I can claim, and Send/Claim actions — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
 
-- The hub has a Tokens tab listing this identity's tracked tokens with balance, symbol and a plain-words status (claim available, can't be sent, checking, issued by you).
-- Send and Claim open the existing transfer and claim screens pre-scoped to this identity; no administrative action appears in the hub.
-- Empty, first-load and failed-refresh states explain what happened and offer a way forward; known balances stay visible after a failed refresh.
-- Adding, checking and stop-tracking a token are reachable from the tab.
+- The hub has a Tokens tab (`Home · Contacts · Tokens · Profile`) listing this identity's tracked tokens with the balance in the token's decimals, a short ID, "Issued by you" and "Can't be sent" badges, and one plain-words status line per row: "Checking balance…" for an unsynced balance (never shown as zero), "Rewards may be waiting for you.", "You can claim {amount} once." / "Claimed on {date}." for once-per-identity distributions, and "Add a key to this identity to send or claim tokens." for a view-only identity.
+- The tab badge shows the number of pending claims; nothing when zero.
+- Send and Claim open the existing transfer and claim screens pre-scoped to this identity, disabled with a reason until sync finishes, when the identity cannot sign, or when the token cannot be sent; Send is hidden at zero balance. Holder transfers say "Send" everywhere, including the transfer screen and Tokens › My Tokens.
+- No administrative action appears in the hub. "Manage in Tokens screen" shows only when this identity holds an administrative permission under the token's configuration rules — not by role, not for issuers as such.
+- Balances refresh on arrival (older than two minutes) and on demand; a refresh already running elsewhere is never an error. A failed refresh is explained inline with "Try again" while known balances stay on screen with "Showing balances from {time}."
+- A fetched zero renders as a normal row; "Hide tokens with zero balance" (always visible, remembered per device) never hides a row still being checked. Filter and sort appear from eight tokens and are remembered too.
+- Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again"). Adding a token (by name or ID), checking a balance now, copying the ID and stop tracking (with confirmation) are reachable from the row menu; the Receive dialog explains how a received token appears.
+- Home shows a Tokens card only when a balance is above zero or a claim is pending; its "See all tokens" and "Claim" open the Tokens tab.
+- A row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule, and Stop tracking.
 - Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
 ## Contracts and Documents (DOC)

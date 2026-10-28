@@ -43,7 +43,9 @@ pub const SEND_LABEL: &str = "Send";
 pub const CLAIM_LABEL: &str = "Claim";
 pub const MENU_LABEL: &str = "•••";
 pub const CHECK_NOW_LABEL: &str = "Check balance now";
+pub const DETAILS_LABEL: &str = "Token details";
 pub const COPY_ID_LABEL: &str = "Copy token ID";
+pub const OPEN_DETAILS_TOOLTIP: &str = "Show this token's details.";
 pub const STOP_TRACKING_LABEL: &str = "Stop tracking";
 pub const STOP_TRACKING_TITLE: &str = "Stop tracking this token?";
 pub const MANAGE_LABEL: &str = "Manage in Tokens screen";
@@ -79,6 +81,7 @@ const SENTENCES: &[&str] = &[
     SUBTITLE,
     REFRESHING_TOOLTIP,
     HIDE_ZERO_TOOLTIP,
+    OPEN_DETAILS_TOOLTIP,
     STATUS_COULD_NOT_CHECK,
     STATUS_REWARDS,
     STATUS_ADD_KEY,
@@ -160,6 +163,19 @@ pub fn render(
     };
     let mut action = AppAction::None;
     let rows: Vec<TokenRow> = state.rows(app_context, identity).to_vec();
+
+    if let Some(pair) = state.detail {
+        // The row can leave while its page is open (stopped tracking elsewhere).
+        action |= match rows.iter().find(|row| row.pair == pair) {
+            Some(row) => super::token_detail::render(ui, app_context, identity, row, state),
+            None => {
+                state.detail = None;
+                AppAction::None
+            }
+        };
+        action |= render_stop_tracking_dialog(ui, state);
+        return action;
+    }
 
     action |= render_header(ui, app_context, state, &rows);
     ui.add_space(Spacing::XS);
@@ -417,10 +433,10 @@ fn render_list(
 
 /// What every row needs to know about the identity and the network.
 #[derive(Clone, Copy)]
-struct RowContext<'a> {
-    synced: bool,
-    view_only: bool,
-    identity_label: &'a str,
+pub(super) struct RowContext<'a> {
+    pub(super) synced: bool,
+    pub(super) view_only: bool,
+    pub(super) identity_label: &'a str,
 }
 
 fn render_row(
@@ -453,7 +469,14 @@ fn render_row(
             |ui| {
                 ui.set_width(name_width);
                 ui.horizontal_wrapped(|ui| {
-                    ui.add(egui::Label::new(RichText::new(&row.name).strong()).truncate());
+                    // The name opens the detail page; Enter works once focused.
+                    if ui
+                        .add(egui::Button::new(RichText::new(&row.name).strong()).frame(false))
+                        .clickable_tooltip(OPEN_DETAILS_TOOLTIP)
+                        .clicked()
+                    {
+                        state.detail = Some(row.pair);
+                    }
                     if row.issued_by_me {
                         accent_pill(ui, ISSUED_BY_YOU_BADGE, DashColors::DASH_BLUE, None);
                     }
@@ -502,10 +525,21 @@ fn render_balance_and_status(
     action: &mut AppAction,
     state: &mut IdentityTokensState,
 ) {
-    let dark = ui.visuals().dark_mode;
     if let Some(balance) = row.balance {
         ui.label(RichText::new(row.amount(balance).to_string()).monospace());
     }
+    render_row_status(ui, row, status, action, state);
+}
+
+/// The row's one status line; "Try again" re-checks a failed pair.
+pub(super) fn render_row_status(
+    ui: &mut Ui,
+    row: &TokenRow,
+    status: &RowStatus,
+    action: &mut AppAction,
+    state: &mut IdentityTokensState,
+) {
+    let dark = ui.visuals().dark_mode;
     let secondary = DashColors::text_secondary(dark);
     match status {
         RowStatus::None => {}
@@ -553,7 +587,7 @@ fn render_balance_and_status(
 
 /// Send and Claim, laid out right to left. Both wait for the masternode list
 /// and for a signing key; Send also needs a balance and a transferable token.
-fn render_row_actions(
+pub(super) fn render_row_actions(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     row: &TokenRow,
@@ -641,6 +675,10 @@ fn render_row_menu(
     let response = ui.menu_button(MENU_LABEL, |ui| {
         if ui.button(CHECK_NOW_LABEL).clicked() {
             action |= state.check_pair_action(row.pair);
+            ui.close();
+        }
+        if ui.button(DETAILS_LABEL).clicked() {
+            state.detail = Some(row.pair);
             ui.close();
         }
         if ui.button(COPY_ID_LABEL).clicked() {

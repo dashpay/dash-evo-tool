@@ -8,11 +8,13 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::TokenListSort;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
 pub use crate::ui::state::identity_home::HomeState;
+use crate::ui::state::identity_tokens::{IdentityTokensState, home_card_shows, sort_rows};
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use crate::ui::wallets::send_screen::IdentitySendMode;
@@ -24,6 +26,12 @@ use std::sync::Arc;
 
 /// Receive dialog, when opened from the Tokens tab.
 pub const RECEIVE_TOKENS_HINT: &str = "A token you receive shows under Tokens once you add it.";
+/// The Home Tokens card.
+pub const TOKENS_CARD_HEADING: &str = "Tokens";
+pub const SEE_ALL_TOKENS_LABEL: &str = "See all tokens";
+pub const CLAIM_FROM_HOME_LABEL: &str = "Claim";
+/// How many held tokens the Home card lists.
+const TOKENS_CARD_ROWS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeOutcome {
@@ -33,6 +41,8 @@ pub enum HomeOutcome {
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
+    /// Open the Tokens tab (from the Tokens card or its Claim shortcut).
+    GoToTokens,
     DismissChecklist,
 }
 
@@ -216,6 +226,7 @@ pub fn render(
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     state.reconcile_owner(identity);
     contacts.reconcile_owner(identity);
@@ -250,6 +261,7 @@ pub fn render(
                                 state,
                                 has_profile,
                                 contacts,
+                                tokens,
                             );
                         },
                     );
@@ -270,8 +282,15 @@ pub fn render(
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    (action, outcome) =
-                        render_main_column(ui, app_context, identity, state, has_profile, contacts);
+                    (action, outcome) = render_main_column(
+                        ui,
+                        app_context,
+                        identity,
+                        state,
+                        has_profile,
+                        contacts,
+                        tokens,
+                    );
                     action |= super::contacts::render_preview(
                         ui,
                         app_context,
@@ -329,6 +348,7 @@ fn render_main_column(
     state: &mut HomeState,
     has_profile: Option<bool>,
     contacts: &ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
@@ -351,7 +371,7 @@ fn render_main_column(
         }
     });
     ui.add_space(Spacing::MD);
-    let outcome = render_setup(
+    let mut outcome = render_setup(
         ui,
         app_context,
         identity,
@@ -365,7 +385,73 @@ fn render_main_column(
         action = notice_action;
     }
     action |= render_payments(ui, app_context, state);
+    if outcome == HomeOutcome::None {
+        outcome = render_tokens_card(ui, app_context, identity, tokens);
+    }
     (action, outcome)
+}
+
+/// The Tokens card: a glance at what the identity holds and can claim. Shown
+/// only when there is something to say; actions live on the Tokens tab.
+fn render_tokens_card(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    tokens: &mut IdentityTokensState,
+) -> HomeOutcome {
+    let mut rows = tokens.rows(app_context, identity).to_vec();
+    if !home_card_shows(&rows) {
+        return HomeOutcome::None;
+    }
+    let mut outcome = HomeOutcome::None;
+    let dark = ui.visuals().dark_mode;
+    sort_rows(&mut rows, TokenListSort::BalanceHighToLow);
+    let pending_claims = rows.iter().filter(|row| row.claim_available()).count();
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(TOKENS_CARD_HEADING);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link(SEE_ALL_TOKENS_LABEL).clicked() {
+                    outcome = HomeOutcome::GoToTokens;
+                }
+            });
+        });
+        for row in rows
+            .iter()
+            .filter(|row| row.holds_some())
+            .take(TOKENS_CARD_ROWS)
+        {
+            ui.horizontal(|ui| {
+                ui.label(&row.name);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(balance) = row.balance {
+                        ui.label(RichText::new(row.amount(balance).to_string()).monospace());
+                    }
+                });
+            });
+        }
+        if pending_claims > 0 {
+            ui.horizontal_wrapped(|ui| {
+                let once_only = rows
+                    .iter()
+                    .filter(|row| row.claim_available())
+                    .filter_map(|row| row.once_claim.as_ref().map(|once| row.amount(once.amount)))
+                    .collect::<Vec<_>>();
+                let text = match once_only.as_slice() {
+                    [amount] if pending_claims == 1 => {
+                        super::tokens_tab::can_claim_once_text(amount)
+                    }
+                    _ => super::tokens_tab::pending_claims_text(pending_claims),
+                };
+                ui.label(RichText::new(text).color(DashColors::success_color(dark)));
+                if ui.button(CLAIM_FROM_HOME_LABEL).clicked() {
+                    outcome = HomeOutcome::GoToTokens;
+                }
+            });
+        }
+    });
+    ui.add_space(Spacing::MD);
+    outcome
 }
 
 fn render_setup(
@@ -546,6 +632,7 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
         HomeOutcome::GoToSettings | HomeOutcome::GoToUsernames | HomeOutcome::GoToAdvanced => {
             Some(IdentityHubTab::Settings)
         }
+        HomeOutcome::GoToTokens => Some(IdentityHubTab::Tokens),
         HomeOutcome::DismissChecklist => {
             state.dismissed_checklist = true;
             None

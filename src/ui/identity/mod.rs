@@ -54,6 +54,7 @@ pub mod request_card;
 pub mod settings;
 pub mod social_profile_gate_card;
 pub mod tabs;
+pub mod token_detail;
 pub mod tokens_tab;
 pub mod top_up_identity_screen;
 pub mod transfer_screen;

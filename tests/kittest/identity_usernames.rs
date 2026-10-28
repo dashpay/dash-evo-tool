@@ -630,6 +630,7 @@ type HomeHarnessState = (
     Option<AppAction>,
     dash_evo_tool::ui::state::AvatarCache,
     dash_evo_tool::ui::state::contacts_view::ContactsState,
+    dash_evo_tool::ui::state::identity_tokens::IdentityTokensState,
 );
 
 fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState> {
@@ -656,6 +657,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                     &mut state.0,
                     &mut state.1,
                     &mut state.4,
+                    &mut state.5,
                 );
                 action |= header;
                 // As in the hub, a load goes out only on a frame nothing else took.
@@ -670,6 +672,7 @@ fn mount_home(app_context: Arc<AppContext>) -> Harness<'static, HomeHarnessState
                 HomeState::default(),
                 ProfileCache::default(),
                 None,
+                Default::default(),
                 Default::default(),
                 Default::default(),
             ),

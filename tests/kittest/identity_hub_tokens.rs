@@ -13,7 +13,9 @@ use dash_evo_tool::model::token::{
     IdentityTokenIdentifier, distribution_rules_with_once_per_identity,
 };
 use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab, tokens_tab};
+use dash_evo_tool::ui::identity::{
+    IdentityHubScreen, IdentityHubTab, home, token_detail, tokens_tab,
+};
 use dash_evo_tool::ui::{Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -582,5 +584,90 @@ fn the_send_screen_uses_send_wording() {
             harness.query_by_label_contains("Transfer").is_none(),
             "holder copy says Send everywhere"
         );
+    });
+}
+
+#[test]
+fn the_home_card_shows_only_with_a_balance_or_a_claim() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB1);
+        let tokens = seed_three_tokens(&app_context, identity);
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_some());
+        assert!(
+            hub.query_by_label("1250 DashCoffee").is_some(),
+            "the card lists what the identity holds"
+        );
+        assert!(
+            hub.query_by_label("0 Grit").is_none(),
+            "zero balances are not worth a glance"
+        );
+        hub.get_by_label(home::SEE_ALL_TOKENS_LABEL).click();
+        hub.run_steps(3);
+        assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Tokens);
+
+        // Nothing held and nothing to claim: no card.
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_none(),
+            "an empty card would only advertise a feature"
+        );
+    });
+}
+
+#[test]
+fn the_detail_page_opens_from_the_row_and_goes_back() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB2);
+        let tokens = seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(tokens_tab::DETAILS_LABEL).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label_contains("Held by").is_some());
+        assert!(hub.query_by_label("1250 DashCoffee").is_some());
+        assert!(hub.query_by_label(token_detail::CAN_BE_SENT_YES).is_some());
+        assert!(hub.query_by_label(token_detail::REWARDS_NONE).is_some());
+        assert!(
+            hub.query_by_label(
+                &tokens[0]
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            )
+            .is_some(),
+            "the full token ID is shown for copying"
+        );
+        assert!(hub.query_by_label(tokens_tab::SEND_LABEL).is_some());
+        assert!(
+            hub.query_by_label(tokens_tab::MANAGE_LABEL).is_none(),
+            "no admin permission, no Manage link"
+        );
+        assert!(
+            hub.query_by_label(tokens_tab::SUBTITLE).is_none(),
+            "the list is replaced by the page"
+        );
+
+        hub.get_by_label(token_detail::BACK_LABEL).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(tokens_tab::SUBTITLE).is_some());
+
+        // The row name opens the page too.
+        hub.get_by_label("Grit").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label("0 Grit").is_some());
     });
 }

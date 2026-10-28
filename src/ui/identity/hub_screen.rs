@@ -744,6 +744,7 @@ impl ScreenLike for IdentityHubScreen {
                                         &mut self.home_state,
                                         &mut self.profile_cache,
                                         &mut self.contacts_state,
+                                        &mut self.tokens_state,
                                     ),
                                     None => (AppAction::None, super::home::HomeOutcome::None),
                                 };

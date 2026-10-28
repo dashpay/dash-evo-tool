@@ -58,6 +58,8 @@ pub struct TokenRow {
     /// The registry name, also used as the balance unit.
     pub name: String,
     pub contract_id: Identifier,
+    /// The contract owner, who issued the token.
+    pub issuer_id: Identifier,
     pub token_position: u16,
     pub token_config: TokenConfiguration,
     /// `None` until the identity's balance of this token has been synced.
@@ -223,6 +225,13 @@ pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs) -> bool {
     row.matches_filter(&prefs.filter)
 }
 
+/// Whether Home shows its Tokens card: only when the identity holds a token
+/// or has something to claim.
+pub fn home_card_shows(rows: &[TokenRow]) -> bool {
+    rows.iter()
+        .any(|row| row.holds_some() || row.claim_available())
+}
+
 /// Whether an arrival refresh is due: on arrival, when no refresh finished
 /// within [`ARRIVAL_REFRESH_AFTER`].
 pub fn arrival_refresh_due(arriving: bool, now_ms: u64, last_refreshed_at_ms: Option<u64>) -> bool {
@@ -380,6 +389,7 @@ impl IdentityTokensState {
                 pair,
                 name: token.token_name,
                 contract_id: token.data_contract.id(),
+                issuer_id: token.data_contract.owner_id(),
                 token_position: token.token_position,
                 issued_by_me: token.data_contract.owner_id() == identity_id,
                 transferable: config.is_transferable(),
@@ -619,6 +629,7 @@ mod tests {
             },
             name: name.into(),
             contract_id: Identifier::from([9; 32]),
+            issuer_id: Identifier::from([8; 32]),
             token_position: 0,
             token_config: TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive()),
             balance,
@@ -754,6 +765,22 @@ mod tests {
             self.transferable = false;
             self.token_config.set_transferable(false);
         }
+    }
+
+    #[test]
+    fn home_card_needs_a_balance_or_a_claim() {
+        assert!(!home_card_shows(&[]));
+        assert!(!home_card_shows(&[
+            row("Zero", Some(0)),
+            row("Checking", None)
+        ]));
+        assert!(home_card_shows(&[
+            row("Zero", Some(0)),
+            row("Held", Some(1))
+        ]));
+        let mut claimable = row("Air", Some(0));
+        claimable.can_claim = true;
+        assert!(home_card_shows(&[claimable]));
     }
 
     #[test]

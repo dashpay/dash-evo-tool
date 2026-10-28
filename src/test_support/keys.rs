@@ -114,8 +114,11 @@ fn derive(kind: &str, domain: &str, index: u64, counter: u32) -> [u8; 32] {
 /// The per-process salt behind the labelled keys: `DET_TEST_KEY_SALT` when
 /// set, otherwise random.
 ///
-/// The salt is printed to stderr once per thread, so it lands in the
-/// captured output of every test that uses labelled keys.
+/// The salt is printed to stderr once per thread, not once per process: the
+/// libtest harness runs each test on its own thread and shows only a failing
+/// test's captured output, so a single process-wide print would reach just
+/// the first test that drew a labelled key and stay hidden from the one that
+/// actually failed.
 fn salt() -> &'static [u8; 32] {
     static SALT: OnceLock<[u8; 32]> = OnceLock::new();
     thread_local! {

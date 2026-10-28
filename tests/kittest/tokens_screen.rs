@@ -413,8 +413,12 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
             .get_by_role_and_label(Role::Button, "Identities")
             .click();
         harness.run_steps(3);
+        // The Identities hub has its own "Tokens" tab, so pick the left-panel
+        // button: it is the leftmost match.
         harness
-            .get_by_role_and_label(Role::Button, "Tokens")
+            .get_all_by_role_and_label(Role::Button, "Tokens")
+            .min_by(|a, b| a.rect().center().x.total_cmp(&b.rect().center().x))
+            .expect("the left-panel Tokens button")
             .click();
         harness.run_steps(3);
         harness

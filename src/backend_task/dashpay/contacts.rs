@@ -705,11 +705,11 @@ pub async fn load_contacts_offline(
         if contact_id == owner_id {
             continue;
         }
-        // A withdrawn request stays hidden, as in the network list
+        // Withdrawn and declined people stay hidden, as in the network list
         // (`mutual_contacts`). Filtered here rather than in
         // `DashpayView::contacts`, whose other callers register payment
         // addresses and must keep every contact.
-        if backend.dashpay_is_withdrawn(&owner_id, &contact_id) {
+        if backend.dashpay_disengaged_from(&owner_id, &contact_id) {
             continue;
         }
 
@@ -977,6 +977,74 @@ mod tests {
         assert_eq!(
             contacts.iter().map(|c| c.identity_id).collect::<Vec<_>>(),
             vec![pending]
+        );
+    }
+
+    /// Declining someone's request hides them from the offline list even
+    /// while the owner's own request to them still stands, as in the network
+    /// list (`dashpay_disengaged_from`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_hides_a_declined_person() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed = [0x5Eu8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let declined = Identifier::from([0x22; 32]);
+        let kept = Identifier::from([0x33; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        let request = |from, to| {
+            platform_wallet::ContactRequest::new(from, to, 0, 0, 0, vec![0u8; 96], 100_000, 1)
+        };
+        for peer in [declined, kept] {
+            backend
+                .record_sent_contact_request(&seed_hash, &owner, request(owner, peer))
+                .await
+                .expect("record sent request");
+        }
+        backend
+            .record_incoming_contact_request(&seed_hash, &owner, request(declined, owner))
+            .await
+            .expect("record incoming request");
+        // Only the decline marker: the owner's own request still stands.
+        backend
+            .dashpay_mark_declined(&owner, &declined)
+            .expect("decline");
+        assert!(!backend.dashpay_is_withdrawn(&owner, &declined));
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        assert_eq!(
+            contacts.iter().map(|c| c.identity_id).collect::<Vec<_>>(),
+            vec![kept]
         );
     }
 

@@ -50,9 +50,21 @@ type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 /// user is actively re-loading (the missing field is genuinely being resupplied)
 /// but is NOT valid for the background legacy migration, where an absent field
 /// can be a deliberate removal (a cleared alias, a "Remove private key from DET").
+///
+/// A carried-over main-identity key takes the state the freshly fetched
+/// identity gives it, so a key the network disabled since it was stored (an
+/// owner or payout key replaced by a rotation) is no longer offered for
+/// signing; its private material is kept.
 fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
-    for (key, value) in existing.private_keys.into_entries() {
-        new.private_keys.insert_if_absent(key, value);
+    for (placement, (mut public_key, data)) in existing.private_keys.into_entries() {
+        if placement.0 == PrivateKeyOnMainIdentity
+            && let Some(current) = new.identity.get_public_key_by_id(placement.1)
+            && current.data() == public_key.identity_public_key.data()
+        {
+            public_key.identity_public_key = current.clone();
+        }
+        new.private_keys
+            .insert_if_absent(placement, (public_key, data));
     }
     if new.alias.is_none() {
         new.alias = existing.alias;
@@ -225,35 +237,35 @@ impl AppContext {
         // merge never swaps a key the node already stores for a reference, but
         // a stored node key the network has since disabled or replaced does not
         // count: after a rotation the new key is looked up.
-        let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
-            load_mode == IdentityLoadMode::MergeIntoExisting
-                && existing_stored.as_ref().is_some_and(|existing| {
-                    existing
-                        .private_keys
-                        .identity_public_keys()
-                        .iter()
-                        .any(|(t, key)| {
-                            let stored = &key.identity_public_key;
-                            **t == target
-                                && stored.purpose() == purpose
-                                && (target != PrivateKeyOnMainIdentity
-                                    || identity.get_public_key_by_id(stored.id()).is_some_and(
-                                        |current| {
-                                            current.purpose() == purpose && !current.is_disabled()
-                                        },
-                                    ))
-                        })
-                })
-        };
         let (node_key_hashes, wallet_keys) = if identity_type != IdentityType::User {
+            // The voting key is not on the node's identity: the masternode list
+            // says which one is current.
+            let current_voting_hash = match self.wallet_backend() {
+                Ok(backend) if voting_private_key_bytes.is_none() => {
+                    backend.masternode_voting_key_hash(identity.id()).await
+                }
+                _ => None,
+            };
+            let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
+                load_mode == IdentityLoadMode::MergeIntoExisting
+                    && existing_stored.as_ref().is_some_and(|existing| {
+                        stores_current_node_key(
+                            existing,
+                            &identity,
+                            target,
+                            purpose,
+                            current_voting_hash,
+                        )
+                    })
+            };
             self.find_node_keys_in_wallets(
                 &identity,
                 owner_private_key_bytes.is_none()
                     && !already_stored(PrivateKeyOnMainIdentity, Purpose::OWNER),
                 payout_address_private_key_bytes.is_none()
                     && !already_stored(PrivateKeyOnMainIdentity, Purpose::TRANSFER),
-                voting_private_key_bytes.is_none()
-                    && !already_stored(PrivateKeyOnVoterIdentity, Purpose::VOTING),
+                current_voting_hash
+                    .filter(|_| !already_stored(PrivateKeyOnVoterIdentity, Purpose::VOTING)),
             )
             .await
         } else {
@@ -1085,7 +1097,7 @@ impl AppContext {
         identity: &Identity,
         want_owner: bool,
         want_payout: bool,
-        want_voting: bool,
+        voting: Option<[u8; 20]>,
     ) -> (MasternodeKeyHashes, MasternodeWalletKeys) {
         let Ok(backend) = self.wallet_backend() else {
             return Default::default();
@@ -1094,11 +1106,7 @@ impl AppContext {
         let hashes = MasternodeKeyHashes {
             owner: on_identity.owner.filter(|_| want_owner),
             payout: on_identity.payout.filter(|_| want_payout),
-            voting: if want_voting {
-                backend.masternode_voting_key_hash(identity.id()).await
-            } else {
-                None
-            },
+            voting,
         };
         match backend.find_masternode_wallet_keys(hashes).await {
             Ok(found) => (hashes, found),
@@ -1111,6 +1119,42 @@ impl AppContext {
             }
         }
     }
+}
+
+/// Whether `existing` already stores the current `purpose` node key at
+/// `target`, so a merge leaves it in place rather than looking the key up in
+/// a wallet. A stored key that a rotation replaced does not count: a main
+/// identity key must still be active on the freshly fetched `identity`, and a
+/// voting key must hash to `current_voting_hash`, the voting key the
+/// masternode list records. When that list cannot be read (`None`) there is
+/// nothing to look up, so a stored voting key counts.
+fn stores_current_node_key(
+    existing: &QualifiedIdentity,
+    identity: &Identity,
+    target: PrivateKeyTarget,
+    purpose: Purpose,
+    current_voting_hash: Option<[u8; 20]>,
+) -> bool {
+    use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+    existing
+        .private_keys
+        .identity_public_keys()
+        .iter()
+        .any(|(t, key)| {
+            let stored = &key.identity_public_key;
+            if **t != target || stored.purpose() != purpose {
+                return false;
+            }
+            match &target {
+                PrivateKeyOnMainIdentity => identity
+                    .get_public_key_by_id(stored.id())
+                    .is_some_and(|current| current.purpose() == purpose && !current.is_disabled()),
+                PrivateKeyOnVoterIdentity => current_voting_hash.is_none_or(|current| {
+                    stored.public_key_hash().is_ok_and(|hash| hash == current)
+                }),
+                PrivateKeyTarget::PrivateKeyOnOperatorIdentity => true,
+            }
+        })
 }
 
 /// The key-storage entry for the active `purpose` key of `identity` whose
@@ -2571,6 +2615,126 @@ mod tests {
     /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
     /// over every key the new partial build omitted, while the resupplied voting
     /// key wins on collision.
+    /// A hash160 node key, the form a masternode identity carries its owner
+    /// and payout keys in.
+    fn node_key(id: KeyID, purpose: Purpose, disabled: bool) -> IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level: SecurityLevel::CRITICAL,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: true,
+            data: rand::random::<[u8; 20]>().to_vec().into(),
+            disabled_at: disabled.then_some(1),
+        })
+    }
+
+    /// A masternode whose stored owner key `old` a rotation has replaced with
+    /// `new`, as the freshly fetched identity reports it.
+    fn rotated_owner_node() -> (QualifiedIdentity, QualifiedIdentity, KeyID, KeyID) {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let (mut existing, _) = masternode_shaped_qi();
+        existing.private_keys = KeyStorage::default();
+        let old = node_key(10, Purpose::OWNER, false);
+        existing.identity.add_public_key(old.clone());
+        existing.private_keys.insert_at(
+            (M, old.id()),
+            (
+                QualifiedIdentityPublicKey::from(old.clone()),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+
+        let mut fetched = existing.clone();
+        fetched.private_keys = KeyStorage::default();
+        let mut disabled_old = old.clone();
+        disabled_old.set_disabled_at(1);
+        let replacement = node_key(11, Purpose::OWNER, false);
+        fetched.identity.add_public_key(disabled_old);
+        fetched.identity.add_public_key(replacement.clone());
+        fetched.private_keys.insert_at(
+            (M, replacement.id()),
+            (
+                QualifiedIdentityPublicKey::from(replacement.clone()),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+        (existing, fetched, old.id(), replacement.id())
+    }
+
+    /// After a key rotation, a merge keeps the replaced key's private half
+    /// but takes its disabled state from the fetched identity, so the
+    /// withdrawal screen offers only the replacement.
+    #[test]
+    fn merge_after_rotation_offers_only_the_active_key_for_withdrawal() {
+        let (existing, mut fetched, old_id, replacement_id) = rotated_owner_node();
+
+        merge_existing_keys_into(&mut fetched, existing);
+
+        assert!(fetched.private_keys.has(&(M, old_id)), "kept, not dropped");
+        let offered: Vec<KeyID> = fetched
+            .available_withdrawal_keys()
+            .iter()
+            .map(|key| key.identity_public_key.id())
+            .collect();
+        assert_eq!(offered, vec![replacement_id]);
+        assert_eq!(
+            fetched
+                .default_withdrawal_key()
+                .map(|key| key.identity_public_key.id()),
+            Some(replacement_id),
+        );
+    }
+
+    /// A stored owner key counts only while the fetched identity still has it
+    /// active; a stored voting key only while it is the one the masternode
+    /// list records.
+    #[test]
+    fn a_rotated_node_key_is_looked_up_again() {
+        let (existing, fetched, _, _) = rotated_owner_node();
+        assert!(!stores_current_node_key(
+            &existing,
+            &fetched.identity,
+            M,
+            Purpose::OWNER,
+            None
+        ));
+        assert!(stores_current_node_key(
+            &existing,
+            &existing.identity,
+            M,
+            Purpose::OWNER,
+            None
+        ));
+
+        let mut voter = existing.clone();
+        let voting = node_key(0, Purpose::VOTING, false);
+        let stored_hash: [u8; 20] = voting.data().as_slice().try_into().unwrap();
+        voter.private_keys.insert_at(
+            (V, voting.id()),
+            (
+                QualifiedIdentityPublicKey::from(voting),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+        let current =
+            |hash| stores_current_node_key(&voter, &voter.identity, V, Purpose::VOTING, hash);
+        assert!(
+            current(Some(stored_hash)),
+            "the recorded voting key is kept"
+        );
+        assert!(
+            !current(Some(rand::random())),
+            "a rotated voting key is looked up again",
+        );
+        assert!(
+            current(None),
+            "without the masternode list, the stored key stays"
+        );
+    }
+
     #[test]
     fn merge_preserves_owner_and_payout_when_only_voting_key_resupplied() {
         // `existing`: a fully-loaded masternode (owner + voter + identity keys).

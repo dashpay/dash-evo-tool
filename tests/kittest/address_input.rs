@@ -33,11 +33,21 @@ fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
     use dash_sdk::dpp::dashcore::{Address, PublicKey};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
-    let wallet = Wallet::new_from_seed([seed; 64], Network::Testnet, Some(alias.to_string()), None)
-        .expect("wallet from seed");
+    let wallet = Wallet::new_from_seed(
+        dash_evo_tool::test_support::keys::labelled_seed(
+            "kittest::address_input::wallet",
+            seed.into(),
+        ),
+        Network::Testnet,
+        Some(alias.to_string()),
+        None,
+    )
+    .expect("wallet from seed");
 
-    let mut sk_bytes = [1u8; 32];
-    sk_bytes[31] = seed.max(1);
+    let sk_bytes = dash_evo_tool::test_support::keys::labelled_secret(
+        "kittest::address_input::wallet",
+        seed.into(),
+    );
     let sk =
         dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
     let address = Address::p2pkh(&PublicKey::new(sk.public_key()), Network::Testnet);

@@ -136,7 +136,7 @@ fn identity_holding_key(
             (target, public_key.id()),
             (
                 QualifiedIdentityPublicKey::from(public_key),
-                PrivateKeyData::Clear([id_byte; 32]),
+                PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
             ),
         )])),
         dpns_names: vec![],
@@ -602,6 +602,7 @@ fn key_info_agrees_with_the_list_about_a_voting_key_held_on_the_main_identity() 
 /// private key") names an entry that does not exist.
 #[test]
 fn a_held_key_published_on_no_list_still_gets_a_row() {
+    let secret_44 = dash_evo_tool::test_support::keys::secret_bytes();
     const UNPUBLISHED_EXPLAINER: &str =
         "These keys are saved on this device but are not on this identity's key lists.";
 
@@ -616,7 +617,7 @@ fn a_held_key_published_on_no_list_still_gets_a_row() {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, orphan.id()),
             (
                 QualifiedIdentityPublicKey::from(orphan.clone()),
-                PrivateKeyData::Clear([0x44; 32]),
+                PrivateKeyData::Clear(secret_44),
             ),
         )]));
 
@@ -1005,6 +1006,7 @@ fn returning_from_key_info_refreshes_both_the_keys_and_the_offer() {
 /// material to Key Info. The row must be about the key the user clicked.
 #[test]
 fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
+    let secret_42 = dash_evo_tool::test_support::keys::secret_bytes();
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
 
@@ -1037,7 +1039,7 @@ fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
                 (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
                 (
                     QualifiedIdentityPublicKey::from(voter_key),
-                    PrivateKeyData::Clear([0x42; 32]),
+                    PrivateKeyData::Clear(secret_42),
                 ),
             )])),
             dpns_names: vec![],
@@ -1082,6 +1084,7 @@ fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
 /// same-numbered keys apart.
 #[test]
 fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
+    let secret_43 = dash_evo_tool::test_support::keys::secret_bytes();
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
 
@@ -1115,7 +1118,7 @@ fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, snapshot.id()),
                 (
                     QualifiedIdentityPublicKey::from(snapshot),
-                    PrivateKeyData::Clear([0x43; 32]),
+                    PrivateKeyData::Clear(secret_43),
                 ),
             )])),
             dpns_names: vec![],

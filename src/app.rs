@@ -18,10 +18,6 @@ pub use reconcilers::{
 pub mod request_routing;
 mod result_delivery;
 mod task_dispatch;
-#[cfg(test)]
-use crate::ui::identity::task_feedback::{
-    clear_profile_saving_banner_after_error, clear_profile_saving_banner_after_success,
-};
 use crate::ui::task_feedback::{Feedback, ResultDelivery};
 use result_delivery::PendingRefresh;
 
@@ -50,10 +46,6 @@ use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHo
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
-#[cfg(test)]
-use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
-#[cfg(test)]
-use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
 use crate::ui::identity::top_up_identity_screen::follow_top_ups_after_network_switch;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -175,24 +167,12 @@ fn boot_auto_start_spv(
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
-/// The root screen hosting the voting workspace (Masternodes ▸ Votes).
-const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
-
 #[cfg(test)]
 mod backend_task_join_tests {
     use super::*;
     use crate::backend_task::BackendTaskContext;
     use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
-
-    fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
-        BackendTaskContext::Dispatched {
-            dispatch_id,
-            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
-                [identity_byte; 32],
-            ))),
-        }
-    }
 
     #[test]
     fn backend_task_error_retains_originating_context() {
@@ -214,146 +194,6 @@ mod backend_task_join_tests {
         assert_eq!(
             BackendTaskContext::from(&BackendTask::None),
             BackendTaskContext::Other
-        );
-    }
-
-    #[test]
-    fn profile_update_error_clears_only_its_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_id = Identifier::from([1; 32]);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &profile_update_context(1, 1));
-
-        assert!(
-            saving.elapsed().is_none(),
-            "a failed profile update must dismiss its persistent progress banner"
-        );
-    }
-
-    #[test]
-    fn profile_update_success_clears_its_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_id = Identifier::from([1; 32]);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &profile_update_context(1, 1),
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: identity_id,
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-
-        assert!(
-            saving.elapsed().is_none(),
-            "a successful profile update must dismiss its persistent progress banner"
-        );
-    }
-
-    #[test]
-    fn unrelated_error_does_not_clear_profile_saving_banner() {
-        let ctx = egui::Context::default();
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &BackendTaskContext::Other);
-
-        assert!(saving.elapsed().is_some());
-    }
-
-    #[test]
-    fn one_identity_error_does_not_clear_another_identity_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_a = profile_update_context(1, 1);
-        let identity_b = profile_update_context(2, 2);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &identity_a);
-
-        assert!(
-            saving.elapsed().is_some(),
-            "identity A's error must not dismiss identity B's progress banner"
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &identity_b);
-        assert!(
-            saving.elapsed().is_none(),
-            "identity B's error must dismiss identity B's progress banner"
-        );
-    }
-
-    #[test]
-    fn one_identity_success_does_not_clear_another_identity_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_a = profile_update_context(1, 1);
-        let identity_b = profile_update_context(2, 2);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &identity_a,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: Identifier::from([1; 32]),
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-
-        assert!(
-            saving.elapsed().is_some(),
-            "identity A's success must not dismiss identity B's progress banner"
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &identity_b,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: Identifier::from([2; 32]),
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-        assert!(
-            saving.elapsed().is_none(),
-            "identity B's success must dismiss identity B's progress banner"
         );
     }
 
@@ -3445,97 +3285,5 @@ mod contact_request_routing_tests {
             );
             assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
-    }
-}
-
-#[cfg(test)]
-mod dpns_result_routing_tests {
-    use super::*;
-
-    use crate::model::dpns_voting::{
-        DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
-        DpnsVoteOperationId,
-    };
-
-    #[test]
-    fn voting_observer_interest_matches_supported_results() {
-        for handled in [
-            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network: Network::Testnet,
-                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
-            },
-            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: Network::Testnet,
-                preserve_eligibility_since_ms: None,
-            },
-            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
-            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-            BackendTaskSuccessResult::RefreshedDpnsContests,
-        ] {
-            assert!(DPNSScreen::handles_result(&handled));
-        }
-        for unrelated in [
-            BackendTaskSuccessResult::None,
-            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: Network::Testnet,
-                domain: crate::backend_task::CacheDomain::Dpns,
-            }),
-            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
-        ] {
-            assert!(!DPNSScreen::handles_result(&unrelated));
-        }
-    }
-
-    #[test]
-    fn scheduled_vote_clear_feedback_reports_removed_and_retained_counts() {
-        let outcome = |name: &str, disposition| DpnsScheduledVoteClearOutcome {
-            operation_id: None,
-            key: DpnsScheduledVoteKey {
-                network: Network::Testnet,
-                voter_id: Identifier::from([name.len() as u8; 32]),
-                contested_name: name.to_owned(),
-            },
-            disposition,
-        };
-        let outcomes = vec![
-            outcome("removed", DpnsScheduledVoteClearDisposition::Cleared),
-            outcome(
-                "queued",
-                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Queued),
-            ),
-            outcome(
-                "submitting",
-                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Submitting),
-            ),
-        ];
-
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes),
-            (
-                "Scheduled votes removed: 1. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
-                MessageType::Info,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes[..1]),
-            (
-                "Scheduled votes removed: 1.".to_owned(),
-                MessageType::Success,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes[1..]),
-            (
-                "No scheduled votes were removed. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
-                MessageType::Info,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&[]),
-            (
-                "No scheduled votes were removed.".to_owned(),
-                MessageType::Info
-            )
-        );
     }
 }

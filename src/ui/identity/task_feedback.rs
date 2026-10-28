@@ -111,3 +111,159 @@ pub(crate) fn clear_profile_saving_banner_after_success(
         crate::ui::identity::settings::clear_profile_saving_banner(ctx, &snapshot.owner);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::Identifier;
+
+    fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
+        BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
+                [identity_byte; 32],
+            ))),
+        }
+    }
+
+    #[test]
+    fn profile_update_error_clears_only_its_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_id = Identifier::from([1; 32]);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &profile_update_context(1, 1));
+
+        assert!(
+            saving.elapsed().is_none(),
+            "a failed profile update must dismiss its persistent progress banner"
+        );
+    }
+
+    #[test]
+    fn profile_update_success_clears_its_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_id = Identifier::from([1; 32]);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &profile_update_context(1, 1),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: identity_id,
+                    revision: 0,
+                    profile: None,
+                },
+            ),
+        );
+
+        assert!(
+            saving.elapsed().is_none(),
+            "a successful profile update must dismiss its persistent progress banner"
+        );
+    }
+
+    #[test]
+    fn unrelated_error_does_not_clear_profile_saving_banner() {
+        let ctx = egui::Context::default();
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &BackendTaskContext::Other);
+
+        assert!(saving.elapsed().is_some());
+    }
+
+    #[test]
+    fn one_identity_error_does_not_clear_another_identity_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_a = profile_update_context(1, 1);
+        let identity_b = profile_update_context(2, 2);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &identity_a);
+
+        assert!(
+            saving.elapsed().is_some(),
+            "identity A's error must not dismiss identity B's progress banner"
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &identity_b);
+        assert!(
+            saving.elapsed().is_none(),
+            "identity B's error must dismiss identity B's progress banner"
+        );
+    }
+
+    #[test]
+    fn one_identity_success_does_not_clear_another_identity_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_a = profile_update_context(1, 1);
+        let identity_b = profile_update_context(2, 2);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &identity_a,
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([1; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
+        );
+
+        assert!(
+            saving.elapsed().is_some(),
+            "identity A's success must not dismiss identity B's progress banner"
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &identity_b,
+            &BackendTaskSuccessResult::DashPayProfileUpdated(
+                crate::model::dashpay::ProfileSnapshot {
+                    network: Network::Testnet,
+                    owner: Identifier::from([2; 32]),
+                    revision: 0,
+                    profile: None,
+                },
+            ),
+        );
+        assert!(
+            saving.elapsed().is_none(),
+            "identity B's success must dismiss identity B's progress banner"
+        );
+    }
+}

@@ -3111,6 +3111,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn voting_observer_interest_matches_supported_results() {
+        for handled in [
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
+            },
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            },
+            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            BackendTaskSuccessResult::RefreshedDpnsContests,
+        ] {
+            assert!(DPNSScreen::handles_result(&handled));
+        }
+        for unrelated in [
+            BackendTaskSuccessResult::None,
+            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network: Network::Testnet,
+                domain: crate::backend_task::CacheDomain::Dpns,
+            }),
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
+        ] {
+            assert!(!DPNSScreen::handles_result(&unrelated));
+        }
+    }
+
     fn history_names(screen: &DPNSScreen) -> Vec<String> {
         screen
             .past_contests()

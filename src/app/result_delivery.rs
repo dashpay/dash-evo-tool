@@ -1,6 +1,6 @@
 //! Screen ownership, finite domain observers and non-destructive cache delivery.
 use super::request_routing::{ResultRoute, ScreenOwner};
-use super::{AppAction, AppState, BackendTasksExecutionMode, VOTING_ROOT_SCREEN};
+use super::{AppAction, AppState, BackendTasksExecutionMode};
 #[cfg(feature = "testing")]
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
@@ -53,6 +53,15 @@ pub(crate) fn deliver_legacy_recovery_result<'a>(
     }
     true
 }
+
+/// The persistent roots that observe other screens' outcomes
+/// ([`ScreenLike::observe_backend_result`]): the Identity Hub, which holds the
+/// app-wide identity selection, and Masternodes, which lists identities as
+/// nodes and hosts the voting workspace.
+const OBSERVER_ROOTS: [RootScreenType; 2] = [
+    RootScreenType::RootScreenIdentityHub,
+    RootScreenType::RootScreenMasternodes,
+];
 
 impl AppState {
     /// The screen in view, as an owner of the tasks it dispatches.
@@ -273,7 +282,7 @@ impl AppState {
             return;
         }
         let visible = self.visible_owner();
-        for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
+        for root in OBSERVER_ROOTS {
             if !route.delivers_to(ScreenOwner::Root(root), visible)
                 && let Some(screen) = self.main_screens.get_mut(&root)
             {
@@ -292,7 +301,7 @@ impl AppState {
             return;
         }
         let visible = self.visible_owner();
-        for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
+        for root in OBSERVER_ROOTS {
             if !route.delivers_to(ScreenOwner::Root(root), visible)
                 && let Some(screen) = self.main_screens.get_mut(&root)
             {

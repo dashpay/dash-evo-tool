@@ -416,6 +416,14 @@ mod tests {
             .ctx
             .delete_local_qualified_identity(&staged.id)
             .expect("remove the identity");
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        assert!(
+            staged
+                .ctx
+                .is_identity_unloaded(&kv, &staged.id.to_buffer())
+                .expect("read the marker"),
+            "the removal must leave an unload marker to retire",
+        );
 
         let mut reloaded = identity.clone();
         staged
@@ -427,7 +435,6 @@ mod tests {
             )
             .expect("load it back");
 
-        let kv = staged.ctx.det_kv().expect("identity kv");
         assert!(
             !staged
                 .ctx

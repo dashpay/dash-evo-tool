@@ -308,13 +308,6 @@ pub struct IdentityTokensState {
     /// Set when the error just recorded belongs to a request of this tab, so
     /// the hub shows no global banner for it.
     swallow_next_error: bool,
-    /// Screen-wide refreshes this tab's tasks still owe the hub. A token task
-    /// sends `TaskResult::Refresh` before its typed result and the app runs
-    /// that refresh first, so each dispatch arms one here and the hub's
-    /// `refresh()` pays it to keep its other content on screen. A task that
-    /// fails, or finds a refresh already running, sends none and gives its
-    /// arm back.
-    expected_screen_refreshes: u8,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The list controls changed since they were last written to the device.
     prefs_dirty: bool,
@@ -352,7 +345,6 @@ impl IdentityTokensState {
             track_again: std::mem::take(&mut self.track_again),
             track_again_owed: self.track_again_owed.take(),
             retry_owed: self.retry_owed,
-            expected_screen_refreshes: self.expected_screen_refreshes,
             last_refreshed_at_ms: self.last_refreshed_at_ms,
             refresh_failure: self.refresh_failure,
             failure_dismissed: self.failure_dismissed,
@@ -582,23 +574,19 @@ impl IdentityTokensState {
             && self.refresh_failure().is_none()
     }
 
-    /// The hub-wide refresh that follows a token task of this tab arrived;
-    /// answer once whether the hub should keep its content on screen.
-    pub fn take_expected_screen_refresh(&mut self) -> bool {
-        if self.expected_screen_refreshes == 0 {
-            return false;
-        }
-        self.expected_screen_refreshes -= 1;
-        true
-    }
-
-    fn arm_screen_refresh(&mut self) {
-        self.expected_screen_refreshes = self.expected_screen_refreshes.saturating_add(1);
-    }
-
-    /// The task settled without sending a screen refresh.
-    fn give_back_screen_refresh(&mut self) {
-        self.expected_screen_refreshes = self.expected_screen_refreshes.saturating_sub(1);
+    /// Whether a hub-wide `refresh()` arriving now is a token task of this
+    /// tab reporting, so the hub keeps its other content on screen. A token
+    /// task sends `TaskResult::Refresh` before its typed result and the app
+    /// runs that refresh first, so while any request of this tab is
+    /// outstanding the refresh is taken as its nudge; once every request has
+    /// settled, a refresh is somebody else's. Nothing is counted, so a nudge
+    /// that went to a screen covering the hub, or two nudges the app merged
+    /// into one refresh, leave nothing behind.
+    pub fn expects_screen_refresh(&self) -> bool {
+        self.refresh.is_pending()
+            || self.track_again.is_pending()
+            || self.pair_checks.is_pending()
+            || self.stop_tracking.is_pending()
     }
 
     /// Proof-verifying reads sent before the masternode list is synced fail
@@ -657,7 +645,6 @@ impl IdentityTokensState {
     }
 
     fn dispatch_refresh(&mut self) -> AppAction {
-        self.arm_screen_refresh();
         self.refresh.dispatch(BackendTask::TokenTask(Box::new(
             TokenTask::QueryMyTokenBalances,
         )))
@@ -678,7 +665,6 @@ impl IdentityTokensState {
     }
 
     fn dispatch_pair_check(&mut self, pair: IdentityTokenIdentifier) -> AppAction {
-        self.arm_screen_refresh();
         self.pair_checks.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(pair))),
             pair,
@@ -696,7 +682,6 @@ impl IdentityTokensState {
         if self.detail == Some(pair) {
             self.detail = None;
         }
-        self.arm_screen_refresh();
         self.stop_tracking.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::StopTrackingTokenBalance(pair))),
             pair,
@@ -734,7 +719,6 @@ impl IdentityTokensState {
     }
 
     fn dispatch_track_again(&mut self, pairs: Vec<IdentityTokenIdentifier>) -> AppAction {
-        self.arm_screen_refresh();
         self.invalidate_rows();
         self.track_again.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(pairs.clone()))),
@@ -749,29 +733,21 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
-        // Only a fetch sends the screen refresh; "already in flight" sends none.
+        // Only a fetch refreshed every balance; "already in flight" fetched nothing.
         let fetched = matches!(result, BackendTaskSuccessResult::FetchedTokenBalances);
         if self.refresh.settle(context).is_some() || self.track_again.settle(context).is_some() {
             if fetched {
                 self.note_full_refresh(now_ms);
-            } else {
-                self.give_back_screen_refresh();
             }
             self.invalidate_rows();
             return true;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
             self.failed_checks.remove(&pair);
-            if !fetched {
-                self.give_back_screen_refresh();
-            }
             self.invalidate_rows();
             return true;
         }
         if self.stop_tracking.settle(context).is_some() {
-            if !fetched {
-                self.give_back_screen_refresh();
-            }
             self.invalidate_rows();
             return true;
         }
@@ -788,12 +764,10 @@ impl IdentityTokensState {
 
     /// Note a failure of this tab's requests. A refresh already running
     /// elsewhere is not a failure: the request is owed again once it ends.
-    /// Anything else is shown inline, never as a global banner. A failed task
-    /// sends no screen refresh.
+    /// Anything else is shown inline, never as a global banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         let in_progress = matches!(error, TaskError::TokenBalanceRefreshInProgress);
         if let Some(pairs) = self.track_again.settle(context) {
-            self.give_back_screen_refresh();
             if in_progress {
                 self.track_again_owed = Some(pairs);
             } else {
@@ -804,7 +778,6 @@ impl IdentityTokensState {
             return;
         }
         if self.refresh.settle(context).is_some() {
-            self.give_back_screen_refresh();
             if !in_progress {
                 self.note_full_refresh_failed(error);
             }
@@ -813,7 +786,6 @@ impl IdentityTokensState {
             return;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
-            self.give_back_screen_refresh();
             if in_progress {
                 self.retry_owed = true;
             } else {
@@ -829,7 +801,6 @@ impl IdentityTokensState {
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
-            self.give_back_screen_refresh();
             // The row left optimistically; put it back with the default banner.
             self.invalidate_rows();
         }
@@ -1101,16 +1072,16 @@ mod tests {
             7,
         ));
         // The screen refresh the task sends first keeps the hub's content…
-        assert!(state.take_expected_screen_refresh());
-        // …and its typed result settles the request without re-arming.
+        assert!(state.expects_screen_refresh());
+        // …and its typed result settles the request, so nothing is expected after.
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7));
         assert_eq!(state.last_refreshed_at_ms(), Some(7));
         assert!(!state.refresh_pending());
-        assert!(!state.take_expected_screen_refresh());
+        assert!(!state.expects_screen_refresh());
     }
 
     #[test]
-    fn a_task_that_sends_no_screen_refresh_gives_its_arm_back() {
+    fn a_settled_task_expects_no_screen_refresh_whatever_it_returned() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh());
         state.record_result(
@@ -1118,21 +1089,21 @@ mod tests {
             &BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight,
             7,
         );
-        assert!(!state.take_expected_screen_refresh());
+        assert!(!state.expects_screen_refresh());
         assert_eq!(state.last_refreshed_at_ms(), None);
 
         let context = dispatched(state.dispatch_refresh());
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(!state.take_expected_screen_refresh());
+        assert!(!state.expects_screen_refresh());
     }
 
     #[test]
-    fn a_pair_check_keeps_the_hub_content_from_dispatch_and_only_once() {
+    fn a_pair_check_keeps_the_hub_content_while_it_is_outstanding() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_pair_check(row("T", None).pair()));
-        assert!(state.take_expected_screen_refresh());
+        assert!(state.expects_screen_refresh());
         state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
-        assert!(!state.take_expected_screen_refresh());
+        assert!(!state.expects_screen_refresh());
     }
 
     #[test]
@@ -1248,7 +1219,7 @@ mod tests {
     }
 
     /// Two quick checks on different rows are both this tab's: neither error
-    /// becomes a global banner and no screen-refresh arm is left owed.
+    /// becomes a global banner and no screen refresh stays expected.
     #[test]
     fn a_second_pair_check_does_not_orphan_the_first() {
         let mut state = IdentityTokensState::default();
@@ -1262,8 +1233,8 @@ mod tests {
         state.record_error(&second_ctx, &TaskError::NoIdentitiesFound);
         assert!(state.take_swallowed_error());
         assert!(
-            !state.take_expected_screen_refresh(),
-            "failed checks send no screen refresh, so nothing stays armed"
+            !state.expects_screen_refresh(),
+            "nothing of this tab is outstanding"
         );
     }
 
@@ -1315,5 +1286,40 @@ mod tests {
         state.prefs_dirty = false;
         state.edit_prefs(same);
         assert!(!state.prefs_dirty(), "an unchanged edit is not dirty");
+    }
+
+    /// The Refresh nudge goes to the visible screen. When the user pushed
+    /// another screen over the hub while a refresh ran, the hub never saw the
+    /// nudge; a later unrelated refresh must not be mistaken for this tab's.
+    #[test]
+    fn a_nudge_lost_to_a_covering_screen_does_not_linger() {
+        let mut state = IdentityTokensState::default();
+        let context = dispatched(state.dispatch_refresh());
+        state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
+        assert!(
+            !state.expects_screen_refresh(),
+            "an unrelated later hub refresh would keep stale content"
+        );
+    }
+
+    /// app.rs merges adjacent Refresh nudges into one `refresh()` call; two
+    /// concurrent tasks of this tab must not leave one nudge outstanding.
+    #[test]
+    fn two_nudges_coalesced_into_one_refresh_leave_nothing_behind() {
+        let mut state = IdentityTokensState {
+            rows: vec![row("A", Some(1))].into(),
+            ..Default::default()
+        };
+        let first = dispatched(state.dispatch_refresh());
+        let pair = state.rows[0].pair();
+        let second = dispatched(state.stop_tracking_action(pair));
+        assert!(state.expects_screen_refresh(), "one coalesced refresh");
+        state.record_result(&first, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
+        assert!(
+            state.expects_screen_refresh(),
+            "the stop-tracking request is still outstanding"
+        );
+        state.record_result(&second, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
+        assert!(!state.expects_screen_refresh());
     }
 }

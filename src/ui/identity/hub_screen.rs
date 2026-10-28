@@ -572,7 +572,7 @@ impl ScreenLike for IdentityHubScreen {
     /// before its own result; that refresh keeps the profile and contacts on
     /// screen instead of blanking them for a balance change.
     fn refresh(&mut self) {
-        let keep_shown = self.tokens_state.take_expected_screen_refresh();
+        let keep_shown = self.tokens_state.expects_screen_refresh();
         self.reload(keep_shown);
     }
 

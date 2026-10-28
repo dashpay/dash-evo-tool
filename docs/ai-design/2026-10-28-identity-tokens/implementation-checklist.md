@@ -75,4 +75,5 @@ otherwise. Each is intentional.
 | D-9 | A failed full refresh marks every unknown balance "Couldn't check this balance." with Try again (not "Checking balance…"), and the first-load line shows only while a refresh actually runs. A check or "Track tokens again" refused because a refresh already runs is sent again once that refresh ends. |
 | D-10 | Tokens › My Tokens shares the claim rule: `claim_is_offered_only_to_a_named_pre_programmed_recipient` (in `my_tokens.rs`) proves a pre-programmed schedule offers Claim only to the identities it names, and `a_disabled_send_never_calls_an_unknown_balance_zero` proves the disabled Send reason never calls an unchecked balance zero. |
 | D-11 | The inline failure notice is a reusable component, `ui/components/inline_notice.rs` (`InlineNotice`), not a hand-built frame. |
+| D-12 | The hub keeps its content on a screen-wide `refresh()` while any Tokens-tab request is outstanding (`expects_screen_refresh`), instead of counting nudges: a nudge delivered to a screen covering the hub, or two nudges app.rs merges into one refresh, cannot leave a stale expectation behind. |
 

@@ -14,6 +14,7 @@ use dash_evo_tool::model::token::{
 };
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::identity::{IdentityHubScreen, IdentityHubTab, token_copy};
+use dash_evo_tool::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
     CONFIRM_SEND_TITLE, send_question, sending_text, sent_text,
 };
@@ -1100,10 +1101,18 @@ fn manage_opens_my_tokens_on_this_token() {
             action,
             AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances)
         )));
+        // What app.rs does on SetMainScreen: the root Tokens screen arrives.
+        let mut my_tokens = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        my_tokens.refresh_on_arrival();
         assert_eq!(
-            app_context.take_pending_token_selection(),
+            my_tokens.selected_token,
             Some(tokens[0]),
             "My Tokens opens on this token"
+        );
+        assert_eq!(
+            app_context.take_pending_token_selection(),
+            None,
+            "the request is consumed on arrival"
         );
     });
 }

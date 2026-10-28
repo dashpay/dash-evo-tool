@@ -1,6 +1,6 @@
 //! Dispatch backend tasks from MCP tool handlers.
 
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;

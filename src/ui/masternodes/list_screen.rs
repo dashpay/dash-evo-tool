@@ -679,6 +679,38 @@ impl MasternodesScreen {
 }
 
 impl ScreenLike for MasternodesScreen {
+    fn observe_backend_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        if crate::ui::dpns::dpns_contested_names_screen::DPNSScreen::handles_result(result) {
+            self.votes
+                .display_backend_task_result(context, result.clone());
+        }
+    }
+    fn observe_backend_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        error: &crate::backend_task::error::TaskError,
+    ) {
+        if context.is_dpns_vote_task() {
+            self.votes.display_backend_task_error(context, error);
+            self.votes.display_task_error(error);
+        }
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network {
+            return;
+        }
+        if matches!(update.domain, CacheDomain::Identities | CacheDomain::All) {
+            self.reload();
+        }
+        if matches!(update.domain, CacheDomain::Dpns | CacheDomain::All) {
+            self.votes.refresh();
+        }
+    }
     fn accepts_legacy_recovery_result(
         &self,
         context: &crate::backend_task::BackendTaskContext,

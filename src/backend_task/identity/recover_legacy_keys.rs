@@ -350,8 +350,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
     use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::database::test_helpers::{LegacyIdentityFixture, create_database_at_path};

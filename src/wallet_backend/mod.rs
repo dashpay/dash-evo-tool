@@ -633,15 +633,18 @@ impl WalletBackend {
             task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
-            // The shielded sync-completed callback writes per-wallet balances
-            // into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.shielded_balances),
-            // Platform-address push writer: the platform address sync-completed callback
-            // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.platform_balances),
-            // ...and the matching `(timestamp, height)` sync-cursor snapshot that
-            // drives the "Addresses synced" status label.
-            Arc::clone(&ctx.platform_sync_cursors),
+            event_bridge::PushSnapshots {
+                // The shielded sync-completed callback writes per-wallet balances
+                // into AppContext's frame-safe snapshot.
+                shielded_balances: Arc::clone(&ctx.shielded_balances),
+                // Platform-address push writer: the platform address sync-completed
+                // callback writes per-wallet owned-only balances into AppContext's
+                // frame-safe snapshot.
+                platform_balances: Arc::clone(&ctx.platform_balances),
+                // ...and the matching `(timestamp, height)` sync-cursor snapshot that
+                // drives the "Addresses synced" status label.
+                platform_sync_cursors: Arc::clone(&ctx.platform_sync_cursors),
+            },
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);

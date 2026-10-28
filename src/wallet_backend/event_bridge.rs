@@ -72,6 +72,16 @@ pub struct EventBridge {
     platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
 }
 
+/// The frame-safe snapshots `AppContext` owns and the bridge writes on sync
+/// events, each read synchronously by the frame loop. See the fields of
+/// [`EventBridge`] of the same names.
+#[derive(Clone, Default)]
+pub(super) struct PushSnapshots {
+    pub(super) shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    pub(super) platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    pub(super) platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+}
+
 impl EventBridge {
     pub(super) fn new(
         network: Network,
@@ -79,10 +89,13 @@ impl EventBridge {
         task_result_sender: SenderAsync<TaskResult>,
         snapshots: Arc<SnapshotStore>,
         coordinator_gate: Arc<CoordinatorGate>,
-        shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
-        platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
-        platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+        push: PushSnapshots,
     ) -> Self {
+        let PushSnapshots {
+            shielded_balances,
+            platform_balances,
+            platform_sync_cursors,
+        } = push;
         Self {
             network,
             connection_status,
@@ -652,9 +665,7 @@ mod tests {
             tx,
             Arc::new(SnapshotStore::new()),
             Arc::clone(&gate),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
+            PushSnapshots::default(),
         );
         (bridge, cs, rx, gate)
     }
@@ -678,9 +689,10 @@ mod tests {
             tx,
             Arc::new(SnapshotStore::new()),
             gate,
-            Arc::clone(&balances),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashMap::new())),
+            PushSnapshots {
+                shielded_balances: Arc::clone(&balances),
+                ..Default::default()
+            },
         );
         (bridge, cs, rx, balances)
     }
@@ -707,9 +719,11 @@ mod tests {
             tx,
             Arc::new(SnapshotStore::new()),
             gate,
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::clone(&platform_balances),
-            Arc::clone(&platform_sync_cursors),
+            PushSnapshots {
+                platform_balances: Arc::clone(&platform_balances),
+                platform_sync_cursors: Arc::clone(&platform_sync_cursors),
+                ..Default::default()
+            },
         );
         (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }

@@ -1086,6 +1086,8 @@ As a user, I want to see my contacts and their profiles so that I can manage my 
 
 - Lists all accepted contacts.
 - View individual contact details and profile.
+- In the Identity Hub Contacts tab, selecting a contact shows its picture, name, username, and
+  bio beside the list, or under it on a narrow window.
 
 ### DPY-006: Send payment to contact [Implemented]
 **Persona:** Alex, Priya
@@ -1120,7 +1122,11 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
-- Changes persist locally.
+- The Identity Hub contact details edit the private note, which is saved encrypted on Dash
+  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
+  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  legacy DashPay screens can continue to show an older local note.
+- Edits made through the legacy contact-details screen persist in its local memo.
 
 ### DPY-010: Remove a contact [Gap]
 **Persona:** Alex, Priya
@@ -1316,6 +1322,17 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 - The row comes back when the user asks for it again: re-importing the token restores it for every identity that dismissed it, and checking that one balance restores just that pair.
 
 ---
+
+### TOK-019: Create a token each identity can claim once [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
+
+- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The fee estimate includes the network's extra fee for this distribution.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
 
 ### TOK-020: Create a token holders cannot transfer [Implemented]
 **Persona:** Jordan
@@ -1787,6 +1804,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
 - Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Selecting a contact in Home's preview opens Contacts with that person's profile and private note selected in Contact details. The selection stays visible while the list refreshes.
 - Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]

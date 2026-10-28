@@ -30,6 +30,35 @@ pub fn validate_account_label(label: &str) -> Result<(), TextLengthError> {
     validate_char_count(label, 0, MAX_ACCOUNT_LABEL_CHARS)
 }
 
+/// Application limit for a contact's private note, in UTF-8 bytes.
+/// The encrypted `contactInfo` payload encodes its length with CompactSize.
+pub const MAX_CONTACT_NOTE_BYTES: usize = u8::MAX as usize;
+/// DashPay contract limit for the encrypted contact-info payload, including its IV.
+pub const MAX_CONTACT_INFO_ENCRYPTED_BYTES: usize = 2048;
+
+/// A private contact note exceeds the application's size limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("This note is too long. Shorten it to save it.")]
+pub struct ContactNoteTooLong {
+    /// Size of the note in UTF-8 bytes.
+    pub bytes: usize,
+    /// Largest note size the application accepts.
+    pub max: usize,
+}
+
+/// Validate a contact's private note. The limit counts UTF-8 bytes, not
+/// characters, because that is what the payload stores.
+pub fn validate_contact_note(note: &str) -> Result<(), ContactNoteTooLong> {
+    let bytes = note.len();
+    if bytes > MAX_CONTACT_NOTE_BYTES {
+        return Err(ContactNoteTooLong {
+            bytes,
+            max: MAX_CONTACT_NOTE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// The recipient (`toUserId`) of a DashPay `contactRequest` document.
 ///
 /// Returns `None` when the field is absent or does not hold a readable
@@ -113,8 +142,8 @@ pub struct ContactInfoUpdate {
     pub nickname: ContactInfoField<Option<String>>,
     /// Note update intent.
     pub note: ContactInfoField<Option<String>>,
-    /// New hidden state.
-    pub display_hidden: bool,
+    /// Visibility update intent.
+    pub display_hidden: ContactInfoField<bool>,
     /// Accepted-account update intent.
     pub accepted_accounts: AcceptedAccounts,
     /// Policy for a present payload that cannot be read.
@@ -127,9 +156,18 @@ impl ContactInfoUpdate {
         Self {
             nickname: ContactInfoField::Preserve,
             note: ContactInfoField::Preserve,
-            display_hidden,
+            display_hidden: ContactInfoField::Replace(display_hidden),
             accepted_accounts: AcceptedAccounts::Preserve,
             unreadable: UnreadableContactInfoPolicy::Abort,
+        }
+    }
+
+    /// Replace only the private note, preserving the latest stored contact details.
+    pub fn note(note: Option<String>) -> Self {
+        Self {
+            note: ContactInfoField::Replace(note),
+            display_hidden: ContactInfoField::Preserve,
+            ..Self::visibility(false)
         }
     }
 
@@ -143,7 +181,7 @@ impl ContactInfoUpdate {
         Self {
             nickname: ContactInfoField::Replace(nickname),
             note: ContactInfoField::Replace(note),
-            display_hidden,
+            display_hidden: ContactInfoField::Replace(display_hidden),
             accepted_accounts: AcceptedAccounts::Replace(accepted_accounts),
             unreadable: UnreadableContactInfoPolicy::Abort,
         }
@@ -462,6 +500,45 @@ mod tests {
             transferred_at_core_block_height: None,
             contract_version: None,
         })
+    }
+
+    #[test]
+    fn a_contact_note_fits_up_to_the_payload_limit_in_bytes() {
+        assert_eq!(MAX_CONTACT_NOTE_BYTES, 255);
+        assert_eq!(validate_contact_note(""), Ok(()));
+        assert_eq!(validate_contact_note(&"a".repeat(255)), Ok(()));
+        assert_eq!(
+            validate_contact_note(&"a".repeat(256)),
+            Err(ContactNoteTooLong {
+                bytes: 256,
+                max: 255
+            })
+        );
+        // 128 two-byte letters are 128 characters but 256 bytes.
+        assert_eq!(
+            validate_contact_note(&"é".repeat(128)),
+            Err(ContactNoteTooLong {
+                bytes: 256,
+                max: 255
+            })
+        );
+    }
+
+    #[test]
+    fn a_note_update_replaces_only_the_note() {
+        let update = ContactInfoUpdate::note(Some("Met at the meetup".into()));
+        assert_eq!(
+            update.note,
+            ContactInfoField::Replace(Some("Met at the meetup".into()))
+        );
+        assert_eq!(update.nickname, ContactInfoField::Preserve);
+        assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
+        assert_eq!(update.display_hidden, ContactInfoField::Preserve);
+        assert_eq!(update.unreadable, UnreadableContactInfoPolicy::Abort);
+
+        let cleared = ContactInfoUpdate::note(None);
+        assert_eq!(cleared.note, ContactInfoField::Replace(None));
+        assert_eq!(cleared.display_hidden, ContactInfoField::Preserve);
     }
 
     #[test]

@@ -10,7 +10,7 @@ Promote a widget to `src/ui/components/` only if a second, non-hub consumer appe
 |---|---|
 | `hub_screen.rs` | Root screen, tab selection, landing resolution |
 | `home.rs` | Shared summary and Home (send · receive · top up · setup · payments · contacts) |
-| `contacts.rs` | Contacts tab (gated / populated shell) |
+| `contacts.rs` | Contacts tab (gated / populated shell, contact detail pane with private note) |
 | `activity.rs` | Hidden activity shell (retained for internal links) |
 | `settings.rs` | Profile tab (social profile · usernames · advanced) |
 | `onboarding.rs` | Onboarding empty state |

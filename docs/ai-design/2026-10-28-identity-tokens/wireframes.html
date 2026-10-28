@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokens in the Identity Hub — Wireframes (2026-10-28)</title>
+<style>
+:root{
+  --bg:#eceae4;--app:#f6f5f1;--surface:#fff;--border:#d6d3cb;--border-strong:#b9b5ab;
+  --text:#1d1f22;--text-2:#5b6068;--accent:#0a6cb8;--accent-h:#07528c;--accent-soft:#e7f1fa;--accent-soft-b:#b9d4ec;
+  --avatar-bg:#dfe7ef;--avatar-t:#0a4f86;--success:#1f7a4d;--success-soft:#e5f3ec;--success-b:#a8d5bd;
+  --warn-bg:#fff4d6;--warn-b:#e0b44a;--warn-t:#6b4e00;--danger:#b3261e;--danger-b:#e3b3ae;--danger-soft:#fbeae8;
+  --muted:#e4e1da;--hover:#f1efea;--row-hover:#f7f6f2;--row-sep:#eeece6;--tray:#fbfaf7;--track:#efede8;--skeleton:#e9e6df;
+  --scrim:rgba(20,22,25,.45);--anno:#7a3e8f;--anno-bg:#f3ebf8;
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  --bg:#15171a;--app:#1b1e22;--surface:#22262b;--border:#343941;--border-strong:#4a515b;
+  --text:#e8e9ec;--text-2:#a0a6ae;--accent:#4ea3e8;--accent-h:#7cbbee;--accent-soft:#1c3550;--accent-soft-b:#2d5a85;
+  --avatar-bg:#243444;--avatar-t:#9fcbf0;--success:#5fcf8f;--success-soft:#193426;--success-b:#2b6b48;
+  --warn-bg:#3a2f12;--warn-b:#8a6d1f;--warn-t:#f0d27a;--danger:#f08a84;--danger-b:#7a3a36;--danger-soft:#3a1f1d;
+  --muted:#2d3238;--hover:#2a2f36;--row-hover:#272c32;--row-sep:#2e333a;--tray:#1f2327;--track:#2d3238;--skeleton:#2d3238;
+  --scrim:rgba(0,0,0,.6);--anno:#d0a8e6;--anno-bg:#2e2236;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:32px 28px 80px;font-size:14px;line-height:1.45}
+a{color:var(--accent)}a:hover{color:var(--accent-h)}
+code{font-family:var(--mono);font-size:12.5px}
+h1.doc{font-size:24px;margin:0 0 6px}
+.lead{color:var(--text-2);max-width:980px;margin:0 0 14px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:1100px;margin-bottom:28px;font-size:13px;columns:2}
+.toc a{display:block;padding:2px 0;text-decoration:none}
+section{margin:44px 0 0;max-width:1100px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+.sec-h .id{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px;color:var(--text-2)}
+.sec-h h2{font-size:17px;margin:0}
+.persona{font-size:12px;border-radius:10px;padding:2px 9px;font-weight:600}
+.p-alex{background:var(--accent-soft);color:var(--avatar-t)}
+.p-priya{background:#efe7f8;color:#5a3290}
+.p-jordan{background:#e3f1e9;color:#1d6440}
+[data-theme="dark"] .p-priya{background:#352a44;color:#d7bff0}
+[data-theme="dark"] .p-jordan{background:#1e3a2b;color:#9fdcb8}
+.phase{font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;border:1px solid var(--border-strong);color:var(--text-2)}
+.phase.mvp{border-color:var(--success);color:var(--success)}
+.notes{font-size:12.5px;color:var(--text-2);margin:0 0 12px;padding-left:18px;max-width:1100px}
+.notes li{margin:2px 0}
+.notes b{color:var(--text)}
+.muted{color:var(--text-2)}
+.small{font-size:12.5px}
+.mono{font-family:var(--mono)}
+h3{font-size:16px;margin:0 0 4px}
+h4{font-size:13.5px;margin:0 0 10px}
+.anno{display:inline-block;font-size:11px;color:var(--anno);background:var(--anno-bg);border-radius:5px;padding:1px 6px;font-weight:600;vertical-align:middle}
+
+/* theme toggle */
+.toolbar{position:sticky;top:0;z-index:20;display:flex;justify-content:flex-end;max-width:1100px;margin-bottom:-28px}
+.toggle{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);font:600 12.5px inherit;font-family:inherit;cursor:pointer}
+.toggle:hover{background:var(--hover)}
+.toggle:focus-visible{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+
+/* App shell */
+.app{background:var(--app);border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;box-shadow:0 8px 24px rgba(30,30,25,.10);position:relative}
+.top{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid var(--border)}
+.crumb{font-size:13px;color:var(--text-2);display:flex;gap:8px;align-items:center}
+.crumb b{color:var(--text);font-weight:500}
+.chip-net{display:flex;align-items:center;gap:8px;font-size:12.5px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block}
+.row{display:flex}
+.nav{width:148px;flex:none;border-right:1px solid var(--border);padding:14px 8px;display:flex;flex-direction:column;gap:2px;min-height:560px}
+.nav a{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;color:var(--text-2);font-size:13px;text-decoration:none}
+.nav a:hover{background:var(--muted);color:var(--text)}
+.nav a.on{background:var(--accent-soft);color:var(--avatar-t);font-weight:600}
+.island{flex:1;margin:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;min-width:0}
+.idh{height:76px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--border)}
+.idh .who{display:flex;gap:12px;align-items:center}
+.av{width:48px;height:48px;border-radius:50%;background:var(--avatar-bg);color:var(--avatar-t);display:flex;align-items:center;justify-content:center;font-weight:600}
+.t1{font-size:18px;font-weight:600}
+.t2{font-size:12.5px;color:var(--text-2)}
+.bal{text-align:right}
+.bal .l{font-size:11.5px;color:var(--text-2)}
+.bal .v{font-family:var(--mono);font-weight:600}
+.tabs{height:42px;display:flex;gap:22px;padding:0 22px;border-bottom:1px solid var(--border)}
+.tabs a{display:flex;align-items:center;gap:6px;font-size:13.5px;color:var(--text-2);text-decoration:none;border-bottom:2px solid transparent}
+.tabs a.on{color:var(--text);font-weight:600;border-color:var(--accent)}
+.tabs a:hover{color:var(--text)}
+.tabs .cnt{background:var(--accent);color:#fff;border-radius:9px;font-size:10.5px;padding:0 6px;font-weight:600}
+.content{padding:22px}
+.cols{display:flex;gap:22px}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 16px;border-radius:8px;font:600 13px inherit;font-family:inherit;cursor:pointer;border:1px solid var(--border-strong);background:var(--surface);color:var(--text)}
+.btn:hover{background:var(--hover)}
+.btn:focus-visible,.kebab:focus-visible,input:focus-visible,.trow:focus-visible,.linkbtn:focus-visible,.toggle-sw:focus-visible,select:focus-visible{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:var(--accent-h)}
+.btn.sm{height:32px;padding:0 12px;font-size:12.5px}
+.btn.xs{height:28px;padding:0 10px;font-size:12px}
+.btn.danger{color:var(--danger);border-color:var(--danger-b)}
+.btn[disabled]{background:var(--muted);border-color:var(--muted);color:#8a877f;cursor:not-allowed}
+.btn .spin{width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.linkbtn{background:none;border:none;color:var(--accent);font:600 12.5px inherit;font-family:inherit;cursor:pointer;padding:0}
+.linkbtn:hover{text-decoration:underline}
+.card{border:1px solid var(--border);border-radius:10px;padding:16px;background:var(--surface)}
+.badge-s{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap}
+.b-main{background:var(--accent-soft);color:var(--avatar-t)}
+.b-wait{background:var(--warn-bg);color:var(--warn-t);border:1px solid var(--warn-b)}
+.b-ok{background:var(--success-soft);color:var(--success)}
+.b-dim{background:var(--muted);color:var(--text-2);border:1px solid var(--border)}
+.kebab{width:30px;height:30px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text-2);cursor:pointer}
+.kebab:hover{background:var(--hover)}
+.menu{position:absolute;right:8px;top:40px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 20px rgba(0,0,0,.18);padding:4px;width:230px;z-index:3}
+.menu button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 10px;border-radius:6px;font:13px inherit;font-family:inherit;cursor:pointer;color:var(--text)}
+.menu button:hover,.menu button:focus-visible{background:var(--accent-soft)}
+.menu hr{border:none;border-top:1px solid var(--border);margin:4px 0}
+.menu .pw{font-size:10.5px;color:var(--text-2);margin-left:6px}
+.banner{display:flex;gap:10px;align-items:flex-start;border-radius:9px;padding:10px 14px;font-size:13px}
+.banner.info{background:var(--accent-soft);border:1px solid var(--accent-soft-b)}
+.banner.warnb{background:var(--warn-bg);border:1px solid var(--warn-b);color:var(--warn-t)}
+.banner.okb{background:var(--success-soft);border:1px solid var(--success-b)}
+.banner.errb{background:var(--danger-soft);border:1px solid var(--danger-b)}
+.banner .grow{flex:1}
+.ic{width:18px;flex:none;text-align:center;font-weight:700}
+.ok{color:var(--success)} .warn{color:#9a6a00} .bad{color:var(--danger)}
+[data-theme="dark"] .warn{color:#f0d27a}
+.field{display:flex;align-items:center;height:36px;border:1.5px solid var(--border-strong);border-radius:9px;padding:0 10px;background:var(--surface);gap:8px}
+.field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.field input{border:none;outline:none;font:13px inherit;font-family:inherit;flex:1;background:transparent;color:var(--text);min-width:0}
+select{height:36px;border:1.5px solid var(--border-strong);border-radius:9px;background:var(--surface);color:var(--text);font:13px inherit;font-family:inherit;padding:0 8px}
+.toggle-sw{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;color:var(--text-2)}
+.toggle-sw i{width:32px;height:18px;border-radius:9px;background:var(--border-strong);position:relative;display:inline-block}
+.toggle-sw i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .15s}
+.toggle-sw[aria-checked="true"] i{background:var(--accent)}
+.toggle-sw[aria-checked="true"] i::after{left:16px}
+.scrim{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:5}
+.modal{background:var(--surface);border-radius:14px;width:480px;box-shadow:0 18px 44px rgba(0,0,0,.3);overflow:hidden}
+.modal .mh{padding:18px 22px 6px;font-size:17px;font-weight:600}
+.modal .mb{padding:6px 22px 16px;font-size:13.5px}
+.modal .mf{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid var(--border)}
+.mini{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.ia{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.ia pre{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;font:12px/1.55 var(--mono);margin:0;overflow:auto;white-space:pre;color:var(--text)}
+.ia h4{margin:0 0 6px}
+.new{color:var(--success);font-weight:600}
+.del{color:var(--danger);text-decoration:line-through}
+.qr{width:120px;height:120px;background:repeating-linear-gradient(90deg,var(--text) 0 6px,transparent 6px 12px),repeating-linear-gradient(0deg,var(--text) 0 6px,transparent 6px 12px);background-blend-mode:multiply;opacity:.75;border-radius:6px;margin:10px auto}
+
+/* Tokens tab */
+.thead{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.thead .r{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tlist{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface);position:relative}
+.trow{display:grid;grid-template-columns:40px minmax(160px,1.4fr) minmax(130px,1fr) auto 30px;gap:14px;align-items:center;padding:12px 14px;position:relative;cursor:pointer}
+.trow + .trow{border-top:1px solid var(--row-sep)}
+.trow:hover{background:var(--row-hover)}
+.trow.focus{outline:3px solid var(--accent-soft-b);outline-offset:-3px}
+.trow.compact{padding:8px 14px;grid-template-columns:28px minmax(140px,1.4fr) minmax(120px,1fr) auto 30px}
+.trow.compact .tav{width:28px;height:28px;font-size:10.5px}
+.tav{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;flex:none}
+.tav.c1{background:#6b4f2a}.tav.c2{background:#2a6b8f}.tav.c3{background:#8f2a6b}.tav.c4{background:#2f7a3d}.tav.c5{background:#6b6b6b}.tav.c6{background:#8a5a1e}.tav.c7{background:#4b3f91}
+.tname{font-weight:600;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tsub{font-size:12px;color:var(--text-2);display:flex;gap:8px;align-items:center;margin-top:2px}
+.tbal{text-align:right}
+.tbal .v{font-family:var(--mono);font-weight:600;font-size:14px}
+.tbal .v.zero{color:var(--text-2);font-weight:500}
+.tbal .s{font-size:12px;color:var(--text-2);margin-top:2px}
+.tbal .s.claim{color:var(--success);font-weight:600}
+.tbal .s.chk{display:inline-flex;gap:6px;align-items:center}
+.tacts{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.sk{height:12px;border-radius:6px;background:var(--skeleton);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.5}}
+.empty{max-width:480px;margin:28px auto;text-align:center}
+.empty .ill{width:64px;height:64px;border-radius:50%;background:var(--accent-soft);color:var(--avatar-t);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:26px;font-weight:700}
+.empty p{margin:6px 0 14px}
+.facts{display:grid;grid-template-columns:160px 1fr;gap:8px 16px;font-size:13.5px}
+.facts dt{color:var(--text-2)}
+.facts dd{margin:0;display:flex;gap:8px;align-items:center}
+.hero{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--surface);margin-bottom:16px;flex-wrap:wrap}
+.hero .big{font-family:var(--mono);font-size:26px;font-weight:700}
+.statebar{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-2);margin:0 0 12px}
+.homecard .hr{display:flex;justify-content:space-between;align-items:center;padding:7px 0;font-size:13.5px}
+.homecard .hr + .hr{border-top:1px solid var(--row-sep)}
+.homecard .hr .mono{font-weight:600}
+.sumrow{display:flex;justify-content:space-between;padding:8px 0;font-size:13.5px}
+.sumrow + .sumrow{border-top:1px solid var(--row-sep)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;color:var(--text-2);font-weight:600;font-size:12px;padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid var(--row-sep);vertical-align:top}
+kbd{font:11px var(--mono);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--tray);color:var(--text-2)}
+</style>
+</head>
+<body>
+
+<div class="toolbar"><button class="toggle" id="themeToggle" aria-pressed="false" onclick="toggleTheme()"><span aria-hidden="true">◐</span> <span id="themeLabel">Dark theme</span></button></div>
+
+<h1 class="doc">Tokens in the Identity Hub — wireframes</h1>
+<p class="lead">Dash Evo Tool, 2026-10-28. Companion to <code>README.md</code>. Mid-fi, same visual system as the 2026-10-01 usernames canvas; light and dark themes mirror <code>DashColors</code> light/dark roles (toggle top right). Hover, focus (<kbd>Tab</kbd>) and open-menu states are live. Frames marked <span class="phase mvp">MVP</span> ship in phase 1; <span class="phase">P2</span>/<span class="phase">P3</span> later. No administrative token action (mint, burn, freeze, pause, price, config) appears anywhere in the hub; the only link to them is the Power-only "Manage in Tokens screen" menu item (optional).</p>
+
+<nav class="toc" aria-label="Frames">
+  <a href="#t0">T0 IA: before and after</a>
+  <a href="#t1">T1 Hub › Tokens tab, populated</a>
+  <a href="#t1b">T1b Token row: every state</a>
+  <a href="#t2">T2 Empty states</a>
+  <a href="#t3">T3 Loading and error</a>
+  <a href="#t4">T4 Many tokens</a>
+  <a href="#t5">T5 Token detail (pushed page)</a>
+  <a href="#t6">T6 Send and Claim hand-off</a>
+  <a href="#t7">T7 Receiving tokens</a>
+  <a href="#t8">T8 Home: Tokens card (P2)</a>
+  <a href="#t9">T9 Copy sheet</a>
+</nav>
+
+<!-- ================= T0 ================= -->
+<section id="t0">
+  <div class="sec-h"><span class="id">T0</span><h2>Information architecture: before and after</h2></div>
+  <ul class="notes">
+    <li>Today every token question goes through <b>Tokens › My Tokens</b>, a token-first table that lists <i>all</i> identities per token, with issuer actions mixed into holder actions.</li>
+    <li>After: the hub gets an identity-first <b>Tokens</b> tab (holder jobs only). The Tokens screen keeps every admin flow; nothing moves, nothing is removed.</li>
+  </ul>
+  <div class="ia">
+    <div><h4>Before</h4><pre>Identities ▸ hub ▸ [ Home | Contacts | Profile ]
+   (no tokens anywhere)
+Tokens ▸ My Tokens          token-first
+   └ row per token ▸ click ▸ row per identity
+        Check · Transfer · Claim · Mint · Burn
+        Freeze · Unfreeze · Pause · Resume
+        Destroy… · Update Config · View Claims
+Tokens ▸ Search · Token Creator
+Masternodes ▸ node ▸ "Claim token rewards ›"</pre></div>
+    <div><h4>After</h4><pre>Identities ▸ hub ▸ [ Home | Contacts | <span class="new">Tokens</span> | Profile ]
+   ├ Home ▸ <span class="new">Tokens card</span> (P2, only when it has something to say)
+   └ <span class="new">Tokens tab</span>  identity-first, this identity only
+        row ▸ Send · Claim · ••• Check now · Details
+                                  Copy ID · Stop tracking
+                                  (Power) Manage in Tokens screen
+        [Refresh] [Add a token ▾]  "How do I receive tokens?"
+        ▸ <span class="new">Token detail</span> page (P2)
+Tokens ▸ My Tokens · Search · Creator   unchanged (admin stays here)
+Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
+  </div>
+</section>
+
+<!-- ================= T1 ================= -->
+<section id="t1">
+  <div class="sec-h"><span class="id">T1</span><h2>Hub › Tokens tab, populated</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Tab bar becomes <b>Home · Contacts · Tokens · Profile</b> (supersedes the 3-tab strip in 2026-10-01 U1/U2). The tab shows a count only when a claim is waiting, never the token count.</li>
+    <li>One row per tracked token, for the selected identity only. Balance uses the token's own decimals and alias (<code>Amount::from(&amp;IdentityTokenBalance)</code>). Sorted: claimable first, then balance descending, zeros last.</li>
+    <li>Row actions: <b>Send</b> (holder has a balance and the token is transferable) and <b>Claim</b> (a distribution this identity can take). Everything else lives under <b>•••</b>. The menu is shown open on row 2 to demo it.</li>
+    <li>"Last updated" is the time of the last successful balance sync; <b>Refresh</b> re-registers the watch set and forces a pass (existing <code>QueryMyTokenBalances</code>).</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> <b>@alice</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav">
+        <a href="#t1" class="on">Identities</a><a href="#t1">Masternodes</a><a href="#t1">Contracts</a><a href="#t1">Tokens</a><a href="#t1">Wallets</a><a href="#t1">Tools</a><a href="#t1">Settings</a>
+      </div>
+      <div class="island">
+        <div class="idh">
+          <div class="who"><div class="av">AN</div><div><div class="t1">Alice Novak &#9662;</div><div class="t2">@alice</div></div></div>
+          <div class="bal"><div class="l">Identity balance</div><div class="v">0.4215 DASH</div></div>
+        </div>
+        <div class="tabs"><a href="#t8">Home</a><a href="#t1">Contacts</a><a href="#t1" class="on">Tokens <span class="cnt" title="1 token has something to claim">1</span></a><a href="#t1">Profile</a></div>
+        <div class="content">
+          <div class="thead">
+            <div><h3>Tokens</h3><p class="muted small" style="margin:0">Tokens this identity holds or keeps an eye on.</p></div>
+            <div class="r">
+              <button class="btn sm">Refresh</button>
+              <button class="btn sm">Add a token &#9662;</button>
+            </div>
+          </div>
+          <div class="statebar"><span>Last updated 2026-10-28 14:02.</span><span>&middot;</span><button class="linkbtn">How do I receive tokens?</button></div>
+
+          <div class="tlist">
+            <div class="trow" tabindex="0" aria-label="AirDrop Token, 0 AIR, you can claim 100 AIR once">
+              <div class="tav c6">AI</div>
+              <div><div class="tname">AirDrop Token</div><div class="tsub"><span class="mono">AIR</span><span>&middot;</span><span class="mono">9Qm3&hellip;k7Lp</span></div></div>
+              <div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div>
+              <div class="tacts"><button class="btn xs pri">Claim</button></div>
+              <button class="kebab" aria-label="More actions for AirDrop Token">&bull;&bull;&bull;</button>
+            </div>
+            <div class="trow focus" tabindex="0" aria-label="DashCoffee, 1,250.00 DCF, rewards may be waiting">
+              <div class="tav c1">DC</div>
+              <div><div class="tname">DashCoffee</div><div class="tsub"><span class="mono">DCF</span><span>&middot;</span><span class="mono">7Yk2&hellip;d1Rt</span></div></div>
+              <div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div>
+              <div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div>
+              <button class="kebab" aria-label="More actions for DashCoffee" aria-expanded="true">&bull;&bull;&bull;</button>
+              <div class="menu" role="menu">
+                <button role="menuitem">Check balance now</button>
+                <button role="menuitem">Token details</button>
+                <button role="menuitem">Copy token ID</button>
+                <button role="menuitem">Stop tracking</button>
+                <hr>
+                <button role="menuitem">Manage in Tokens screen<span class="pw">Expert view</span></button>
+              </div>
+            </div>
+            <div class="trow" tabindex="0" aria-label="Platform Points, 48 PTS, issued by you">
+              <div class="tav c2">PP</div>
+              <div><div class="tname">Platform Points <span class="badge-s b-main">Issued by you</span></div><div class="tsub"><span class="mono">PTS</span><span>&middot;</span><span class="mono">3Hb9&hellip;zz1Q</span></div></div>
+              <div class="tbal"><div class="v">48 PTS</div></div>
+              <div class="tacts"><button class="btn xs">Send</button></div>
+              <button class="kebab" aria-label="More actions for Platform Points">&bull;&bull;&bull;</button>
+            </div>
+            <div class="trow" tabindex="0" aria-label="Fan Badge, 1 FAN, cannot be sent">
+              <div class="tav c3">FB</div>
+              <div><div class="tname">Fan Badge <span class="badge-s b-dim">Can't be sent</span></div><div class="tsub"><span class="mono">FAN</span><span>&middot;</span><span class="mono">Bq1x&hellip;m0Ce</span></div></div>
+              <div class="tbal"><div class="v">1 FAN</div></div>
+              <div class="tacts"><button class="btn xs" disabled title="This token cannot be sent to other identities.">Send</button></div>
+              <button class="kebab" aria-label="More actions for Fan Badge">&bull;&bull;&bull;</button>
+            </div>
+            <div class="trow" tabindex="0" aria-label="Test Token, balance not checked yet">
+              <div class="tav c5">TT</div>
+              <div><div class="tname">Test Token</div><div class="tsub"><span class="mono">TST</span><span>&middot;</span><span class="mono">Fz8a&hellip;p2Wd</span></div></div>
+              <div class="tbal"><div class="s chk"><span class="spin" style="width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite"></span>Checking balance&hellip;</div></div>
+              <div class="tacts"></div>
+              <button class="kebab" aria-label="More actions for Test Token">&bull;&bull;&bull;</button>
+            </div>
+          </div>
+          <p class="muted small" style="margin:12px 0 0">Balances are checked in the background. A token you don't see here can be added with <b>Add a token</b>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T1b ================= -->
+<section id="t1b">
+  <div class="sec-h"><span class="id">T1b</span><h2>Token row: every state</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Exactly one status line per row. Status is text first; colour and badge only reinforce it. Disabled buttons always carry the reason as a tooltip, and the same sentence is repeated in the detail page so it is reachable without hover.</li>
+    <li>"Checking balance…" is the snapshot's <code>None</code> (identity not synced yet, or token not in its synced set) — never shown as 0. A real fetched 0 shows <b>0 TKN</b>.</li>
+  </ul>
+  <div class="tlist" style="max-width:900px">
+    <div class="trow"><div class="tav c1">DC</div><div><div class="tname">Synced, transferable</div><div class="tsub">default row</div></div><div class="tbal"><div class="v">1,250.00 DCF</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c1">DC</div><div><div class="tname">Rewards available</div><div class="tsub">perpetual or pre-programmed distribution this identity can take</div></div><div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div><div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c6">AI</div><div><div class="tname">Once-per-identity claim, not taken</div><div class="tsub">balance 0, claim is the only action</div></div><div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c6">AI</div><div><div class="tname">Once-per-identity claim, taken</div><div class="tsub">device remembers the claim (<code>once_per_identity_claimed_at</code>)</div></div><div class="tbal"><div class="v">100 AIR</div><div class="s">Claimed on 2026-10-20.</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c3">FB</div><div><div class="tname">Fan Badge <span class="badge-s b-dim">Can't be sent</span></div><div class="tsub">non-transferable token</div></div><div class="tbal"><div class="v">1 FAN</div></div><div class="tacts"><button class="btn xs" disabled title="This token cannot be sent to other identities.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c4">GT</div><div><div class="tname">Zero balance</div><div class="tsub">tracked, nothing held; sorted last</div></div><div class="tbal"><div class="v zero">0 GRT</div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c5">TT</div><div><div class="tname">Checking balance</div><div class="tsub">identity not synced yet for this token</div></div><div class="tbal"><div class="s chk"><span style="width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite"></span>Checking balance&hellip;</div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c5">TT</div><div><div class="tname">Could not check</div><div class="tsub">last refresh for this pair failed; no stale value to show</div></div><div class="tbal"><div class="s"><span class="bad">&#9650;</span> Couldn't check this balance. <button class="linkbtn">Try again</button></div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c2">PP</div><div><div class="tname">View-only identity</div><div class="tsub">no signing key on this device</div></div><div class="tbal"><div class="v">48 PTS</div><div class="s">Add a key to this identity to send or claim tokens.</div></div><div class="tacts"><button class="btn xs" disabled title="Add a key to this identity to send or claim tokens.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c2">PP</div><div><div class="tname">Not synced yet</div><div class="tsub">masternode list still syncing; balances may be stale</div></div><div class="tbal"><div class="v">48 PTS</div></div><div class="tacts"><button class="btn xs" disabled title="Available after sync finishes.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+  </div>
+</section>
+
+<!-- ================= T2 ================= -->
+<section id="t2">
+  <div class="sec-h"><span class="id">T2</span><h2>Empty states</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Left: nothing tracked on this device. One sentence of value, one honest sentence about how tokens appear (Platform cannot list "all tokens of an identity"; a token must be added once), then two ways in. Replaces My Tokens' "No Tracked Tokens / You don't have any tokens yet", which conflates <i>tracked</i> with <i>owned</i>.</li>
+    <li>Right: tokens are tracked, but this identity stopped tracking all of them. Different cause, different way back.</li>
+  </ul>
+  <div class="mini">
+    <div class="card"><div class="empty"><div class="ill">&#9679;</div><h3>No tokens yet</h3><p class="small">Tokens are assets issued on Dash Platform. A token shows here once you add it, so when someone sends you one, add it to see your balance.</p><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn pri">Find a token by name</button><button class="btn">Add by token or contract ID</button></div><p class="muted small" style="margin:12px 0 0">Both open the existing Tokens screens and come back here.</p></div></div>
+    <div class="card"><div class="empty"><div class="ill" style="background:var(--muted);color:var(--text-2)">&#9679;</div><h3>Nothing tracked for this identity</h3><p class="small">You stopped tracking every token for Alice Novak. Tokens you track on other identities are unaffected.</p><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn pri">Track tokens again</button><button class="btn">Add a token</button></div><p class="muted small" style="margin:12px 0 0">"Track tokens again" clears this identity's dismissals (<code>clear_untracked_token_balance</code> per pair) and refreshes.</p></div></div>
+  </div>
+</section>
+
+<!-- ================= T3 ================= -->
+<section id="t3">
+  <div class="sec-h"><span class="id">T3</span><h2>Loading and error</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Left — first visit, nothing synced yet: skeleton rows keep the layout stable; one spinner line. Refresh is disabled while a pass is in flight (single-flight guard; <code>TokenBalanceRefreshInProgress</code> is not an error to the user).</li>
+    <li>Right — refresh failed: known balances stay on screen with their "Last updated" time; the error is inline, says what happened and what to do, and offers the retry where the eye already is. Never a blocking modal, never an empty list.</li>
+  </ul>
+  <div class="mini">
+    <div class="card">
+      <div class="thead"><div><h4 style="margin:0">Tokens</h4></div><div class="r"><button class="btn sm" disabled title="Balances are being checked."><span class="spin"></span>Refreshing</button><button class="btn sm">Add a token &#9662;</button></div></div>
+      <div class="statebar"><span>Checking balances for the first time. This usually takes a few seconds.</span></div>
+      <div class="tlist" aria-busy="true" aria-label="Loading token balances">
+        <div class="trow"><div class="tav" style="background:var(--skeleton)"></div><div><div class="sk" style="width:130px"></div><div class="sk" style="width:90px;margin-top:8px"></div></div><div class="tbal"><div class="sk" style="width:90px;margin-left:auto"></div></div><div></div><div></div></div>
+        <div class="trow"><div class="tav" style="background:var(--skeleton)"></div><div><div class="sk" style="width:110px"></div><div class="sk" style="width:80px;margin-top:8px"></div></div><div class="tbal"><div class="sk" style="width:70px;margin-left:auto"></div></div><div></div><div></div></div>
+        <div class="trow"><div class="tav" style="background:var(--skeleton)"></div><div><div class="sk" style="width:150px"></div><div class="sk" style="width:90px;margin-top:8px"></div></div><div class="tbal"><div class="sk" style="width:80px;margin-left:auto"></div></div><div></div><div></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="thead"><div><h4 style="margin:0">Tokens</h4></div><div class="r"><button class="btn sm">Refresh</button><button class="btn sm">Add a token &#9662;</button></div></div>
+      <div class="banner errb" style="margin-bottom:12px"><span class="ic bad">&#9650;</span><div class="grow">Token balances couldn't be updated. Check your internet connection and try again. <button class="linkbtn">Try again</button></div><button class="linkbtn" aria-label="Dismiss message">Dismiss</button></div>
+      <div class="statebar"><span>Showing balances from 2026-10-28 09:41.</span></div>
+      <div class="tlist">
+        <div class="trow"><div class="tav c1">DC</div><div><div class="tname">DashCoffee</div><div class="tsub"><span class="mono">DCF</span></div></div><div class="tbal"><div class="v">1,250.00 DCF</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+        <div class="trow"><div class="tav c2">PP</div><div><div class="tname">Platform Points</div><div class="tsub"><span class="mono">PTS</span></div></div><div class="tbal"><div class="v">48 PTS</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+      </div>
+      <p class="muted small" style="margin:10px 0 0">Timeout variant: "Updating token balances is taking longer than usual. Try again in a moment."</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T4 ================= -->
+<section id="t4">
+  <div class="sec-h"><span class="id">T4</span><h2>Many tokens (8 or more)</h2><span class="persona p-priya">Priya</span><span class="persona p-jordan">Jordan</span><span class="phase">P2</span></div>
+  <ul class="notes">
+    <li>Controls appear only past the threshold: a filter box (name, alias or ID), a sort select, and <b>Hide zero balances</b> (remembered per device). Rows go compact; the list scrolls inside the island so the header and controls stay put at 800 px window height.</li>
+    <li>Filter has no debounce issue — it is local. <kbd>/</kbd> focuses the filter when the list has focus.</li>
+  </ul>
+  <div class="app" style="height:560px">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> <b>@priya</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav" style="min-height:0"><a href="#t4" class="on">Identities</a><a href="#t4">Masternodes</a><a href="#t4">Contracts</a><a href="#t4">Tokens</a><a href="#t4">Wallets</a><a href="#t4">Tools</a><a href="#t4">Settings</a></div>
+      <div class="island" style="display:flex;flex-direction:column">
+        <div class="tabs"><a href="#t8">Home</a><a href="#t4">Contacts</a><a href="#t4" class="on">Tokens <span class="cnt">2</span></a><a href="#t4">Profile</a></div>
+        <div class="content" style="display:flex;flex-direction:column;min-height:0;flex:1">
+          <div class="thead" style="margin-bottom:10px">
+            <div><h3>Tokens</h3><p class="muted small" style="margin:0">14 tokens &middot; Last updated 2026-10-28 14:02.</p></div>
+            <div class="r"><button class="btn sm">Refresh</button><button class="btn sm">Add a token &#9662;</button></div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+            <div class="field" style="width:260px"><span class="muted" aria-hidden="true">&#8981;</span><input placeholder="Filter by name or ID" aria-label="Filter tokens by name or ID"></div>
+            <label class="small muted" for="sort">Sort</label>
+            <select id="sort"><option>Claimable first, then balance</option><option>Balance, high to low</option><option>Name, A to Z</option><option>Recently updated</option></select>
+            <button class="toggle-sw" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')!=='true')"><i></i>Hide zero balances</button>
+            <span class="small muted">3 hidden</span>
+          </div>
+          <div class="tlist" style="overflow:auto;flex:1;min-height:0">
+            <div class="trow compact"><div class="tav c6">AI</div><div><div class="tname">AirDrop Token</div></div><div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c1">DC</div><div><div class="tname">DashCoffee</div></div><div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div><div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c7">ME</div><div><div class="tname">Meridian</div></div><div class="tbal"><div class="v">98,400 MRD</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c4">GR</div><div><div class="tname">Grid Credits</div></div><div class="tbal"><div class="v">12,000.5 GRD</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c2">PP</div><div><div class="tname">Platform Points <span class="badge-s b-main">Issued by you</span></div></div><div class="tbal"><div class="v">4,800 PTS</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c3">NB</div><div><div class="tname">Node Badge <span class="badge-s b-dim">Can't be sent</span></div></div><div class="tbal"><div class="v">3 NDB</div></div><div class="tacts"><button class="btn xs" disabled title="This token cannot be sent to other identities.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c5">OP</div><div><div class="tname">Operator Vote</div></div><div class="tbal"><div class="v">1 OPV</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c1">SB</div><div><div class="tname">Shelter Bond</div></div><div class="tbal"><div class="v">250 SHB</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c7">TQ</div><div><div class="tname">Torque</div></div><div class="tbal"><div class="v">77.25 TRQ</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c4">VT</div><div><div class="tname">Vault Ticket</div></div><div class="tbal"><div class="v">6 VLT</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact"><div class="tav c2">WX</div><div><div class="tname">Wexel</div></div><div class="tbal"><div class="v">0.0001 WXL</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T5 ================= -->
+<section id="t5">
+  <div class="sec-h"><span class="id">T5</span><h2>Token detail (pushed page)</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya</span><span class="phase">P2</span></div>
+  <ul class="notes">
+    <li>Opened from a row (click, <kbd>Enter</kbd>, or ••• Token details). Answers: how much do I have, can I send it, is anything waiting for me, who issued it. Plain words; IDs are copyable handles, not jargon.</li>
+    <li>"Recent activity" is a placeholder until the token-history query lands (P3). Power/Developer only: the "Manage in Tokens screen" link (optional; routes to <code>RootScreenMyTokenBalances</code> with this token selected).</li>
+    <li>Replaces My Tokens' "Token Configuration Details" window for holders; issuers keep that window in the Tokens screen.</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>DashCoffee</b></div><div class="chip-net"><span class="dot"></span>Mainnet &middot; Connected</div></div>
+    <div class="row">
+      <div class="nav"><a href="#t5" class="on">Identities</a><a href="#t5">Masternodes</a><a href="#t5">Contracts</a><a href="#t5">Tokens</a><a href="#t5">Wallets</a><a href="#t5">Tools</a><a href="#t5">Settings</a></div>
+      <div class="island">
+        <div class="content">
+          <button class="linkbtn" style="margin-bottom:12px">&lsaquo; Back to tokens</button>
+          <div class="hero">
+            <div style="display:flex;gap:14px;align-items:center"><div class="tav c1" style="width:56px;height:56px;font-size:18px">DC</div><div><div class="t1">DashCoffee</div><div class="t2">Held by Alice Novak</div></div></div>
+            <div style="text-align:right"><div class="big">1,250.00 <span class="muted" style="font-size:16px">DCF</span></div><div class="small claim" style="color:var(--success);font-weight:600">Rewards may be waiting for you.</div></div>
+            <div style="display:flex;gap:10px"><button class="btn">Send</button><button class="btn pri">Claim rewards</button></div>
+          </div>
+          <div class="cols">
+            <div style="flex:0 0 480px">
+              <div class="card">
+                <h4>About this token</h4>
+                <dl class="facts">
+                  <dt>Symbol</dt><dd class="mono">DCF</dd>
+                  <dt>Token ID</dt><dd><span class="mono">7Yk2mN4pQr8sT1uV3wX5yZ7aB9cD1eF2gH4jK6d1Rt</span><button class="linkbtn">Copy</button></dd>
+                  <dt>Contract</dt><dd><span class="mono">Cx2q&hellip;9Lm</span><button class="linkbtn">Copy</button></dd>
+                  <dt>Issued by</dt><dd><span class="mono">4Wq7&hellip;hH2k</span> <span class="muted small">(someone else)</span></dd>
+                  <dt>Smallest unit</dt><dd>0.01 DCF</dd>
+                  <dt>Can be sent</dt><dd>Yes, to any identity.</dd>
+                  <dt>Rewards</dt><dd>Paid out to holders over time. Claim them whenever you like.</dd>
+                  <dt>Tracked since</dt><dd>2026-09-02</dd>
+                </dl>
+                <div style="border-top:1px solid var(--border);margin:14px 0 12px"></div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap"><button class="linkbtn">Check balance now</button><button class="linkbtn">Stop tracking</button><button class="linkbtn">Manage in Tokens screen <span class="pw small muted">(Expert view)</span></button></div>
+              </div>
+            </div>
+            <div style="flex:1">
+              <div class="card" style="min-height:220px"><h4>Recent activity</h4><div style="height:150px;border:1px dashed var(--border-strong);border-radius:8px;display:flex;align-items:center;justify-content:center" class="muted small">Sends, receipts and claims for this token <span class="anno" style="margin-left:8px">P3</span></div></div>
+              <p class="muted small" style="margin:12px 0 0">Non-transferable variant: the Send button is disabled, "Can be sent" reads <i>No. This token cannot be sent to other identities.</i></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T6 ================= -->
+<section id="t6">
+  <div class="sec-h"><span class="id">T6</span><h2>Send and Claim hand-off (existing screens, pre-scoped)</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Both buttons push the screens My Tokens already uses — <code>TransferTokensScreen::new(IdentityTokenBalance)</code> and <code>ClaimTokensScreen::new(basic, contract, config)</code> (the Masternodes "Claim token rewards ›" pattern). The sending identity is fixed; the hub never shows an identity picker.</li>
+    <li>Only change requested on those screens: align the heading with the button that opened it (<i>Send DashCoffee</i>, <i>Claim DashCoffee rewards</i>) — the label→title lesson from 2026-07-24 item 4. Open question Q2 in README.</li>
+  </ul>
+  <div class="mini">
+    <div class="card">
+      <div class="crumb" style="margin-bottom:10px">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Send DashCoffee</b></div>
+      <h3 style="font-size:18px">Send DashCoffee</h3>
+      <p class="muted small">From Alice Novak &middot; 1,250.00 DCF available</p>
+      <label class="small muted" style="display:block;margin:12px 0 5px">To</label>
+      <div class="field" style="width:100%;height:44px"><input placeholder="Username or identity ID" value="@bob"></div>
+      <label class="small muted" style="display:block;margin:12px 0 5px">Amount</label>
+      <div class="field" style="width:100%;height:44px"><input value="50" style="font-family:var(--mono);font-size:15px"><span class="muted mono">DCF</span><button class="linkbtn">Max</button></div>
+      <div class="sumrow" style="margin-top:14px"><span>Network fee</span><span class="mono">about 0.0001 DASH from identity balance</span></div>
+      <div style="display:flex;justify-content:space-between;margin-top:18px"><button class="btn">Cancel</button><button class="btn pri">Send 50 DCF</button></div>
+      <p class="muted small" style="margin:10px 0 0">Existing <code>TransferTokensScreen</code>; sketch only. A network refusal is explained in a banner (TOK-020).</p>
+    </div>
+    <div class="card">
+      <div class="crumb" style="margin-bottom:10px">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Claim DashCoffee rewards</b></div>
+      <h3 style="font-size:18px">Claim DashCoffee rewards</h3>
+      <p class="muted small">For Alice Novak. Rewards paid out over time are added to your balance.</p>
+      <div class="banner info" style="margin:12px 0"><span class="ic">i</span><div class="grow">The exact amount is calculated by the network when you claim. <button class="linkbtn">Estimate first</button></div></div>
+      <div class="sumrow"><span>Claiming as</span><span>Alice Novak</span></div>
+      <div class="sumrow"><span>Network fee</span><span class="mono">about 0.0001 DASH from identity balance</span></div>
+      <div style="display:flex;justify-content:space-between;margin-top:18px"><button class="btn">Cancel</button><button class="btn pri">Claim rewards</button></div>
+      <p class="muted small" style="margin:10px 0 0">Existing <code>ClaimTokensScreen</code>; sketch only. Once-per-identity: the button reads <i>Claim 100 AIR</i>; a second claim refused by the network is explained (TOK-019).</p>
+    </div>
+  </div>
+  <div class="banner okb" style="margin-top:14px;max-width:900px"><span class="ic ok">&#10003;</span><div class="grow">After either screen succeeds, the hub shows the result banner and the row reflects the proof-derived balance immediately (<code>insert_token_identity_balance</code>), before the next background pass.</div></div>
+</section>
+
+<!-- ================= T7 ================= -->
+<section id="t7">
+  <div class="sec-h"><span class="id">T7</span><h2>Receiving tokens</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
+  <ul class="notes">
+    <li>Tokens are sent to an identity, exactly like Dash on Platform, so the Tokens tab reuses Home's Receive dialog with one extra sentence. No new "token address".</li>
+    <li>The honest part: a token someone sent you appears only after you add it. The dialog says so and offers the way in, so Alex is never left staring at an empty list after being told "I sent you 50 DCF".</li>
+  </ul>
+  <div class="app" style="height:420px">
+    <div class="top"><div class="crumb">Identities <span>&rsaquo;</span> <b>@alice</b></div></div>
+    <div class="scrim">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="t7t">
+        <div class="mh" id="t7t">Receive</div>
+        <div class="mb">
+          <div style="text-align:center"><div class="t1 mono">@alice</div><p class="small muted" style="margin:4px 0 0">Share your username with someone sending Dash or tokens to your identity.</p><div class="qr" aria-label="QR code for @alice"></div><button class="btn sm">Copy username</button></div>
+          <div class="banner info" style="margin-top:14px"><span class="ic">i</span><div class="grow">A token you receive shows under Tokens once you add it. <button class="linkbtn">Add a token</button></div></div>
+        </div>
+        <div class="mf"><button class="btn pri">Done</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T8 ================= -->
+<section id="t8">
+  <div class="sec-h"><span class="id">T8</span><h2>Home: Tokens card</h2><span class="persona p-alex">Alex</span><span class="phase">P2</span></div>
+  <ul class="notes">
+    <li>Home is the glance surface, so the card appears only when it has something to say: the identity holds at least one token with a balance, or a claim is waiting. Otherwise Home is unchanged — the tab is the entry.</li>
+    <li>Up to three rows by balance, one claim line, one link. No actions on Home other than the claim shortcut; the tab owns actions.</li>
+  </ul>
+  <div class="mini">
+    <div class="card homecard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h4 style="margin:0">Tokens</h4><button class="linkbtn">See all tokens</button></div>
+      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c1" style="width:22px;height:22px;font-size:9px">DC</span>DashCoffee</span><span class="mono">1,250.00 DCF</span></div>
+      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c2" style="width:22px;height:22px;font-size:9px">PP</span>Platform Points</span><span class="mono">48 PTS</span></div>
+      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c3" style="width:22px;height:22px;font-size:9px">FB</span>Fan Badge</span><span class="mono">1 FAN</span></div>
+      <div class="banner okb" style="margin-top:10px;padding:8px 12px"><span class="ic ok">&#9679;</span><div class="grow small">2 tokens have something to claim. <button class="linkbtn">Claim</button></div></div>
+    </div>
+    <div class="card homecard" style="opacity:.75">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h4 style="margin:0">Tokens</h4><button class="linkbtn">See all tokens</button></div>
+      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c6" style="width:22px;height:22px;font-size:9px">AI</span>AirDrop Token</span><span class="mono muted">0 AIR</span></div>
+      <div class="banner okb" style="margin-top:10px;padding:8px 12px"><span class="ic ok">&#9679;</span><div class="grow small">You can claim 100 AIR once. <button class="linkbtn">Claim</button></div></div>
+      <p class="muted small" style="margin:10px 0 0">Variant: nothing held, but a claim waits — the card still earns its place. With neither, no card.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= T9 ================= -->
+<section id="t9">
+  <div class="sec-h"><span class="id">T9</span><h2>Copy sheet (i18n-ready, one sentence per unit)</h2></div>
+  <table>
+    <thead><tr><th>Where</th><th>String</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>Tab label</td><td>Tokens</td><td>accessible description: "Tokens. Balances and rewards this identity holds."</td></tr>
+      <tr><td>Tab subtitle</td><td>Tokens this identity holds or keeps an eye on.</td><td></td></tr>
+      <tr><td>State bar</td><td>Last updated {time}.</td><td><code>model::datetime</code>, local time</td></tr>
+      <tr><td>State bar, stale</td><td>Showing balances from {time}.</td><td>after a failed refresh</td></tr>
+      <tr><td>Row status</td><td>Rewards may be waiting for you.</td><td>perpetual/pre-programmed claim available</td></tr>
+      <tr><td>Row status</td><td>You can claim {amount} once.</td><td>once-per-identity, amount from token config</td></tr>
+      <tr><td>Row status</td><td>Claimed on {date}.</td><td>once-per-identity taken</td></tr>
+      <tr><td>Row status</td><td>Checking balance&hellip;</td><td>snapshot <code>None</code></td></tr>
+      <tr><td>Row status</td><td>Couldn't check this balance.</td><td>+ "Try again" link</td></tr>
+      <tr><td>Disabled Send</td><td>This token cannot be sent to other identities.</td><td>same wording as My Tokens (TOK-020)</td></tr>
+      <tr><td>Disabled Send/Claim</td><td>Add a key to this identity to send or claim tokens.</td><td>view-only identity</td></tr>
+      <tr><td>Disabled (not synced)</td><td>Available after sync finishes.</td><td>reused from usernames spec</td></tr>
+      <tr><td>Badge</td><td>Issued by you</td><td>identity is the contract owner</td></tr>
+      <tr><td>Badge</td><td>Can't be sent</td><td>non-transferable</td></tr>
+      <tr><td>Empty</td><td>No tokens yet</td><td>heading</td></tr>
+      <tr><td>Empty</td><td>Tokens are assets issued on Dash Platform. A token shows here once you add it, so when someone sends you one, add it to see your balance.</td><td></td></tr>
+      <tr><td>Empty, all dismissed</td><td>You stopped tracking every token for {identity}. Tokens you track on other identities are unaffected.</td><td></td></tr>
+      <tr><td>Error</td><td>Token balances couldn't be updated. Check your internet connection and try again.</td><td>refresh failed</td></tr>
+      <tr><td>Error</td><td>Updating token balances is taking longer than usual. Try again in a moment.</td><td><code>TokenBalanceRefreshTimeout</code></td></tr>
+      <tr><td>Error</td><td>This token's details aren't available yet. Refresh and try again.</td><td>contract missing when opening Claim (replaces "Token contract not found")</td></tr>
+      <tr><td>Receive</td><td>A token you receive shows under Tokens once you add it.</td><td>+ "Add a token" link</td></tr>
+      <tr><td>Menu</td><td>Check balance now &middot; Token details &middot; Copy token ID &middot; Stop tracking &middot; Manage in Tokens screen</td><td>last item Power+ only</td></tr>
+      <tr><td>Confirm</td><td>Stop tracking {token} for {identity}? You can add it again at any time.</td><td>confirm "Stop tracking" / cancel</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<script>
+function toggleTheme(){
+  var root=document.documentElement;
+  var dark=root.getAttribute('data-theme')==='dark';
+  root.setAttribute('data-theme',dark?'light':'dark');
+  var b=document.getElementById('themeToggle');
+  b.setAttribute('aria-pressed',String(!dark));
+  document.getElementById('themeLabel').textContent=dark?'Dark theme':'Light theme';
+}
+if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){toggleTheme();}
+</script>
+</body>
+</html>

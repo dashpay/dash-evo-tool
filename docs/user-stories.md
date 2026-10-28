@@ -1344,6 +1344,17 @@ As a token creator, I want to create a token that holders cannot send to other i
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
 
+### TOK-021: See and use my identity's tokens in the Identity Hub [Gap]
+**Persona:** Alex, Priya
+
+As an identity owner, I want to see the tokens this identity holds — with balances, rewards I can claim, and Send/Claim actions — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
+
+- The hub has a Tokens tab listing this identity's tracked tokens with balance, symbol and a plain-words status (claim available, can't be sent, checking, issued by you).
+- Send and Claim open the existing transfer and claim screens pre-scoped to this identity; no administrative action appears in the hub.
+- Empty, first-load and failed-refresh states explain what happened and offer a way forward; known balances stay visible after a failed refresh.
+- Adding, checking and stop-tracking a token are reachable from the tab.
+- Design: `docs/ai-design/2026-10-28-identity-tokens/`.
+
 ## Contracts and Documents (DOC)
 
 ### DOC-001: Register a new data contract [Implemented]

@@ -19,33 +19,27 @@ use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
     QR codes allow instant mutual contact establishment.\n\n\
-    The recipient can scan to automatically send and accept contact requests.\n\n\
-    QR codes expire after the specified validity period.\n\n\
-    Each QR code is unique and can only be used once.\n\n\
-    WARNING: Anyone with this QR code can automatically become your contact.";
+    Someone who scans your code sends you a contact request that proves you invited them.\n\n\
+    Each QR code is valid for 1 hour. Create a new one when it expires.\n\n\
+    The code shows your username, so your identity needs a username.\n\n\
+    WARNING: Anyone with this QR code can automatically become your contact until it expires.";
 
-const ACCOUNT_INDEX_INFO_TEXT: &str = "Account Index:\n\n\
-    The account index determines which HD wallet account is used for this contact relationship.\n\n\
-    Most users should leave this at 0 (the default).\n\n\
-    Advanced users may use different account indices to segregate contacts \
-    (e.g., separate personal and business contacts into different wallet accounts).\n\n\
-    The account index is used in the derivation path: m/9'/5'/15'/account'/...";
+/// How long a contact QR code stays valid, in plain words. platform-wallet
+/// fixes it (`AUTO_ACCEPT_TTL_SECS`): the code carries a usable key.
+const QR_CODE_VALIDITY_TEXT: &str = "Valid for 1 hour.";
 
 pub struct QRCodeGeneratorScreen {
     pub app_context: Arc<AppContext>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
-    account_index: String,
-    validity_hours: String,
     generated_qr_data: Option<String>,
     qr_code: Option<QrCodeImage>,
     show_info_popup: bool,
-    show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -57,12 +51,9 @@ impl QRCodeGeneratorScreen {
             app_context: app_context.clone(),
             selected_identity: None,
             selected_identity_string: String::new(),
-            account_index: "0".to_string(),
-            validity_hours: "24".to_string(),
             generated_qr_data: None,
             qr_code: None,
             show_info_popup: false,
-            show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -92,8 +83,9 @@ impl QRCodeGeneratorScreen {
         new_self
     }
 
-    /// Dispatch the auto-accept QR build to the backend, which resolves the key
-    /// and derives the proof through the JIT chokepoint (no seed in the UI).
+    /// Dispatch the contact QR build to the backend, which derives the
+    /// auto-accept key from the wallet seed through the secret seam (no seed
+    /// in the UI).
     fn generate_qr_code(&mut self) -> AppAction {
         let Some(identity) = &self.selected_identity else {
             MessageBanner::set_global(
@@ -104,35 +96,9 @@ impl QRCodeGeneratorScreen {
             return AppAction::None;
         };
 
-        let account_idx = match self.account_index.parse::<u32>() {
-            Ok(v) => v,
-            Err(_) => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Invalid account index number",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
-        };
-
-        let validity = match self.validity_hours.parse::<u32>() {
-            Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
-            _ => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Validity hours must be between 1 and 720",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
-        };
-
         AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
             DashPayTask::GenerateAutoAcceptQrCode {
                 identity: identity.clone(),
-                account_reference: account_idx,
-                validity_hours: validity,
             },
         )))
     }
@@ -151,9 +117,6 @@ impl QRCodeGeneratorScreen {
             if crate::ui::helpers::info_icon_button(ui, QR_CODE_INFO_TEXT).clicked() {
                 self.show_info_popup = true;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-            });
         });
 
         ui.separator();
@@ -222,47 +185,6 @@ impl QRCodeGeneratorScreen {
                         });
                         ui.end_row();
                     });
-
-                // Advanced options (only shown when checkbox is checked)
-                if self.show_advanced_options {
-                    ui.add_space(10.0);
-                    egui::Grid::new("qr_advanced_config_grid")
-                        .num_columns(2)
-                        .spacing([10.0, 10.0])
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("Account Index:")
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                                crate::ui::helpers::info_icon_button(ui, ACCOUNT_INDEX_INFO_TEXT);
-                            });
-                            ui.add(
-                                TextEdit::singleline(&mut self.account_index)
-                                    .hint_text("0")
-                                    .desired_width(100.0),
-                            );
-                            ui.end_row();
-
-                            ui.label(
-                                RichText::new("Validity (hours):")
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    TextEdit::singleline(&mut self.validity_hours)
-                                        .hint_text("24")
-                                        .desired_width(100.0),
-                                );
-                                ui.label(
-                                    RichText::new("How long the QR code remains valid (default: 24)")
-                                        .small()
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                            });
-                            ui.end_row();
-                        });
-                }
 
                 ui.add_space(10.0);
 
@@ -349,6 +271,11 @@ impl QRCodeGeneratorScreen {
 
                     ui.add_space(10.0);
 
+                    ui.label(
+                        RichText::new(QR_CODE_VALIDITY_TEXT)
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
                     ui.label(
                         RichText::new(
                             "Share this QR code with someone to establish a mutual contact",

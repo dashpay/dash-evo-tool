@@ -23,6 +23,7 @@
 pub mod auth_pubkey_cache;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod auth_pubkey_cache;
+mod auto_accept;
 mod avatar_cache;
 mod contact_info;
 mod contact_profile_cache;

@@ -5,9 +5,6 @@ use super::encryption::{
 use super::errors::DashPayError;
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::dashpay::auto_accept_proof::{
-    AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
-};
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::contact_request_recipient;
@@ -238,7 +235,7 @@ pub async fn send_contact_request_with_proof(
     signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
-    qr_auto_accept: Option<AutoAcceptProofData>,
+    qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     if let Some(label) = account_label.as_deref()
         && let Err(error) = crate::model::dashpay::validate_account_label(label)
@@ -506,23 +503,11 @@ pub async fn send_contact_request_with_proof(
         );
     }
 
-    // If QR auto-accept data is provided, create the proof bytes now to match the final accountReference
-    if let Some(qr) = qr_auto_accept {
-        // Ensure the QR target matches the resolved recipient
-        if qr.identity_id != to_identity_id {
-            return Err(DashPayError::InvalidQrCode {
-                reason: "QR code target identity does not match recipient".to_string(),
-            }
-            .into());
-        }
-        let proof = create_auto_accept_proof_bytes_with_key(
-            qr.expires_at,
-            &qr.proof_key,
-            &identity.identity.id(),
-            &to_identity_id,
-            account_reference,
-        )
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+    // A scanned contact QR code signs the autoAcceptProof over the final
+    // accountReference. The recipient was resolved from the code's own
+    // username, so the proof is always addressed to the code's owner.
+    if let Some(qr) = qr_code {
+        let proof = qr.sign_proof(&identity.identity.id(), &to_identity_id, account_reference);
         tracing::debug!(
             "Including autoAcceptProof in contact request ({} bytes)",
             proof.len()

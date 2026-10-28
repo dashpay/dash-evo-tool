@@ -116,6 +116,11 @@ pub enum TokenConfigInputError {
     /// The maximum supply is not a whole number.
     #[error("Enter the maximum supply as a whole number, or leave it empty for no limit.")]
     MaxSupplyNotANumber,
+    /// The maximum supply is larger than any token amount.
+    #[error(
+        "The maximum supply is too large. Enter at most {max}, or leave it empty for no limit."
+    )]
+    MaxSupplyTooLarge { max: TokenAmount },
     /// The new-tokens destination is not an identity ID.
     #[error(
         "Enter the destination as an identity ID, or leave it empty so new tokens have no default destination."
@@ -131,9 +136,14 @@ pub fn parse_max_supply_input(input: &str) -> Result<Option<TokenAmount>, TokenC
         return Ok(None);
     }
     input
-        .parse()
+        .parse::<TokenAmount>()
         .map(Some)
-        .map_err(|_| TokenConfigInputError::MaxSupplyNotANumber)
+        .map_err(|e| match e.kind() {
+            std::num::IntErrorKind::PosOverflow => TokenConfigInputError::MaxSupplyTooLarge {
+                max: TokenAmount::MAX,
+            },
+            _ => TokenConfigInputError::MaxSupplyNotANumber,
+        })
 }
 
 /// Parse the identity new tokens go to by default, Base58 or hex. An empty
@@ -159,6 +169,17 @@ mod tests {
         assert_eq!(parse_max_supply_input(""), Ok(None));
         assert_eq!(parse_max_supply_input("  "), Ok(None));
         assert_eq!(parse_max_supply_input(" 1000 "), Ok(Some(1000)));
+        assert_eq!(
+            parse_max_supply_input(&TokenAmount::MAX.to_string()),
+            Ok(Some(TokenAmount::MAX))
+        );
+        assert_eq!(
+            parse_max_supply_input("18446744073709551616"),
+            Err(TokenConfigInputError::MaxSupplyTooLarge {
+                max: TokenAmount::MAX
+            }),
+            "a number that is too large is not a typo"
+        );
         for typo in ["12a", "1.5", "-3", "ten"] {
             assert_eq!(
                 parse_max_supply_input(typo),

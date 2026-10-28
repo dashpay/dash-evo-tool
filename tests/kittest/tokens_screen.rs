@@ -901,7 +901,7 @@ fn group_mint_co_signer_cannot_change_the_proposed_recipient() {
 #[test]
 fn update_config_holds_back_a_max_supply_that_does_not_parse() {
     use egui::accesskit::Role;
-    const FIELD: &str = "New maximum supply:";
+    const FIELD: &str = "New maximum supply, in the token's smallest units:";
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();

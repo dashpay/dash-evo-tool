@@ -547,7 +547,7 @@ impl UpdateTokenConfigScreen {
                 let text = self
                     .field_text
                     .get_or_insert_with(|| opt_amt.map(|a| a.to_string()).unwrap_or_default());
-                if labelled_text_field(ui, "New maximum supply:", text) {
+                if labelled_text_field(ui, "New maximum supply, in the token's smallest units:", text) {
                     // An empty field means no limit; a typo keeps the
                     // earlier value and blocks the update.
                     match parse_max_supply_input(text) {

@@ -859,6 +859,42 @@ fn token_action_buttons_wait_for_valid_input() {
     });
 }
 
+/// Co-signing a group mint approves the proposal as it stands: the proposed
+/// recipient is shown but cannot be changed, even when the token lets a new
+/// mint choose its recipient.
+#[test]
+fn group_mint_co_signer_cannot_change_the_proposed_recipient() {
+    use dash_evo_tool::model::amount::Amount;
+    use dash_evo_tool::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        let proposed = Identifier::from([0x99; 32]).to_string(Encoding::Base58);
+
+        let mut screen = MintTokensScreen::new(f.info.clone(), &f.app_context);
+        screen.common.group_action_id = Some(Identifier::from([0x42; 32]));
+        screen.action.recipient_identity_id = proposed.clone();
+        screen.action.amount = Some(Amount::from_token(&f.info, 5));
+        f.show(Screen::MintTokensScreen(screen));
+
+        f.harness.get_by_label(&format!("Recipient: {proposed}"));
+        assert!(
+            f.harness.query_by_label("Recipient:").is_none(),
+            "a co-signer must not get a recipient selector"
+        );
+        assert_eq!(
+            f.harness
+                .query_all_by_role(egui::accesskit::Role::TextInput)
+                .filter(|node| node.rect().left() >= 360.0)
+                .count(),
+            0,
+            "a co-signer has nothing to type in"
+        );
+    });
+}
+
 /// Each token form shows one page heading, with Advanced Options on its row,
 /// and numbers its steps from 1. Breadcrumbs use plain words.
 #[test]

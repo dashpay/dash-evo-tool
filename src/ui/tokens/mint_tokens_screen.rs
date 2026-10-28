@@ -163,7 +163,16 @@ impl TokenAction for MintAction {
         }
 
         let distribution_rules = ctx.info.token_config.distribution_rules();
-        if distribution_rules.minting_allow_choosing_destination()
+        if ctx.is_group_signing {
+            // The co-signer approves the proposal as it stands, so its
+            // recipient is shown but cannot be changed.
+            ui.add_space(10.0);
+            ui.label(
+                "You are signing an existing group Mint so you are not allowed to choose the recipient.",
+            );
+            ui.add_space(5.0);
+            ui.label(format!("Recipient: {}", self.recipient_identity_id));
+        } else if distribution_rules.minting_allow_choosing_destination()
             || ctx.app_context.user_role().at_least(UserRole::Power)
         {
             let destination_optional = distribution_rules

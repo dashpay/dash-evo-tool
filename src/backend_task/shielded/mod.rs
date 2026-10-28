@@ -319,8 +319,8 @@ fn shielded_amount_to_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskResult;
     use crate::backend_task::BackendTask;
+    use crate::backend_task::TaskResult;
     use crate::context::test_support::test_app_context;
     use crate::model::user_role::UserRole;
     use crate::utils::egui_mpsc::SenderAsync;

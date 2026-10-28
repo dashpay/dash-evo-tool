@@ -1812,7 +1812,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn contended_asset_lock_observation_keeps_the_fresh_balance_and_utxos() {
-        use crate::app::TaskResult;
+        use crate::backend_task::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use std::time::Duration;

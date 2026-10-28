@@ -378,3 +378,123 @@ fn rejects_shielded_to_identity_route() {
          Transfer to a Platform address first, then top up the identity.",
     );
 }
+
+/// The send button with its confirmation, as the screen renders them. The
+/// confirmed task is dropped: no funds may move in a test.
+fn send_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+    let mut harness = Harness::builder().build_ui_state(
+        |ui, screen: &mut WalletSendScreen| {
+            screen.render_simple_send_button_for_test(ui);
+            screen.render_send_confirmation_for_test(ui);
+        },
+        screen,
+    );
+    harness.run();
+    harness
+}
+
+/// Press Send and check that it opened the confirmation, with nothing in
+/// flight yet.
+fn press_send_expecting_confirmation(
+    harness: &mut Harness<'_, WalletSendScreen>,
+    button_label: &str,
+) {
+    harness.get_by_label(button_label).click();
+    harness.run();
+    assert!(
+        harness.state().has_send_confirmation_for_test(),
+        "Send opens the confirmation"
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Confirm this send.")
+            .is_some()
+    );
+    assert!(
+        harness.query_by_label("Sending...").is_none(),
+        "nothing is sent before the confirmation"
+    );
+}
+
+/// Cancelling a private-balance send at its confirmation gives the form
+/// back: Send works again, and only a confirmed send shows "Sending...".
+fn assert_cancel_leaves_send_usable(destination: ValidatedAddress, button_label: &str) {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        screen.set_simple_send_input_for_test(
+            Some(SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS)),
+            Some(destination),
+            Some(Amount::new_dash(1.0)),
+        );
+        let mut harness = send_harness(screen);
+
+        press_send_expecting_confirmation(&mut harness, button_label);
+
+        // The dialog's Cancel renders after the form's own Cancel.
+        harness
+            .get_all_by_label("Cancel")
+            .last()
+            .expect("the confirmation's Cancel")
+            .click();
+        harness.run();
+        assert!(!harness.state().has_send_confirmation_for_test());
+        assert!(harness.query_by_label("Sending...").is_none());
+
+        // Send is usable again, and a confirmed send is in flight.
+        press_send_expecting_confirmation(&mut harness, button_label);
+        harness.get_by_label("Confirm and Send").click();
+        harness.run();
+        assert!(harness.query_by_label("Sending...").is_some());
+    });
+}
+
+#[test]
+fn cancelling_a_private_send_leaves_send_usable() {
+    assert_cancel_leaves_send_usable(
+        ValidatedAddress::Shielded(shielded_address()),
+        "Private Send",
+    );
+}
+
+#[test]
+fn cancelling_an_unshield_leaves_send_usable() {
+    let address = platform_address();
+    assert_cancel_leaves_send_usable(
+        ValidatedAddress::Platform {
+            address,
+            bech32m: address.to_bech32m_string(Network::Testnet),
+        },
+        "Unshield Credits",
+    );
+}
+
+/// A send that fails to build opens no confirmation and leaves Send usable:
+/// once the recipient is fixed, Send opens the confirmation.
+#[test]
+fn a_private_send_that_fails_to_build_leaves_send_usable() {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        let source = SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS);
+        screen.set_simple_send_input_for_test(
+            Some(source.clone()),
+            Some(ValidatedAddress::Shielded(
+                "not a private address".to_string(),
+            )),
+            Some(Amount::new_dash(1.0)),
+        );
+        let mut harness = send_harness(screen);
+
+        harness.get_by_label("Private Send").click();
+        harness.run();
+        assert!(!harness.state().has_send_confirmation_for_test());
+        assert!(harness.query_by_label("Sending...").is_none());
+
+        harness.state_mut().set_simple_send_input_for_test(
+            Some(source),
+            Some(ValidatedAddress::Shielded(shielded_address())),
+            Some(Amount::new_dash(1.0)),
+        );
+        harness.run();
+        press_send_expecting_confirmation(&mut harness, "Private Send");
+    });
+}

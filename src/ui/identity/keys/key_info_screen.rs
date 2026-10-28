@@ -48,6 +48,7 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 use zxcvbn::zxcvbn;
 
 pub struct KeyInfoScreen {
@@ -151,6 +152,18 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        if update.network == self.app_context.network
+            && matches!(
+                update.domain,
+                crate::backend_task::CacheDomain::Identities
+                    | crate::backend_task::CacheDomain::All
+            )
+        {
+            self.reload_identity();
+            self.protection_status = None;
+        }
+    }
     fn accepts_legacy_recovery_result(
         &self,
         context: &BackendTaskContext,
@@ -172,7 +185,7 @@ impl ScreenLike for KeyInfoScreen {
     /// This is the hook that has to carry it: `AppState` dispatches
     /// `refresh_on_arrival` only to root screens, and this screen is always
     /// pushed onto the screen stack. What reaches a pushed screen is `refresh` —
-    /// from `TaskResult::Refresh`, from `AppAction::Refresh`, and from the
+    /// from `AppAction::Refresh` and from the
     /// `PopScreenAndRefresh` that reveals it. `refresh_on_arrival` defaults to
     /// delegating here, so both hooks run this.
     fn refresh(&mut self) {
@@ -1091,15 +1104,16 @@ impl KeyInfoScreen {
     }
 
     fn validate_and_store_private_key(&mut self) {
-        // Convert the input string to bytes (hex decoding)
-        let private_key_bytes = match hex::decode(self.private_key_input.text()) {
-            Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let bytes: [u8; 32] = private_key_bytes_vec
-                    .try_into()
-                    .expect("invariant: length checked to be 32 in the match guard");
-                bytes
-            }
-            Ok(_) => {
+        // Convert the input string to bytes (hex, then WIF). The parsed key is
+        // held in `Zeroizing`, so it is wiped when this function returns.
+        let input = self.private_key_input.text();
+        let is_hex =
+            input.len().is_multiple_of(2) && input.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let private_key_bytes = if is_hex {
+            // Decoded straight into the zeroizing buffer, so no plain copy of
+            // the key is left behind; the only error left is a wrong length.
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            if hex::decode_to_slice(input, bytes.as_mut_slice()).is_err() {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Private key not 32 bytes",
@@ -1107,8 +1121,10 @@ impl KeyInfoScreen {
                 );
                 return;
             }
-            Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
-                Ok(key) => *key.inner.to_bytes(),
+            bytes
+        } else {
+            match PrivateKey::from_wif(input) {
+                Ok(key) => key.inner.to_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -1117,7 +1133,7 @@ impl KeyInfoScreen {
                     );
                     return;
                 }
-            },
+            }
         };
 
         let validation_result = self
@@ -1150,7 +1166,7 @@ impl KeyInfoScreen {
                     let target = Self::filed_at_in(fresh, &self.key)?;
                     fresh.private_keys.insert_non_encrypted(
                         (target, self.key.id()),
-                        (self.key.clone().into(), private_key_bytes),
+                        (self.key.clone().into(), *private_key_bytes),
                     )
                 });
             match updated {
@@ -1773,6 +1789,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::legacy_recovery::RecoveryPlan;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -1782,7 +1799,6 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
@@ -1839,16 +1855,13 @@ mod tests {
     }
 
     fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![id as u8; 20]),
+        )
     }
 
     fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
@@ -1983,16 +1996,13 @@ mod tests {
 
         // Same id, different keys: purpose is what tells them apart.
         let on_screen = public_key(0, Purpose::VOTING);
-        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xEE; 20]),
-            disabled_at: None,
-        });
+        let other = identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xEE; 20]),
+        );
 
         let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
         stored.private_keys.insert_at(
@@ -2243,6 +2253,63 @@ mod tests {
             .await;
     }
 
+    /// Pastes `input(secret)` as the private key of a key the identity
+    /// publishes, and reports whether the record on disk then holds that key.
+    async fn held_after_paste(id_byte: u8, input: impl FnOnce(&[u8; 32]) -> String) -> bool {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(id_byte, &[]);
+        stored.identity = Identity::new_with_id_and_keys(
+            Identifier::from([id_byte; 32]),
+            BTreeMap::from([(pasted.id(), pasted.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing the pasted key");
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+
+        screen.private_key_input.set_text(input(&secret));
+        screen.validate_and_store_private_key();
+
+        let held = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored")
+            .private_keys
+            .candidates(&pasted)
+            .next()
+            .is_some();
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+        held
+    }
+
+    /// A key pasted as WIF is read and saved, like one pasted as hex.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_pasted_as_wif_is_saved() {
+        let held = held_after_paste(0x5A, |secret| {
+            PrivateKey::from_byte_array(secret, Network::Testnet)
+                .expect("valid secret key")
+                .to_wif()
+        })
+        .await;
+        assert!(held, "a valid WIF key must be saved");
+    }
+
+    /// Valid hex that is not 32 bytes long is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hex_key_of_the_wrong_length_is_not_saved() {
+        let held = held_after_paste(0x5B, |secret| hex::encode(&secret[..31])).await;
+        assert!(!held, "a 31-byte hex key must not be saved");
+    }
+
     /// The removal's mirror of `a_write_behind_the_screen_survives_a_paste`:
     /// removing one key must not write away a key another writer landed while
     /// the screen was open — for a private key, silently and irreversibly.
@@ -2295,16 +2362,13 @@ mod tests {
             .public_key()
             .to_bytes();
         (
-            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                BinaryData::new(data),
+            ),
             secret_bytes,
         )
     }

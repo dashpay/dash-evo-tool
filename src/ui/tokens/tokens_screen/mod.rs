@@ -217,7 +217,8 @@ fn is_duplicate_balance_refresh(
     action: &AppAction,
 ) -> bool {
     *status == RefreshingStatus::Refreshing
-        && pending_context == Some(&BackendTaskContext::TokenBalanceRefresh)
+        && pending_context.map(BackendTaskContext::operation)
+            == Some(&BackendTaskContext::TokenBalanceRefresh)
         && matches!(
             action,
             AppAction::BackendTask(BackendTask::TokenTask(task))
@@ -237,13 +238,13 @@ fn completes_pending_operation(
     match result {
         BackendTaskSuccessResult::FetchedTokenBalances
         | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
-            *result_context == BackendTaskContext::TokenBalanceRefresh
+            *result_context.operation() == BackendTaskContext::TokenBalanceRefresh
         }
         BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
             identity_token_id,
             ..
         ) => {
-            *result_context == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
+            *result_context.operation() == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
         }
         _ => false,
     }
@@ -256,6 +257,18 @@ pub enum ContractSearchStatus {
     WaitingForResult,
     Complete,
     Error,
+}
+
+/// What the Token Creator's preset selector shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokenPresetSelection {
+    /// No preset chosen and no rule edited yet: "Select a preset...".
+    #[default]
+    Unselected,
+    /// The rules are exactly this preset's.
+    Preset(TokenConfigurationPresetFeatures),
+    /// The rules were chosen individually, or no longer match the preset picked earlier.
+    Custom,
 }
 
 #[derive(Debug, PartialEq, Default)]
@@ -1135,7 +1148,7 @@ pub struct TokensScreen {
     //           Token Creator
     // ====================================
     show_advanced_token_creator: bool,
-    selected_token_preset: Option<TokenConfigurationPresetFeatures>,
+    selected_token_preset: TokenPresetSelection,
     show_pop_up_info: Option<String>,
     identity_id_string: String,
     pub selected_identity: Option<QualifiedIdentity>,
@@ -1419,6 +1432,32 @@ fn my_tokens(
 }
 
 impl TokensScreen {
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Starts a registration as the creator's confirmation does, without
+    /// building a contract, and returns a dispatch standing in for it.
+    pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
+        self.mark_token_registration_started();
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        BackendTaskContext::for_dispatch_on(&task, self.app_context.network)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Where the Token Creator's registration stands.
+    pub fn token_creator_status_for_test(&self) -> &TokenCreatorStatus {
+        &self.token_creator_status
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether the registration's progress banner is still shown.
+    pub fn registration_banner_live_for_test(&self) -> bool {
+        self.operation_banner
+            .as_ref()
+            .is_some_and(|banner| banner.is_live())
+    }
+
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
         let identities = app_context
             .load_local_qualified_identities()
@@ -1502,7 +1541,7 @@ impl TokensScreen {
 
             // Token Creator
             show_advanced_token_creator: false,
-            selected_token_preset: None,
+            selected_token_preset: TokenPresetSelection::Unselected,
             show_pop_up_info: None,
             identity_id_string: String::new(),
             selected_identity: None,
@@ -2289,6 +2328,33 @@ impl TokensScreen {
         Ok(map)
     }
 
+    /// Leaving the screen keeps the Token Creator form (e.g. to top up the
+    /// identity and come back); only a finished creation starts over.
+    fn keep_token_creator_across_navigation(&mut self) {
+        if self.token_creator_status == TokenCreatorStatus::Complete {
+            self.reset_token_creator();
+        }
+    }
+
+    /// Whether this creator sent a registration it has not heard back about. A
+    /// network switch resets the creator, so a late result of a registration
+    /// sent on the previous network finds it not waiting and is ignored rather
+    /// than showing success (or failure) on the new network.
+    fn awaits_token_registration(&self) -> bool {
+        self.token_creator_status == TokenCreatorStatus::WaitingForResult
+    }
+
+    /// Drops the Token Creator form after a network switch: its identity, key and
+    /// wallet belong to the previous network.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.selected_wallet = None;
+        self.wallet_open_attempted = false;
+        // Its wallet belongs to the previous network; left open, it would come
+        // back for the next wallet the user selects.
+        self.wallet_unlock_popup.close();
+        self.reset_token_creator();
+    }
+
     fn reset_token_creator(&mut self) {
         self.identity_id_string = String::new();
         self.selected_identity = None;
@@ -2400,8 +2466,20 @@ impl TokensScreen {
         self.new_tokens_destination_other_identity = "".to_string();
         self.minting_allow_choosing_destination = false;
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
+        self.new_tokens_destination_identity_should_default_to_contract_owner = true;
+        self.allow_transfers_to_frozen_identities = true;
+        self.perpetual_dist_interval_unit = IntervalTimeUnit::Day;
 
+        // The rules above are back to their defaults, so no preset applies any more.
+        self.selected_token_preset = TokenPresetSelection::Unselected;
+        self.cached_build_args = None;
         self.show_token_creator_confirmation_popup = false;
+        // The dialog caches its summary text; drop it so it is rebuilt from the new form.
+        self.token_creator_confirmation_dialog = None;
+        // The "View JSON" popup shows the contract built from the old form.
+        self.show_json_popup = false;
+        self.json_popup_text.clear();
+        self.json_popup_opening_guard = ModalOpeningGuard::default();
 
         // Reset document schemas
         self.document_schemas_input = String::new();
@@ -2653,6 +2731,34 @@ impl TokensScreen {
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
 impl ScreenLike for TokensScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network != self.app_context.network
+            || !matches!(
+                update.domain,
+                CacheDomain::Tokens | CacheDomain::Identities | CacheDomain::All
+            )
+        {
+            return;
+        }
+        self.all_known_tokens = self
+            .app_context
+            .get_all_known_tokens_with_data_contract()
+            .unwrap_or_default();
+        self.identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| (identity.identity.id(), identity))
+            .collect();
+        self.my_tokens = my_tokens(
+            &self.app_context,
+            &self.identities,
+            &self.all_known_tokens,
+            &self.token_pricing_data,
+        );
+    }
     fn refresh(&mut self) {
         self.all_known_tokens = self
             .app_context
@@ -2877,17 +2983,21 @@ impl ScreenLike for TokensScreen {
             self.pending_operation_context.as_ref(),
             &action,
         );
+        // A tracked operation is sent under a dispatch context of its own, so
+        // only its own result or failure settles it.
+        let mut dispatch_context = None;
         if duplicate_balance_refresh {
             action = AppAction::None;
-        } else if let AppAction::BackendTask(task) = &action {
-            let context = BackendTaskContext::from(task);
-            if matches!(
-                context,
+        } else if let AppAction::BackendTask(task) = &action
+            && matches!(
+                BackendTaskContext::from(task),
                 BackendTaskContext::TokenBalanceRefresh
                     | BackendTaskContext::TokenRewardEstimate(_)
-            ) {
-                self.pending_operation_context = Some(context);
-            }
+            )
+        {
+            let context = BackendTaskContext::for_dispatch_on(task, self.app_context.network);
+            self.pending_operation_context = Some(context.clone());
+            dispatch_context = Some(context);
         }
 
         // Post-processing on user actions
@@ -2917,7 +3027,7 @@ impl ScreenLike for TokensScreen {
                 self.selected_contract_id = None;
                 self.selected_contract_description = None;
 
-                self.reset_token_creator();
+                self.keep_token_creator_across_navigation();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token = None;
@@ -2928,6 +3038,12 @@ impl ScreenLike for TokensScreen {
             _ => {
                 // No extra processing needed
             }
+        }
+
+        if let Some(context) = dispatch_context
+            && let AppAction::BackendTask(task) = std::mem::replace(&mut action, AppAction::None)
+        {
+            action = AppAction::BackendTaskWithContext { task, context };
         }
 
         if action == AppAction::None
@@ -2970,8 +3086,9 @@ impl ScreenLike for TokensScreen {
 
         match self.tokens_subscreen {
             TokensSubscreen::TokenCreator => {
-                if msg.contains("Failed to register token contract")
-                    | msg.contains("Error building contract V1")
+                if (msg.contains("Failed to register token contract")
+                    | msg.contains("Error building contract V1"))
+                    && self.awaits_token_registration()
                 {
                     self.token_creator_status = TokenCreatorStatus::Error;
                 }
@@ -3095,7 +3212,9 @@ impl ScreenLike for TokensScreen {
                 );
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
-                self.token_creator_status = TokenCreatorStatus::Complete;
+                if self.awaits_token_registration() {
+                    self.token_creator_status = TokenCreatorStatus::Complete;
+                }
                 self.operation_banner.take_and_clear();
             }
             _ => {}
@@ -3226,6 +3345,8 @@ mod tests {
             MessageType::Info,
         );
         screen.operation_banner = Some(handle.clone());
+        // As set when the registration was sent.
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
 
         screen.display_backend_task_result(
             &BackendTaskContext::Other,
@@ -3235,6 +3356,52 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn token_cache_updates_reload_only_the_matching_network_and_keep_form_state() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        let tmp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        let marker = Identifier::from([0x32; 32]);
+        screen.token_pricing_data.insert(marker, None);
+        screen.selected_token = Some(marker);
+        // A removed local identity cache entry must disappear only for this network.
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(marker, context.platform_version()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network,
+        };
+        screen.identities.insert(marker, identity);
+        let foreign = if context.network == dash_sdk::dpp::dashcore::Network::Mainnet {
+            dash_sdk::dpp::dashcore::Network::Testnet
+        } else {
+            dash_sdk::dpp::dashcore::Network::Mainnet
+        };
+        screen.cached_data_changed(CacheUpdate {
+            network: foreign,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(screen.identities.contains_key(&marker));
+        screen.cached_data_changed(CacheUpdate {
+            network: context.network,
+            domain: CacheDomain::Tokens,
+        });
+        assert!(!screen.identities.contains_key(&marker));
+        assert_eq!(screen.selected_token, Some(marker));
+        assert!(screen.token_pricing_data.contains_key(&marker));
     }
 
     impl ChangeControlRulesUI {
@@ -4000,6 +4167,390 @@ mod tests {
         assert_eq!(err, "Please enter a token name");
     }
 
+    /// Fills the minimum inputs `parse_token_build_args` needs, the way a user
+    /// would in Simple mode: an identity, a token name and an initial supply.
+    fn fill_minimal_creator_inputs(screen: &mut TokensScreen, app_context: &Arc<AppContext>) {
+        let identity_id = Identifier::from([7; 32]);
+        let identity = Identity::create_basic_identity(identity_id, app_context.platform_version())
+            .expect("basic identity");
+        screen.selected_identity = Some(QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        });
+        screen.token_names_input = vec![(
+            "PresetCoin".to_string(),
+            "PresetCoins".to_string(),
+            TokenNameLanguage::English,
+            true,
+        )];
+        screen.base_supply_amount = Some(Amount::new(1_000, 8));
+    }
+
+    /// Asserts that every rule in `args` equals what `features` defines, computed
+    /// straight from the Platform preset rather than through the creator.
+    fn assert_build_args_match_preset(
+        args: &TokenBuildArgs,
+        features: TokenConfigurationPresetFeatures,
+    ) {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+
+        let preset = TokenConfigurationPreset {
+            features,
+            action_taker: AuthorizedActionTakers::ContractOwner,
+        };
+        let basic = ChangeControlRules::V0(preset.default_basic_change_control_rules_v0());
+        let advanced = ChangeControlRules::V0(preset.default_advanced_change_control_rules_v0());
+        let emergency =
+            ChangeControlRules::V0(preset.default_emergency_action_change_control_rules_v0());
+
+        let cases = [
+            ("manual minting", &args.manual_minting_rules, &basic),
+            ("manual burning", &args.manual_burning_rules, &basic),
+            ("freeze", &args.freeze_rules, &advanced),
+            ("unfreeze", &args.unfreeze_rules, &advanced),
+            (
+                "destroy frozen funds",
+                &args.destroy_frozen_funds_rules,
+                &advanced,
+            ),
+            ("emergency action", &args.emergency_action_rules, &emergency),
+            (
+                "max supply change",
+                &args.max_supply_change_rules,
+                &advanced,
+            ),
+            ("conventions change", &args.conventions_change_rules, &basic),
+            ("marketplace", &args.marketplace_rules, &basic),
+            (
+                "direct purchase pricing",
+                &args.change_direct_purchase_pricing_rules,
+                &basic,
+            ),
+            (
+                "perpetual distribution",
+                args.distribution_rules.perpetual_distribution_rules(),
+                &advanced,
+            ),
+            (
+                "new tokens destination identity",
+                args.distribution_rules
+                    .new_tokens_destination_identity_rules(),
+                &basic,
+            ),
+            (
+                "minting allow choosing destination",
+                args.distribution_rules
+                    .minting_allow_choosing_destination_rules(),
+                &basic,
+            ),
+            (
+                "distribution direct purchase pricing",
+                args.distribution_rules
+                    .change_direct_purchase_pricing_rules(),
+                &basic,
+            ),
+        ];
+        for (name, actual, expected) in cases {
+            assert_eq!(
+                actual, expected,
+                "{name} rules differ from the {features:?} preset shown on screen"
+            );
+        }
+        assert_eq!(
+            args.main_control_group_change_authorized,
+            preset.default_main_control_group_can_be_modified(),
+            "main control group change rule differs from the {features:?} preset shown on screen"
+        );
+    }
+
+    const ALL_PRESETS: [TokenConfigurationPresetFeatures; 5] = [
+        TokenConfigurationPresetFeatures::MostRestrictive,
+        TokenConfigurationPresetFeatures::WithOnlyEmergencyAction,
+        TokenConfigurationPresetFeatures::WithMintingAndBurningActions,
+        TokenConfigurationPresetFeatures::WithAllAdvancedActions,
+        TokenConfigurationPresetFeatures::WithExtremeActions,
+    ];
+
+    fn owner_preset(
+        features: TokenConfigurationPresetFeatures,
+    ) -> dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset
+{
+        dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset {
+            features,
+            action_taker: AuthorizedActionTakers::ContractOwner,
+        }
+    }
+
+    /// Regression: choosing "All Allowed", leaving the Token Creator (subscreen tab,
+    /// left panel) and coming back used to reset every rule to "no one" while the
+    /// selector kept showing "All Allowed", so the token was created with no actions
+    /// allowed. Now the whole form survives and the shown preset is what gets built.
+    #[test]
+    fn token_creator_form_and_preset_survive_navigation() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.token_description_input = "Kept across navigation".to_string();
+        screen.start_as_paused_input = true;
+
+        // What `SetMainScreenThenGoToMainScreen` (tabs, left panel) does on the way out.
+        screen.keep_token_creator_across_navigation();
+        screen.reconcile_selected_preset();
+
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
+        );
+        assert!(screen.can_create_in_simple_mode());
+        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
+        assert_eq!(screen.token_description_input, "Kept across navigation");
+        assert!(screen.start_as_paused_input);
+        assert!(screen.selected_identity.is_some());
+        let args = screen.parse_token_build_args().expect("token build args");
+        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
+    }
+
+    /// After a successful creation, leaving the success screen gives a fresh
+    /// creator: no preset, "Create Token" blocked, no stale confirmation.
+    #[test]
+    fn token_creator_starts_fresh_after_a_successful_creation() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.allow_transfers_to_frozen_identities = false;
+        screen.token_creator_confirmation_dialog = Some(
+            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
+                "Confirm Token Contract Registration",
+                "stale summary",
+            ),
+        );
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+
+        screen.keep_token_creator_across_navigation();
+        screen.reconcile_selected_preset();
+
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::NotStarted);
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert!(screen.token_creator_confirmation_dialog.is_none());
+        assert!(screen.allow_transfers_to_frozen_identities);
+
+        // Even with the other required fields filled in again, a preset is needed.
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        assert!(!screen.can_create_in_simple_mode());
+        assert_eq!(
+            screen.simple_mode_blocked_reason().as_deref(),
+            Some("Choose a preset to create the token.")
+        );
+    }
+
+    /// A network switch drops the form: its identity belongs to the old network.
+    #[test]
+    fn token_creator_starts_fresh_after_a_network_switch() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+
+        screen.reset_for_network_switch();
+
+        assert!(screen.selected_identity.is_none());
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert!(!screen.can_create_in_simple_mode());
+    }
+
+    /// Every preset picked in a freshly opened creator is built exactly as defined.
+    #[test]
+    fn token_creator_builds_exactly_the_selected_preset() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+
+        for features in ALL_PRESETS {
+            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+            fill_minimal_creator_inputs(&mut screen, &app_context);
+            assert!(
+                !screen.can_create_in_simple_mode(),
+                "a creator with no preset chosen must not allow creating"
+            );
+            assert!(
+                !screen.preset_chosen(),
+                "Advanced mode must not register a token with no preset chosen"
+            );
+            screen.change_to_preset(owner_preset(features));
+            screen.reconcile_selected_preset();
+
+            assert_eq!(
+                screen.selected_token_preset,
+                TokenPresetSelection::Preset(features),
+                "an untouched {features:?} preset must stay selected"
+            );
+            assert!(screen.can_create_in_simple_mode());
+            let args = screen.parse_token_build_args().expect("token build args");
+            assert_build_args_match_preset(&args, features);
+        }
+    }
+
+    /// Editing one rule after picking a preset shows "Custom", still allows
+    /// creating, and builds the edited rules; picking a preset again re-applies it.
+    #[test]
+    fn token_creator_shows_custom_when_rules_leave_the_preset() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+
+        screen.manual_minting_rules.rules.authorized_to_make_change = AuthorizedActionTakers::NoOne;
+        screen.reconcile_selected_preset();
+
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+        assert_eq!(screen.preset_selection_label(), "Custom");
+        assert!(screen.can_create_in_simple_mode());
+        let args = screen.parse_token_build_args().expect("token build args");
+        let ChangeControlRules::V0(minting) = &args.manual_minting_rules;
+        assert_eq!(
+            minting.authorized_to_make_change,
+            AuthorizedActionTakers::NoOne,
+            "the edited rule must be built"
+        );
+        let ChangeControlRules::V0(burning) = &args.manual_burning_rules;
+        assert_eq!(
+            burning.authorized_to_make_change,
+            AuthorizedActionTakers::ContractOwner,
+            "untouched rules keep the preset's value"
+        );
+
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.reconcile_selected_preset();
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
+        );
+        let args = screen.parse_token_build_args().expect("token build args");
+        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
+
+        // The main control group rule counts too.
+        screen.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+
+        // So does letting a mint choose where the new tokens go, which "All Allowed" turns on.
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert!(screen.minting_allow_choosing_destination);
+        screen.minting_allow_choosing_destination = false;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+    }
+
+    /// Editing a rule before choosing any preset is a "Custom" choice, not "Select a preset...".
+    #[test]
+    fn token_creator_rule_edit_without_preset_is_custom() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+
+        screen.reconcile_selected_preset();
+        assert_eq!(
+            screen.selected_token_preset,
+            TokenPresetSelection::Unselected
+        );
+        assert_eq!(screen.preset_selection_label(), "Select a preset...");
+
+        screen.freeze_rules.rules.authorized_to_make_change = AuthorizedActionTakers::ContractOwner;
+        screen.reconcile_selected_preset();
+        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
+        assert!(screen.can_create_in_simple_mode());
+        assert!(
+            screen.preset_chosen(),
+            "Custom rules may be registered in Advanced mode"
+        );
+    }
+
+    /// Every preset builds exactly Platform's own token configuration for it
+    /// (`TokenConfigurationPreset::token_configuration_v0` with direct pricing), apart
+    /// from the inputs the user types and one deliberate difference: new tokens go
+    /// to the contract owner by default instead of requiring a destination per mint.
+    #[test]
+    fn token_creator_presets_build_platforms_full_preset_configuration() {
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+
+        for features in ALL_PRESETS {
+            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+            fill_minimal_creator_inputs(&mut screen, &app_context);
+            screen.change_to_preset(owner_preset(features));
+
+            let args = screen.parse_token_build_args().expect("token build args");
+            let owner_id = args.identity_id;
+            let contract = app_context
+                .build_data_contract_v1_with_one_token(owner_id, args.into_contract_params())
+                .expect("contract build");
+            let TokenConfiguration::V0(built) =
+                contract.as_v1().expect("DataContract::V1").tokens[&0u16].clone()
+            else {
+                panic!("a transferable token keeps the version 0 configuration");
+            };
+
+            let mut expected = owner_preset(features).token_configuration_v0(
+                built.conventions.clone(),
+                built.base_supply,
+                built.max_supply,
+                true,
+                true,
+            );
+            expected
+                .distribution_rules
+                .set_new_tokens_destination_identity(Some(owner_id));
+
+            assert_eq!(
+                built, expected,
+                "the {features:?} preset must build Platform's full preset configuration"
+            );
+        }
+    }
+
     /// Renders the "holders can send this token" row once, as a frame would.
     fn render_transferable_row(screen: &mut TokensScreen) {
         let ctx = egui::Context::default();
@@ -4045,5 +4596,100 @@ mod tests {
             TokensScreen::transferability_summary(false),
             "Holders cannot send this token to other identities. This cannot be changed later."
         );
+    }
+
+    /// Both modes name the preset first and then a setting the network does not
+    /// accept, so the user fixes one thing at a time.
+    #[test]
+    fn blocked_reasons_name_the_preset_before_transferability() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.transferable_input = false;
+        let unsupported = TaskError::NonTransferableTokenNotSupported.to_string();
+
+        assert_eq!(
+            screen.simple_mode_blocked_reason().as_deref(),
+            Some("Choose a preset to create the token.")
+        );
+        assert_eq!(
+            screen.advanced_mode_blocked_reason().as_deref(),
+            Some("Choose a preset, or Custom to use the rules below.")
+        );
+
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert_eq!(
+            screen.simple_mode_blocked_reason(),
+            Some(unsupported.clone())
+        );
+        assert_eq!(screen.advanced_mode_blocked_reason(), Some(unsupported));
+
+        screen.transferable_input = true;
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+    }
+
+    /// A network switch closes the wallet unlock popup: its wallet belongs to the
+    /// previous network, and leaving it open would show it again for the next
+    /// wallet the user selects.
+    #[test]
+    fn network_switch_closes_the_wallet_unlock_popup() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.wallet_unlock_popup.open();
+
+        screen.reset_for_network_switch();
+
+        assert!(!screen.wallet_unlock_popup.is_open());
+    }
+
+    /// A registration sent before a network switch must not complete the
+    /// creator on the new network: neither its success nor its failure.
+    #[test]
+    fn registration_result_from_before_a_network_switch_is_ignored() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+
+        screen.reset_for_network_switch();
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::NotStarted,
+            "a late success must not show the success screen on the new network"
+        );
+
+        screen.display_message(
+            "Failed to register token contract: the old network refused it",
+            MessageType::Error,
+        );
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::NotStarted,
+            "a late failure must not mark the new network's creator as failed"
+        );
+    }
+
+    /// A network switch closes the "View JSON" popup: the contract it shows was
+    /// built for the previous network's form.
+    #[test]
+    fn network_switch_closes_the_contract_json_popup() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        screen.open_data_contract_json_popup("{\"previous\": \"network\"}".to_owned());
+
+        screen.reset_for_network_switch();
+
+        assert!(!screen.show_json_popup);
+        assert!(screen.json_popup_text.is_empty());
     }
 }

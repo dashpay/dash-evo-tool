@@ -334,6 +334,10 @@ pub enum BackendTask {
 impl BackendTask {
     /// The identity whose credits pay for this task, for tasks whose handler
     /// does not store the payer's new balance itself.
+    // TODO: interim. Remove `fee_payer` (and the balance read it drives) once
+    // DET's paid operations run through platform-wallet `IdentityWallet`
+    // methods, which persist the proven owner balance, and upstream syncs
+    // identity credit balances periodically.
     pub(crate) fn fee_payer(&self) -> Option<Identifier> {
         let payer = match self {
             Self::TokenTask(task) => match task.as_ref() {
@@ -1458,9 +1462,15 @@ impl AppContext {
             BackendTask::WalletTask(_) | BackendTask::ShieldedTask(_)
         );
         let task_sdk = self.sdk.load_full();
+        let fee_payer = task.fee_payer();
         let result = self
-            .run_backend_task_inner(task, sender, task_sdk.as_ref())
+            .run_backend_task_inner(task, sender.clone(), task_sdk.as_ref())
             .await;
+        // The inner run has dropped every guard and claim the task held, so the
+        // balance read below delays neither the result nor a retry of the action.
+        if let (Ok(_), Some(payer)) = (&result, fee_payer) {
+            self.spawn_fee_payer_balance_refresh(Arc::clone(&task_sdk), payer, sender);
+        }
 
         if uses_wallet_backend_sdk {
             result
@@ -1574,8 +1584,7 @@ impl AppContext {
             };
         }
 
-        let fee_payer = task.fee_payer();
-        let result = match task {
+        match task {
             BackendTask::ContractTask(contract_task) => {
                 Ok(self.run_contract_task(*contract_task, sdk, sender).await?)
             }
@@ -1642,8 +1651,7 @@ impl AppContext {
                 })
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
-        };
-        self.refresh_fee_payer_balance(sdk, fee_payer, result).await
+        }
     }
 
     /// Test seam: keep every network switch dispatched from this context
@@ -2935,7 +2943,9 @@ mod tests {
 
     /// Regression: after a paid task the Identity hub kept showing the
     /// pre-fee balance. A paid task run through `run_backend_task` stores the
-    /// payer's balance read back afterwards. Accepting an already answered
+    /// payer's balance read back afterwards, and announces it. The read runs
+    /// after the result is returned and the task's claim is released, so a
+    /// slow balance read delays neither. Accepting an already answered
     /// contact request succeeds without a broadcast, so a mock SDK can drive it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_paid_task_run_through_dispatch_stores_the_payers_new_balance() {
@@ -2947,7 +2957,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, context.egui_ctx().clone());
         context
             .ensure_wallet_backend(sender.clone())
@@ -3023,6 +3033,9 @@ mod tests {
             .await
             .expect("balance expectation");
 
+        // Holding the gate keeps the balance read from starting: a read
+        // slower than anything the task itself waits for.
+        let slow_read = context.test_fee_payer_refresh_gate.lock().await;
         let result = context
             .run_backend_task(
                 BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
@@ -3040,11 +3053,72 @@ mod tests {
             ),
             "{result:?}"
         );
-        let stored = context
-            .get_local_qualified_identity(&payer_id)
-            .expect("read payer")
-            .expect("payer stored");
-        assert_eq!(stored.identity.balance(), 3_400_000_000);
+        let stored_balance = || {
+            context
+                .get_local_qualified_identity(&payer_id)
+                .expect("read payer")
+                .expect("payer stored")
+                .identity
+                .balance()
+        };
+        assert_eq!(
+            stored_balance(),
+            43_600_388_314,
+            "read ran before the result"
+        );
+        assert!(
+            context
+                .try_claim_contact_request_action(request_id)
+                .is_some(),
+            "the request stays claimed while the balance is read"
+        );
+
+        drop(slow_read);
+        let announced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match rx.recv().await {
+                    Some(TaskResult::CacheUpdated(update)) => break update,
+                    Some(_) => continue,
+                    None => panic!("channel closed before the balance was announced"),
+                }
+            }
+        })
+        .await
+        .expect("balance refresh announced");
+        assert_eq!(
+            announced,
+            CacheUpdate {
+                network: context.network,
+                domain: CacheDomain::Identities,
+            }
+        );
+        assert_eq!(stored_balance(), 3_400_000_000);
+    }
+
+    /// A failed paid task reads no balance back: nothing was necessarily paid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_paid_task_reads_no_balance_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        context.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
+        let payer = qualified_identity(0x21);
+
+        // A spawned read would wait here, still active, for the test to look.
+        let _gate = context.test_fee_payer_refresh_gate.lock().await;
+        let result = context
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                    identity: payer,
+                    request_id: Identifier::from([0x23; 32]),
+                })),
+                sender,
+            )
+            .await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!context.subtasks.is_active("fee_payer_balance_refresh"));
     }
 
     fn qualified_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {

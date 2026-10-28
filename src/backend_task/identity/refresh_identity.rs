@@ -1,16 +1,18 @@
-use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{CacheDomain, CacheUpdate, TaskResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
+use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use dash_sdk::query_types::IdentityBalance;
+use std::sync::Arc;
 
 use super::BackendTaskSuccessResult;
 
-/// How long a finished paid task waits for its payer's new balance before
-/// reporting success without it.
+/// How long the background read of a paying identity's new balance may take
+/// before it gives up, leaving the balance to the next identity refresh.
 const FEE_PAYER_BALANCE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl AppContext {
@@ -70,25 +72,57 @@ impl AppContext {
         ))
     }
 
-    /// After a successful task paid by `payer`, store the payer's balance read
-    /// back from Platform, so screens showing the identity reflect the fee.
+    /// After a successful task paid by `payer`, read the payer's balance back
+    /// from Platform and store it, so screens showing the identity reflect the
+    /// fee, then announce the identity cache change.
     ///
+    /// Runs as a tracked subtask, never awaited by the task: call it once the
+    /// task's result is final and its guards are released. Shutdown cancels it.
     /// Best effort: the task is already paid, so a failed read or save is only
-    /// logged and `result` is returned unchanged.
-    pub(crate) async fn refresh_fee_payer_balance(
-        &self,
-        sdk: &Sdk,
-        payer: Option<Identifier>,
-        result: Result<BackendTaskSuccessResult, TaskError>,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if let (Ok(_), Some(identity_id)) = (&result, payer) {
-            self.store_identity_balance_from_platform(sdk, identity_id)
-                .await;
+    /// logged.
+    pub(crate) fn spawn_fee_payer_balance_refresh(
+        self: &Arc<Self>,
+        sdk: Arc<Sdk>,
+        payer: Identifier,
+        sender: SenderAsync<TaskResult>,
+    ) {
+        let context = Arc::clone(self);
+        let shutdown = self.subtasks.cancellation_token.clone();
+        let refresh = async move {
+            #[cfg(test)]
+            drop(context.test_fee_payer_refresh_gate.lock().await);
+            let stored = tokio::select! {
+                biased;
+                () = shutdown.cancelled() => return,
+                stored = context.store_identity_balance_from_platform(&sdk, payer) => stored,
+            };
+            if stored
+                && sender
+                    .send(TaskResult::CacheUpdated(CacheUpdate {
+                        network: context.network,
+                        domain: CacheDomain::Identities,
+                    }))
+                    .await
+                    .is_err()
+            {
+                tracing::debug!(%payer, "Paying identity's new balance stored; no screen is listening for it");
+            }
+        };
+        if self
+            .subtasks
+            .spawn_sync("fee_payer_balance_refresh", refresh)
+            .is_err()
+        {
+            tracing::debug!(%payer, "Shutting down; the paying identity's balance is not read back");
         }
-        result
     }
 
-    async fn store_identity_balance_from_platform(&self, sdk: &Sdk, identity_id: Identifier) {
+    /// Store `identity_id`'s balance read from Platform; whether it was stored.
+    async fn store_identity_balance_from_platform(
+        &self,
+        sdk: &Sdk,
+        identity_id: Identifier,
+    ) -> bool {
         let read = tokio::time::timeout(
             FEE_PAYER_BALANCE_READ_TIMEOUT,
             IdentityBalance::fetch(sdk, identity_id),
@@ -98,22 +132,26 @@ impl AppContext {
             Ok(Ok(Some(balance))) => balance,
             Ok(Ok(None)) => {
                 tracing::debug!(%identity_id, "Paying identity not found on Platform; its stored balance is kept");
-                return;
+                return false;
             }
             Ok(Err(error)) => {
                 tracing::warn!(%identity_id, ?error, "Balance after a paid task could not be read; it updates on the next identity refresh");
-                return;
+                return false;
             }
             Err(_) => {
                 tracing::warn!(%identity_id, "Balance after a paid task took too long to read; it updates on the next identity refresh");
-                return;
+                return false;
             }
         };
-        if let Err(error) = self.edit_local_qualified_identity(&identity_id, |stored| {
+        match self.edit_local_qualified_identity(&identity_id, |stored| {
             stored.identity.set_balance(balance);
             Ok(())
         }) {
-            tracing::warn!(%identity_id, ?error, "Balance after a paid task could not be saved locally");
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%identity_id, ?error, "Balance after a paid task could not be saved locally");
+                false
+            }
         }
     }
 }
@@ -159,49 +197,49 @@ mod tests {
     /// Regression: a paid operation (token registration, claim, profile
     /// save) left the stored balance at its pre-fee value until restart.
     #[tokio::test]
-    async fn a_paid_task_stores_the_payers_balance_read_after_it() {
+    async fn the_payers_balance_read_after_a_paid_task_is_stored() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, id) = context_with_payer(dir.path(), 43_600_388_314);
         let sdk = sdk_reporting_balance(id, 3_400_000_000).await;
 
-        let result = ctx
-            .refresh_fee_payer_balance(&sdk, Some(id), Ok(BackendTaskSuccessResult::None))
-            .await;
-
-        assert!(matches!(result, Ok(BackendTaskSuccessResult::None)));
+        assert!(ctx.store_identity_balance_from_platform(&sdk, id).await);
         assert_eq!(stored_balance(&ctx, &id), 3_400_000_000);
     }
 
+    /// The task already succeeded and was paid for: an unreadable balance
+    /// leaves the stored one and announces nothing.
     #[tokio::test]
-    async fn a_failed_task_leaves_the_stored_balance_alone() {
+    async fn an_unreadable_balance_keeps_the_stored_balance() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, id) = context_with_payer(dir.path(), 1_000);
-        let sdk = sdk_reporting_balance(id, 600).await;
 
-        let result = ctx
-            .refresh_fee_payer_balance(&sdk, Some(id), Err(TaskError::IdentityNotFoundLocally))
-            .await;
-
-        assert!(matches!(result, Err(TaskError::IdentityNotFoundLocally)));
+        assert!(
+            !ctx.store_identity_balance_from_platform(&Sdk::new_mock(), id)
+                .await
+        );
         assert_eq!(stored_balance(&ctx, &id), 1_000);
     }
 
-    /// The task already succeeded and was paid for: an unreadable balance
-    /// must not turn it into a failure.
-    #[tokio::test]
-    async fn an_unreadable_balance_keeps_the_success_and_the_stored_balance() {
+    /// Shutdown cancels a pending balance read: nothing is stored or announced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_cancels_a_pending_balance_read() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ctx, id) = context_with_payer(dir.path(), 1_000);
+        let sdk = Arc::new(sdk_reporting_balance(id, 600).await);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(4);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
 
-        let result = ctx
-            .refresh_fee_payer_balance(
-                &Sdk::new_mock(),
-                Some(id),
-                Ok(BackendTaskSuccessResult::None),
-            )
-            .await;
+        ctx.subtasks.cancellation_token.cancel();
+        ctx.spawn_fee_payer_balance_refresh(sdk, id, sender);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while ctx.subtasks.is_active("fee_payer_balance_refresh") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled read ends");
 
-        assert!(matches!(result, Ok(BackendTaskSuccessResult::None)));
         assert_eq!(stored_balance(&ctx, &id), 1_000);
+        assert!(rx.try_recv().is_err(), "a cancelled read announces nothing");
     }
 }

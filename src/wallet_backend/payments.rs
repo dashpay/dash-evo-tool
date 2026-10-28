@@ -31,6 +31,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::version::PlatformVersion;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -133,6 +134,15 @@ pub(super) fn asset_lock_input_cap(platform_version: &PlatformVersion) -> usize 
     )
 }
 
+/// `account_types` without repeats, each kept at its first position.
+fn first_occurrences(account_types: impl IntoIterator<Item = AccountType>) -> Vec<AccountType> {
+    let mut seen = HashSet::new();
+    account_types
+        .into_iter()
+        .filter(|account_type| seen.insert(*account_type))
+        .collect()
+}
+
 /// The funding accounts `sources` name at `account_index`, in funding order,
 /// cloned with their keys. An account present on only one side is skipped,
 /// as a pooled upstream build skips it.
@@ -142,26 +152,21 @@ fn pooled_funding_accounts(
     sources: &[AccountTypePreference],
     account_index: u32,
 ) -> Vec<(ManagedCoreFundsAccount, Account)> {
-    let mut account_types: Vec<AccountType> = Vec::new();
-    for preference in sources {
-        let resolved: Vec<AccountType> = match preference {
-            AccountTypePreference::AllDashpayReceivingFunds => accounts
-                .dashpay_receival_accounts
-                .keys()
-                .map(|key| AccountType::DashpayReceivingFunds {
-                    index: key.index,
-                    user_identity_id: key.user_identity_id,
-                    friend_identity_id: key.friend_identity_id,
-                })
-                .collect(),
-            single => single.account_type(account_index).into_iter().collect(),
-        };
-        for account_type in resolved {
-            if !account_types.contains(&account_type) {
-                account_types.push(account_type);
+    let account_types =
+        first_occurrences(sources.iter().flat_map(|preference| -> Vec<AccountType> {
+            match preference {
+                AccountTypePreference::AllDashpayReceivingFunds => accounts
+                    .dashpay_receival_accounts
+                    .keys()
+                    .map(|key| AccountType::DashpayReceivingFunds {
+                        index: key.index,
+                        user_identity_id: key.user_identity_id,
+                        friend_identity_id: key.friend_identity_id,
+                    })
+                    .collect(),
+                single => single.account_type(account_index).into_iter().collect(),
             }
-        }
-    }
+        }));
     account_types
         .into_iter()
         .filter_map(|account_type| {
@@ -2184,6 +2189,29 @@ mod tests {
             .await
             .expect("platform wallet");
         (temp_dir, app_context, backend, seed_hash, platform_wallet)
+    }
+
+    /// Accounts named by several funding sources are pooled once, at the
+    /// position of their first source, so the funding order is kept.
+    #[test]
+    fn pooled_account_types_keep_their_first_position_once() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let bip32 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP32Account,
+        };
+        let coinjoin = AccountType::CoinJoin { index: 0 };
+
+        assert_eq!(
+            super::first_occurrences([bip32, bip44, bip32, coinjoin, bip44, bip32]),
+            vec![bip32, bip44, coinjoin]
+        );
+        assert!(super::first_occurrences([]).is_empty());
     }
 
     /// Give `account_type` one confirmed UTXO per value, at height 200.

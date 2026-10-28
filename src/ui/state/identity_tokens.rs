@@ -276,7 +276,8 @@ pub enum RefreshFailure {
 impl RefreshFailure {
     fn from_error(error: &TaskError) -> Self {
         match error {
-            TaskError::TokenBalanceRefreshTimeout { .. } => RefreshFailure::TooSlow,
+            TaskError::TokenBalanceRefreshTimeout { .. }
+            | TaskError::TokenBalanceSyncStillRunning => RefreshFailure::TooSlow,
             _ => RefreshFailure::Failed,
         }
     }
@@ -791,7 +792,9 @@ impl IdentityTokensState {
             return;
         }
         if self.refresh.settle(context).is_some() {
-            if !in_progress {
+            if in_progress {
+                self.retry_owed = true;
+            } else {
                 self.note_full_refresh_failed(error);
             }
             self.invalidate_rows();
@@ -1256,6 +1259,30 @@ mod tests {
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
+    }
+
+    /// A refresh refused because the network is still syncing is sent again
+    /// once it can go out, even when the last refresh is still recent.
+    #[test]
+    fn a_refresh_refused_before_sync_is_sent_again_once_synced() {
+        let mut state = IdentityTokensState::default();
+        state.balances_refreshed_elsewhere(1_000);
+        let context = dispatched(state.dispatch_refresh());
+        state.record_error(&context, &TaskError::MasternodeListSyncPending);
+        assert!(state.take_swallowed_error());
+        assert_eq!(state.refresh_failure(), None, "waiting is not a failure");
+        assert_eq!(state.arrival(1_001, false, false), Arrival::Owed);
+        assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
+    }
+
+    /// A background balance check that outlasted the wait reads as "taking
+    /// longer than usual", not as a connection failure.
+    #[test]
+    fn a_background_check_still_running_reads_as_slow() {
+        let mut state = IdentityTokensState::default();
+        let context = dispatched(state.dispatch_refresh());
+        state.record_error(&context, &TaskError::TokenBalanceSyncStillRunning);
+        assert_eq!(state.refresh_failure(), Some(RefreshFailure::TooSlow));
     }
 
     /// "Track tokens again" refreshes only the selected identity's watch set,

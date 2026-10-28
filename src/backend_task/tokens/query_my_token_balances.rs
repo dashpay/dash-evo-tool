@@ -14,6 +14,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::model::token::IdentityTokenIdentifier;
+use crate::wallet_backend::TokenBalanceSyncError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -26,6 +27,13 @@ use tokio_util::sync::CancellationToken;
 use crate::backend_task::TaskResult;
 
 const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
+
+/// The one deadline for upstream's sync pass, waiting and retries included.
+/// It must end before the refresh guard's lease expires, or a second refresh
+/// could start while this one still runs.
+const TOKEN_BALANCE_SYNC_BUDGET: Duration = NETWORK_REQUEST_TIMEOUT;
+const _: () =
+    assert!(TOKEN_BALANCE_SYNC_BUDGET.as_millis() < TOKEN_BALANCE_REFRESH_MAX_LIFETIME.as_millis());
 
 struct TokenBalanceRefreshLease {
     context: Arc<AppContext>,
@@ -285,9 +293,17 @@ impl AppContext {
                 .await;
         }
         backend
-            .sync_token_balances_now()
+            .sync_token_balances_now(TOKEN_BALANCE_SYNC_BUDGET, &self.subtasks.cancellation_token)
             .await
-            .map_err(|source| TaskError::TokenBalanceRefreshTimeout { source })
+            .map_err(|error| match error {
+                TokenBalanceSyncError::OtherPassStillRunning => {
+                    TaskError::TokenBalanceSyncStillRunning
+                }
+                TokenBalanceSyncError::TimedOut(source) => {
+                    TaskError::TokenBalanceRefreshTimeout { source }
+                }
+                TokenBalanceSyncError::Cancelled => TaskError::TaskManagerShuttingDown,
+            })
     }
 }
 

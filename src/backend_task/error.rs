@@ -1975,6 +1975,11 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshInProgress,
 
+    /// Upstream's background balance sync kept its single slot until the
+    /// refresh deadline, so no fresh pass could run.
+    #[error("A background balance check is still running. Try again in a minute.")]
+    TokenBalanceSyncStillRunning,
+
     /// A balance read was refused before the masternode list finished
     /// syncing: sent now, its proof could not be verified and the queried
     /// node would be banned.

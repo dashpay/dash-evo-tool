@@ -216,13 +216,21 @@ fn balance_rank(row: &TokenRow) -> (u8, TokenAmount) {
     }
 }
 
+/// Whether the filter box and sort control are shown for a list of `rows`
+/// tokens; below that the list is short enough to scan.
+pub fn filter_shown(rows: usize) -> bool {
+    rows >= MANY_TOKENS_THRESHOLD
+}
+
 /// Whether `row` stays listed under the current controls. The hide-zero
-/// control hides only a fetched zero, never an unknown balance.
-pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs) -> bool {
+/// control hides only a fetched zero, never an unknown balance. The
+/// remembered filter applies only while its box is shown, so a filter typed
+/// on a long list never hides rows the user has no control to clear.
+pub fn row_is_listed(row: &TokenRow, prefs: &IdentityTokensViewPrefs, filter_shown: bool) -> bool {
     if prefs.hide_zero_balances && row.balance == Some(0) {
         return false;
     }
-    row.matches_filter(&prefs.filter)
+    !filter_shown || row.matches_filter(&prefs.filter)
 }
 
 /// Whether Home shows its Tokens card: only when the identity holds a token
@@ -272,15 +280,20 @@ pub struct IdentityTokensState {
     refresh: PendingRequest,
     pair_check: PendingRequest<IdentityTokenIdentifier>,
     stop_tracking: PendingRequest<IdentityTokenIdentifier>,
+    track_again: PendingRequest,
     last_refreshed_at_ms: Option<u64>,
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
     /// Set when the error just recorded belongs to a request of this tab, so
     /// the hub shows no global banner for it.
     swallow_next_error: bool,
-    /// A task of this tab succeeded; its screen-wide refresh must keep the
-    /// hub's other content on screen instead of blanking it.
-    expects_screen_refresh: bool,
+    /// Screen-wide refreshes this tab's tasks still owe the hub. A token task
+    /// sends `TaskResult::Refresh` before its typed result and the app runs
+    /// that refresh first, so each dispatch arms one here and the hub's
+    /// `refresh()` pays it to keep its other content on screen. A task that
+    /// fails, or finds a refresh already running, sends none and gives its
+    /// arm back.
+    expected_screen_refreshes: u8,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The Stop tracking confirmation, with the pair it is about.
     pub stop_tracking_dialog: Option<(ConfirmationDialog, IdentityTokenIdentifier)>,
@@ -290,15 +303,29 @@ pub struct IdentityTokensState {
     pub failure_dismissed: bool,
 }
 
+/// What the arrival rule asks for on a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// Balances are fresh enough; the arrival is spent.
+    NotDue,
+    /// A refresh is wanted but cannot go out yet; the arrival stays owed.
+    Owed,
+    /// Refresh now.
+    Due,
+}
+
 impl IdentityTokensState {
     /// Drop everything that belongs to the previous identity. Device
-    /// preferences and an in-flight request's bookkeeping survive.
+    /// preferences and the in-flight requests survive, so an answer that
+    /// arrives after the switch is still settled by this tab.
     pub fn reset_for_identity_change(&mut self) {
-        let prefs = self.prefs.take();
-        let expects_screen_refresh = self.expects_screen_refresh;
         *self = Self {
-            prefs,
-            expects_screen_refresh,
+            prefs: self.prefs.take(),
+            refresh: std::mem::take(&mut self.refresh),
+            pair_check: std::mem::take(&mut self.pair_check),
+            stop_tracking: std::mem::take(&mut self.stop_tracking),
+            track_again: std::mem::take(&mut self.track_again),
+            expected_screen_refreshes: self.expected_screen_refreshes,
             arriving: true,
             ..Self::default()
         };
@@ -440,7 +467,7 @@ impl IdentityTokensState {
         self.prefs = Some(prefs);
     }
 
-    /// When balances were last refreshed at this tab's request (Unix ms).
+    /// When balances were last refreshed while this tab was watching (Unix ms).
     pub fn last_refreshed_at_ms(&self) -> Option<u64> {
         self.last_refreshed_at_ms
     }
@@ -456,45 +483,101 @@ impl IdentityTokensState {
 
     /// This tab is waiting on a refresh it asked for.
     pub fn refresh_pending(&self) -> bool {
-        self.refresh.is_pending()
+        self.refresh.is_pending() || self.track_again.is_pending()
     }
 
     /// The hub-wide refresh that follows a token task of this tab arrived;
     /// answer once whether the hub should keep its content on screen.
     pub fn take_expected_screen_refresh(&mut self) -> bool {
-        std::mem::take(&mut self.expects_screen_refresh)
+        if self.expected_screen_refreshes == 0 {
+            return false;
+        }
+        self.expected_screen_refreshes -= 1;
+        true
+    }
+
+    fn arm_screen_refresh(&mut self) {
+        self.expected_screen_refreshes = self.expected_screen_refreshes.saturating_add(1);
+    }
+
+    /// The task settled without sending a screen refresh.
+    fn give_back_screen_refresh(&mut self) {
+        self.expected_screen_refreshes = self.expected_screen_refreshes.saturating_sub(1);
+    }
+
+    /// Proof-verifying reads sent before the masternode list is synced fail
+    /// and get the queried nodes banned, so no network read goes out before.
+    fn can_read(app_context: &AppContext) -> bool {
+        app_context.connection_status().masternodes_ready()
+    }
+
+    /// The arrival rule for this frame.
+    fn arrival(&self, now_ms: u64, synced: bool, refresh_running: bool) -> Arrival {
+        if !arrival_refresh_due(self.arriving, now_ms, self.last_refreshed_at_ms) {
+            return Arrival::NotDue;
+        }
+        // A refresh already running, here or on another screen, reports when
+        // it ends; an unsynced network cannot be asked yet.
+        if !synced || refresh_running {
+            return Arrival::Owed;
+        }
+        Arrival::Due
     }
 
     /// The arrival refresh, when due. Claims the hub's dispatch slot, so the
     /// caller asks only on a frame nothing else produced an action.
     pub fn load_action(&mut self, app_context: &AppContext, now_ms: u64) -> AppAction {
-        if !arrival_refresh_due(self.arriving, now_ms, self.last_refreshed_at_ms) {
-            self.arriving = false;
-            return AppAction::None;
+        let refresh_running =
+            self.refresh.is_pending() || app_context.token_balance_refresh_in_flight();
+        match self.arrival(now_ms, Self::can_read(app_context), refresh_running) {
+            Arrival::NotDue => {
+                self.arriving = false;
+                AppAction::None
+            }
+            Arrival::Owed => AppAction::None,
+            Arrival::Due => {
+                self.arriving = false;
+                self.refresh_action(app_context)
+            }
         }
-        // Proof-verifying reads sent before the masternode list is synced fail
-        // and get the queried nodes banned, so the arrival stays owed.
-        if !app_context.connection_status().masternodes_ready() {
-            return AppAction::None;
-        }
-        self.arriving = false;
-        self.refresh_action(app_context)
     }
 
-    /// Ask for a balance refresh now, unless one is already running anywhere
-    /// in the app — the guard is shared with My Tokens.
+    /// Ask for a balance refresh now, unless the network is not synced or one
+    /// is already running anywhere in the app — the guard is shared with My
+    /// Tokens.
     pub fn refresh_action(&mut self, app_context: &AppContext) -> AppAction {
-        if self.refresh.is_pending() || app_context.token_balance_refresh_in_flight() {
+        if !Self::can_read(app_context)
+            || self.refresh.is_pending()
+            || app_context.token_balance_refresh_in_flight()
+        {
             return AppAction::None;
         }
         self.failure_dismissed = false;
+        self.dispatch_refresh()
+    }
+
+    fn dispatch_refresh(&mut self) -> AppAction {
+        self.arm_screen_refresh();
         self.refresh.dispatch(BackendTask::TokenTask(Box::new(
             TokenTask::QueryMyTokenBalances,
         )))
     }
 
-    /// Check one pair's balance now; also tracks the pair again.
-    pub fn check_pair_action(&mut self, pair: IdentityTokenIdentifier) -> AppAction {
+    /// Check one pair's balance now; also tracks the pair again. Waits for the
+    /// masternode list like every other network read.
+    pub fn check_pair_action(
+        &mut self,
+        app_context: &AppContext,
+        pair: IdentityTokenIdentifier,
+    ) -> AppAction {
+        if !Self::can_read(app_context) {
+            return AppAction::None;
+        }
+        self.dispatch_pair_check(pair)
+    }
+
+    fn dispatch_pair_check(&mut self, pair: IdentityTokenIdentifier) -> AppAction {
+        self.arm_screen_refresh();
         self.pair_check.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(pair))),
             pair,
@@ -507,18 +590,23 @@ impl IdentityTokensState {
         if self.detail == Some(pair) {
             self.detail = None;
         }
+        self.arm_screen_refresh();
         self.stop_tracking.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::StopTrackingTokenBalance(pair))),
             pair,
         )
     }
 
-    /// Track every dismissed token of `identity` again by checking its balance.
+    /// Track every dismissed token of `identity` again, in one request this
+    /// tab waits on. Waits for the masternode list like every network read.
     pub fn track_again_action(
         &mut self,
         app_context: &AppContext,
         identity: &QualifiedIdentity,
     ) -> AppAction {
+        if !Self::can_read(app_context) || self.track_again.is_pending() {
+            return AppAction::None;
+        }
         let identity_id = identity.identity.id();
         let dismissed = match app_context.untracked_token_balances() {
             Ok(dismissed) => dismissed,
@@ -527,19 +615,19 @@ impl IdentityTokensState {
                 return AppAction::None;
             }
         };
-        let tasks: Vec<BackendTask> = dismissed
+        let pairs: Vec<IdentityTokenIdentifier> = dismissed
             .into_iter()
             .filter(|pair| pair.identity_id == identity_id)
-            .map(|pair| {
-                BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(pair)))
-            })
             .collect();
-        if tasks.is_empty() {
+        if pairs.is_empty() {
             return AppAction::None;
         }
-        self.expects_screen_refresh = true;
+        self.failure_dismissed = false;
+        self.arm_screen_refresh();
         self.invalidate_rows();
-        AppAction::BackendTasks(tasks, crate::app::BackendTasksExecutionMode::Sequential)
+        self.track_again.dispatch(BackendTask::TokenTask(Box::new(
+            TokenTask::TrackTokenBalancesAgain(pairs),
+        )))
     }
 
     /// Settle a result of this tab's requests. Returns whether it was one.
@@ -549,23 +637,30 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
-        if self.refresh.settle(context).is_some() {
-            if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+        // Only a fetch sends the screen refresh; "already in flight" sends none.
+        let fetched = matches!(result, BackendTaskSuccessResult::FetchedTokenBalances);
+        if self.refresh.settle(context).is_some() || self.track_again.settle(context).is_some() {
+            if fetched {
                 self.last_refreshed_at_ms = Some(now_ms);
                 self.refresh_failure = None;
-                self.expects_screen_refresh = true;
+            } else {
+                self.give_back_screen_refresh();
             }
             self.invalidate_rows();
             return true;
         }
         if let Some(pair) = self.pair_check.settle(context) {
             self.failed_checks.remove(&pair);
-            self.expects_screen_refresh = true;
+            if !fetched {
+                self.give_back_screen_refresh();
+            }
             self.invalidate_rows();
             return true;
         }
         if self.stop_tracking.settle(context).is_some() {
-            self.expects_screen_refresh = true;
+            if !fetched {
+                self.give_back_screen_refresh();
+            }
             self.invalidate_rows();
             return true;
         }
@@ -574,18 +669,21 @@ impl IdentityTokensState {
 
     /// Note a failure of this tab's requests. A refresh already running
     /// elsewhere is not a failure; anything else is shown inline, never as a
-    /// global banner.
+    /// global banner. A failed task sends no screen refresh.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        if self.refresh.settle(context).is_some() {
+        if self.refresh.settle(context).is_some() || self.track_again.settle(context).is_some() {
+            self.give_back_screen_refresh();
             if !matches!(error, TaskError::TokenBalanceRefreshInProgress) {
                 tracing::warn!(error = ?error, "The Identity Hub token balance refresh failed");
                 self.refresh_failure = Some(RefreshFailure::from_error(error));
                 self.failure_dismissed = false;
             }
+            self.invalidate_rows();
             self.swallow_next_error = true;
             return;
         }
         if let Some(pair) = self.pair_check.settle(context) {
+            self.give_back_screen_refresh();
             if !matches!(error, TaskError::TokenBalanceRefreshInProgress) {
                 tracing::warn!(
                     error = ?error,
@@ -599,6 +697,7 @@ impl IdentityTokensState {
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
+            self.give_back_screen_refresh();
             // The row left optimistically; put it back with the default banner.
             self.invalidate_rows();
         }
@@ -611,6 +710,14 @@ impl IdentityTokensState {
 
     /// The hub's token rows changed under another screen's task.
     pub fn balances_changed(&mut self) {
+        self.invalidate_rows();
+    }
+
+    /// Another screen's refresh fetched every balance just now: as fresh as
+    /// one of this tab's own, so the arrival rule is satisfied too.
+    pub fn balances_refreshed_elsewhere(&mut self, now_ms: u64) {
+        self.last_refreshed_at_ms = Some(now_ms);
+        self.refresh_failure = None;
         self.invalidate_rows();
     }
 }
@@ -692,12 +799,13 @@ mod tests {
             hide_zero_balances: true,
             ..Default::default()
         };
-        assert!(!row_is_listed(&row("Zero", Some(0)), &prefs));
-        assert!(row_is_listed(&row("Checking", None), &prefs));
-        assert!(row_is_listed(&row("Held", Some(3)), &prefs));
+        assert!(!row_is_listed(&row("Zero", Some(0)), &prefs, true));
+        assert!(row_is_listed(&row("Checking", None), &prefs, true));
+        assert!(row_is_listed(&row("Held", Some(3)), &prefs, true));
         assert!(row_is_listed(
             &row("Zero", Some(0)),
-            &IdentityTokensViewPrefs::default()
+            &IdentityTokensViewPrefs::default(),
+            true
         ));
     }
 
@@ -708,13 +816,14 @@ mod tests {
             ..Default::default()
         };
         let coffee = row("DashCoffee", Some(1));
-        assert!(row_is_listed(&coffee, &prefs("coffee")));
-        assert!(row_is_listed(&coffee, &prefs("  ")));
+        assert!(row_is_listed(&coffee, &prefs("coffee"), true));
+        assert!(row_is_listed(&coffee, &prefs("  "), true));
         assert!(row_is_listed(
             &coffee,
-            &prefs(&coffee.token_id_base58()[..6].to_lowercase())
+            &prefs(&coffee.token_id_base58()[..6].to_lowercase()),
+            true
         ));
-        assert!(!row_is_listed(&coffee, &prefs("points")));
+        assert!(!row_is_listed(&coffee, &prefs("points"), true));
     }
 
     #[test]
@@ -810,8 +919,7 @@ mod tests {
     #[test]
     fn a_refresh_result_records_the_time_and_keeps_the_hub_content() {
         let mut state = IdentityTokensState::default();
-        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
-        let AppAction::BackendTaskWithContext { context, .. } = state.refresh.dispatch(task) else {
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_refresh() else {
             panic!("a refresh dispatches with its own context");
         };
         assert!(state.refresh_pending());
@@ -820,11 +928,76 @@ mod tests {
             &BackendTaskSuccessResult::FetchedTokenBalances,
             7,
         ));
+        // The screen refresh the task sends first keeps the hub's content…
+        assert!(state.take_expected_screen_refresh());
+        // …and its typed result settles the request without re-arming.
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7,));
         assert_eq!(state.last_refreshed_at_ms(), Some(7));
         assert!(!state.refresh_pending());
-        assert!(state.take_expected_screen_refresh());
         assert!(!state.take_expected_screen_refresh());
+    }
+
+    #[test]
+    fn a_task_that_sends_no_screen_refresh_gives_its_arm_back() {
+        let mut state = IdentityTokensState::default();
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_refresh() else {
+            panic!("a refresh dispatches with its own context");
+        };
+        state.record_result(
+            &context,
+            &BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight,
+            7,
+        );
+        assert!(!state.take_expected_screen_refresh());
+        assert_eq!(state.last_refreshed_at_ms(), None);
+
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_refresh() else {
+            panic!("a refresh dispatches with its own context");
+        };
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        assert!(!state.take_expected_screen_refresh());
+    }
+
+    #[test]
+    fn an_arrival_stays_owed_until_the_network_is_synced_and_no_refresh_runs() {
+        let mut state = IdentityTokensState::default();
+        state.arrive();
+        assert_eq!(state.arrival(0, false, false), Arrival::Owed);
+        assert_eq!(state.arrival(0, true, true), Arrival::Owed);
+        assert_eq!(state.arrival(0, true, false), Arrival::Due);
+        state.balances_refreshed_elsewhere(0);
+        assert_eq!(
+            state.arrival(1, true, false),
+            Arrival::NotDue,
+            "another screen's fetch satisfies the arrival"
+        );
+    }
+
+    #[test]
+    fn the_filter_applies_only_while_its_box_is_shown() {
+        let prefs = IdentityTokensViewPrefs {
+            filter: "coffee".into(),
+            ..Default::default()
+        };
+        let grit = row("Grit", Some(3));
+        assert!(!filter_shown(MANY_TOKENS_THRESHOLD - 1));
+        assert!(filter_shown(MANY_TOKENS_THRESHOLD));
+        assert!(row_is_listed(&grit, &prefs, false));
+        assert!(!row_is_listed(&grit, &prefs, true));
+        assert!(row_is_listed(&row("DashCoffee", Some(1)), &prefs, true));
+    }
+
+    #[test]
+    fn a_taken_once_claim_shows_its_local_date() {
+        let mut taken = row("Taken", Some(1));
+        taken.once_claim = Some(OnceClaim {
+            amount: 100,
+            claimed_at_ms: Some(1_700_000_000_000),
+        });
+        let expected = crate::model::datetime::instant_from_unix_millis(1_700_000_000_000)
+            .map(crate::model::datetime::local_date)
+            .expect("a representable instant");
+        assert_eq!(row_status(&taken, false), RowStatus::ClaimedOn(expected));
     }
 
     #[test]
@@ -861,7 +1034,7 @@ mod tests {
     fn a_failed_pair_check_marks_the_row_until_it_succeeds() {
         let mut state = IdentityTokensState::default();
         let pair = row("T", None).pair;
-        let AppAction::BackendTaskWithContext { context, .. } = state.check_pair_action(pair)
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_pair_check(pair)
         else {
             panic!("a pair check dispatches with its own context");
         };
@@ -869,7 +1042,7 @@ mod tests {
         assert!(state.failed_checks.contains(&pair));
         assert!(state.take_swallowed_error());
 
-        let AppAction::BackendTaskWithContext { context, .. } = state.check_pair_action(pair)
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_pair_check(pair)
         else {
             panic!("a pair check dispatches with its own context");
         };
@@ -888,5 +1061,52 @@ mod tests {
         let _ = state.stop_tracking_action(pair);
         assert_eq!(names(&state.rows), ["Bee"]);
         assert_eq!(state.detail, None);
+    }
+
+    /// app.rs runs a pending `TaskResult::Refresh` before the typed result
+    /// that follows it, and every token task sends Refresh before returning;
+    /// the hub's refresh() must see the flag from dispatch, and only once.
+    #[test]
+    fn a_refresh_keeps_the_hub_content_from_dispatch_and_only_once() {
+        let mut state = IdentityTokensState::default();
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_refresh() else {
+            panic!("a refresh dispatches with its own context");
+        };
+        assert!(
+            state.take_expected_screen_refresh(),
+            "Refresh arrives first"
+        );
+        state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7);
+        assert!(
+            !state.take_expected_screen_refresh(),
+            "the typed result must not re-arm the flag for an unrelated refresh"
+        );
+    }
+
+    #[test]
+    fn a_pair_check_keeps_the_hub_content_from_dispatch_and_only_once() {
+        let mut state = IdentityTokensState::default();
+        let pair = row("T", None).pair;
+        let AppAction::BackendTaskWithContext { context, .. } = state.dispatch_pair_check(pair)
+        else {
+            panic!("a pair check dispatches with its own context");
+        };
+        assert!(state.take_expected_screen_refresh());
+        state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
+        assert!(!state.take_expected_screen_refresh());
+    }
+
+    /// In-flight bookkeeping survives an identity switch, so an answer that
+    /// arrives afterwards is still this tab's, never a global banner.
+    #[test]
+    fn a_refresh_error_after_an_identity_change_is_still_this_tabs() {
+        let mut state = IdentityTokensState::default();
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let AppAction::BackendTaskWithContext { context, .. } = state.refresh.dispatch(task) else {
+            panic!("a refresh dispatches with its own context");
+        };
+        state.reset_for_identity_change();
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        assert!(state.take_swallowed_error());
     }
 }

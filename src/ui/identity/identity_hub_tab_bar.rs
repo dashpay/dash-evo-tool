@@ -167,7 +167,12 @@ impl IdentityHubTabBar {
                 if let Some((_, count, tooltip)) =
                     self.badges.iter().find(|(badged, ..)| *badged == tab)
                 {
-                    accent_pill(ui, &count.to_string(), DashColors::DASH_BLUE, Some(tooltip));
+                    accent_pill(
+                        ui,
+                        &count.to_string(),
+                        DashColors::pill_accent(ui.visuals().dark_mode),
+                        Some(tooltip),
+                    );
                 }
             }
         });

@@ -997,13 +997,17 @@ impl ScreenLike for IdentityHubScreen {
             return;
         }
         // Another screen's token task changed the balances the hub shows.
-        if matches!(
-            result,
-            BackendTaskSuccessResult::FetchedTokenBalances
-                | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
-        ) {
-            self.tokens_state.balances_changed();
-            return;
+        match result {
+            BackendTaskSuccessResult::FetchedTokenBalances => {
+                self.tokens_state
+                    .balances_refreshed_elsewhere(crate::utils::time::now_ms());
+                return;
+            }
+            BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
+                self.tokens_state.balances_changed();
+                return;
+            }
+            _ => {}
         }
 
         if self.handle_contact_request_result(&result) {

@@ -1355,9 +1355,9 @@ As an identity owner, I want to see the tokens this identity holds — with bala
 - No administrative action appears in the hub. "Manage in Tokens screen" shows only when this identity holds an administrative permission under the token's configuration rules — not by role, not for issuers as such.
 - Balances refresh on arrival (older than two minutes) and on demand; a refresh already running elsewhere is never an error. A failed refresh is explained inline with "Try again" while known balances stay on screen with "Showing balances from {time}."
 - A fetched zero renders as a normal row; "Hide tokens with zero balance" (always visible, remembered per device) never hides a row still being checked. Filter and sort appear from eight tokens and are remembered too.
-- Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again"). Adding a token (by name or ID), checking a balance now, copying the ID and stop tracking (with confirmation) are reachable from the row menu; the Receive dialog explains how a received token appears.
-- Home shows a Tokens card only when a balance is above zero or a claim is pending; its "See all tokens" and "Claim" open the Tokens tab.
-- A row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule, and Stop tracking.
+- Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again", one request). Adding a token (by name or ID) sits in the header; checking a balance now, copying the ID, the detail page and stop tracking (with confirmation) are in the row menu; the Receive dialog explains how a received token appears. Every network read waits for the masternode list and says so.
+- Home shows a Tokens card only when a balance is above zero or a claim is pending. A single pending claim can be taken from the card; "See all tokens" opens the Tokens tab.
+- Clicking a row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule (opening Tokens › My Tokens on that token), and Stop tracking.
 - Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
 ## Contracts and Documents (DOC)

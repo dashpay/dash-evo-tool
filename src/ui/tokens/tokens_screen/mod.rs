@@ -2661,7 +2661,11 @@ impl ScreenLike for TokensScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        self.selected_token = None;
+        // Another screen may have asked for a token to open on arrival.
+        self.selected_token = match self.tokens_subscreen {
+            TokensSubscreen::MyTokens => self.app_context.take_pending_token_selection(),
+            _ => None,
+        };
         self.should_reset_collapsing_states = true;
 
         self.all_known_tokens = self

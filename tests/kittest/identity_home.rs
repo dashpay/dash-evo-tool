@@ -11,7 +11,7 @@ use dash_evo_tool::ui::Screen;
 use dash_evo_tool::ui::identity::home::{self, HomeOutcome, HomeState};
 use dash_evo_tool::ui::identity::profile_cache::{ProfileCache, ProfileFields};
 use dash_evo_tool::ui::wallets::send_screen::IdentitySendMode;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
@@ -46,13 +46,26 @@ pub(crate) fn seed_identity_with_id(
     on_chain: Vec<IdentityPublicKey>,
     with_private: Vec<IdentityPublicKey>,
 ) -> Identifier {
+    seed_funded_identity_with_id(app_context, id_byte, on_chain, with_private, 0)
+}
+
+/// [`seed_identity_with_id`] with `balance` credits, for actions that need
+/// the identity to afford a fee.
+pub(crate) fn seed_funded_identity_with_id(
+    app_context: &Arc<AppContext>,
+    id_byte: u8,
+    on_chain: Vec<IdentityPublicKey>,
+    with_private: Vec<IdentityPublicKey>,
+    balance: u64,
+) -> Identifier {
     let public_keys = on_chain.into_iter().map(|key| (key.id(), key)).collect();
-    let identity = Identity::new_with_id_and_keys(
+    let mut identity = Identity::new_with_id_and_keys(
         Identifier::from([id_byte; 32]),
         public_keys,
         PlatformVersion::latest(),
     )
     .expect("identity");
+    identity.set_balance(balance);
     let identity_id = identity.id();
 
     let mut private_keys = BTreeMap::new();

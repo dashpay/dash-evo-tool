@@ -18,6 +18,7 @@ use crate::wallet_backend::TokenBalanceSyncOutcome;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -96,18 +97,39 @@ impl AppContext {
 
     pub async fn query_token_balance(
         self: &std::sync::Arc<Self>,
-        _sdk: &Sdk,
+        sdk: &Sdk,
         pair: IdentityTokenIdentifier,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Asking for a balance is intent to track it: undo any earlier "stop
-        // tracking" for this pair, otherwise the watch set would omit the very
-        // token the caller asked about.
-        self.clear_untracked_token_balance(pair)?;
+        self.track_token_balances_again(sdk, vec![pair], sender)
+            .await
+    }
 
+    /// Track `pairs` again and refresh their identities' balances in one pass.
+    /// Asking for a balance is intent to track it: every earlier "stop
+    /// tracking" of these pairs is undone first, otherwise the watch set would
+    /// omit the very tokens the caller asked about.
+    pub async fn track_token_balances_again(
+        self: &std::sync::Arc<Self>,
+        _sdk: &Sdk,
+        pairs: Vec<IdentityTokenIdentifier>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        for pair in &pairs {
+            self.clear_untracked_token_balance(*pair)?;
+        }
         // The upstream watch list is per-identity and replaced wholesale, so
-        // register the identity's whole watch set rather than a single pair.
-        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
+        // register each identity's whole watch set rather than single pairs.
+        let identity_ids: Vec<Identifier> = pairs
+            .iter()
+            .map(|pair| pair.identity_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if identity_ids.is_empty() {
+            return Ok(BackendTaskSuccessResult::FetchedTokenBalances);
+        }
+        let watch_sets = self.token_watch_sets(identity_ids)?;
         let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
         let outcome = await_managed_network_request_with_timeout(

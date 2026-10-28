@@ -13,8 +13,11 @@ use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
+use crate::ui::identity::tokens_tab::{RowContext, render_claim_button};
 pub use crate::ui::state::identity_home::HomeState;
-use crate::ui::state::identity_tokens::{IdentityTokensState, home_card_shows, sort_rows};
+use crate::ui::state::identity_tokens::{
+    IdentityTokensState, TokenRow, home_card_shows, sort_rows,
+};
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use crate::ui::wallets::send_screen::IdentitySendMode;
@@ -29,7 +32,6 @@ pub const RECEIVE_TOKENS_HINT: &str = "A token you receive shows under Tokens on
 /// The Home Tokens card.
 pub const TOKENS_CARD_HEADING: &str = "Tokens";
 pub const SEE_ALL_TOKENS_LABEL: &str = "See all tokens";
-pub const CLAIM_FROM_HOME_LABEL: &str = "Claim";
 /// How many held tokens the Home card lists.
 const TOKENS_CARD_ROWS: usize = 3;
 
@@ -41,7 +43,7 @@ pub enum HomeOutcome {
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
-    /// Open the Tokens tab (from the Tokens card or its Claim shortcut).
+    /// Open the Tokens tab (from the Tokens card).
     GoToTokens,
     DismissChecklist,
 }
@@ -386,27 +388,38 @@ fn render_main_column(
     }
     action |= render_payments(ui, app_context, state);
     if outcome == HomeOutcome::None {
-        outcome = render_tokens_card(ui, app_context, identity, tokens);
+        let (card_action, card_outcome) = render_tokens_card(ui, app_context, identity, tokens);
+        action |= card_action;
+        outcome = card_outcome;
     }
     (action, outcome)
 }
 
 /// The Tokens card: a glance at what the identity holds and can claim. Shown
-/// only when there is something to say; actions live on the Tokens tab.
+/// only when there is something to say. A single pending claim can be taken
+/// right here; more than one is listed on the Tokens tab.
 fn render_tokens_card(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     tokens: &mut IdentityTokensState,
-) -> HomeOutcome {
+) -> (AppAction, HomeOutcome) {
     let mut rows = tokens.rows(app_context, identity).to_vec();
     if !home_card_shows(&rows) {
-        return HomeOutcome::None;
+        return (AppAction::None, HomeOutcome::None);
     }
+    let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     let dark = ui.visuals().dark_mode;
     sort_rows(&mut rows, TokenListSort::BalanceHighToLow);
-    let pending_claims = rows.iter().filter(|row| row.claim_available()).count();
+    let claimable: Vec<&TokenRow> = rows.iter().filter(|row| row.claim_available()).collect();
+    let pending_claims = claimable.len();
+    let identity_label = app_context.identity_display_label(identity);
+    let context = RowContext {
+        synced: app_context.connection_status().masternodes_ready(),
+        view_only: identity.private_keys.is_empty(),
+        identity_label: &identity_label,
+    };
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong(TOKENS_CARD_HEADING);
@@ -430,28 +443,24 @@ fn render_tokens_card(
                 });
             });
         }
-        if pending_claims > 0 {
+        if let [only] = claimable.as_slice() {
             ui.horizontal_wrapped(|ui| {
-                let once_only = rows
-                    .iter()
-                    .filter(|row| row.claim_available())
-                    .filter_map(|row| row.once_claim.as_ref().map(|once| row.amount(once.amount)))
-                    .collect::<Vec<_>>();
-                let text = match once_only.as_slice() {
-                    [amount] if pending_claims == 1 => {
-                        super::tokens_tab::can_claim_once_text(amount)
-                    }
-                    _ => super::tokens_tab::pending_claims_text(pending_claims),
+                let text = match &only.once_claim {
+                    Some(once) => super::tokens_tab::can_claim_once_text(&only.amount(once.amount)),
+                    None => super::tokens_tab::pending_claims_text(1),
                 };
                 ui.label(RichText::new(text).color(DashColors::success_color(dark)));
-                if ui.button(CLAIM_FROM_HOME_LABEL).clicked() {
-                    outcome = HomeOutcome::GoToTokens;
-                }
+                action |= render_claim_button(ui, app_context, only, context);
             });
+        } else if pending_claims > 1 {
+            ui.label(
+                RichText::new(super::tokens_tab::pending_claims_text(pending_claims))
+                    .color(DashColors::success_color(dark)),
+            );
         }
     });
     ui.add_space(Spacing::MD);
-    outcome
+    (action, outcome)
 }
 
 fn render_setup(

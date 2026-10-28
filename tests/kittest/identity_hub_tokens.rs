@@ -1,7 +1,7 @@
 //! Identity Hub › Tokens tab: rows, actions, controls and states for the
 //! selected identity. Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
-use crate::identity_home::{key, seed_identity_with_id};
+use crate::identity_home::{key, seed_funded_identity_with_id, seed_identity_with_id};
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::error::TaskError;
@@ -16,12 +16,16 @@ use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::identity::{
     IdentityHubScreen, IdentityHubTab, home, token_detail, tokens_tab,
 };
-use dash_evo_tool::ui::{Screen, ScreenLike, ScreenType};
+use dash_evo_tool::ui::tokens::transfer_tokens_screen::{
+    CONFIRM_SEND_TITLE, send_question, sending_text, sent_text,
+};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::{
     TokenConfigurationV0Getters, TokenConfigurationV0Setters,
 };
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Setters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{
     TokenConfigurationPreset, TokenConfigurationPresetFeatures,
 };
@@ -34,10 +38,12 @@ use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers
 use dash_sdk::dpp::data_contract::config::DataContractConfig;
 use dash_sdk::dpp::data_contract::v1::DataContractV1;
 use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{DataContract, Identifier};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
+use egui_kittest::kittest::NodeT;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -394,9 +400,15 @@ fn a_once_per_identity_claim_opens_the_claim_screen() {
             hub.query_by_label(tokens_tab::SEND_LABEL).is_none(),
             "nothing to send"
         );
+        let tab_row_y = hub
+            .get_by_role_and_label(Role::Button, "Home")
+            .rect()
+            .center()
+            .y;
         assert!(
-            hub.query_by_label("1").is_some(),
-            "the tab badge counts the pending claim"
+            hub.query_all_by_label("1")
+                .any(|node| (node.rect().center().y - tab_row_y).abs() < 4.0),
+            "the tab badge on the tab row counts the pending claim"
         );
         hub.state_mut().1.clear();
         hub.get_by_label(tokens_tab::CLAIM_LABEL).click();
@@ -457,7 +469,20 @@ fn the_manage_link_needs_a_real_admin_permission_not_a_role() {
             "the issuer holds admin permissions, so Manage is offered"
         );
         assert!(
-            hub.query_by_label("Mint").is_none() && hub.query_by_label("Burn").is_none(),
+            [
+                "Mint",
+                "Burn",
+                "Freeze",
+                "Unfreeze",
+                "Destroy frozen funds",
+                "Pause",
+                "Resume",
+                "Set price",
+                "Purchase",
+                "Update configuration",
+            ]
+            .iter()
+            .all(|admin| hub.query_by_label(admin).is_none()),
             "no admin action is rendered in the hub"
         );
     });
@@ -669,5 +694,471 @@ fn the_detail_page_opens_from_the_row_and_goes_back() {
         hub.run_steps(3);
         assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
         assert!(hub.query_by_label("0 Grit").is_some());
+    });
+}
+
+#[test]
+fn check_balance_now_waits_for_the_masternode_list() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD2);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        app_context.connection_status().set_masternodes_ready(false);
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(tokens_tab::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        let dispatched = hub.state().1.iter().any(|action| {
+            matches!(
+                action,
+                AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), .. }
+                    if matches!(**task, TokenTask::QueryIdentityTokenBalance(_))
+            )
+        });
+        assert!(
+            !dispatched,
+            "a proof-verifying balance read went out before the masternode list synced"
+        );
+        assert!(
+            hub.get_by_label(tokens_tab::REFRESH_LABEL)
+                .accesskit_node()
+                .is_disabled(),
+            "Refresh stays visible, disabled until sync finishes"
+        );
+    });
+}
+
+#[test]
+fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+    use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD3);
+        let mut vest = token_config("Vest", false);
+        let mut rules = match vest.distribution_rules().clone() {
+            TokenDistributionRules::V0(rules) => rules,
+            TokenDistributionRules::V1(_) => panic!("presets are version 0"),
+        };
+        // Only somebody else is a recipient.
+        rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+            TokenPreProgrammedDistributionV0 {
+                distributions: BTreeMap::from([(
+                    1_000u64,
+                    BTreeMap::from([(Identifier::from([0x77; 32]), 500u64)]),
+                )]),
+            },
+        ));
+        vest.set_distribution_rules(TokenDistributionRules::V0(rules));
+        let tokens = seed_contract(&app_context, 0xC9, Identifier::from([0xEE; 32]), vec![vest]);
+        set_balance(&app_context, identity, tokens[0], 0);
+        let hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_none(),
+            "nothing held and nothing to claim: no Home card"
+        );
+        let hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label(tokens_tab::CLAIM_LABEL).is_none());
+        assert!(hub.query_by_label(tokens_tab::STATUS_REWARDS).is_none());
+    });
+}
+
+/// Eight tokens named Alpha…Hotel, every balance known.
+fn seed_eight_tokens(app_context: &Arc<AppContext>, identity: Identifier) -> Vec<Identifier> {
+    let names = [
+        "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+    ];
+    let tokens = seed_contract(
+        app_context,
+        0xC8,
+        Identifier::from([0xEE; 32]),
+        names.iter().map(|name| token_config(name, false)).collect(),
+    );
+    for (index, token) in tokens.iter().enumerate() {
+        set_balance(app_context, identity, *token, (index as u64 + 1) * 100);
+    }
+    tokens
+}
+
+#[test]
+fn the_remembered_filter_does_not_hide_rows_while_its_box_is_hidden() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD1);
+        seed_three_tokens(&app_context, identity);
+        // A filter typed earlier on a long list is remembered per device.
+        app_context
+            .save_identity_tokens_view_prefs(
+                &dash_evo_tool::model::token::IdentityTokensViewPrefs {
+                    filter: "Coffee".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("prefs");
+        let hub = mount_tokens_tab(&app_context);
+        assert!(
+            hub.query_by_label("0 Grit").is_some(),
+            "a filter the user cannot see or clear hides nothing"
+        );
+        assert!(hub.query_by_label_contains(" hidden").is_none());
+    });
+}
+
+#[test]
+fn filter_and_sort_appear_from_eight_tokens_and_the_filter_applies() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD4);
+        seed_eight_tokens(&app_context, identity);
+        app_context
+            .save_identity_tokens_view_prefs(
+                &dash_evo_tool::model::token::IdentityTokensViewPrefs {
+                    filter: "alpha".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("prefs");
+        let hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label("8 tokens").is_some());
+        assert!(
+            hub.query_by_label(tokens_tab::SORT_LABEL).is_some(),
+            "the sort control shows for a long list"
+        );
+        assert!(hub.query_by_label("1 Alpha").is_some());
+        assert!(
+            hub.query_by_label("2 Bravo").is_none(),
+            "the filter applies while its box is shown"
+        );
+        assert!(
+            hub.query_by_label(&tokens_tab::hidden_count_text(7))
+                .is_some()
+        );
+    });
+}
+
+#[test]
+fn a_view_only_identity_is_told_to_add_a_key_and_cannot_send() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let auth = key(1, Purpose::AUTHENTICATION);
+        let identity = seed_identity_with_id(&app_context, 0xD5, vec![auth], vec![]);
+        seed_three_tokens(&app_context, identity);
+        let hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label(tokens_tab::STATUS_ADD_KEY).is_some());
+        assert!(
+            hub.get_by_label(tokens_tab::SEND_LABEL)
+                .accesskit_node()
+                .is_disabled(),
+            "nothing can be signed on this device"
+        );
+    });
+}
+
+#[test]
+fn a_token_that_cannot_be_sent_shows_the_badge_and_a_disabled_send() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD6);
+        let mut fixed = token_config("Fixed", false);
+        fixed.set_transferable(false);
+        let tokens = seed_contract(
+            &app_context,
+            0xC7,
+            Identifier::from([0xEE; 32]),
+            vec![fixed],
+        );
+        set_balance(&app_context, identity, tokens[0], 500);
+        let hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label(tokens_tab::CANT_BE_SENT_BADGE).is_some());
+        assert!(
+            hub.get_by_label(tokens_tab::SEND_LABEL)
+                .accesskit_node()
+                .is_disabled(),
+            "Send stays visible for a held token but cannot be used"
+        );
+    });
+}
+
+#[test]
+fn track_tokens_again_sends_one_request_this_tab_waits_on() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD7);
+        let tokens = seed_three_tokens(&app_context, identity);
+        let pairs: Vec<IdentityTokenIdentifier> = tokens
+            .iter()
+            .map(|token| IdentityTokenIdentifier {
+                identity_id: identity,
+                token_id: *token,
+            })
+            .collect();
+        for pair in &pairs {
+            app_context
+                .mark_token_balance_untracked(*pair)
+                .expect("dismiss");
+        }
+        let mut hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label(tokens_tab::DISMISSED_HEADING).is_some());
+
+        // The arrival refresh is still running: nothing else may ask the network.
+        assert!(
+            hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL)
+                .accesskit_node()
+                .is_disabled()
+        );
+        let arrival = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    context,
+                    ..
+                } if matches!(**task, TokenTask::QueryMyTokenBalances) => Some(context.clone()),
+                _ => None,
+            })
+            .expect("the arrival refresh");
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        let tracked = hub.state().1.iter().find_map(|action| match action {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::TokenTask(task),
+                ..
+            } => match &**task {
+                TokenTask::TrackTokenBalancesAgain(pairs) => Some(pairs.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+        let mut tracked = tracked.expect("one request this tab waits on");
+        tracked.sort();
+        let mut expected = pairs.clone();
+        expected.sort();
+        assert_eq!(tracked, expected);
+
+        // And never before the masternode list is synced.
+        app_context.connection_status().set_masternodes_ready(false);
+        hub.run_steps(2);
+        assert!(
+            hub.get_by_label(tokens_tab::TRACK_AGAIN_LABEL)
+                .accesskit_node()
+                .is_disabled()
+        );
+    });
+}
+
+#[test]
+fn the_receive_link_opens_receive_with_the_tokens_hint() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD8);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label(tokens_tab::RECEIVE_LINK).click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(home::RECEIVE_TOKENS_HINT).is_some());
+    });
+}
+
+#[test]
+fn find_a_token_by_name_opens_token_search() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD9);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label(&format!("{} ▾", tokens_tab::ADD_TOKEN_LABEL))
+            .click();
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(tokens_tab::FIND_BY_NAME_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreen(RootScreenType::RootScreenTokenSearch)
+        )));
+    });
+}
+
+#[test]
+fn the_home_card_shows_for_a_claim_alone_and_claims_right_there() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDA);
+        let mut airdrop = token_config("AirDrop", false);
+        let rules = match airdrop.distribution_rules().clone() {
+            TokenDistributionRules::V0(rules) => rules,
+            TokenDistributionRules::V1(_) => panic!("presets are version 0"),
+        };
+        airdrop.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(100)));
+        let tokens = seed_contract(
+            &app_context,
+            0xC3,
+            Identifier::from([0xEE; 32]),
+            vec![airdrop],
+        );
+        set_balance(&app_context, identity, tokens[0], 0);
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            hub.query_by_label(home::SEE_ALL_TOKENS_LABEL).is_some(),
+            "a pending claim alone earns the card"
+        );
+        assert!(
+            hub.query_by_label("You can claim 1 AirDrop once.")
+                .is_some()
+        );
+        hub.state_mut().1.clear();
+        hub.get_by_label(tokens_tab::CLAIM_LABEL).click();
+        hub.run_steps(2);
+        assert!(
+            hub.state()
+                .1
+                .iter()
+                .any(|action| matches!(action, AppAction::AddScreen(Screen::ClaimTokensScreen(_)))),
+            "Claim on the Home card claims; it does not merely switch tabs"
+        );
+        assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Home);
+    });
+}
+
+#[test]
+fn clicking_anywhere_on_a_row_opens_its_detail_page() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDB);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label("1250 DashCoffee").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_detail::BACK_LABEL).is_some());
+        assert!(hub.query_by_label_contains("Held by").is_some());
+    });
+}
+
+#[test]
+fn manage_opens_my_tokens_on_this_token() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xDC);
+        let tokens = seed_contract(
+            &app_context,
+            0xC6,
+            identity,
+            vec![token_config("Mine", true)],
+        );
+        set_balance(&app_context, identity, tokens[0], 10);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_label("More actions for Mine").click();
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(tokens_tab::MANAGE_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.state().1.iter().any(|action| matches!(
+            action,
+            AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances)
+        )));
+        assert_eq!(
+            app_context.take_pending_token_selection(),
+            Some(tokens[0]),
+            "My Tokens opens on this token"
+        );
+    });
+}
+
+#[test]
+fn the_send_screen_confirms_sends_and_reports_in_send_wording() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let auth = key(1, Purpose::AUTHENTICATION);
+        let identity = seed_funded_identity_with_id(
+            &app_context,
+            0xDD,
+            vec![auth.clone()],
+            vec![auth],
+            1_000_000_000,
+        );
+        seed_three_tokens(&app_context, identity);
+        let balance = app_context
+            .identity_token_balances()
+            .expect("balances")
+            .into_values()
+            .find(|balance| balance.token_alias == "DashCoffee")
+            .expect("the held token");
+        let screen = ScreenType::TransferTokensScreen(balance).create_screen(&app_context);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut Screen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        let recipient = Identifier::from([0x55; 32]).to_string(Encoding::Base58);
+        // The amount field comes first, the recipient's free-text field second.
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .expect("amount")
+            .focus();
+        harness.run();
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .expect("amount")
+            .type_text("1");
+        harness.run();
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(1)
+            .expect("recipient")
+            .focus();
+        harness.run();
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(1)
+            .expect("recipient")
+            .type_text(&recipient);
+        harness.run_steps(2);
+        // The breadcrumb's current item is a "Send" button too; the primary
+        // button comes last.
+        harness
+            .get_all_by_role_and_label(Role::Button, tokens_tab::SEND_LABEL)
+            .rfind(|node| !node.accesskit_node().is_disabled())
+            .expect("an enabled Send button")
+            .click();
+        harness.run_steps(2);
+        let amount = dash_evo_tool::model::amount::Amount::new(100, 2).with_unit_name("DashCoffee");
+        assert!(harness.query_by_label(CONFIRM_SEND_TITLE).is_some());
+        assert!(
+            harness
+                .query_by_label(&send_question(&amount, &recipient))
+                .is_some(),
+            "the confirmation names the amount and the recipient"
+        );
+        assert_eq!(sending_text(&amount), "Sending 1 DashCoffee…");
+        assert_eq!(
+            sent_text(&amount, &recipient),
+            format!("Sent 1 DashCoffee to {recipient}.")
+        );
+        assert!(harness.query_by_label_contains("Transfer").is_none());
     });
 }

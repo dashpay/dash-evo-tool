@@ -113,7 +113,7 @@ impl TokenOperationKind {
                 "Burning the tokens did not complete. Check your connection and try again."
             }
             Self::Transfer => {
-                "The token transfer did not complete. Check your connection and try again."
+                "Sending the tokens did not complete. Check your connection and try again."
             }
             Self::Freeze => {
                 "Freezing the token account did not complete. Check your connection and try again."

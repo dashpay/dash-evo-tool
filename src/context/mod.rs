@@ -312,6 +312,10 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
+    /// A token to select when Tokens › My Tokens is next shown — set by
+    /// "Manage in Tokens screen" in the Identity Hub. Forward-courier;
+    /// mirrors `pending_identity_selection`.
+    pub(crate) pending_token_selection: Mutex<Option<Identifier>>,
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
@@ -644,6 +648,7 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
+            pending_token_selection: Mutex::new(None),
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
@@ -1698,6 +1703,21 @@ impl AppContext {
             .lock()
             .ok()
             .and_then(|mut g| g.take())
+    }
+
+    /// Stage a token to be selected when Tokens › My Tokens is next shown.
+    pub fn set_pending_token_selection(&self, token_id: Identifier) {
+        if let Ok(mut staged) = self.pending_token_selection.lock() {
+            *staged = Some(token_id);
+        }
+    }
+
+    /// Take any staged pending token selection, clearing it.
+    pub fn take_pending_token_selection(&self) -> Option<Identifier> {
+        self.pending_token_selection
+            .lock()
+            .ok()
+            .and_then(|mut staged| staged.take())
     }
 
     /// Persist the per-network selected-identity pointer. Best-effort, mirrors

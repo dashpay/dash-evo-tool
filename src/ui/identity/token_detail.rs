@@ -5,17 +5,16 @@
 //! Design: `docs/ai-design/2026-10-28-identity-tokens/` frame T5.
 
 use super::tokens_tab::{
-    CHECK_NOW_LABEL, MANAGE_LABEL, RowContext, STOP_TRACKING_LABEL, open_stop_tracking_dialog,
-    render_row_actions, render_row_status,
+    CHECK_NOW_LABEL, DISABLED_NOT_SYNCED, MANAGE_LABEL, RowContext, STOP_TRACKING_LABEL,
+    manage_action, open_stop_tracking_dialog, render_row_actions, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::RootScreenType;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::identity_tokens::{IdentityTokensState, TokenRow, row_status};
-use crate::ui::theme::{ComponentStyles, DashColors, Spacing};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{RichText, Ui};
 use std::sync::Arc;
@@ -81,7 +80,7 @@ pub fn render(
                     );
                     ui.add_space(Spacing::SM);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(&row.name).size(20.0).strong());
+                        ui.label(RichText::new(&row.name).size(Typography::SCALE_XL).strong());
                         ui.label(
                             RichText::new(held_by_text(&identity_label))
                                 .color(DashColors::text_secondary(dark)),
@@ -92,12 +91,12 @@ pub fn render(
                 if let Some(balance) = row.balance {
                     ui.label(
                         RichText::new(row.amount(balance).to_string())
-                            .size(24.0)
+                            .size(Typography::SCALE_XXL)
                             .monospace(),
                     );
                 }
                 let status = row_status(row, context.view_only);
-                render_row_status(ui, row, &status, &mut action, state);
+                render_row_status(ui, app_context, row, &status, context, &mut action, state);
                 ui.add_space(Spacing::SM);
                 ui.horizontal_wrapped(|ui| {
                     action |= render_row_actions(ui, app_context, row, context);
@@ -153,8 +152,15 @@ pub fn render(
                     });
                 ui.add_space(Spacing::MD);
                 ui.horizontal_wrapped(|ui| {
-                    if ComponentStyles::add_secondary_button(ui, CHECK_NOW_LABEL, dark).clicked() {
-                        action |= state.check_pair_action(row.pair);
+                    if ui
+                        .add_enabled(
+                            context.synced,
+                            ComponentStyles::secondary_button(CHECK_NOW_LABEL, dark),
+                        )
+                        .disabled_tooltip(DISABLED_NOT_SYNCED)
+                        .clicked()
+                    {
+                        action |= state.check_pair_action(app_context, row.pair);
                     }
                     if ComponentStyles::add_secondary_button(ui, STOP_TRACKING_LABEL, dark)
                         .clicked()
@@ -162,8 +168,7 @@ pub fn render(
                         open_stop_tracking_dialog(state, row, &identity_label);
                     }
                     if row.has_admin_permission && ui.link(MANAGE_LABEL).clicked() {
-                        action |=
-                            AppAction::SetMainScreen(RootScreenType::RootScreenMyTokenBalances);
+                        action |= manage_action(app_context, row);
                     }
                 });
             });

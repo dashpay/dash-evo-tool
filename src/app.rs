@@ -2544,14 +2544,6 @@ impl App for AppState {
                             // without a manual Refresh. No banner — this fires every 15 s.
                             active_context.apply_platform_address_push(updates);
                         }
-                        BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
-                            MessageBanner::set_global(
-                                ctx,
-                                "Token balances are already refreshing. Wait a moment before refreshing again.",
-                                MessageType::Info,
-                            );
-                            self.deliver_result(route, &context, unboxed_message);
-                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -2712,7 +2704,8 @@ impl App for AppState {
                             TaskError::WalletStorageNotReady => {
                                 self.migration.track_storage_startup_error(handle);
                             }
-                            TaskError::MasternodeListNotReady { .. } => {
+                            TaskError::MasternodeListNotReady { .. }
+                            | TaskError::MasternodeListSyncPending => {
                                 self.connection_banner.track_quorum_startup_error(handle);
                             }
                             TaskError::TransactionConfirmationUnknown {

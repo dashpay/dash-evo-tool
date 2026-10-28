@@ -1085,9 +1085,6 @@ pub enum BackendTaskSuccessResult {
     OncePerIdentityClaimHintCleared(IdentityTokenIdentifier),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
-    /// A requested foreground refresh found the upstream balance sync already
-    /// running, so no second pass was started.
-    TokenBalanceRefreshAlreadyInFlight,
     SavedToken,
 
     // Identity operation results (replacing string messages)

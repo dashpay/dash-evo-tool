@@ -183,7 +183,14 @@ Constraints found:
   an amount) in the MVP; N16 is Phase 3.
 - Proof-verifying reads must wait for `connection_status().masternodes_ready()`
   (same gate Home uses for contacts/payments). Until then: rows render from the
-  last snapshot, actions disabled with "Available after sync finishes."
+  last snapshot, actions disabled with "Available after sync finishes." The
+  token-balance tasks enforce the gate themselves
+  (`TaskError::MasternodeListSyncPending`), so My Tokens, the identity detail
+  Check and the post-mutation refreshes are covered too; the hub treats that
+  refusal like "already refreshing" and sends the request again later.
+- A forced balance refresh waits out an upstream background pass that is
+  already running (it snapshotted the watch lists before DET registered its
+  own), then runs its own pass, so a refresh never settles without fetching.
 - Refresh is single-flight across the app: the hub and My Tokens share the
   guard. The hub treats `TokenBalanceRefreshInProgress` as "already
   refreshing", never as an error banner; a check or "Track tokens again"
@@ -307,8 +314,8 @@ override (D3; checklist P0.2).
    renderer (`render`, `load_action`, matching the Home/Contacts pattern that tab
    renderers do not themselves return data loads).
 3. Hub wiring: render arm, arrival flag in `refresh_on_arrival`, reset on
-   identity change, `display_task_result` for `FetchedTokenBalances` /
-   `TokenBalanceRefreshAlreadyInFlight`, `display_task_error` swallowing
+   identity change, `display_task_result` for `FetchedTokenBalances`,
+   `display_task_error` swallowing
    `TokenBalanceRefreshInProgress` and recording per-tab error.
 4. Row actions → existing screens; ••• via `action_menu::show_action_menu`
    (Check balance now · Token details · Copy token ID · Stop tracking · Manage

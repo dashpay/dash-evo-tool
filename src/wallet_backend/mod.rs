@@ -160,31 +160,46 @@ impl Drop for ProvisionOverlapGuard<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TokenBalanceSyncOutcome {
-    Performed,
-    AlreadyInFlight,
-}
+/// How often a forced token-balance sync re-checks whether the upstream pass
+/// holding the single-flight slot has ended.
+const TOKEN_BALANCE_SYNC_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
-    mut is_syncing: IsSyncing,
-    sync_now: SyncNow,
-) -> TokenBalanceSyncOutcome
+/// The longest a forced token-balance sync waits for someone else's pass to
+/// end before giving up.
+const TOKEN_BALANCE_SYNC_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Run one upstream token-balance pass that starts after this call.
+///
+/// A pass already running snapshotted the watch lists before the caller
+/// registered its own, so its result may miss the tokens just asked for. Wait
+/// for it to end (upstream clears `is_syncing` when a pass ends), then run a
+/// fresh pass, and wait again whenever another pass takes the slot first.
+/// Only the waiting is bounded; a pass of our own always runs to completion.
+async fn run_fresh_token_balance_sync<IsSyncing, SyncNow, SyncFuture>(
+    is_syncing: IsSyncing,
+    mut sync_now: SyncNow,
+    poll: std::time::Duration,
+    wait_budget: std::time::Duration,
+) -> Result<(), tokio::time::error::Elapsed>
 where
-    IsSyncing: FnMut() -> bool,
-    SyncNow: FnOnce() -> SyncFuture,
+    IsSyncing: Fn() -> bool,
+    SyncNow: FnMut() -> SyncFuture,
     SyncFuture: std::future::Future<Output = ()>,
 {
-    // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
-    // outcome or completion generation; before/after `is_syncing()` samples are racy.
-    if is_syncing() {
-        return TokenBalanceSyncOutcome::AlreadyInFlight;
-    }
-    sync_now().await;
-    if is_syncing() {
-        TokenBalanceSyncOutcome::AlreadyInFlight
-    } else {
-        TokenBalanceSyncOutcome::Performed
+    loop {
+        tokio::time::timeout(wait_budget, async {
+            while is_syncing() {
+                tokio::time::sleep(poll).await;
+            }
+        })
+        .await?;
+        sync_now().await;
+        // TODO(upstream): `IdentitySyncManager::sync_now()` should report
+        // whether it ran or skipped; sampling `is_syncing()` cannot tell a
+        // skipped call whose blocking pass ended in between from our own pass.
+        if !is_syncing() {
+            return Ok(());
+        }
     }
 }
 
@@ -3088,20 +3103,21 @@ impl WalletBackend {
         self.refresh_token_balances().await;
     }
 
-    /// Force one immediate upstream token-balance sync pass, then republish
-    /// DET's snapshot. Reports when upstream skipped the request because
-    /// another pass already owns its single-flight slot.
-    pub(crate) async fn sync_token_balances_now(&self) -> TokenBalanceSyncOutcome {
+    /// Run one upstream token-balance sync pass that sees the watch lists
+    /// registered so far, then republish DET's snapshot. A pass already
+    /// running is waited out first; `Err` means it did not end in time and
+    /// nothing was fetched.
+    pub(crate) async fn sync_token_balances_now(&self) -> Result<(), tokio::time::error::Elapsed> {
         let identity_sync = self.inner.pwm.identity_sync();
-        let outcome = run_token_balance_sync_if_idle(
+        run_fresh_token_balance_sync(
             || identity_sync.is_syncing(),
             || identity_sync.sync_now(),
+            TOKEN_BALANCE_SYNC_POLL,
+            TOKEN_BALANCE_SYNC_WAIT_BUDGET,
         )
-        .await;
-        if outcome == TokenBalanceSyncOutcome::Performed {
-            self.refresh_token_balances().await;
-        }
-        outcome
+        .await?;
+        self.refresh_token_balances().await;
+        Ok(())
     }
 
     /// Republish the lock-free token-balance snapshot from the upstream
@@ -4012,20 +4028,85 @@ mod tests {
         }
     }
 
+    /// A pass already running when DET asks snapshotted the watch lists before
+    /// the new registration, so DET waits for it to end and runs its own.
     #[tokio::test]
-    async fn token_balance_sync_reports_an_already_running_upstream_pass() {
-        let sync_called = std::cell::Cell::new(false);
+    async fn token_balance_sync_waits_out_a_running_pass_then_runs_its_own() {
+        use std::cell::Cell;
+        let other_pass_polls_left = Cell::new(3u32);
+        let own_passes = Cell::new(0u32);
 
-        let outcome = run_token_balance_sync_if_idle(
-            || true,
-            || async {
-                sync_called.set(true);
+        let result = run_fresh_token_balance_sync(
+            || {
+                let left = other_pass_polls_left.get();
+                other_pass_polls_left.set(left.saturating_sub(1));
+                left > 0
             },
+            || {
+                assert_eq!(
+                    other_pass_polls_left.get(),
+                    0,
+                    "our pass must start only after the running one ended"
+                );
+                own_passes.set(own_passes.get() + 1);
+                async {}
+            },
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(5),
         )
         .await;
 
-        assert_eq!(outcome, TokenBalanceSyncOutcome::AlreadyInFlight);
-        assert!(!sync_called.get());
+        assert!(result.is_ok());
+        assert_eq!(own_passes.get(), 1);
+    }
+
+    /// When another pass takes the slot between the wait and our call, the
+    /// call was skipped: DET waits again and retries rather than reporting
+    /// balances it never fetched.
+    #[tokio::test]
+    async fn token_balance_sync_retries_when_another_pass_takes_the_slot() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        // The first call is skipped: another pass holds the slot right after.
+        let other_pass_running = Cell::new(false);
+
+        let result = run_fresh_token_balance_sync(
+            || {
+                let running = other_pass_running.get();
+                other_pass_running.set(false);
+                running
+            },
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    other_pass_running.set(true);
+                }
+                async {}
+            },
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.get(), 2, "the skipped call is retried once");
+    }
+
+    /// A pass that never ends gives up after the wait budget without running
+    /// a pass of its own.
+    #[tokio::test]
+    async fn token_balance_sync_gives_up_on_a_pass_that_never_ends() {
+        let result = run_fresh_token_balance_sync(
+            || true,
+            || -> std::future::Ready<()> {
+                panic!("must not run while another pass holds the slot")
+            },
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     /// A completed start flight remains current, so repeated calls reuse its

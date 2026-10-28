@@ -343,7 +343,9 @@ impl IdentityTokensState {
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
             track_again: std::mem::take(&mut self.track_again),
-            track_again_owed: self.track_again_owed.take(),
+            // Owed pairs belong to the previous identity; its next visit
+            // offers "track again" anew.
+            track_again_owed: None,
             retry_owed: self.retry_owed,
             last_refreshed_at_ms: self.last_refreshed_at_ms,
             refresh_failure: self.refresh_failure,
@@ -736,12 +738,16 @@ impl IdentityTokensState {
         result: &BackendTaskSuccessResult,
         now_ms: u64,
     ) -> bool {
-        // Only a fetch refreshed every balance; "already in flight" fetched nothing.
-        let fetched = matches!(result, BackendTaskSuccessResult::FetchedTokenBalances);
-        if self.refresh.settle(context).is_some() || self.track_again.settle(context).is_some() {
-            if fetched {
+        // Only the full refresh fetched every identity's balances; "track
+        // again" refreshed the selected identity's watch set alone.
+        if self.refresh.settle(context).is_some() {
+            if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
                 self.note_full_refresh(now_ms);
             }
+            self.invalidate_rows();
+            return true;
+        }
+        if self.track_again.settle(context).is_some() {
             self.invalidate_rows();
             return true;
         }
@@ -766,10 +772,14 @@ impl IdentityTokensState {
     }
 
     /// Note a failure of this tab's requests. A refresh already running
-    /// elsewhere is not a failure: the request is owed again once it ends.
-    /// Anything else is shown inline, never as a global banner.
+    /// elsewhere, or a read held back until the network has synced, is not a
+    /// failure: the request is owed again once it can go out. Anything else
+    /// is shown inline, never as a global banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        let in_progress = matches!(error, TaskError::TokenBalanceRefreshInProgress);
+        let in_progress = matches!(
+            error,
+            TaskError::TokenBalanceRefreshInProgress | TaskError::MasternodeListSyncPending
+        );
         if let Some(pairs) = self.track_again.settle(context) {
             if in_progress {
                 self.track_again_owed = Some(pairs);
@@ -819,11 +829,6 @@ impl IdentityTokensState {
     /// Whether the error just recorded is shown by this tab rather than a banner.
     pub fn take_swallowed_error(&mut self) -> bool {
         std::mem::take(&mut self.swallow_next_error)
-    }
-
-    /// The hub's token rows changed under another screen's task.
-    pub fn balances_changed(&mut self) {
-        self.invalidate_rows();
     }
 
     /// Another screen's refresh fetched every balance just now: as fresh as
@@ -1084,11 +1089,7 @@ mod tests {
     fn a_settled_task_is_no_longer_pending_whatever_it_returned() {
         let mut state = IdentityTokensState::default();
         let context = dispatched(state.dispatch_refresh());
-        state.record_result(
-            &context,
-            &BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight,
-            7,
-        );
+        state.record_result(&context, &BackendTaskSuccessResult::SavedToken, 7);
         assert!(!state.refresh_pending());
         assert_eq!(state.last_refreshed_at_ms(), None);
 
@@ -1255,6 +1256,43 @@ mod tests {
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
+    }
+
+    /// "Track tokens again" refreshes only the selected identity's watch set,
+    /// so it never counts as the full refresh another identity relies on.
+    #[test]
+    fn a_track_again_result_is_not_a_full_refresh() {
+        let mut state = IdentityTokensState::default();
+        let context = dispatched(state.dispatch_track_again(vec![row("A", None).pair()]));
+        assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 7));
+        assert!(!state.refresh_pending());
+        assert_eq!(state.last_refreshed_at_ms(), None);
+
+        state.reset_for_identity_change();
+        assert_eq!(
+            state.arrival(8, true, false),
+            Arrival::Due,
+            "the next identity still needs its own refresh"
+        );
+    }
+
+    /// Owed "track again" pairs belong to the identity that asked; switching
+    /// identity drops them instead of retrying them for the wrong identity.
+    #[test]
+    fn an_identity_switch_drops_an_owed_track_again() {
+        let mut state = IdentityTokensState::default();
+        state.balances_refreshed_elsewhere(1_000);
+        let context = dispatched(state.dispatch_track_again(vec![row("A", None).pair()]));
+        state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
+        assert!(state.track_again_owed.is_some());
+
+        state.reset_for_identity_change();
+        assert_eq!(state.track_again_owed, None);
+        assert_eq!(
+            state.arrival(1_001, true, false),
+            Arrival::NotDue,
+            "nothing is owed for the new identity"
+        );
     }
 
     /// A filter still being typed when the identity changes is written to

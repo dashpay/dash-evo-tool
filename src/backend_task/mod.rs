@@ -376,6 +376,8 @@ pub enum BackendTaskContext {
     RestoreFromPreviousVersion,
     /// Saving the upgrade-backup retention policy.
     UpdateBackupRetention,
+    /// The Settings "Refresh DAPI endpoints" run.
+    DapiNodeDiscovery,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// The background contest + vote-state refresh; its failures are logged,
@@ -754,6 +756,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::DiscoverDapiNodes { .. } => Self::DapiNodeDiscovery,
             BackendTask::ContestedResourceTask(
                 ContestedResourceTask::SubmitDpnsVoteOperation {
                     operation, network, ..

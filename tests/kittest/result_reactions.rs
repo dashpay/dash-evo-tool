@@ -220,3 +220,58 @@ fn a_hidden_chooser_settles_its_own_restore() {
         });
     }
 }
+
+/// A dispatch the chooser started, captured instead of run.
+fn captured_dispatch(
+    harness: &mut App,
+    action: dash_evo_tool::app::AppAction,
+) -> BackendTaskContext {
+    harness.state_mut().test_dispatch_screen_action(action);
+    harness
+        .state()
+        .test_captured_dispatches()
+        .last()
+        .map(|(_, context)| context.clone())
+        .expect("the action is dispatched")
+}
+
+/// A failure of one Settings task settles that task alone: a failed restore
+/// leaves a running DAPI endpoint discovery running, and the discovery's own
+/// failure frees its button.
+#[test]
+fn a_settings_task_failure_settles_only_its_own_task() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+        harness.state_mut().test_capture_dispatches();
+        let discovery_action = chooser(&mut harness).begin_discovery_for_test();
+        let discovery = captured_dispatch(&mut harness, discovery_action);
+        let restore_action = chooser(&mut harness).begin_restore_for_test();
+        let restore = captured_dispatch(&mut harness, restore_action);
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: restore,
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(!chooser(&mut harness).restore_in_progress_for_test());
+        assert!(
+            chooser(&mut harness).discovery_in_progress_for_test(),
+            "a failed restore leaves the running discovery alone"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: discovery,
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(
+            !chooser(&mut harness).discovery_in_progress_for_test(),
+            "the discovery's own failure frees its button"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+    });
+}

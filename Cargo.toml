@@ -228,6 +228,23 @@ opt-level = 3
 [profile.test.package.argon2]
 opt-level = 3
 
+# Release builds are the distributed binaries (weekly/nightly CI, Flatpak), so
+# they are optimized as far as is reasonable and build time is irrelevant:
+# whole-program fat LTO plus a single codegen unit per crate. opt-level stays at
+# the release default of 3. `panic` stays "unwind" on purpose: tokio contains a
+# panicking task to its JoinHandle, while "abort" would take the whole app down.
+# No target-cpu flags, so the binaries keep running on any CPU of their target.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# `bench` inherits `release`. Keep benchmarks on the default release settings
+# so a local `cargo bench` is not a whole-program fat-LTO link, which takes
+# a long time and a lot of memory for this binary.
+[profile.bench]
+lto = false
+codegen-units = 16
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = [

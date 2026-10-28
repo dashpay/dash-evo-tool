@@ -9,6 +9,8 @@ mod token_creator;
 
 pub use structs::*;
 
+pub use crate::model::token::validate_perpetual_distribution_recipient;
+
 pub use groups::*;
 
 use crate::wallet_backend::poison::MutexRecover;
@@ -63,7 +65,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -102,39 +104,6 @@ pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let pixels = image.as_flat_samples();
 
     ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
-}
-
-pub fn validate_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
-    recipient: TokenDistributionRecipient,
-    identity: &QualifiedIdentity,
-) -> Result<(), String> {
-    match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

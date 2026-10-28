@@ -50,12 +50,14 @@ jobs:
     # Sized for a COLD build, not a cache hit. The Cargo cache key below is
     # keyed on `Cargo.lock` and `rust-toolchain.toml`, so every dependency or
     # toolchain bump starts both arches from
-    # a prefix-restore that still recompiles the whole upstream tree: ~16
-    # minutes of `cargo build --release` on x86_64 before flatpak-builder even
-    # starts exporting. A warm run finishes in well under half this budget;
-    # the headroom exists so the cold run can reach "Save Cargo cache" and
+    # a prefix-restore that still recompiles the whole upstream tree. The
+    # release profile (Cargo.toml) uses fat LTO and a single codegen unit, so
+    # a cold `cargo build --release` is estimated at ~40-65 minutes on these
+    # 4-vCPU runners before flatpak-builder even starts exporting. Even a warm
+    # run redoes the app crate and the whole-program LTO link on every commit.
+    # The headroom exists so the cold run can reach "Save Cargo cache" and
     # make the next one warm.
-    timeout-minutes: 45
+    timeout-minutes: 120
 
     steps:
       - name: Check out code
@@ -241,7 +243,7 @@ jobs:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}${{ job.status != 'success' && format('-partial-{0}-{1}', github.run_id, github.run_attempt) || '' }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

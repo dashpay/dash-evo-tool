@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
@@ -233,7 +234,7 @@ impl AppContext {
                 (PrivateKeyOnMainIdentity, key_id),
                 (
                     qualified_key,
-                    PrivateKeyData::Clear(owner_private_key_bytes),
+                    PrivateKeyData::Clear(*owner_private_key_bytes),
                 ),
             );
         }
@@ -256,7 +257,7 @@ impl AppContext {
                 (PrivateKeyOnMainIdentity, key_id),
                 (
                     qualified_key,
-                    PrivateKeyData::Clear(payout_address_private_key_bytes),
+                    PrivateKeyData::Clear(*payout_address_private_key_bytes),
                 ),
             );
         }
@@ -298,7 +299,7 @@ impl AppContext {
                         (PrivateKeyOnVoterIdentity, key.id()),
                         (
                             qualified_key,
-                            PrivateKeyData::Clear(voting_private_key_bytes),
+                            PrivateKeyData::Clear(*voting_private_key_bytes),
                         ),
                     );
                     Some((voter_identity, key))
@@ -332,8 +333,8 @@ impl AppContext {
 
             #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
-                HashMap<Vec<u8>, [u8; 32]>,
-                HashMap<[u8; 20], [u8; 32]>,
+                HashMap<Vec<u8>, Zeroizing<[u8; 32]>>,
+                HashMap<[u8; 20], Zeroizing<[u8; 32]>>,
             ) = input_private_keys
                 .into_iter()
                 .map(|private_key| {
@@ -341,8 +342,8 @@ impl AppContext {
                     let public_key_bytes = public_key.to_bytes();
                     let pub_key_hash = public_key.pubkey_hash().to_byte_array();
                     (
-                        (public_key_bytes, *private_key.inner.to_bytes()),
-                        (pub_key_hash, *private_key.inner.to_bytes()),
+                        (public_key_bytes, private_key.inner.to_bytes()),
+                        (pub_key_hash, private_key.inner.to_bytes()),
                     )
                 })
                 .unzip();
@@ -359,8 +360,8 @@ impl AppContext {
                     public_key_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
-                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
-                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(**private_key_bytes),
+                        _ => PrivateKeyData::Clear(**private_key_bytes),
                     };
                     encrypted_private_keys
                         .insert(key_map_key, (qualified_key.clone(), private_data));
@@ -371,8 +372,8 @@ impl AppContext {
                     public_key_hash_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
-                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
-                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(**private_key_bytes),
+                        _ => PrivateKeyData::Clear(**private_key_bytes),
                     };
                     encrypted_private_keys
                         .insert(key_map_key, (qualified_key.clone(), private_data));

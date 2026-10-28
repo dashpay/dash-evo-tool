@@ -1106,8 +1106,8 @@ impl KeyInfoScreen {
         // Convert the input string to bytes (hex decoding)
         let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let bytes: [u8; 32] = private_key_bytes_vec
-                    .try_into()
+                // From a slice: the error then holds no key bytes to print.
+                let bytes = <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
                     .expect("invariant: length checked to be 32 in the match guard");
                 bytes
             }

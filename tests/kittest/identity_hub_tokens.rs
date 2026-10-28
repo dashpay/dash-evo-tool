@@ -1196,3 +1196,39 @@ fn the_send_screen_confirms_sends_and_reports_in_send_wording() {
         assert!(harness.query_by_label_contains("Transfer").is_none());
     });
 }
+
+/// The filter is written to the device when its box loses focus, not on
+/// every keystroke; the edit itself is never lost.
+#[test]
+fn the_filter_is_saved_when_its_box_loses_focus_not_while_typing() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD6);
+        seed_eight_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        hub.get_by_role(Role::TextInput).click();
+        hub.run_steps(2);
+        hub.get_by_role(Role::TextInput).type_text("alp");
+        hub.run_steps(4);
+        assert!(
+            hub.get_by_role(Role::TextInput).is_focused(),
+            "the box keeps focus while typing"
+        );
+        assert_eq!(
+            app_context.identity_tokens_view_prefs().filter,
+            "",
+            "typing must not write the filter to the database"
+        );
+        assert!(
+            hub.query_by_label("2 Bravo").is_none() && hub.query_by_label("1 Alpha").is_some(),
+            "the typed filter applies at once"
+        );
+        hub.key_press(egui::Key::Enter);
+        hub.run_steps(4);
+        assert_eq!(
+            app_context.identity_tokens_view_prefs().filter,
+            "alp",
+            "leaving the box writes the filter once"
+        );
+    });
+}

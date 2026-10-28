@@ -355,9 +355,12 @@ impl IdentityTokensState {
     }
 
     /// Bind the rows to the identity on screen, dropping another identity's.
-    fn reconcile_owner(&mut self, identity: &QualifiedIdentity) {
+    /// A filter still being edited is written to the device first, so a
+    /// switch never loses it.
+    fn reconcile_owner(&mut self, app_context: &AppContext, identity: &QualifiedIdentity) {
         let owner = Some((identity.network, identity.identity.id()));
         if self.owner != owner {
+            self.save_prefs(app_context);
             self.reset_for_identity_change();
             self.owner = owner;
         }
@@ -380,7 +383,7 @@ impl IdentityTokensState {
         app_context: &AppContext,
         identity: &QualifiedIdentity,
     ) -> Arc<[TokenRow]> {
-        self.reconcile_owner(identity);
+        self.reconcile_owner(app_context, identity);
         let stale = self
             .rows_read_at
             .is_none_or(|read_at| read_at.elapsed() >= ROWS_TTL);
@@ -399,7 +402,7 @@ impl IdentityTokensState {
         app_context: &AppContext,
         identity: &QualifiedIdentity,
     ) -> usize {
-        self.reconcile_owner(identity);
+        self.reconcile_owner(app_context, identity);
         if self.rows_read_at.is_none() {
             self.reread_rows(app_context, identity);
         }
@@ -503,7 +506,9 @@ impl IdentityTokensState {
     }
 
     /// Change the list controls for this session; [`save_prefs`](Self::save_prefs)
-    /// writes them to the device.
+    /// writes them to the device. The tab calls it when the filter box loses
+    /// focus or another control changes, the hub when the tab is left, and
+    /// the state itself when the identity changes.
     pub fn edit_prefs(&mut self, mut prefs: IdentityTokensViewPrefs) {
         prefs.clamp_filter();
         if self.prefs.as_ref() != Some(&prefs) {
@@ -1264,6 +1269,34 @@ mod tests {
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
+    }
+
+    /// A filter still being typed when the identity changes is written to
+    /// the device, never lost.
+    #[test]
+    fn switching_identity_saves_a_filter_still_being_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        let identity = |byte: u8| {
+            crate::context::test_support::bare_user_identity(
+                Identifier::from([byte; 32]),
+                Network::Testnet,
+            )
+        };
+        let mut state = IdentityTokensState::default();
+        state.rows(&context, &identity(1));
+        state.prefs(&context);
+        state.edit_prefs(IdentityTokensViewPrefs {
+            filter: "cof".into(),
+            ..Default::default()
+        });
+        assert_eq!(context.identity_tokens_view_prefs().filter, "");
+        state.rows(&context, &identity(2));
+        assert_eq!(context.identity_tokens_view_prefs().filter, "cof");
+        assert!(!state.prefs_dirty());
     }
 
     #[test]

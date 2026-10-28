@@ -270,7 +270,9 @@ fn render_failure(
 }
 
 /// Hide-zero (always), plus filter and sort once the list is long. Hide-zero
-/// and sort are saved as they change; the filter when its box loses focus.
+/// and sort are saved as they change; the filter applies at once but is
+/// written when its box loses focus (Enter included), when the tab is left
+/// or when the identity changes — never per keystroke.
 fn render_controls(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -315,13 +317,12 @@ fn render_controls(
             );
         }
     });
-    let only_the_filter_changed = prefs.filter != before.filter
-        && prefs.hide_zero_balances == before.hide_zero_balances
-        && prefs.sort == before.sort;
+    let a_control_changed =
+        prefs.hide_zero_balances != before.hide_zero_balances || prefs.sort != before.sort;
     if prefs != before {
         state.edit_prefs(prefs);
     }
-    if filter_done || (state.prefs_dirty() && !only_the_filter_changed) {
+    if filter_done || a_control_changed {
         state.save_prefs(app_context);
     }
 }

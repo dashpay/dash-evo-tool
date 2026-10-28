@@ -733,6 +733,11 @@ impl ScreenLike for IdentityHubScreen {
                         }
                         ui.add_space(16.0);
                         rendered_tab = Some(self.selected_tab);
+                        if self.selected_tab != IdentityHubTab::Tokens {
+                            // A filter still being typed when the tab is left
+                            // is written now rather than lost.
+                            self.tokens_state.save_prefs(&self.app_context);
+                        }
                         let mut tab_action = match self.selected_tab {
                             IdentityHubTab::Home => {
                                 let (home_action, outcome) = match &selected {

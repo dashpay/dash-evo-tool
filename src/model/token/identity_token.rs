@@ -698,6 +698,31 @@ mod tests {
     }
 
     #[test]
+    fn a_token_name_loses_every_invisible_format_character() {
+        let token_id = Identifier::from([7; 32]);
+        for hidden in [
+            "\u{00ad}",
+            "\u{180e}",
+            "\u{2061}",
+            "\u{2063}",
+            "\u{2064}",
+            "\u{e0041}",
+            "\u{e007f}",
+        ] {
+            assert_eq!(
+                token_display_name(&format!("Dash{hidden}Coffee"), &token_id),
+                "DashCoffee",
+                "{hidden:?} survived"
+            );
+        }
+        assert_eq!(
+            token_display_name("\u{1F468}\u{200d}\u{1F4BB} Coin", &token_id),
+            "\u{1F468}\u{200d}\u{1F4BB} Coin",
+            "an emoji sequence keeps its joiner"
+        );
+    }
+
+    #[test]
     fn the_perpetual_recipient_rule_names_owner_identity_or_evonode() {
         let owner = identity(1);
         let other = identity(2);

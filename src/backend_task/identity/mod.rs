@@ -852,26 +852,6 @@ impl AppContext {
         Ok(key)
     }
 
-    /// Tell screens that cached identity data changed. Cannot fail: the
-    /// task's own result follows whatever happens here, and a frame loop that
-    /// is not listening (as under MCP) is no reason to fail work the network
-    /// has already accepted.
-    pub(crate) async fn notify_identities_changed(
-        &self,
-        sender: &crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) {
-        let update = crate::backend_task::CacheUpdate {
-            network: self.network,
-            domain: crate::backend_task::CacheDomain::Identities,
-        };
-        if sender.send(TaskResult::CacheUpdated(update)).await.is_err() {
-            tracing::debug!(
-                ?update,
-                "No frame loop is listening for the identity cache notification"
-            );
-        }
-    }
-
     pub async fn run_identity_task(
         self: &Arc<Self>,
         task: IdentityTask,
@@ -922,7 +902,8 @@ impl AppContext {
                 .await?),
             IdentityTask::TopUpIdentity(top_up_info) => {
                 let result = self.top_up_identity(sdk, top_up_info).await?;
-                self.notify_identities_changed(&sender).await;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
                 Ok(result)
             }
             IdentityTask::TopUpIdentityFromPlatformAddresses {
@@ -938,7 +919,8 @@ impl AppContext {
                         wallet_seed_hash,
                     )
                     .await?;
-                self.notify_identities_changed(&sender).await;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
                 Ok(result)
             }
             IdentityTask::TransferToAddresses {
@@ -1156,29 +1138,6 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A top-up's cache notification goes to the frame loop when one listens,
-    /// and is dropped without error when none does, as under MCP: the top-up
-    /// result that follows it must never be lost to the notification.
-    #[tokio::test]
-    async fn identity_cache_notification_never_fails_the_task_behind_it() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let context = crate::context::test_support::test_app_context(temp_dir.path());
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let listening = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
-        context.notify_identities_changed(&listening).await;
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network,
-                domain: crate::backend_task::CacheDomain::Identities,
-            })) if network == context.network
-        ));
-
-        let (tx, _) = tokio::sync::mpsc::channel(1);
-        let unheard = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
-        context.notify_identities_changed(&unheard).await;
-    }
 
     /// RUST-001: every seed-recovery scan must cover the highest derivation
     /// index the Add Key chooser can offer. Once the derived key is on-chain the

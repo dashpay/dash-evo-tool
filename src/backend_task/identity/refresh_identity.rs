@@ -51,14 +51,8 @@ impl AppContext {
         // Insert the updated identity into local state
         self.update_local_qualified_identity(&qualified_identity_to_update)?;
 
-        // Send refresh message to refresh the Identities Screen
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Identities,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+            .await;
 
         Ok(BackendTaskSuccessResult::RefreshedIdentity(
             qualified_identity_to_update,

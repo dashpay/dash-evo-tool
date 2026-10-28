@@ -1304,6 +1304,25 @@ impl BackendTaskSuccessResult {
 }
 
 impl AppContext {
+    /// Tell screens that cached data of `domain` changed on this network.
+    /// Never fails the task behind it: the task's own result follows whatever
+    /// happens here, and a frame loop gone at shutdown or after a network
+    /// switch is no reason to report work the network has already accepted
+    /// as failed. A lost notification is logged.
+    pub(crate) async fn notify_cache_changed(
+        &self,
+        domain: CacheDomain,
+        sender: &SenderAsync<TaskResult>,
+    ) {
+        let update = CacheUpdate {
+            network: self.network,
+            domain,
+        };
+        if sender.send(TaskResult::CacheUpdated(update)).await.is_err() {
+            tracing::warn!(?update, "No frame loop took the cache notification");
+        }
+    }
+
     /// Run backend tasks sequentially
     pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,
@@ -1837,6 +1856,33 @@ mod tests {
             .wallet_backend()
             .expect("registered backend")
             .shutdown()
+            .await;
+    }
+
+    /// A cache notification goes to the frame loop when one listens, and is
+    /// dropped without error when none does: the result of the task behind
+    /// it must never be lost to the notification.
+    #[tokio::test]
+    async fn a_cache_notification_never_fails_the_task_behind_it() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let listening = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Identities, &listening)
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TaskResult::CacheUpdated(CacheUpdate {
+                network,
+                domain: CacheDomain::Identities,
+            })) if network == context.network
+        ));
+
+        let (tx, _) = tokio::sync::mpsc::channel(1);
+        let unheard = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Tokens, &unheard)
             .await;
     }
 

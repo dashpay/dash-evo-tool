@@ -54,9 +54,8 @@ mid-campaign restart; all planned checklist items closed out).
       correct wording ("clears the data used by this version... read-only recovery database
       stays on this device") → confirmed removal, wallet gone from selector — matches prior
       PASS behavior for HD wallets, still working. (2) Imported a single-key wallet via "Import
-      key (advanced)" using the repo's own test-vector WIF
-      (`cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK`, a well-known public BitcoinJS/DET
-      test fixture already used in `tests/`, zero value at risk) — clicked Remove — a
+      key (advanced)" using a throwaway testnet WIF (an unfunded test key, zero value at
+      risk) — clicked Remove — a
       confirmation dialog now appears: "Removing wallet 'qa-sk-remove-test' will delete its
       imported private key and local wallet data from this device. Make sure you have a backup
       of the private key before continuing. Continue?" This is the exact previously-missing

@@ -24,15 +24,14 @@ use std::sync::{Arc, LazyLock};
 use rand::Rng;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-use dash_sdk::dpp::identity::v0::IdentityV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel,
 };
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::platform_value::BinaryData;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
+use dash_sdk::sdk::min_protocol_version;
 use rusqlite::{Connection, params};
 
 use crate::backend_task::migration::finish_unwire::{
@@ -149,19 +148,16 @@ fn v093_masternode_blob() -> Vec<u8> {
 }
 
 fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+    crate::context::test_support::identity_public_key(
         id,
         purpose,
-        security_level: SecurityLevel::MASTER,
-        contract_bounds: None,
-        key_type: KeyType::ECDSA_HASH160,
-        read_only: false,
+        SecurityLevel::MASTER,
+        KeyType::ECDSA_HASH160,
         // 20 bytes: the shape of a hash160 key. The import never checks a key
         // against its public data, so a stand-in value is enough here — row A's
         // keys, the ones that matter, use matching public hashes in the v0.9.3 template instead.
-        data: BinaryData::new(vec![id as u8; 20]),
-        disabled_at: None,
-    })
+        vec![id as u8; 20],
+    )
 }
 
 /// Encode a `QualifiedIdentity` the way v0.9.3 did — same manual `Encode`, same
@@ -185,13 +181,16 @@ fn legacy_identity_blob(
         );
     }
 
+    // The protocol version a fresh context on `network` starts at.
+    let platform_version = PlatformVersion::get(min_protocol_version(network)).expect("version");
+    let mut identity =
+        Identity::new_with_id_and_keys(Identifier::from(id), public_keys, platform_version)
+            .expect("identity");
+    identity.set_balance(1_000_000);
+    identity.set_revision(1);
+
     QualifiedIdentity {
-        identity: Identity::V0(IdentityV0 {
-            id: Identifier::from(id),
-            public_keys,
-            balance: 1_000_000,
-            revision: 1,
-        }),
+        identity,
         associated_voter_identity: None,
         associated_operator_identity: None,
         associated_owner_key_id: None,
@@ -1643,10 +1642,7 @@ const SKIPPED_PROTECTED_ADDRESS: &str = "XprotectedPaperKeyAddress";
 fn skipped_single_key_address() -> String {
     use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
     let key = PrivateKey::from_byte_array(&SKIPPED_SINGLE_KEY, Network::Mainnet).expect("key");
-    let public = PublicKey {
-        compressed: true,
-        inner: key.inner.public_key(),
-    };
+    let public = PublicKey::new(key.inner.public_key());
     Address::p2pkh(&public, Network::Mainnet).to_string()
 }
 

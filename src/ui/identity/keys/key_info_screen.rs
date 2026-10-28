@@ -1789,6 +1789,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::legacy_recovery::RecoveryPlan;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -1798,7 +1799,6 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
@@ -1855,16 +1855,13 @@ mod tests {
     }
 
     fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![id as u8; 20]),
+        )
     }
 
     fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
@@ -1999,16 +1996,13 @@ mod tests {
 
         // Same id, different keys: purpose is what tells them apart.
         let on_screen = public_key(0, Purpose::VOTING);
-        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xEE; 20]),
-            disabled_at: None,
-        });
+        let other = identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xEE; 20]),
+        );
 
         let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
         stored.private_keys.insert_at(
@@ -2368,16 +2362,13 @@ mod tests {
             .public_key()
             .to_bytes();
         (
-            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                BinaryData::new(data),
+            ),
             secret_bytes,
         )
     }

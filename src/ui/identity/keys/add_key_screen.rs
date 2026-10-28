@@ -310,6 +310,7 @@ impl AddKeyScreen {
             let Some(index) = self.derivation.submit() else {
                 return app_action;
             };
+            // A literal: the key setters cannot bind a key to a contract.
             let new_key = IdentityPublicKeyV0 {
                 id: 0,
                 key_type: self.key_type,
@@ -350,6 +351,7 @@ impl AddKeyScreen {
                     )
                     .with_details(error);
                 } else {
+                    // A literal: the key setters cannot bind a key to a contract.
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -377,10 +379,9 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let new_qualified_key = QualifiedIdentityPublicKey {
-                            identity_public_key: new_key.into(),
-                            in_wallet_at_derivation_path: None,
-                        };
+                        let new_qualified_key = QualifiedIdentityPublicKey::from(
+                            dash_sdk::platform::IdentityPublicKey::from(new_key),
+                        );
                         self.submitted_private_key
                             .set_text(hex::encode(private_key_bytes));
                         app_action = self.dispatch_add(BackendTask::IdentityTask(
@@ -1378,30 +1379,24 @@ mod derived_key_tests {
     /// when a lower slot is free.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_default_slot_matches_the_new_key_id() {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         let (staged, mut identity) = staged_screen_parts(true).await;
         // A manually entered key takes id 2; the new key will get id 3.
-        identity.identity.add_public_key(
-            IdentityPublicKeyV0 {
-                id: 2,
-                key_type: KeyType::ECDSA_SECP256K1,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: None,
-                data: dash_sdk::dpp::secp256k1::PublicKey::from_slice(&[
+        identity
+            .identity
+            .add_public_key(crate::context::test_support::identity_public_key(
+                2,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                dash_sdk::dpp::secp256k1::PublicKey::from_slice(&[
                     0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95,
                     0xCE, 0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59,
                     0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17, 0x98,
                 ])
                 .unwrap()
                 .serialize()
-                .to_vec()
-                .into(),
-            }
-            .into(),
-        );
+                .to_vec(),
+            ));
         let screen = AddKeyScreen::new(identity, &staged.ctx);
         assert_eq!(screen.derivation.selected_index(), Some(3));
         assert_eq!(screen.derivation.suggested_index(), None);

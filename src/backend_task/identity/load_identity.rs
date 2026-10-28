@@ -1005,6 +1005,7 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -1017,6 +1018,7 @@ mod tests {
     use dash_sdk::dpp::identifier::MasternodeIdentifiers;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -1052,17 +1054,12 @@ mod tests {
             .unwrap();
         let mut other_identity =
             Identity::create_basic_identity(other_voter, PlatformVersion::latest()).unwrap();
-        other_identity.add_public_keys([IdentityPublicKey::V0(
-            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                id: 0,
-                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_HASH160,
-                read_only: false,
-                data: address.to_byte_array().to_vec().into(),
-                disabled_at: None,
-            },
+        other_identity.add_public_keys([identity_public_key(
+            0,
+            dash_sdk::dpp::identity::Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            address.to_byte_array().to_vec(),
         )]);
         select_voting_key(&other_identity, &address.to_byte_array())
             .expect("the key is a usable voting key of the other node");
@@ -1125,18 +1122,15 @@ mod tests {
         let voter = Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
         let mut voter_identity =
             Identity::create_basic_identity(voter, PlatformVersion::latest()).unwrap();
-        voter_identity.add_public_keys([IdentityPublicKey::V0(
-            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                id: 0,
-                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_HASH160,
-                read_only: false,
-                data: address.to_byte_array().to_vec().into(),
-                disabled_at: Some(1),
-            },
-        )]);
+        let mut voting_key = identity_public_key(
+            0,
+            dash_sdk::dpp::identity::Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            address.to_byte_array().to_vec(),
+        );
+        voting_key.set_disabled_at(1);
+        voter_identity.add_public_keys([voting_key]);
         let mut sdk = Sdk::new_mock();
         sdk.mock()
             .expect_fetch(staged.id, Some(before.identity.clone()))

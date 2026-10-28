@@ -688,7 +688,7 @@ async fn no_password_wallet_resignable_via_unlock_chokepoint() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0x24u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -741,7 +741,7 @@ async fn network_switch_path_clears_outgoing_session_cache() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0x31u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -795,7 +795,7 @@ async fn register_wallet_from_seed_is_idempotent() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x5Au8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -860,7 +860,7 @@ async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
     let _serialize = backend_reopen_lock().await;
     let temp_dir = tempfile::tempdir().expect("tempdir");
 
-    let seed = [0x71u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, meta_xpub) = {
         // ---- First boot: create + register through the full W1 path ----
         let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
@@ -1053,7 +1053,7 @@ async fn list_tracked_asset_locks_task_returns_typed_result() {
 
     let (ctx, sender, _tmp) = offline_testnet_context();
 
-    let seed = [0x9Eu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1114,7 +1114,7 @@ async fn ensure_upstream_registered_is_noop_when_already_registered() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x6Bu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1152,7 +1152,7 @@ async fn concurrent_registration_of_one_wallet_is_single_flight() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x6Cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1185,7 +1185,7 @@ async fn concurrent_registration_failure_is_shared_by_the_flight() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x6Eu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1222,7 +1222,7 @@ fn poisoned_wallet_lock_is_recovered_consistently() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
     let password = Secret::new("poison-test-password");
     let mut wallet = crate::model::wallet::Wallet::new_from_seed(
-        [0x6Du8; 64],
+        crate::test_support::keys::seed(),
         Network::Testnet,
         Some("Poisoned wallet".to_string()),
         Some(&password),
@@ -1256,7 +1256,7 @@ fn poisoned_wallet_lock_is_recovered_consistently() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unlock_seed_promotion_failure_is_returned_and_wallet_is_relocked() {
     let (ctx, sender, _tmp) = offline_testnet_context();
-    let seed = [0x6Eu8; 64];
+    let seed = crate::test_support::keys::seed();
     let password = Secret::new("correct-wallet-password");
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
@@ -1313,7 +1313,7 @@ async fn tier2_wallet_cold_boot_unlock_uses_the_real_vault_envelope() {
     };
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
-    let seed = [0x8du8; 64];
+    let seed = crate::test_support::keys::seed();
     let password_text = "correct-wallet-password";
     let password_secret = Secret::new(password_text);
     let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
@@ -1420,7 +1420,7 @@ async fn storage_update_seed_outlives_the_unlock_subtask_that_promoted_it() {
     use platform_wallet_storage::secrets::SecretString;
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
-    let seed = [0x9cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let password_text = "storage-update-password";
     let password_secret = Secret::new(password_text);
     let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
@@ -1523,7 +1523,7 @@ async fn tier2_cold_boot_unlock_popup_accepts_the_correct_password() {
     use platform_wallet_storage::secrets::SecretString;
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
-    let seed = [0x3cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let password_text = "correct-wallet-password";
     let password_secret = Secret::new(password_text);
     let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
@@ -1597,7 +1597,7 @@ async fn register_wallet_persists_seed_envelope_before_backend_wired() {
         "precondition: the backend must be unwired so we exercise the pre-wire path"
     );
 
-    let seed = [0x7Cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -1661,7 +1661,7 @@ async fn register_wallet_persists_seed_envelope_before_backend_wired() {
 async fn wallet_registered_before_wiring_is_upstream_registered_on_cold_boot() {
     let (ctx, sender, _tmp) = offline_testnet_context();
 
-    let seed = [0x8Du8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -1704,9 +1704,13 @@ async fn unregistered_count_fails_safe_on_poisoned_wallet_lock() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
 
     // One wallet, inserted straight into the map (no backend wired).
-    let wallet =
-        crate::model::wallet::Wallet::new_from_seed([0x42u8; 64], Network::Testnet, None, None)
-            .expect("build wallet");
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        crate::test_support::keys::seed(),
+        Network::Testnet,
+        None,
+        None,
+    )
+    .expect("build wallet");
     let seed_hash = wallet.seed_hash();
     let arc = Arc::new(std::sync::RwLock::new(wallet));
     ctx.wallet_context()
@@ -1753,7 +1757,7 @@ async fn register_wallet_succeeds_on_fresh_install_without_legacy_tables() {
         "precondition: fresh install must not create the legacy `wallet` table"
     );
 
-    let seed = [0x9Eu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -1788,7 +1792,7 @@ async fn remove_wallet_wipes_seed_envelope() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xA1u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1834,7 +1838,7 @@ async fn remove_wallet_warns_when_local_secret_wipe_fails() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xA4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1864,7 +1868,7 @@ async fn remove_wallet_warns_when_local_secret_wipe_fails() {
 async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let seed = [0xA2u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1924,7 +1928,7 @@ async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
 async fn remove_wallet_warns_when_persisted_shielded_viewing_key_delete_fails() {
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let seed = [0xA3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -1993,7 +1997,7 @@ async fn shielded_receive_address_is_none_before_bind() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xC4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2022,7 +2026,7 @@ async fn shielded_receive_address_is_none_before_bind() {
 async fn cache_shielded_receive_address_publishes_bound_account_zero_address() {
     let (ctx, sender, _tmp) = offline_testnet_context();
 
-    let seed = [0xD7u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2088,7 +2092,7 @@ async fn cache_shielded_receive_address_publishes_bound_account_zero_address() {
 async fn remove_wallet_evicts_shielded_receive_address() {
     let (ctx, sender, _tmp) = offline_testnet_context();
 
-    let seed = [0xE9u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2145,7 +2149,7 @@ async fn remove_wallet_evicts_shielded_balance_snapshot() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xB2u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2205,7 +2209,7 @@ async fn remove_wallet_wipes_secrets_on_fresh_install_without_legacy_tables() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xF6u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2260,7 +2264,7 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xB2u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2341,7 +2345,7 @@ async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear
     ctx.ensure_wallet_backend(sender.clone())
         .await
         .expect("ensure_wallet_backend should succeed offline");
-    let seed = [0xB3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2352,7 +2356,7 @@ async fn clear_network_database_removes_an_auth_pubkey_cache_rewritten_mid_clear
     let late_writer = Arc::clone(&backend);
     backend.set_after_forget_all_test_hook(move || {
         let key = PublicKey::new(
-            SecretKey::from_secret_bytes([0x42; 32])
+            SecretKey::from_secret_bytes(crate::test_support::keys::secret_bytes())
                 .expect("valid secret key")
                 .public_key(),
         );
@@ -2417,7 +2421,7 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
         (
             QualifiedIdentityPublicKey::from(key),
-            PrivateKeyData::Clear([0x5Au8; 32]),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
         ),
     );
     let identity_id = Identifier::from([0x33u8; 32]);
@@ -2662,7 +2666,7 @@ async fn clear_network_database_removes_backups_when_legacy_shielded_cleanup_fai
 #[tokio::test]
 async fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
-    let seed = [0xB3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2705,7 +2709,7 @@ async fn lock_wipes_session_cached_seed() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xC3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2764,7 +2768,7 @@ async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
     std::fs::remove_file(&vault_path).expect("remove vault file");
     std::fs::create_dir(&vault_path).expect("plant directory at vault path");
 
-    let seed = [0xD4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2813,7 +2817,7 @@ async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
             .expect("drop meta_global to force the wallet-meta write to fail");
     }
 
-    let seed = [0x17u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -2843,7 +2847,7 @@ async fn register_wallet_rejects_overlong_alias_before_seed_write() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
 
-    let seed = [0x5Au8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
@@ -2877,7 +2881,10 @@ async fn register_wallet_rejects_overlong_alias_before_seed_write() {
 
 /// Build an unprotected testnet HD wallet from a repeated seed byte.
 fn hd_wallet_with_alias(seed_byte: u8, alias: Option<&str>) -> ([u8; 64], Wallet) {
-    let seed = [seed_byte; 64];
+    let seed = crate::test_support::keys::labelled_seed(
+        "context::wallet_lifecycle::tests::hd_wallet_with_alias",
+        seed_byte.into(),
+    );
     let wallet = Wallet::new_from_seed(seed, Network::Testnet, alias.map(str::to_owned), None)
         .expect("build wallet");
     (seed, wallet)
@@ -3091,7 +3098,7 @@ async fn migrated_wallet_is_visible_without_second_restart() {
     // Seed a legacy `wallet` row with a valid xpub so the migration's
     // seed + meta passes produce a hydratable wallet.
     use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
-    let seed = [0xE5u8; 64];
+    let seed = crate::test_support::keys::seed();
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
     let epk = legacy_master_epk_bytes(&seed);
     seed_legacy_unprotected_hd_wallet_row(
@@ -3156,7 +3163,7 @@ async fn migrated_wallet_is_upstream_registered_without_second_restart() {
     // published xpub agree, so the migration's seed + meta passes produce a
     // wallet the W2 fund-routing gate will accept.
     use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
-    let seed = [0xD7u8; 64];
+    let seed = crate::test_support::keys::seed();
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
     let epk = legacy_master_epk_bytes(&seed);
     seed_legacy_unprotected_hd_wallet_row(
@@ -3208,7 +3215,7 @@ async fn migrated_protected_wallet_waits_without_modifying_legacy_database() {
     use crate::model::wallet::encryption::encrypt_message;
 
     let (ctx, sender, tmp) = offline_testnet_context();
-    let seed = [0x42u8; 64];
+    let seed = crate::test_support::keys::seed();
     let passphrase = "correct-horse-battery-staple";
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
     let epk = legacy_master_epk_bytes(&seed);
@@ -3307,7 +3314,7 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
     // Stage a legacy PROTECTED `wallet` row whose published BIP44 xpub agrees
     // with the seed, so the W2 fund-routing gate accepts it once reached. The
     // passphrase is the one the test feeds back in at unlock time.
-    let seed = [0x42u8; 64];
+    let seed = crate::test_support::keys::seed();
     let passphrase = "correct-horse-battery-staple";
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
     let epk = legacy_master_epk_bytes(&seed);
@@ -3646,8 +3653,7 @@ async fn restore_protected_single_key_round_trip_and_wrong_password() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x2A;
+    let raw = crate::test_support::keys::secret_bytes();
     let address =
         seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("savings"));
 
@@ -3723,8 +3729,7 @@ async fn restore_without_new_passphrase_leaves_legacy_database_unchanged() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x5B;
+    let raw = crate::test_support::keys::secret_bytes();
     let address =
         seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("plain"));
     let legacy_path = ctx.db.db_file_path().expect("file-backed test database");
@@ -3778,8 +3783,7 @@ async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() 
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x77;
+    let raw = crate::test_support::keys::secret_bytes();
     let wif = testnet_wif_from_raw(&raw);
 
     let passphrase = ImportPassphrase {
@@ -3843,8 +3847,7 @@ async fn protection_changing_reimport_then_forget_leaves_no_stale_handle() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x5A;
+    let raw = crate::test_support::keys::secret_bytes();
     let wif = testnet_wif_from_raw(&raw);
     let import = |passphrase| {
         ctx.import_single_key_wif(
@@ -3880,14 +3883,13 @@ async fn remove_last_hd_wallet_keeps_has_wallet_with_imported_key() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let seed = [0xB7u8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let (seed_hash, _) = ctx
         .register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("register wallet");
-    let mut raw = [0u8; 32];
-    raw[31] = 0x5B;
+    let raw = crate::test_support::keys::secret_bytes();
     ctx.import_single_key_wif(
         &testnet_wif_from_raw(&raw),
         crate::model::wallet::alias::AliasSource::Preserved(None),
@@ -3915,8 +3917,7 @@ async fn unprotected_single_key_import_mirrors_open() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x55;
+    let raw = crate::test_support::keys::secret_bytes();
     let wif = testnet_wif_from_raw(&raw);
 
     let (imported, wallet_arc) = ctx
@@ -3960,8 +3961,7 @@ async fn protected_single_key_unlock_verifies_without_reparking_plaintext() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
-    let mut raw = [0u8; 32];
-    raw[31] = 0x91;
+    let raw = crate::test_support::keys::secret_bytes();
     let wif = testnet_wif_from_raw(&raw);
     let pass = "a-strong-passphrase";
 
@@ -4103,7 +4103,8 @@ async fn wait_for_identity_lookups(ctx: &Arc<AppContext>, seed_hash: &WalletSeed
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn import_discovery_waits_for_the_masternode_list() {
-    let (ctx, _tmp, seed_hash, wallet) = context_with_imported_wallet([0xD1u8; 64]).await;
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_imported_wallet(crate::test_support::keys::seed()).await;
     assert!(
         !ctx.connection_status().masternodes_ready(),
         "precondition: the masternode list is not synced yet"
@@ -4124,7 +4125,8 @@ async fn import_discovery_waits_for_the_masternode_list() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn import_discovery_starts_at_once_when_the_masternode_list_is_synced() {
-    let (ctx, _tmp, seed_hash, wallet) = context_with_imported_wallet([0xD2u8; 64]).await;
+    let (ctx, _tmp, seed_hash, wallet) =
+        context_with_imported_wallet(crate::test_support::keys::seed()).await;
     ctx.connection_status().set_masternodes_ready(true);
 
     ctx.queue_wallet_identity_discovery(&wallet, 4);
@@ -4158,7 +4160,7 @@ async fn open_wallets_snapshot_excludes_locked_wallets() {
 
     // A locked, password-protected wallet staged via the legacy migration
     // row: it hydrates `WalletSeed::Closed` and must be excluded.
-    let locked_seed = [0x77u8; 64];
+    let locked_seed = crate::test_support::keys::seed();
     let locked_hash: WalletSeedHash =
         crate::model::wallet::ClosedKeyItem::compute_seed_hash(&locked_seed);
     let epk = legacy_master_epk_bytes(&locked_seed);
@@ -4186,7 +4188,7 @@ async fn open_wallets_snapshot_excludes_locked_wallets() {
     let backend = ctx.wallet_backend().expect("backend wired");
 
     // An open, no-password wallet registered alongside it.
-    let open_seed = [0x66u8; 64];
+    let open_seed = crate::test_support::keys::seed();
     let open_wallet =
         crate::model::wallet::Wallet::new_from_seed(open_seed, Network::Testnet, None, None)
             .expect("build open wallet");
@@ -4331,7 +4333,7 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     // ── Boot 1: write wallet-meta sidecar + upstream persister from seed ──
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
-    let seed = [0xC7u8; 64];
+    let seed = crate::test_support::keys::seed();
     let seed_hash = {
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
@@ -4441,7 +4443,7 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
 async fn a_provisioned_identity_topup_account_survives_a_restart() {
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let seed = [0xF3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let registration_index = 7u32;
     let account_type = dash_sdk::dpp::key_wallet::AccountType::IdentityTopUp { registration_index };
 
@@ -4525,7 +4527,7 @@ async fn a_provisioned_identity_topup_account_survives_a_restart() {
 async fn an_unbound_topup_funding_account_survives_a_restart() {
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let seed = [0xB4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let account_type = dash_sdk::dpp::key_wallet::AccountType::IdentityTopUpNotBoundToIdentity;
 
     let (seed_hash, provisioned) = {
@@ -4648,8 +4650,8 @@ async fn cold_boot_fails_closed_on_a_corrupt_fvk_row() {
 
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let corrupt_seed = [0xD5u8; 64];
-    let healthy_seed = [0xD6u8; 64];
+    let corrupt_seed = crate::test_support::keys::seed();
+    let healthy_seed = crate::test_support::keys::seed();
 
     // The seed hashes matter only inside the fixture block below; the strict
     // load fails before any wallet is registered, so nothing outside reads them.
@@ -4824,7 +4826,7 @@ async fn cold_boot_surfaces_typed_error_when_persisted_transaction_txid_is_corru
 
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let seed = [0xD4u8; 64];
+    let seed = crate::test_support::keys::seed();
 
     let (_seed_hash, wallet_id) = {
         let wallet =
@@ -5008,7 +5010,7 @@ async fn wallet_not_loaded_names_the_wallet_by_alias() {
     let backend = ctx.wallet_backend().expect("backend wired");
 
     // A loaded sibling wallet, so the error cannot name "the only wallet".
-    let loaded_seed = [0x11u8; 64];
+    let loaded_seed = crate::test_support::keys::seed();
     let loaded_hash = Wallet::new_from_seed(loaded_seed, Network::Testnet, None, None)
         .expect("build wallet")
         .seed_hash();
@@ -5088,7 +5090,10 @@ fn insert_unregistered_protected_wallet(
     locked: bool,
 ) -> WalletSeedHash {
     let mut wallet = Wallet::new_from_seed(
-        [seed_byte; 64],
+        crate::test_support::keys::labelled_seed(
+            "context::wallet_lifecycle::tests::locked_wallet",
+            seed_byte.into(),
+        ),
         Network::Testnet,
         Some(alias.to_string()),
         Some(&Secret::new("a long enough password")),
@@ -5219,7 +5224,7 @@ async fn ensure_identity_managed_registers_then_noops_while_locked() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x2Cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -5259,7 +5264,7 @@ async fn reconcile_managed_identities_registers_only_wallet_owned() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0x3Du8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
@@ -5320,7 +5325,8 @@ async fn dashpay_task_registers_identity_stored_after_wallet_bootstrap() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _wallet) = register_test_wallet(&ctx, &backend, [0x4Eu8; 64], "late").await;
+    let (seed_hash, _wallet) =
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "late").await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
@@ -5461,7 +5467,8 @@ async fn storing_a_wallet_owned_identity_does_not_register_it_as_unowned() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x53u8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
@@ -5497,7 +5504,8 @@ async fn none_insert_of_a_wallet_owned_identity_does_not_disturb_the_upstream_ro
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x56u8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     let owned_id = identity_id_of(&owned);
@@ -5555,7 +5563,8 @@ async fn removing_a_wallet_deletes_no_record_det_reports_as_wallet_less() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, wallet_id) = register_backend_only_test_wallet(&backend, [0x57u8; 64]).await;
+    let (seed_hash, wallet_id) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     // A genuinely wallet-less node — the durability this reconcile mirror
     // exists for, and what keeps this assertion from passing vacuously.
@@ -5612,8 +5621,10 @@ async fn unowned_registration_survives_removal_of_every_wallet() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (_, wallet_a) = register_backend_only_test_wallet(&backend, [0x54u8; 64]).await;
-    let (_, wallet_b) = register_backend_only_test_wallet(&backend, [0x55u8; 64]).await;
+    let (_, wallet_a) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
+    let (_, wallet_b) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let node = masternode_qualified_identity();
     let node_id = identity_id_of(&node);
@@ -5779,7 +5790,8 @@ async fn reconcile_preserves_wallet_owned_identity_until_durable_promotion() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, wallet_id) = register_backend_only_test_wallet(&backend, [0x58u8; 64]).await;
+    let (seed_hash, wallet_id) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     // Registered unowned by an earlier boot, then stored as wallet-owned: the
     // registration is stale from that moment on.
@@ -5904,7 +5916,8 @@ async fn reconcile_does_not_register_an_identity_that_gained_a_wallet_after_the_
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Au8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     // Wallet-less in the id scan and absent from the unowned scope, i.e. a
     // registration candidate the moment the reconcile takes its snapshot.
@@ -5946,7 +5959,8 @@ async fn a_mirror_read_failure_keeps_the_wallet_link_of_a_wallet_owned_row() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x59u8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     let owned_id = identity_id_of(&owned);
@@ -5986,7 +6000,8 @@ async fn a_mirror_read_failure_with_no_sidecar_link_refuses_the_insert() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Du8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     // Upstream owns the row; DET has never heard of the identity.
     let owned = wallet_owned_qualified_identity(Some(0));
@@ -6037,7 +6052,8 @@ async fn a_wallet_owned_upstream_row_with_no_sidecar_refuses_the_wallet_less_ins
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Eu8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     let owned_id = identity_id_of(&owned);
@@ -6090,7 +6106,8 @@ async fn removing_a_wallet_deletes_no_wallet_less_record_after_a_mirror_read_fai
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, wallet_id) = register_backend_only_test_wallet(&backend, [0x5Fu8; 64]).await;
+    let (seed_hash, wallet_id) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     // A genuinely wallet-less node, so the surviving-records assertion has
     // something to range over instead of passing vacuously.
@@ -6432,7 +6449,8 @@ async fn a_refused_insert_strands_no_vault_entry() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x7Au8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let mut owned = wallet_owned_qualified_identity(Some(0));
     let public_key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
@@ -6442,7 +6460,7 @@ async fn a_refused_insert_strands_no_vault_entry() {
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
         (
             QualifiedIdentityPublicKey::from(public_key),
-            PrivateKeyData::Clear([0xEEu8; 32]),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
         ),
     );
     owned.private_keys = keys;
@@ -6482,7 +6500,8 @@ async fn an_unverifiable_wallet_less_downgrade_warns_the_user() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Bu8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     let owned_id = identity_id_of(&owned);
@@ -6526,7 +6545,8 @@ async fn a_swallowed_mirror_write_is_retried_before_the_wallet_link_is_kept() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Cu8; 64]).await;
+    let (seed_hash, _) =
+        register_backend_only_test_wallet(&backend, crate::test_support::keys::seed()).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
     let owned_id = identity_id_of(&owned);
@@ -6703,7 +6723,7 @@ async fn unbound_topup_funding_account_provisions_on_the_watch_only_wallet() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xAEu8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "payer").await;
 
     backend
@@ -6734,7 +6754,7 @@ async fn a_committed_registration_write_is_not_followed_by_a_second_write() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xCBu8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "one-write").await;
 
     assert!(
@@ -6812,7 +6832,7 @@ async fn a_transient_registration_persist_failure_is_retried_and_keeps_the_accou
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC1u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "transient").await;
 
     backend.arm_registration_persist_faults([PersistenceErrorKind::Transient]);
@@ -6860,7 +6880,7 @@ async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC2u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "exhausted").await;
 
     // One fault per `store` the retry budget allows — every attempt resupplies
@@ -6918,7 +6938,7 @@ async fn a_terminal_registration_persist_failure_rolls_back_the_in_memory_accoun
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC3u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "terminal").await;
 
     backend.arm_registration_persist_faults([PersistenceErrorKind::Fatal]);
@@ -6971,7 +6991,7 @@ async fn a_terminal_failure_keeps_inherited_pending_registrations_for_the_next_a
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC4u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "inherited").await;
 
     // Leave the top-up registration pending.
@@ -7047,7 +7067,7 @@ async fn a_registration_lost_by_a_foreign_buffer_drain_is_rewritten_not_reported
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC7u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "foreign").await;
 
     backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
@@ -7098,7 +7118,7 @@ async fn a_registration_lost_between_retries_is_rewritten_not_reported_saved() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC9u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "between").await;
 
     // The first `store` parks the changeset; before the retry runs, an
@@ -7133,7 +7153,7 @@ async fn a_constraint_registration_persist_failure_rolls_back_the_in_memory_acco
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC5u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "constraint").await;
 
     backend.arm_registration_persist_faults([PersistenceErrorKind::Constraint]);
@@ -7184,7 +7204,7 @@ async fn assert_terminal_retry_preserves_registration(foreign_commit: bool) {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC6u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "escalate").await;
 
     // Transient on the first `store`, then terminal on the retry.
@@ -7258,7 +7278,7 @@ async fn removing_a_wallet_drops_its_pending_account_registrations() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xC8u8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "removed").await;
 
     backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
@@ -7303,7 +7323,7 @@ async fn provisioning_two_funding_accounts_on_one_wallet_does_not_overlap() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xCEu8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "concurrent").await;
 
     // Enough transient faults that both calls sit in their retry windows at
@@ -7357,7 +7377,7 @@ async fn a_pending_registration_recorded_after_wallet_removal_is_refused() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let seed = [0xCAu8; 64];
+    let seed = crate::test_support::keys::seed();
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "outlive").await;
     let wallet_id = backend.registered_wallet_id(&seed_hash).expect("wallet id");
 
@@ -7513,8 +7533,10 @@ async fn cross_wallet_top_up_leaves_the_paying_wallets_identity_state_intact() {
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    let (owner_hash, owner_arc) = register_test_wallet(&ctx, &backend, [0x4Eu8; 64], "owner").await;
-    let (payer_hash, payer_arc) = register_test_wallet(&ctx, &backend, [0x5Fu8; 64], "payer").await;
+    let (owner_hash, owner_arc) =
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "owner").await;
+    let (payer_hash, payer_arc) =
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "payer").await;
 
     // The identity belongs to the owner wallet, at its index 0, and is already
     // registered upstream there — the steady state a reconcile leaves behind.
@@ -7576,8 +7598,9 @@ async fn cross_wallet_top_up_never_displaces_the_paying_wallets_own_identity() {
     let backend = ctx.wallet_backend().expect("backend wired");
 
     let (owner_hash, _owner_arc) =
-        register_test_wallet(&ctx, &backend, [0x6Au8; 64], "owner").await;
-    let (payer_hash, payer_arc) = register_test_wallet(&ctx, &backend, [0x7Bu8; 64], "payer").await;
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "owner").await;
+    let (payer_hash, payer_arc) =
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "payer").await;
 
     // The payer's own identity occupies its index 0.
     let mut own = wallet_owned_qualified_identity(Some(0));
@@ -7618,8 +7641,13 @@ async fn top_up_below_the_network_fee_is_refused_before_the_wallet_is_touched() 
     };
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-    let wallet =
-        Wallet::new_from_seed([0x6Au8; 64], Network::Testnet, None, None).expect("build wallet");
+    let wallet = Wallet::new_from_seed(
+        crate::test_support::keys::seed(),
+        Network::Testnet,
+        None,
+        None,
+    )
+    .expect("build wallet");
     let task = IdentityTask::TopUpIdentity(IdentityTopUpInfo {
         qualified_identity: wallet_owned_qualified_identity(Some(0)),
         wallet: Arc::new(RwLock::new(wallet)),
@@ -7662,7 +7690,7 @@ async fn existing_funding_below_the_network_fee_is_refused_by_every_task_that_ta
     use dash_sdk::dpp::address_funds::PlatformAddress;
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-    let seed = [0x6Du8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
     let seed_hash = wallet.seed_hash();
     ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
@@ -7746,7 +7774,7 @@ async fn identity_creation_below_the_network_fee_is_refused_before_the_wallet_is
     use crate::backend_task::identity::{IdentityTask, build_identity_registration_with_seed};
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-    let seed = [0x6Cu8; 64];
+    let seed = crate::test_support::keys::seed();
     let wallet = Arc::new(RwLock::new(
         Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet"),
     ));
@@ -7837,9 +7865,9 @@ async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet(
     let backend = ctx.wallet_backend().expect("backend wired");
 
     let (owner_hash, _owner_arc) =
-        register_test_wallet(&ctx, &backend, [0x8Cu8; 64], "owner").await;
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "owner").await;
     let (other_hash, _other_arc) =
-        register_test_wallet(&ctx, &backend, [0x9Du8; 64], "other").await;
+        register_test_wallet(&ctx, &backend, crate::test_support::keys::seed(), "other").await;
 
     let foreign = wallet_owned_qualified_identity(Some(0));
     ctx.insert_local_qualified_identity(&foreign, &Some((owner_hash, 0)))
@@ -7863,9 +7891,13 @@ async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet(
 async fn remove_wallet_keeps_upgrade_backups_without_backend() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
     assert!(ctx.wallet_backend().is_err());
-    let wallet =
-        crate::model::wallet::Wallet::new_from_seed([0xA7; 64], Network::Testnet, None, None)
-            .expect("build wallet");
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        crate::test_support::keys::seed(),
+        Network::Testnet,
+        None,
+        None,
+    )
+    .expect("build wallet");
     let seed_hash = wallet.seed_hash();
     ctx.wallet_context()
         .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));

@@ -909,7 +909,13 @@ impl WalletSendScreen {
             (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => Some((
                 seed_hash,
                 SpendLimitKind::ShieldFromPlatform,
-                self.live_platform_balances_revision(),
+                // A shield in flight has spent credits the live balances
+                // still show, so its opening and settling re-key the quote.
+                self.live_platform_balances_revision()
+                    ^ self
+                        .app_context
+                        .platform_shield_quote_revision(&seed_hash)
+                        .rotate_left(32),
             )),
             (SourceSelection::CoreWallet, AddressKind::Core) => Some((
                 seed_hash,
@@ -7122,6 +7128,51 @@ mod tests {
             preview.total_debit_credits,
             Amount::new_dash(1.0).value() + fee
         );
+    }
+
+    /// A shield from Platform spends credits the live balances keep showing
+    /// until a sync pass reads them back, so the shield Max key also follows
+    /// the wallet's shields in flight: a quote made before one opens is not
+    /// offered while it runs, nor after it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shield_in_flight_moves_the_shield_from_platform_max_key() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            100 * CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let key = |screen: &WalletSendScreen| {
+            let (_, kind, revision) = screen.spend_limit_target().expect("shield target");
+            assert_eq!(kind, SpendLimitKind::ShieldFromPlatform);
+            revision
+        };
+        let before = key(&screen);
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(16);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                egui::Context::default(),
+            ))
+            .await
+            .expect("wallet backend");
+        let backend = screen.app_context.wallet_backend().expect("wallet backend");
+
+        let shielding = backend.begin_platform_shield(&seed_hash);
+        let during = key(&screen);
+        assert_ne!(during, before, "a quote from before the shield is stale");
+        drop(shielding);
+        let after = key(&screen);
+        assert_ne!(after, during, "a quote from during the shield is stale");
+        assert_ne!(after, before, "a quote from before the shield stays stale");
     }
 
     /// While another transaction from the wallet is in progress, the backend

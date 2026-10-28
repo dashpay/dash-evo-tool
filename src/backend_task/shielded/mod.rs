@@ -149,6 +149,10 @@ impl AppContext {
                 // The upstream op selects the funding platform addresses; DET
                 // only supplies the wallet's address→path index for signing.
                 let path_index = self.platform_path_index(&seed_hash)?;
+                // Held until the sync pass below reads the spend back: until
+                // then the live Platform balances still show the spent
+                // credits, so no shield Max is quoted. Dropped on every exit.
+                let _shielding = backend.begin_platform_shield(&seed_hash);
                 backend
                     .shield_from_balance(
                         &seed_hash,

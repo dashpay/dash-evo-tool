@@ -443,8 +443,10 @@ pub enum TaskError {
     AssetLockTooManyInputs { count: usize, max: usize },
 
     /// The wallet's available amount is not quoted while another operation
-    /// that can take or release its Core inputs is in progress: until it
-    /// reserves them, no quote can see what it will take.
+    /// that moves the funds it is quoted from is in progress: one that can
+    /// take or release its Core inputs (until it reserves them, no quote can
+    /// see what it will take), or a shield from its Platform balance (until a
+    /// sync pass reads the spend back, the balances still show it).
     #[error("{}", crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)]
     SpendInProgress,
 

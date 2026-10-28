@@ -209,6 +209,9 @@ impl WalletBackend {
         payment_account: u32,
         amount: u64,
     ) -> Result<(), TaskError> {
+        // No shield Max is quoted while this runs. `ShieldFromBalance` holds
+        // its own guard on through the sync pass that reads the spend back.
+        let _shielding = self.begin_platform_shield(seed_hash);
         let coordinator = self.shielded_coordinator_arc().await?;
         // The planner's verdict, before any prompt: an amount above its
         // maximum is refused with the maximum it can shield. A failed read

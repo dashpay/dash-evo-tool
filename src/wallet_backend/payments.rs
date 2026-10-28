@@ -711,18 +711,24 @@ impl WalletBackend {
                 core_send_search_outcome(proven_duffs, timed_out)
                     .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF))
             }
-            SpendLimitKind::ShieldFromPlatform => wallet
-                // The payment account `ShieldFromBalance` shields from.
-                .shielded_shield_preflight(super::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT)
-                .await
-                .map(|preflight| {
-                    if preflight.can_shield {
-                        preflight.max_shieldable_credits
-                    } else {
-                        0
-                    }
-                })
-                .map_err(quote_failed),
+            SpendLimitKind::ShieldFromPlatform => {
+                // As for a Core send: the UI keys this quote on the revision
+                // it read before dispatch, so a shield opening after this
+                // check leaves the result stale rather than current.
+                self.platform_shield_quote_key(seed_hash)?;
+                wallet
+                    // The payment account `ShieldFromBalance` shields from.
+                    .shielded_shield_preflight(super::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT)
+                    .await
+                    .map(|preflight| {
+                        if preflight.can_shield {
+                            preflight.max_shieldable_credits
+                        } else {
+                            0
+                        }
+                    })
+                    .map_err(quote_failed)
+            }
         }
     }
 
@@ -2415,6 +2421,7 @@ mod tests {
         .expect("DET wallet");
         let path_index =
             crate::wallet_backend::PlatformPathIndex::from_wallet(&det_wallet, Network::Testnet);
+        let before = backend.platform_shield_quote_revision(&seed_hash);
 
         let refused = backend
             .shield_from_balance(
@@ -2432,6 +2439,57 @@ mod tests {
                 Err(TaskError::ShieldFromPlatformNothingShieldable { .. })
             ),
             "{refused:?}"
+        );
+        // The refused shield still ran as a shield: it moved the shield Max
+        // key and, once settled, leaves the wallet free to quote again.
+        assert_ne!(backend.platform_shield_quote_revision(&seed_hash), before);
+        let quote = backend
+            .spend_limit_credits(
+                &seed_hash,
+                crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform,
+            )
+            .await;
+        assert!(
+            !matches!(quote, Err(TaskError::SpendInProgress)),
+            "{quote:?}"
+        );
+    }
+
+    /// A shield from Platform spends credits the balances its Max is keyed
+    /// on keep showing until a sync pass reads them back, so while one is in
+    /// flight no shield Max is quoted. Its key moves when the shield opens and
+    /// again when it settles, and Core quotes are untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_shield_max_is_quoted_while_a_shield_from_platform_is_in_flight() {
+        let (_dir, _ctx, backend, seed_hash, _platform_wallet) =
+            backend_with_registered_wallet().await;
+        let kind = crate::model::spend_limit::SpendLimitKind::ShieldFromPlatform;
+        let idle_key = backend.platform_shield_quote_revision(&seed_hash);
+        let core_key = backend.core_send_quote_revision(&seed_hash);
+        let idle = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(!matches!(idle, Err(TaskError::SpendInProgress)), "{idle:?}");
+
+        let shielding = backend.begin_platform_shield(&seed_hash);
+        let busy = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(matches!(busy, Err(TaskError::SpendInProgress)), "{busy:?}");
+        let in_flight_key = backend.platform_shield_quote_revision(&seed_hash);
+        assert_ne!(in_flight_key, idle_key, "opening a shield moves the key");
+        assert_eq!(
+            backend.core_send_quote_revision(&seed_hash),
+            core_key,
+            "a shield from Platform reserves no Core input"
+        );
+        drop(shielding);
+
+        assert_ne!(
+            backend.platform_shield_quote_revision(&seed_hash),
+            in_flight_key,
+            "settling a shield moves the key"
+        );
+        let settled = backend.spend_limit_credits(&seed_hash, kind).await;
+        assert!(
+            !matches!(settled, Err(TaskError::SpendInProgress)),
+            "{settled:?}"
         );
     }
 

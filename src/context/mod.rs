@@ -1796,6 +1796,14 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// The shield-in-flight part of a shield-from-Platform Max quote key; see
+    /// [`crate::wallet_backend::WalletBackend::platform_shield_quote_revision`].
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.platform_shield_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
     /// Core (L1) transaction fee shown for a send that spends every UTXO.
     ///

@@ -1,5 +1,10 @@
-//! Per-wallet record of DET operations that can take or release Core input
-//! reservations, so a Max quote made before one is never offered after it.
+//! Per-wallet record of DET operations that move funds a Max quote is made
+//! from, so a quote made before one is never offered after it.
+//!
+//! One record covers the operations that can take or release Core input
+//! reservations (Core send and asset-lock Max); another covers shields from
+//! Platform, whose spend the live Platform balances keep showing until a
+//! sync pass reads it back (shield-from-Platform Max). The Core case:
 //!
 //! Reservations live in key-wallet's crate-private `ReservationSet`, which
 //! exposes no list, count or generation, and every one in this process is
@@ -16,6 +21,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -64,6 +70,16 @@ impl SpendActivity {
         }
     }
 
+    /// The key a Max quote made now for `seed_hash` is valid under, or
+    /// [`TaskError::SpendInProgress`] while an operation is open.
+    pub(super) fn idle_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        let state = self.quote_state(seed_hash);
+        if state.busy {
+            return Err(TaskError::SpendInProgress);
+        }
+        Ok(state.key)
+    }
+
     /// The key and busy flag for a Max quote on `seed_hash`.
     pub(super) fn quote_state(&self, seed_hash: &WalletSeedHash) -> QuoteState {
         let spends = self.lock().get(seed_hash).copied().unwrap_or_default();
@@ -76,7 +92,7 @@ impl SpendActivity {
 
 /// An open reserving operation; see [`SpendActivity::begin`].
 #[must_use = "the operation closes when the guard drops"]
-pub(super) struct SpendGuard {
+pub(crate) struct SpendGuard {
     activity: Arc<SpendActivity>,
     seed_hash: WalletSeedHash,
 }

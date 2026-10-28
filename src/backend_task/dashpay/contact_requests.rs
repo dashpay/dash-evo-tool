@@ -829,6 +829,10 @@ trait ReEngageOps {
     ///
     /// The decline record could not be read.
     fn is_declined(&self) -> Result<bool, TaskError>;
+    /// Whether platform-wallet still ignores the person. A decline or
+    /// withdrawal ignores them before writing its marker, so an ignore can
+    /// outlive a marker write that failed (and a rollback that failed too).
+    fn is_ignored(&self) -> impl Future<Output = bool> + Send;
     /// Lift the ignore and clear the withdrawal and decline markers.
     fn re_engage(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
 }
@@ -839,8 +843,10 @@ trait ReEngageOps {
 ///
 /// The person is hidden after a withdrawal, or after a decline that a send
 /// could not clear (see [`re_engage_after_send`]), so sending again retries.
+/// An ignore left in platform-wallet without either marker is lifted the same
+/// way; otherwise their reply would never establish the contact.
 async fn restore_withdrawn_request<O: ReEngageOps>(ops: &O) -> Result<bool, TaskError> {
-    if !(ops.is_withdrawn()? || ops.is_declined()?) {
+    if !(ops.is_withdrawn()? || ops.is_declined()? || ops.is_ignored().await) {
         return Ok(false);
     }
     ops.re_engage().await?;
@@ -878,6 +884,12 @@ impl ReEngageOps for PlatformReEngage<'_> {
     fn is_declined(&self) -> Result<bool, TaskError> {
         self.backend
             .dashpay_decline_recorded(&self.owner, &self.peer)
+    }
+
+    async fn is_ignored(&self) -> bool {
+        self.backend
+            .dashpay_sender_ignored(&self.owner, &self.peer)
+            .await
     }
 
     async fn re_engage(&self) -> Result<(), TaskError> {
@@ -935,6 +947,8 @@ trait RejectOps {
     /// Ignore the sender in platform-wallet (local only), unless the contact
     /// is already established there; returns whether the ignore stands.
     fn ignore_sender(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
+    /// Undo [`Self::ignore_sender`] when the decline cannot be recorded.
+    fn unignore_sender(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
     fn mark_declined(&self) -> Result<(), TaskError>;
     fn request_id(&self) -> Identifier;
     fn sender_id(&self) -> Identifier;
@@ -949,6 +963,32 @@ fn recorded_on_this_device(error: TaskError) -> TaskError {
         }
         error => error,
     }
+}
+
+/// Record a decline or withdrawal whose ignore already stands; if the record
+/// cannot be written, lift the ignore again so no half-done decision is left.
+///
+/// The ignore and the marker live in different stores (platform-wallet's and
+/// DET's), so they cannot change together. A rollback that fails too is only
+/// logged: the user is told the decision was not recorded, and the next send
+/// or accept lifts the leftover ignore (see [`restore_withdrawn_request`]).
+async fn record_or_unignore<U>(
+    mark: Result<(), TaskError>,
+    unignore: impl FnOnce() -> U,
+) -> Result<(), TaskError>
+where
+    U: Future<Output = Result<(), TaskError>>,
+{
+    let Err(error) = mark else {
+        return Ok(());
+    };
+    if let Err(rollback) = unignore().await {
+        tracing::warn!(
+            ?rollback,
+            "could not lift the ignore of a decision that was not recorded"
+        );
+    }
+    Err(recorded_on_this_device(error))
 }
 
 /// The progress record an older version kept is read by nothing once the
@@ -966,9 +1006,8 @@ fn forget_phase(cleared: Result<(), TaskError>) {
 async fn reject_flow<O: RejectOps>(ops: &O) -> Result<BackendTaskSuccessResult, TaskError> {
     let _action_guard = ops.lock_action().await?;
     let result = if ops.ignore_sender().await? {
-        complete_rejection(ops.request_id(), || {
-            ops.mark_declined().map_err(recorded_on_this_device)
-        })?
+        let recorded = record_or_unignore(ops.mark_declined(), || ops.unignore_sender()).await;
+        complete_rejection(ops.request_id(), || recorded)?
     } else {
         // The contact was established before the ignore took effect.
         BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
@@ -1010,6 +1049,13 @@ impl RejectOps for PlatformRejectOps<'_> {
         self.app_context
             .wallet_backend()?
             .dashpay_ignore_unless_established(&self.owner_id, &self.from_identity_id)
+            .await
+    }
+
+    async fn unignore_sender(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_unignore_contact_sender(&self.owner_id, &self.from_identity_id)
             .await
     }
 
@@ -1074,6 +1120,9 @@ trait CancelOps {
     /// in first and the contact is already established.
     fn ignore_recipient(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
 
+    /// Undo [`Self::ignore_recipient`] when the withdrawal cannot be recorded.
+    fn unignore_recipient(&self) -> impl Future<Output = Result<(), TaskError>> + Send;
+
     /// Record the withdrawal in the DET sidecar so the request stops being
     /// listed as pending.
     ///
@@ -1092,7 +1141,7 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
     let outcome = if ops.reciprocal_request_exists().await? {
         CancelOutcome::AlreadyEstablished
     } else if ops.ignore_recipient().await? {
-        ops.mark_withdrawn().map_err(recorded_on_this_device)?;
+        record_or_unignore(ops.mark_withdrawn(), || ops.unignore_recipient()).await?;
         CancelOutcome::Withdrawn
     } else {
         // The reply was taken in after the query, before the ignore.
@@ -1160,6 +1209,13 @@ impl CancelOps for PlatformCancelOps<'_> {
         self.app_context
             .wallet_backend()?
             .dashpay_ignore_unless_established(&self.owner_id, &self.to_identity_id)
+            .await
+    }
+
+    async fn unignore_recipient(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_unignore_contact_sender(&self.owner_id, &self.to_identity_id)
             .await
     }
 }
@@ -1499,6 +1555,8 @@ mod tests {
     struct ScriptedReEngage {
         withdrawn: bool,
         declined: bool,
+        /// platform-wallet still ignores the person, with no DET marker.
+        ignored: bool,
         unreadable: bool,
         re_engage_fails: bool,
         re_engaged: std::sync::Mutex<bool>,
@@ -1516,6 +1574,10 @@ mod tests {
 
         fn is_declined(&self) -> Result<bool, TaskError> {
             Ok(self.declined)
+        }
+
+        async fn is_ignored(&self) -> bool {
+            self.ignored
         }
 
         async fn re_engage(&self) -> Result<(), TaskError> {
@@ -1555,6 +1617,21 @@ mod tests {
     async fn a_decline_left_by_a_failed_send_is_retried_on_the_next_send() {
         let ops = ScriptedReEngage {
             declined: true,
+            ..Default::default()
+        };
+
+        assert!(restore_withdrawn_request(&ops).await.expect("restored"));
+        assert!(*ops.re_engaged.lock().unwrap());
+    }
+
+    /// A decline or withdrawal whose marker write failed after the ignore
+    /// stood (and whose rollback failed too) leaves only platform-wallet's
+    /// ignore. Sending or accepting again still lifts it, rather than
+    /// reporting the request as already sent while the person stays ignored.
+    #[tokio::test]
+    async fn an_ignore_left_without_a_marker_is_lifted_on_re_engagement() {
+        let ops = ScriptedReEngage {
+            ignored: true,
             ..Default::default()
         };
 
@@ -1702,6 +1779,7 @@ mod tests {
         phase_cleared: Mutex<bool>,
         phase_fails: bool,
         ignored: Mutex<bool>,
+        unignore_fails: bool,
         /// The reply is taken in between the reciprocal query and the ignore.
         established_meanwhile: bool,
     }
@@ -1728,6 +1806,14 @@ mod tests {
         async fn ignore_recipient(&self) -> Result<bool, TaskError> {
             *self.ignored.lock().unwrap() = !self.established_meanwhile;
             Ok(!self.established_meanwhile)
+        }
+
+        async fn unignore_recipient(&self) -> Result<(), TaskError> {
+            if self.unignore_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            *self.ignored.lock().unwrap() = false;
+            Ok(())
         }
 
         fn mark_withdrawn(&self) -> Result<(), TaskError> {
@@ -1809,6 +1895,65 @@ mod tests {
         assert!(cancel_flow(&ops).await.is_err());
     }
 
+    /// A withdrawal whose marker cannot be written lifts the ignore it just
+    /// set, so nothing is left half-done: no marker means no ignore.
+    #[tokio::test]
+    async fn a_failed_withdrawal_record_lifts_the_ignore_again() {
+        let ops = ScriptedOps {
+            withdraw_fails: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            cancel_flow(&ops).await,
+            Err(TaskError::DashPayRequestDecisionNotRecorded { .. })
+        ));
+        assert!(!*ops.ignored.lock().unwrap());
+    }
+
+    /// The decline twin of `a_failed_withdrawal_record_lifts_the_ignore_again`.
+    #[tokio::test]
+    async fn a_failed_decline_record_lifts_the_ignore_again() {
+        let ops = ScriptedRejectOps {
+            decline_fails: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            reject_flow(&ops).await,
+            Err(TaskError::DashPayRequestDecisionNotRecorded { .. })
+        ));
+        assert!(*ops.unignored.lock().unwrap());
+    }
+
+    /// When the rollback fails too, the user still sees why the decision
+    /// was not recorded, not the rollback's error; the ignore left behind is
+    /// lifted by the next send or accept
+    /// (`an_ignore_left_without_a_marker_is_lifted_on_re_engagement`).
+    #[tokio::test]
+    async fn a_failed_rollback_reports_the_unrecorded_decision() {
+        let decline = ScriptedRejectOps {
+            decline_fails: true,
+            unignore_fails: true,
+            ..Default::default()
+        };
+        let withdraw = ScriptedOps {
+            withdraw_fails: true,
+            unignore_fails: true,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            reject_flow(&decline).await,
+            Err(TaskError::DashPayRequestDecisionNotRecorded { .. })
+        ));
+        assert!(matches!(
+            cancel_flow(&withdraw).await,
+            Err(TaskError::DashPayRequestDecisionNotRecorded { .. })
+        ));
+        assert!(*withdraw.ignored.lock().unwrap());
+    }
+
     #[test]
     fn failed_mark_declined_write_surfaces_error_instead_of_rejected() {
         let result = complete_rejection(id(7), || {
@@ -1831,6 +1976,8 @@ mod tests {
         phase_fails: bool,
         established_meanwhile: bool,
         ignored: Mutex<usize>,
+        unignore_fails: bool,
+        unignored: Mutex<bool>,
         declined: Mutex<bool>,
     }
 
@@ -1857,6 +2004,14 @@ mod tests {
             }
             *self.ignored.lock().unwrap() += 1;
             Ok(true)
+        }
+
+        async fn unignore_sender(&self) -> Result<(), TaskError> {
+            if self.unignore_fails {
+                return Err(TaskError::WalletStateInconsistent);
+            }
+            *self.unignored.lock().unwrap() = true;
+            Ok(())
         }
 
         fn mark_declined(&self) -> Result<(), TaskError> {

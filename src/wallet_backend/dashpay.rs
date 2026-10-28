@@ -1225,6 +1225,24 @@ impl WalletBackend {
             })
     }
 
+    /// Whether platform-wallet ignores `sender`'s contact requests for
+    /// `owner`. `false` when no wallet manages `owner`.
+    pub(crate) async fn dashpay_sender_ignored(
+        &self,
+        owner: &Identifier,
+        sender: &Identifier,
+    ) -> bool {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return false;
+        };
+        wallet
+            .state()
+            .await
+            .identity_manager
+            .managed_identity(owner)
+            .is_some_and(|managed| managed.is_sender_ignored(sender))
+    }
+
     /// Undo [`Self::dashpay_ignore_contact_sender`]: platform-wallet skips an
     /// ignored sender's requests entirely, so re-engaging with them must
     /// lift the ignore or their reply never establishes the contact.
@@ -3734,6 +3752,57 @@ mod tests {
             published.public_key,
             other_scanned.public_key.to_compressed(),
             "the unselected wallet's seed must derive a different xpub"
+        );
+    }
+
+    /// `dashpay_sender_ignored` reads platform-wallet's ignore as decline,
+    /// withdrawal and their rollback leave it, and is `false` for an identity
+    /// no wallet manages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_ignore_query_follows_ignore_and_unignore() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed = [0x6Fu8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, _wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = id_from_byte(0x11);
+        let peer = id_from_byte(0x22);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+
+        assert!(!backend.dashpay_sender_ignored(&owner, &peer).await);
+        backend
+            .dashpay_ignore_contact_sender(&owner, &peer)
+            .await
+            .expect("ignore");
+        assert!(backend.dashpay_sender_ignored(&owner, &peer).await);
+        backend
+            .dashpay_unignore_contact_sender(&owner, &peer)
+            .await
+            .expect("unignore");
+        assert!(!backend.dashpay_sender_ignored(&owner, &peer).await);
+        assert!(
+            !backend
+                .dashpay_sender_ignored(&id_from_byte(0x33), &peer)
+                .await
         );
     }
 }

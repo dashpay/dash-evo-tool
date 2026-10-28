@@ -3,7 +3,7 @@
 //! These helpers are the single source of truth for parsing the string
 //! parameters of `masternode_identity_load` and
 //! `masternode_credits_withdraw`: the node type, the withdrawal key
-//! mode, the at-least-one-signing-key rule, and the ProTxHash decode. They hold
+//! mode, and the ProTxHash decode. They hold
 //! no state — no `AppContext`, `Sdk`, DB, or `BackendTask` — so they are
 //! exhaustively unit-testable without a network. Stateful enforcement (key
 //! presence on-chain, identity existence, network match) stays in the backend
@@ -12,7 +12,6 @@
 use std::fmt;
 
 use crate::model::qualified_identity::IdentityType;
-use crate::model::secret::Secret;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use thiserror::Error;
@@ -27,8 +26,11 @@ pub enum MasternodeInputError {
     InvalidNodeType,
     #[error("The 'key_mode' must be \"owner\" or \"transfer\".")]
     InvalidKeyMode,
+    /// The load stored the node, but neither its owner nor its payout key was
+    /// supplied or held by one of this device's wallets.
     #[error(
-        "Provide at least one of the owner or payout private key. \
+        "The node was loaded, but it has no owner or payout key on this device, \
+         so it cannot withdraw. Load it again with the owner or payout private key. \
          The owner key withdraws to the registered payout address; \
          the payout key withdraws to any address."
     )]
@@ -93,28 +95,6 @@ pub fn parse_key_mode(key_mode: &str) -> Result<KeyMode, MasternodeInputError> {
         "transfer" => Ok(KeyMode::Transfer),
         _ => Err(MasternodeInputError::InvalidKeyMode),
     }
-}
-
-/// Require at least one of the owner or payout signing keys.
-///
-/// A masternode identity loaded with neither signing key is watch-only and can
-/// sign no withdrawal, so it is rejected. A voting key alone does not satisfy
-/// the rule — it only binds the voter identity. Keys are considered present
-/// when their trimmed value is non-empty (an empty string means "not supplied",
-/// matching the backend's `verify_key_input`).
-///
-/// # Errors
-///
-/// Returns [`MasternodeInputError::NoSigningKey`] naming both keys and
-/// explaining the two withdraw modes when neither is supplied.
-pub fn require_at_least_one_signing_key(
-    owner_private_key: &Secret,
-    payout_private_key: &Secret,
-) -> Result<(), MasternodeInputError> {
-    if owner_private_key.is_blank() && payout_private_key.is_blank() {
-        return Err(MasternodeInputError::NoSigningKey);
-    }
-    Ok(())
 }
 
 /// Decode a ProTxHash / identity ID accepting either Base58 or hex encoding.
@@ -231,36 +211,14 @@ mod tests {
         }
     }
 
-    // ── require_at_least_one_signing_key (TC-MN-008/009) ──────────────────
-
     #[test]
-    fn both_keys_absent_rejected_naming_both() {
-        let err = require_at_least_one_signing_key(&Secret::new(""), &Secret::new("")).unwrap_err();
-        let msg = err.to_string();
+    fn no_signing_key_names_both_keys_and_what_to_do() {
+        let msg = MasternodeInputError::NoSigningKey.to_string();
         assert!(msg.contains("owner"), "message names owner key: {msg}");
         assert!(msg.contains("payout"), "message names payout key: {msg}");
-    }
-
-    #[test]
-    fn voting_key_alone_does_not_satisfy() {
-        // Voting key is not a parameter here — the rule sees only owner/payout.
-        // Both empty must still be rejected even when a voting key is set elsewhere.
         assert!(
-            require_at_least_one_signing_key(&Secret::new("   "), &Secret::new("   ")).is_err()
-        );
-    }
-
-    #[test]
-    fn owner_key_alone_satisfies() {
-        assert!(
-            require_at_least_one_signing_key(&Secret::new("OWNER_WIF"), &Secret::new("")).is_ok()
-        );
-    }
-
-    #[test]
-    fn payout_key_alone_satisfies() {
-        assert!(
-            require_at_least_one_signing_key(&Secret::new(""), &Secret::new("PAYOUT_WIF")).is_ok()
+            msg.contains("Load it again"),
+            "message says what to do: {msg}"
         );
     }
 

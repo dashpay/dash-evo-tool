@@ -47,8 +47,8 @@ pub struct MasternodeIdentityLoadParams {
     pub pro_tx_hash: String,
     /// Node type: "masternode" or "evonode".
     pub node_type: String,
-    /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. At
-    /// least one of the owner or payout private key is required.
+    /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. Leave
+    /// blank to use the owner key held by one of this device's wallets.
     #[serde(default)]
     pub owner_private_key: Secret,
     /// Voting private key (WIF or 64-char hex). Optional; binds the voter
@@ -56,8 +56,8 @@ pub struct MasternodeIdentityLoadParams {
     #[serde(default)]
     pub voting_private_key: Secret,
     /// Payout/transfer private key (WIF or 64-char hex). Bound as the
-    /// TRANSFER key. At least one of the owner or payout private key is
-    /// required.
+    /// TRANSFER key. Leave blank to use the payout key held by one of this
+    /// device's wallets.
     #[serde(default)]
     pub payout_private_key: Secret,
     /// Optional human-readable name; trimmed, empty falls back to a DPNS name.
@@ -114,7 +114,9 @@ impl ToolBase for MasternodeIdentityLoad {
         Some(
             "Load a masternode or evonode identity by ProTxHash, binding its \
              owner/voting/payout private keys (WIF or hex) and persisting it \
-             locally for the withdraw tool. The output reports which keys \
+             locally for the withdraw tool. A key left blank is taken from a \
+             wallet loaded in this app when one holds it; the load fails when \
+             the node ends up with neither an owner nor a payout key. The output reports which keys \
              loaded, the available withdrawal modes, and the registered payout \
              address. The 'network' parameter is required."
                 .into(),
@@ -144,12 +146,9 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         // format are all pure checks that reject without touching the network.
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
-        // Keys are `Secret`-typed; presence check uses `is_blank()` so no
-        // expose_secret() call is needed here.
-        masternode_input::require_at_least_one_signing_key(
-            &param.owner_private_key,
-            &param.payout_private_key,
-        )?;
+        // Blank keys are allowed: the backend looks them up in this device's
+        // wallets. Whether the node can sign a withdrawal is checked after the
+        // load, once that lookup ran.
         // S2: validate the ProTxHash format BEFORE the SPV wait so a malformed
         // hash is rejected immediately rather than after a 10-min sync.
         masternode_input::decode_identity_id(&param.pro_tx_hash)?;
@@ -225,6 +224,10 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
                 }
                 _ => {}
             }
+        }
+
+        if available_withdrawal_keys.is_empty() {
+            return Err(masternode_input::MasternodeInputError::NoSigningKey.into());
         }
 
         Ok(MasternodeIdentityLoadOutput {

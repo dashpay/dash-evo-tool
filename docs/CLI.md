@@ -221,8 +221,9 @@ clear your shell history afterward. In transfer mode, `to-address` must be a Cor
 address — Platform (bech32m `dash1…`/`tdash1…`) addresses are rejected.
 
 ```bash
-# 1. Load an evonode identity (testnet). Provide at least one of the owner or
-#    payout key; voting key and alias are optional.
+# 1. Load an evonode identity (testnet). Provide the owner or payout key, or
+#    leave both blank when a wallet loaded in the app holds them; voting key
+#    and alias are optional.
 det-cli masternode-identity-load \
   pro-tx-hash=<64-hex protx> \
   node-type=evonode \

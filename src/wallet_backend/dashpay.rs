@@ -3766,7 +3766,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let backend = context.wallet_backend().expect("backend wired");
-        let seed = [0x6Fu8; 64];
+        let seed: [u8; 64] = rand::random();
         let wallet =
             Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
         let (seed_hash, _wallet) = context

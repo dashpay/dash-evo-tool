@@ -338,6 +338,8 @@ impl BackendTask {
     // DET's paid operations run through platform-wallet `IdentityWallet`
     // methods, which persist the proven owner balance, and upstream syncs
     // identity credit balances periodically.
+    // Known limit: two overlapping paid tasks for the same payer can store
+    // the older read last; there is no ordering guard until that migration.
     pub(crate) fn fee_payer(&self) -> Option<Identifier> {
         let payer = match self {
             Self::TokenTask(task) => match task.as_ref() {
@@ -3070,7 +3072,7 @@ mod tests {
             context
                 .try_claim_contact_request_action(request_id)
                 .is_some(),
-            "the request stays claimed while the balance is read"
+            "the request's claim is released before the balance is read"
         );
 
         drop(slow_read);

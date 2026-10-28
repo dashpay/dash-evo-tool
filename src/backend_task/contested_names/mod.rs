@@ -1250,7 +1250,8 @@ impl AppContext {
         let voters = self.load_local_voting_identities()?;
         // Tell the Scheduled view which votes are now in flight.
         let _ = sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
             ))
             .await;

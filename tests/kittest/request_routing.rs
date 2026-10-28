@@ -1305,3 +1305,249 @@ fn a_deposit_seen_by_the_previous_network_leaves_the_new_networks_add_funds_wait
         );
     });
 }
+
+fn add_existing(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::identity::add_existing_identity_screen::AddExistingIdentityScreen {
+    harness
+        .state_mut()
+        .screen_stack
+        .iter_mut()
+        .find_map(|screen| match screen {
+            Screen::AddExistingIdentityScreen(form) => Some(form),
+            _ => None,
+        })
+        .expect("the Load Identity form is open")
+}
+
+/// Open the Load Identity form and start its wallet search, recorded as the
+/// form's dispatch. Returns the dispatch.
+fn searching_form(harness: &mut App) -> BackendTaskContext {
+    let app_context = harness.state().current_app_context().clone();
+    harness
+        .state_mut()
+        .screen_stack
+        .push(ScreenType::AddExistingIdentity.create_screen(&app_context));
+    add_existing(harness).begin_wallet_search_for_test();
+    let request = BackendTaskContext::for_dispatch_for_test(&BackendTask::None);
+    harness.state_mut().test_record_visible_dispatch(&request);
+    harness.run_steps(3);
+    request
+}
+
+/// A progress report the search `request` sends from `network` at `step`.
+fn search_progress(request: &BackendTaskContext, network: Network, step: u32) -> TaskResult {
+    TaskResult::Success {
+        context: BackendTaskContext::Interim {
+            network,
+            request: Box::new(request.clone()),
+        },
+        result: Box::new(BackendTaskSuccessResult::Progress {
+            message: format!("Searching wallet identity index {step} of about 20."),
+            current: step,
+            total: 20,
+        }),
+    }
+}
+
+fn search_found(request: BackendTaskContext) -> TaskResult {
+    TaskResult::Success {
+        context: request,
+        result: Box::new(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 }),
+    }
+}
+
+/// A progress report of a wallet search reaches the form that started it
+/// while another screen covers it, updating its banner, and ends nothing:
+/// the form keeps waiting and the search's sender stays on record until the
+/// search's own result arrives.
+#[test]
+fn a_progress_report_reaches_the_covered_form_that_started_the_search_and_ends_nothing() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let network = harness.state().current_app_context().network();
+        let request = searching_form(&mut harness);
+        cover_with_registration(&mut harness);
+
+        deliver(&mut harness, search_progress(&request, network, 2));
+        let banner = add_existing(&mut harness).search_banner_text_for_test();
+        assert!(
+            banner
+                .as_deref()
+                .is_some_and(|text| text.contains("index 2 of")),
+            "the covered form shows the search's progress, got {banner:?}"
+        );
+        assert!(
+            add_existing(&mut harness).is_searching_for_test(),
+            "progress leaves the form waiting"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress leaves the search's sender on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert!(
+            !add_existing(&mut harness).is_searching_for_test(),
+            "the search's own result ends the wait"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+    });
+}
+
+/// A progress report of a search whose form was closed reaches no screen and
+/// raises no banner, and the search's sender stays on record until its own
+/// result arrives.
+#[test]
+fn a_progress_report_of_a_closed_form_raises_no_banner_and_ends_nothing() {
+    use dash_evo_tool::ui::components::MessageBanner;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        let request = searching_form(&mut harness);
+        harness.state_mut().screen_stack.pop();
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        harness.run_steps(3);
+
+        deliver(
+            &mut harness,
+            search_progress(&request, app_context.network(), 2),
+        );
+        assert!(
+            !MessageBanner::has_global(app_context.egui_ctx()),
+            "a closed form's progress raises no banner"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress leaves the search's sender on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+    });
+}
+
+/// A progress report of a search started on the previous network, arriving
+/// after a switch, leaves a Load Identity form opened on the new network
+/// alone and raises no banner. The search's sender stays on record until its
+/// own result ends it.
+#[test]
+fn a_progress_report_from_the_previous_network_leaves_the_new_networks_form_alone() {
+    use dash_evo_tool::ui::components::MessageBanner;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let previous_network = harness.state().current_app_context().network();
+        let request = searching_form(&mut harness);
+
+        switch_network(&mut harness);
+        let app_context = harness.state().current_app_context().clone();
+        harness.state_mut().screen_stack.clear();
+        harness
+            .state_mut()
+            .screen_stack
+            .push(ScreenType::AddExistingIdentity.create_screen(&app_context));
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        harness.run_steps(3);
+
+        deliver(&mut harness, search_progress(&request, previous_network, 2));
+        assert!(
+            !add_existing(&mut harness).is_searching_for_test(),
+            "the previous network's progress leaves the new form idle"
+        );
+        assert_eq!(
+            add_existing(&mut harness).search_banner_text_for_test(),
+            None,
+            "the new form shows no progress of the previous network's search"
+        );
+        assert!(
+            !MessageBanner::has_global(app_context.egui_ctx()),
+            "the previous network's progress raises no banner"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress ends nothing: the search's sender stays on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            0,
+            "the search's own result ends it"
+        );
+        assert!(!add_existing(&mut harness).is_searching_for_test());
+    });
+}
+
+/// One sub-query of a contest refresh failing reports the failure without
+/// ending the refresh: the voting panel keeps its refresh running and its
+/// sender stays on record. A failure of the previous network's refresh,
+/// arriving after a switch, raises no banner either.
+#[test]
+fn a_sub_query_failure_of_a_contest_refresh_ends_nothing_and_stays_on_its_network() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let previous_network = harness.state().current_app_context().network();
+        let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&previous);
+
+        switch_network(&mut harness);
+        let current_network = harness.state().current_app_context().network();
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+        harness.run_steps(3);
+        let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&current);
+        harness.run_steps(3);
+        assert_eq!(harness.state().test_dispatch_owner_count(), 2);
+
+        let failed_step = |network, request: &BackendTaskContext| TaskResult::Error {
+            context: BackendTaskContext::Interim {
+                network,
+                request: Box::new(request.clone()),
+            },
+            error: TaskError::NoIdentitiesFound,
+        };
+        let failure_text = TaskError::NoIdentitiesFound.to_string();
+
+        deliver(&mut harness, failed_step(previous_network, &previous));
+        assert!(
+            harness.query_by_label_contains(&failure_text).is_none(),
+            "the previous network's failed step raises no banner"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "the new network's refresh keeps running"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 2);
+
+        deliver(&mut harness, failed_step(current_network, &current));
+        assert!(
+            harness.query_by_label_contains(&failure_text).is_some(),
+            "the active network's failed step is reported"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "a failed step does not end the refresh"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            2,
+            "a failed step leaves both refreshes on record"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: current,
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(
+            !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "the refresh's own failure ends it"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 1);
+    });
+}

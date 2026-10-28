@@ -2509,11 +2509,10 @@ impl App for AppState {
                             self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::Progress { .. } => {
-                            // Progress updates only go to the screen — no global banner.
-                            // The screen updates its existing banner handle in-place.
-                            // TODO: Progress is sent mid-task without the dispatch
-                            // context, so it reaches the screen in view rather than
-                            // the one that started the task.
+                            // Progress goes to the screen that started the task,
+                            // in view or not, and to no screen once that screen is
+                            // closed or its network switched away from. No global
+                            // banner: the screen updates its own banner in place.
                             self.deliver_result(route, &context, unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
@@ -2726,7 +2725,12 @@ impl App for AppState {
                     // A screen out of view cannot show how it handled the
                     // error, so the banner still tells the user.
                     let owner_hidden = owner.is_some() && !owner_in_view;
-                    let banner_shown = !suppress_stale_error && (!handled || owner_hidden);
+                    // One step of a previous network's request failing is not
+                    // an outcome: its result, when it arrives, reports it.
+                    let quiet_interim = context.interim_request().is_some()
+                        && matches!(route, ResultRoute::PreviousNetwork(_));
+                    let banner_shown =
+                        !suppress_stale_error && !quiet_interim && (!handled || owner_hidden);
 
                     if banner_shown {
                         let msg = err.to_string();

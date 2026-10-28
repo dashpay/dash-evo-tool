@@ -1,6 +1,8 @@
 use crate::backend_task::TaskResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
-use crate::backend_task::{BackendTaskSuccessResult, contextualize_dapi_task_result};
+use crate::backend_task::{
+    BackendTaskSuccessResult, contextualize_dapi_task_result, in_current_request,
+};
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
@@ -115,10 +117,11 @@ where
             pace.tick().await;
         }
         let query = query(name);
-        queries.push(tokio::spawn(async move {
+        // Carried into the subtask so its failure still names the refresh.
+        queries.push(tokio::spawn(in_current_request(async move {
             let _permit = permit;
             query.await
-        }));
+        })));
     }
     queries
 }
@@ -234,7 +237,8 @@ impl AppContext {
             let sender = sender.clone();
             let self_ref = self.clone();
 
-            tokio::spawn(async move {
+            // Carried into the subtask so its failure still names the refresh.
+            tokio::spawn(in_current_request(async move {
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -269,7 +273,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {
@@ -281,7 +285,7 @@ impl AppContext {
                         false
                     }
                 }
-            })
+            }))
         };
 
         // The end times tell which contests are still open. Those are read
@@ -323,7 +327,7 @@ impl AppContext {
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
                         let result = contextualize_dapi_task_result(
-                            TaskResult::unattributed_error(e),
+                            TaskResult::interim_error(self_ref.network, e),
                             DapiAddressAvailability::from_sdk(&sdk),
                         );
                         if let Err(send_err) = sender.send(result).await {

@@ -161,6 +161,24 @@ impl AppState {
             }
         };
         let active_network = self.current_app_context().network;
+        // A report from a request still running goes where the request's
+        // result will, but ends nothing: its sender stays on record, and a
+        // previous network's is not told to end anything either.
+        if let Some(request) = context.interim_request() {
+            return match self.request_owners.peek(request) {
+                Some((_, network)) if network != active_network => {
+                    ResultRoute::PreviousNetwork(None)
+                }
+                Some((owner, _)) if self.has_screen(owner) => ResultRoute::Owner(owner),
+                Some(_) => ResultRoute::ClosedOwner,
+                None => match context.undispatched_network() {
+                    Some(network) if network != active_network => {
+                        ResultRoute::PreviousNetwork(None)
+                    }
+                    _ => ResultRoute::Visible,
+                },
+            };
+        }
         match self.request_owners.take(context) {
             Some((owner, network)) if network != active_network => {
                 ResultRoute::PreviousNetwork(Some(owner))

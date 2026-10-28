@@ -1,31 +1,46 @@
 //! User notifications for identity and DashPay task outcomes.
 use super::top_up_identity_screen::finish_top_up;
-use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, CacheUpdate};
+use crate::ui::task_feedback::{DomainFeedback, Feedback};
 use crate::ui::{
     MessageType,
     components::{BannerHandle, MessageBanner},
 };
 
-/// Settle what the identity domain tracks about the task behind `result`
-/// and tell the user what it needs to know. `watched` says the screen that
-/// sent the task is in view, so a top-up it ended needs no confirmation
-/// banner. Returns whether `result` ended a tracked top-up.
-pub(crate) fn on_success(
-    ctx: &egui::Context,
-    watched: bool,
-    context: &BackendTaskContext,
-    result: &BackendTaskSuccessResult,
-) -> bool {
-    let tracked_top_up = finish_top_up(ctx, context, true, watched);
-    clear_profile_saving_banner_after_success(ctx, context, result);
-    show(ctx, result);
-    tracked_top_up
-}
+/// The identity domain's reactions. It tracks every top-up in flight,
+/// wherever it was sent from, and confirms one that ends out of the user's
+/// sight: a top-up's sender in view says so itself and needs no banner.
+pub(crate) struct IdentityFeedback;
 
-/// Settle what the identity domain tracks about a task that failed.
-pub(crate) fn on_error(ctx: &egui::Context, context: &BackendTaskContext) {
-    finish_top_up(ctx, context, false, true);
-    clear_profile_saving_banner_after_error(ctx, context);
+impl DomainFeedback for IdentityFeedback {
+    fn on_success(
+        &self,
+        feedback: &Feedback<'_>,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) -> Vec<CacheUpdate> {
+        finish_top_up(
+            feedback.ctx,
+            context,
+            true,
+            feedback.delivery.sender_in_view,
+        );
+        clear_profile_saving_banner_after_success(feedback.ctx, context, result);
+        show(feedback.ctx, result);
+        Vec::new()
+    }
+
+    fn on_error(
+        &self,
+        feedback: &Feedback<'_>,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        finish_top_up(feedback.ctx, context, false, true);
+        clear_profile_saving_banner_after_error(feedback.ctx, context);
+        false
+    }
 }
 
 pub(crate) fn show(ctx: &egui::Context, result: &BackendTaskSuccessResult) -> Option<BannerHandle> {

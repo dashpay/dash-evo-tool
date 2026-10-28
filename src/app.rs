@@ -22,7 +22,7 @@ mod task_dispatch;
 use crate::ui::identity::task_feedback::{
     clear_profile_saving_banner_after_error, clear_profile_saving_banner_after_success,
 };
-use crate::ui::task_feedback::ResultDelivery;
+use crate::ui::task_feedback::{Feedback, ResultDelivery};
 use result_delivery::PendingRefresh;
 
 use reconcilers::{
@@ -2289,9 +2289,13 @@ impl App for AppState {
             }
             let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
-            let delivery = ResultDelivery {
-                sender_in_view: owner_in_view,
-                sender_gone: route.sender_gone(),
+            let feedback = Feedback {
+                ctx,
+                contexts: &self.network_contexts,
+                delivery: ResultDelivery {
+                    sender_in_view: owner_in_view,
+                    sender_gone: route.sender_gone(),
+                },
             };
 
             // Each domain settles what it tracks about the task and tells the
@@ -2303,16 +2307,12 @@ impl App for AppState {
                     pending_refresh
                         .0
                         .extend(crate::ui::task_feedback::on_success(
-                            ctx,
-                            &self.network_contexts,
-                            delivery,
-                            context,
-                            result,
+                            &feedback, context, result,
                         ));
                     false
                 }
                 TaskResult::Error { context, error } => {
-                    crate::ui::task_feedback::on_error(ctx, context, error)
+                    crate::ui::task_feedback::on_error(&feedback, context, error)
                 }
                 TaskResult::CacheUpdated(_) | TaskResult::Repaint => false,
             };

@@ -1,6 +1,5 @@
 //! Dispatch backend tasks from MCP tool handlers.
 
-use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -98,6 +97,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::TaskResult;
     use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;

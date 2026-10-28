@@ -247,6 +247,10 @@ pub enum RegistrationKeyStatus {
     /// This device holds such a key only as a reference into a wallet that is
     /// not on this device, so nothing here can produce its private half.
     KeyWalletNotOnDevice,
+    /// This device holds such a key only as saved by an early version, in a
+    /// per-key encrypted form this version cannot open; entering the key
+    /// again makes it usable.
+    KeySavedByOlderVersion,
     /// The identity has such a key, but this device does not hold it.
     KeyNotOnDevice,
     /// The identity has no key that can sign a registration.
@@ -255,7 +259,9 @@ pub enum RegistrationKeyStatus {
 
 impl RegistrationKeyStatus {
     /// Whether the identity has a key that can sign a registration, but this
-    /// device cannot use it.
+    /// device cannot use it and restoring from the previous version may bring
+    /// it back. [`Self::KeySavedByOlderVersion`] is not among them: the restore
+    /// cannot open that key either, it must be entered again.
     pub fn key_is_unusable_here(self) -> bool {
         matches!(self, Self::KeyNotOnDevice | Self::KeyWalletNotOnDevice)
     }
@@ -272,22 +278,28 @@ pub fn registration_key_status(
 ) -> RegistrationKeyStatus {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     let mut held_without_its_wallet = false;
+    let mut held_in_legacy_form = false;
     for (key, data) in identity.private_keys.values() {
         // The stored copy may predate a limits update: judge the key as the
         // identity holds it now.
         if !key_can_sign_documents(identity.live_public_key(&key.identity_public_key), required) {
             continue;
         }
-        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
-        // per-key envelope, so such a key fails at signing; it is still reported
-        // as ready because it needs its own status and guidance first.
-        if identity.key_secret_is_obtainable(data) || matches!(data, PrivateKeyData::Encrypted(_)) {
+        if identity.key_secret_is_obtainable(data) {
             return RegistrationKeyStatus::Ready;
         }
-        held_without_its_wallet = true;
+        // Not obtainable: kept in the legacy per-key envelope this version
+        // cannot open, or a reference into a wallet not on this device.
+        if matches!(data, PrivateKeyData::Encrypted(_)) {
+            held_in_legacy_form = true;
+        } else {
+            held_without_its_wallet = true;
+        }
     }
     if held_without_its_wallet {
         RegistrationKeyStatus::KeyWalletNotOnDevice
+    } else if held_in_legacy_form {
+        RegistrationKeyStatus::KeySavedByOlderVersion
     } else if identity
         .identity
         .public_keys()
@@ -1517,6 +1529,23 @@ mod tests {
         assert_eq!(
             registration_key_status(&identity, high),
             RegistrationKeyStatus::Ready
+        );
+    }
+
+    /// Regression: a key kept only in the per-key encrypted format of early
+    /// versions was reported as ready, though this version cannot open it, so
+    /// the username flow offered a registration that failed at signing.
+    #[test]
+    fn a_legacy_encrypted_key_cannot_register() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let mut identity = identity_with_keys(&[(1, high)], &[1]);
+        crate::context::test_support::hold_as_legacy_encrypted(&mut identity, 1);
+
+        assert!(!can_register_usernames(&identity, high));
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::KeySavedByOlderVersion
         );
     }
 

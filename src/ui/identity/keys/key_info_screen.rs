@@ -602,10 +602,21 @@ impl ScreenLike for KeyInfoScreen {
                             self.render_sign_input(ui);
                         }
                         PrivateKeyData::Encrypted(_) => {
-                            ui.label(RichText::new("Key is encrypted").color(text_primary));
+                            // This version cannot open the per-key envelope of
+                            // early versions; entering the key again files a
+                            // copy it can use in the same place.
+                            ui.label(
+                                RichText::new(
+                                    "This key was saved by an older version of Dash Evo Tool and must be entered again before it can be used.",
+                                )
+                                .color(text_primary),
+                            );
                             ui.add_space(10.0);
-
-                            //todo decrypt key
+                            ui.label(RichText::new("Enter Private Key:").color(text_primary));
+                            self.private_key_input.show(ui);
+                            if ui.button("Add Private Key").clicked() {
+                                self.validate_and_store_private_key();
+                            }
                         }
                         PrivateKeyData::AtWalletDerivationPath(derivation_path) => {
                             if self.wallet_open

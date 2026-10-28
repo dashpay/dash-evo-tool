@@ -240,6 +240,12 @@ async fn save_contact_details<O: SaveOps>(
     // A failed publish records nothing. platform-wallet stores the details
     // here before it publishes, but its error does not say whether it got
     // that far, and an attempt can equal details that were never stored.
+    // TODO(upstream): https://github.com/dashpay/platform/issues/5646 —
+    // platform-wallet keeps its local change when the publish fails, so this
+    // device can show details Platform never got (or, for a contact with only
+    // a legacy document, the legacy details again). Once platform-wallet rolls
+    // the local change back or reports it in a typed outcome, nothing here
+    // needs to change for the rollback; a typed outcome gets its own arm.
     let outcome = ops.publish(details).await?;
     match ops.mark_synced() {
         Ok(()) => {}

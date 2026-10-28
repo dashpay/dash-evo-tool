@@ -560,6 +560,50 @@ impl IdentityHubScreen {
 }
 
 impl ScreenLike for IdentityHubScreen {
+    fn observe_backend_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        let needs_completion = match result {
+            // Another screen's contact details write is newer than any note
+            // the hub saved, so the hub retires that note and reloads.
+            BackendTaskSuccessResult::DashPayProfileUpdated(_)
+            | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
+            | BackendTaskSuccessResult::DashPayContactRequests { .. }
+            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
+            BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
+            _ => false,
+        };
+        if needs_completion {
+            self.display_backend_task_result(context, result.clone());
+        } else {
+            self.handle_contact_request_result(result);
+        }
+    }
+
+    fn observe_backend_error(&mut self, _context: &BackendTaskContext, error: &TaskError) {
+        self.handle_contact_request_error(error);
+    }
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        if update.network == self.app_context.network
+            && update.domain == crate::backend_task::CacheDomain::All
+        {
+            self.load_error_banner.take_and_clear();
+            self.profile_cache.reload_kept();
+            self.contacts_state.invalidate();
+        }
+        if update.network == self.app_context.network
+            && matches!(
+                update.domain,
+                crate::backend_task::CacheDomain::ContactPayments
+                    | crate::backend_task::CacheDomain::All
+            )
+        {
+            self.home_state.refresh_payments();
+        }
+        // Identity selection and balances are read from AppContext each frame.
+    }
     fn refresh(&mut self) {
         self.reload(false);
     }

@@ -68,6 +68,12 @@ pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
 pub const SENT_HEADING: &str = "Sent requests";
 pub const NO_RECEIVED_EMPTY: &str = "No pending requests.";
 pub const NO_ACTIVE_EMPTY: &str = "You have no contacts yet.";
+/// Shown in place of the contact list until its first load lands.
+pub const CONTACTS_LOADING: &str = "Loading contacts…";
+/// Shown in place of the contact list once its load failed with no automatic
+/// retry left. Leaving the tab and opening it again reloads the list.
+pub const CONTACTS_LOAD_FAILED: &str =
+    "Contacts could not be loaded. Open another tab and come back to try again.";
 pub const NO_SENT_EMPTY: &str = "No outgoing requests.";
 pub const NO_SEARCH_MATCH: &str = "No contact matches your search.";
 pub const SEARCH_PLACEHOLDER: &str = "Search your contacts";
@@ -256,20 +262,15 @@ pub(super) fn load_action(identity: &QualifiedIdentity, state: &mut ContactsStat
                     }
                 }
             }));
-            let context = match kind {
-                // Its own dispatch, so an older load answering late is
-                // recognised as stale.
-                crate::model::dashpay::ContactsLoadKind::Contacts => {
-                    let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
-                    if let Some(dispatch_id) = context.dispatch_id() {
-                        state.record_contacts_load(dispatch_id);
-                    }
-                    context
-                }
-                crate::model::dashpay::ContactsLoadKind::Requests => {
-                    BackendTaskContext::for_task_on(&task, identity.network)
-                }
-            };
+            // Each load is the hub's own dispatch, so its outcome comes back
+            // to the hub even while another screen is in view.
+            let context = BackendTaskContext::for_dispatch_on(&task, identity.network);
+            // A contact list answering after a newer one is recognised as stale.
+            if kind == crate::model::dashpay::ContactsLoadKind::Contacts
+                && let Some(dispatch_id) = context.dispatch_id()
+            {
+                state.record_contacts_load(dispatch_id);
+            }
             (task, context)
         })
         .collect();
@@ -580,13 +581,15 @@ fn render_populated(
                 |ui| {
                     ui.spacing_mut().item_spacing = item_spacing;
                     ui.set_width(detail_width);
-                    eframe::egui::ScrollArea::vertical()
+                    let mut detail_scroll = eframe::egui::ScrollArea::vertical()
                         .id_salt("identity_hub_contact_detail")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            action |=
-                                detail_pane(ui, app_context, identity, state, avatars, dark_mode);
-                        });
+                        .auto_shrink([false, false]);
+                    if detail_subject_changed(ui, identity, state) {
+                        detail_scroll = detail_scroll.vertical_scroll_offset(0.0);
+                    }
+                    detail_scroll.show(ui, |ui| {
+                        action |= detail_pane(ui, app_context, identity, state, avatars, dark_mode);
+                    });
                 },
             );
         });
@@ -604,6 +607,19 @@ fn render_populated(
             });
     }
     action
+}
+
+/// Whether the detail pane now shows another contact, or the same contact of
+/// another identity, than the last time it was drawn. A new subject's details
+/// open at the top instead of at the previous subject's scroll offset.
+fn detail_subject_changed(ui: &Ui, identity: &QualifiedIdentity, state: &ContactsState) -> bool {
+    let subject = (identity.identity.id(), state.detail().selected());
+    let key = eframe::egui::Id::new("identity_hub_contact_detail_subject");
+    ui.data_mut(|data| {
+        let changed = data.get_temp::<(Identifier, Option<Identifier>)>(key) != Some(subject);
+        data.insert_temp(key, subject);
+        changed
+    })
 }
 
 /// Open the send-payment screen for `contact_id`.
@@ -847,8 +863,15 @@ fn active_section(
     let pay_available = FeatureGate::DashPayOperations.is_available(app_context);
     ui.add_space(12.0);
 
-    let heading = format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len());
     let has_contacts = state.contacts_len() > 0;
+    // Until the list is loaded there is no list to call empty, or to count.
+    let notice = unknown_contacts_notice(state);
+    let loading = notice == Some(CONTACTS_LOADING);
+    let heading = if notice.is_some() {
+        ACTIVE_HEADING_PREFIX.to_string()
+    } else {
+        format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len())
+    };
     let selected = state.detail().selected();
     let mut clicked_contact = None;
 
@@ -864,7 +887,14 @@ fn active_section(
         }
 
         let matches = state.filtered_contacts();
-        if !has_contacts {
+        if let Some(notice) = notice {
+            ui.horizontal(|ui| {
+                if loading {
+                    ui.add(eframe::egui::Spinner::new());
+                }
+                ui.label(RichText::new(notice).color(DashColors::text_secondary(dark_mode)));
+            });
+        } else if !has_contacts {
             ui.label(RichText::new(NO_ACTIVE_EMPTY).color(DashColors::text_secondary(dark_mode)));
         } else if matches.is_empty() {
             ui.label(RichText::new(NO_SEARCH_MATCH).color(DashColors::text_secondary(dark_mode)));
@@ -921,7 +951,7 @@ fn active_section(
 
         // The header already offers Add by username; the section repeats it
         // only as the empty state's call to action (design-spec §B.4).
-        if !has_contacts {
+        if notice.is_none() && !has_contacts {
             ui.add_space(8.0);
             let add = ui
                 .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
@@ -940,6 +970,19 @@ fn active_section(
         state.select_contact(&contact_id);
     }
     action
+}
+
+/// What the Active contacts section shows instead of the list while the list
+/// is not known yet: loading, or failed with no automatic retry left. `None`
+/// once the list is loaded.
+fn unknown_contacts_notice(state: &ContactsState) -> Option<&'static str> {
+    if state.contacts_known() {
+        None
+    } else if state.load_failed() {
+        Some(CONTACTS_LOAD_FAILED)
+    } else {
+        Some(CONTACTS_LOADING)
+    }
 }
 
 /// Hidden contacts — the way back for anyone the user hid, declined, or
@@ -1596,6 +1639,26 @@ mod tests {
     }
 
     #[test]
+    fn unloaded_contacts_say_loading_or_failed_never_empty() {
+        let mut state = ContactsState::default();
+        assert_eq!(unknown_contacts_notice(&state), Some(CONTACTS_LOADING));
+
+        state.record_load_error(crate::model::dashpay::ContactsLoadKind::Contacts, None);
+        assert_eq!(
+            unknown_contacts_notice(&state),
+            Some(CONTACTS_LOAD_FAILED),
+            "a failed load with no retry left must say so"
+        );
+
+        state.record_contacts(Vec::new());
+        assert_eq!(
+            unknown_contacts_notice(&state),
+            None,
+            "a loaded list, even an empty one, needs no notice"
+        );
+    }
+
+    #[test]
     fn copy_constants_are_complete_sentences() {
         for line in [
             NO_SELECTION,
@@ -1611,6 +1674,7 @@ mod tests {
             CANCEL_EXPLAINER,
             HIDDEN_EXPLAINER,
             UNHIDE_TOOLTIP,
+            CONTACTS_LOAD_FAILED,
         ] {
             assert!(
                 line.ends_with('.'),
@@ -1833,6 +1897,12 @@ mod tests {
                     if matches!(**task, DashPayTask::LoadContactRequests { .. })
             )),
             "the request lists must be loaded"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|(_, context)| context.dispatch_id().is_some()),
+            "each load is the hub's own dispatch, so its outcome comes back to the hub"
         );
     }
 

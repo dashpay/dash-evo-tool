@@ -1,5 +1,5 @@
 use super::{BackendTaskSuccessResult, IdentityIndex};
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::derived_identity_key::recovery_scan_bound;
@@ -146,10 +146,10 @@ impl AppContext {
                 Some((
                     (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()),
                     (
-                        QualifiedIdentityPublicKey {
-                            identity_public_key: public_key.clone(),
-                            in_wallet_at_derivation_path: Some(wallet_derivation_path.clone()),
-                        },
+                        QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                            public_key.clone(),
+                            Some(wallet_derivation_path.clone()),
+                        ),
                         PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
                     ),
                 ))

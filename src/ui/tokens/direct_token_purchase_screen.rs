@@ -349,6 +349,14 @@ impl PurchaseTokenScreen {
 }
 
 impl ScreenLike for PurchaseTokenScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::TokenPricing {

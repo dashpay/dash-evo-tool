@@ -1,4 +1,5 @@
 pub mod connection_status;
+mod contact_info_writes;
 mod contested_names_db;
 mod contract_token_db;
 mod dapi_addresses;
@@ -276,6 +277,8 @@ pub struct AppContext {
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    /// Shared across all contact-info writers on this network.
+    pub(crate) contact_info_writes: contact_info_writes::ContactInfoWrites,
     /// Serializes operation journal writes and target-lock acquisition.
     dpns_vote_operation_guard: Mutex<()>,
     /// Bumped under `dpns_vote_operation_guard` when a removed voter is loaded
@@ -626,6 +629,7 @@ impl AppContext {
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
+            contact_info_writes: Default::default(),
             dpns_vote_operation_guard: Mutex::new(()),
             dpns_voter_lifecycles: Mutex::default(),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),

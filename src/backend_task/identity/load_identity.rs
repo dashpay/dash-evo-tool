@@ -2609,12 +2609,6 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// §10.8 — the testable core of the "Add voting key" in-place
-    /// update. A voter-key-only rebuild (blank Owner/Payout, so `associated_*`
-    /// and the Owner/Payout private keys are absent) MUST NOT erase the
-    /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
-    /// over every key the new partial build omitted, while the resupplied voting
-    /// key wins on collision.
     /// A hash160 node key, the form a masternode identity carries its owner
     /// and payout keys in.
     fn node_key(id: KeyID, purpose: Purpose, disabled: bool) -> IdentityPublicKey {
@@ -2735,6 +2729,12 @@ mod tests {
         );
     }
 
+    /// §10.8 — the testable core of the "Add voting key" in-place
+    /// update. A voter-key-only rebuild (blank Owner/Payout, so `associated_*`
+    /// and the Owner/Payout private keys are absent) MUST NOT erase the
+    /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
+    /// over every key the new partial build omitted, while the resupplied voting
+    /// key wins on collision.
     #[test]
     fn merge_preserves_owner_and_payout_when_only_voting_key_resupplied() {
         // `existing`: a fully-loaded masternode (owner + voter + identity keys).

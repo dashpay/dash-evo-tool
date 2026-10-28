@@ -1,7 +1,8 @@
 use crate::{VERSION, app_dir::app_user_data_file_path};
 use chrono::{Duration, Local};
-use std::backtrace::Backtrace;
+use std::backtrace::{Backtrace, BacktraceStatus};
 use std::fs;
+use std::io::Write as _;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -113,37 +114,14 @@ fn initialize_logger_internal() {
         }
     };
 
+    // Installed even when another subscriber is already global: the hook
+    // reports through whichever subscriber is active when a panic happens.
+    install_panic_hook();
+
     if !subscriber_set {
         // Logger already initialized, this is fine
         return;
     }
-
-    // Log panic events
-    let default_panic_hook = panic::take_hook();
-
-    panic::set_hook(Box::new(move |panic_info| {
-        let payload = panic_info.payload();
-        let message = if let Some(s) = payload.downcast_ref::<&str>() {
-            *s
-        } else if let Some(s) = payload.downcast_ref::<String>() {
-            s.as_str()
-        } else {
-            "unknown panic"
-        };
-
-        let location = panic_info
-            .location()
-            .unwrap_or_else(|| panic::Location::caller());
-
-        let backtrace = Backtrace::force_capture();
-
-        error!(
-            location = tracing::field::display(location),
-            "Panic occurred: {}\n{}", message, backtrace
-        );
-
-        default_panic_hook(panic_info);
-    }));
 
     if let Some(Some(path)) = log_file_path_for_msg {
         info!(
@@ -156,6 +134,120 @@ fn initialize_logger_internal() {
             version = VERSION,
             "Dash-Evo-Tool logging initialized (stderr fallback)"
         );
+    }
+}
+
+static INSTALL_PANIC_HOOK: Once = Once::new();
+
+/// Replaces the process panic hook with one that never writes a runtime-
+/// formatted panic message anywhere.
+///
+/// A message formatted at runtime (`panic!("{x}")`, `Result::expect`,
+/// `assert_eq!`, even `Option::expect("literal")`) can embed any value,
+/// secrets included, so only its length is reported. A compile-time literal
+/// carries no runtime value and is kept. The location, thread name and
+/// backtrace are kept: they name code, not data.
+///
+/// The hook writes to the active tracing subscriber (with a full backtrace)
+/// and to stderr, in the default hook's format, so `det-stderr.log` and the
+/// terminal still get a crash marker. The default hook is replaced, not
+/// chained: it would print the unredacted message to stderr.
+///
+/// Every entry point must call this ([`initialize_logger`] does). Idempotent.
+pub fn install_panic_hook() {
+    INSTALL_PANIC_HOOK.call_once(|| panic::set_hook(Box::new(report_panic)));
+}
+
+fn report_panic(info: &panic::PanicHookInfo<'_>) {
+    let report = PanicReport::from_hook_info(info);
+
+    let backtrace = Backtrace::force_capture();
+    error!(
+        thread = %report.thread,
+        location = %report.location,
+        message = %report.message,
+        "Panic occurred\n{backtrace}"
+    );
+
+    let mut text = report.terminal_text();
+    // Like the default hook, print a backtrace on stderr only when
+    // RUST_BACKTRACE asks for one; the log above always carries it.
+    let terminal_backtrace = Backtrace::capture();
+    if terminal_backtrace.status() == BacktraceStatus::Captured {
+        text.push_str(&format!("stack backtrace:\n{terminal_backtrace}\n"));
+    }
+    // Nothing useful can be done if stderr is gone.
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
+/// What a panic report may say about a panic message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanicMessage {
+    /// A compile-time literal (`&'static str` payload): no runtime value in it.
+    Literal(&'static str),
+    /// Formatted at runtime (`String` payload); may embed any value.
+    Formatted { len: usize },
+    /// A payload that is not a string (`std::panic::panic_any`).
+    NonString,
+}
+
+impl PanicMessage {
+    /// Classifies a panic payload. `panic!` passes a `&'static str` only for
+    /// a message without format arguments; anything formatted arrives as a
+    /// `String`, whatever it contains. (`panic_any` with a leaked runtime
+    /// `&'static str` would defeat this; nothing in DET does that.)
+    fn from_payload(payload: &(dyn std::any::Any + Send)) -> Self {
+        if let Some(literal) = payload.downcast_ref::<&'static str>() {
+            Self::Literal(literal)
+        } else if let Some(formatted) = payload.downcast_ref::<String>() {
+            Self::Formatted {
+                len: formatted.len(),
+            }
+        } else {
+            Self::NonString
+        }
+    }
+}
+
+impl std::fmt::Display for PanicMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(text) => f.write_str(text),
+            Self::Formatted { len } => {
+                write!(f, "<redacted: formatted panic message, {len} bytes>")
+            }
+            Self::NonString => f.write_str("<non-string panic payload>"),
+        }
+    }
+}
+
+/// The parts of a panic that are safe to write anywhere.
+struct PanicReport {
+    thread: String,
+    location: String,
+    message: PanicMessage,
+}
+
+impl PanicReport {
+    fn from_hook_info(info: &panic::PanicHookInfo<'_>) -> Self {
+        Self {
+            thread: std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_owned(),
+            location: info
+                .location()
+                .map_or_else(|| "<unknown location>".to_owned(), ToString::to_string),
+            message: PanicMessage::from_payload(info.payload()),
+        }
+    }
+
+    /// The default hook's stderr layout, with the message redacted.
+    fn terminal_text(&self) -> String {
+        format!(
+            "\nthread '{}' panicked at {}:\n{}\n",
+            self.thread, self.location, self.message
+        )
     }
 }
 
@@ -640,6 +732,169 @@ mod tests {
             "an explicit RUST_LOG directive for rmcp must not lift the cap, got:\n{text}"
         );
         assert!(text.contains("rmcp info is kept"), "got:\n{text}");
+    }
+
+    /// Synthetic stand-in for a secret a formatted panic message could embed.
+    /// Not a real key, seed or password.
+    const SYNTHETIC_SECRET: &str = "synthetic-secret-7f3a9c0e";
+
+    /// Child-process switch for the panic-hook tests: which panic to raise.
+    const PANIC_CHILD_MODE: &str = "DET_PANIC_HOOK_TEST_CHILD";
+    /// Child-process switch for the panic-hook tests: where to write the log.
+    const PANIC_CHILD_LOG: &str = "DET_PANIC_HOOK_TEST_LOG";
+
+    /// What a panicking child process wrote to its terminal and its log file.
+    struct PanicChildOutput {
+        /// stderr (where the hook writes), plus stdout so nothing printed by
+        /// libtest on the child's failure escapes the check.
+        terminal: String,
+        log: String,
+    }
+
+    /// Re-runs the test `test_name` in a child process that installs the real
+    /// panic hook (process-global, so it must not run in this test process)
+    /// and panics in `mode`. Returns `None` inside that child.
+    fn run_panic_hook_child(test_name: &str, mode: &str) -> Option<PanicChildOutput> {
+        if std::env::var_os(PANIC_CHILD_MODE).is_some() {
+            return None;
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let log_path = dir.path().join("det.log");
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg(test_name)
+            .arg("--exact")
+            // No libtest capture: the child's stderr is the real fd, as in production.
+            .arg("--nocapture")
+            .env(PANIC_CHILD_MODE, mode)
+            .env(PANIC_CHILD_LOG, &log_path)
+            .env_remove("RUST_BACKTRACE")
+            .env_remove("RUST_LIB_BACKTRACE")
+            .output()
+            .expect("run panic-hook child");
+        assert!(
+            !output.status.success(),
+            "the child must fail by panicking, stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Some(PanicChildOutput {
+            terminal: format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            ),
+            log: fs::read_to_string(&log_path).unwrap_or_default(),
+        })
+    }
+
+    /// Child side: install the production hook over a file-backed subscriber,
+    /// then panic as the parent asked.
+    fn panic_as_child() -> ! {
+        let mode = std::env::var(PANIC_CHILD_MODE).expect("child mode");
+        let log_path = std::env::var_os(PANIC_CHILD_LOG).expect("child log path");
+        let log_file = fs::File::create(log_path).expect("child log file");
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).expect("child subscriber");
+        install_panic_hook();
+        match mode.as_str() {
+            "formatted" => {
+                let secret = std::hint::black_box(SYNTHETIC_SECRET.to_owned());
+                panic!("wallet unlock failed for {secret}");
+            }
+            "literal" => panic!("static panic text is kept"),
+            other => unreachable!("unknown child mode {other}"),
+        }
+    }
+
+    /// Test name as libtest knows it (module path without the crate name).
+    fn libtest_name(function: &str) -> String {
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, rest)| rest);
+        format!("{module}::{function}")
+    }
+
+    #[test]
+    fn panic_hook_keeps_formatted_panic_messages_out_of_stderr_and_the_log() {
+        let name =
+            libtest_name("panic_hook_keeps_formatted_panic_messages_out_of_stderr_and_the_log");
+        let Some(child) = run_panic_hook_child(&name, "formatted") else {
+            panic_as_child();
+        };
+        for (sink, text) in [("terminal", &child.terminal), ("log", &child.log)] {
+            assert!(
+                !text.contains(SYNTHETIC_SECRET),
+                "the formatted panic message reached {sink}:\n{text}"
+            );
+            assert!(
+                text.contains("<redacted: formatted panic message"),
+                "{sink} must say the message was redacted:\n{text}"
+            );
+            assert!(
+                text.contains("src/logging.rs:"),
+                "{sink} must keep the panic location:\n{text}"
+            );
+        }
+        // The crash marker the default hook used to write, without its payload.
+        assert!(
+            child.terminal.contains("panicked at src/logging.rs:"),
+            "stderr must keep the crash marker:\n{}",
+            child.terminal
+        );
+        assert!(
+            child.terminal.contains(&format!("thread '{name}'")),
+            "stderr must name the panicking thread:\n{}",
+            child.terminal
+        );
+        assert!(
+            child.log.contains("stack backtrace") || child.log.contains("panic_as_child"),
+            "the log must keep the backtrace:\n{}",
+            child.log
+        );
+    }
+
+    #[test]
+    fn panic_hook_keeps_static_panic_messages_verbatim() {
+        let name = libtest_name("panic_hook_keeps_static_panic_messages_verbatim");
+        let Some(child) = run_panic_hook_child(&name, "literal") else {
+            panic_as_child();
+        };
+        for (sink, text) in [("terminal", &child.terminal), ("log", &child.log)] {
+            assert!(
+                text.contains("static panic text is kept"),
+                "{sink} must keep a literal panic message:\n{text}"
+            );
+            assert!(!text.contains("<redacted"), "{sink}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn panic_message_keeps_only_compile_time_literals() {
+        let literal: &'static str = "invariant broken";
+        assert_eq!(
+            PanicMessage::from_payload(&literal),
+            PanicMessage::Literal("invariant broken")
+        );
+
+        let formatted = format!("key {SYNTHETIC_SECRET}");
+        let message = PanicMessage::from_payload(&formatted);
+        assert_eq!(
+            message,
+            PanicMessage::Formatted {
+                len: formatted.len()
+            }
+        );
+        let shown = message.to_string();
+        assert!(!shown.contains(SYNTHETIC_SECRET), "{shown}");
+        assert!(shown.contains(&formatted.len().to_string()), "{shown}");
+
+        assert_eq!(PanicMessage::from_payload(&7u32), PanicMessage::NonString);
+        assert_eq!(
+            PanicMessage::NonString.to_string(),
+            "<non-string panic payload>"
+        );
     }
 
     #[test]

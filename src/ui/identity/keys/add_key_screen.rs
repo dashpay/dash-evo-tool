@@ -334,8 +334,8 @@ impl AddKeyScreen {
         // Convert the input string to bytes (hex decoding)
         match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let private_key_bytes: [u8; 32] = private_key_bytes_vec
-                    .try_into()
+                // From a slice: the error then holds no key bytes to print.
+                let private_key_bytes = <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
                     .expect("invariant: length checked to be 32 in the match guard");
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,

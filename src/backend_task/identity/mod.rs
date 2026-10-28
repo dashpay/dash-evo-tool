@@ -17,7 +17,7 @@ mod transfer;
 mod withdraw_from_identity;
 
 use super::{BackendTaskSuccessResult, FeeResult, TaskError};
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};

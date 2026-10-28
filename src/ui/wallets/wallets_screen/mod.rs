@@ -34,6 +34,7 @@ use crate::ui::components::top_panel::{add_top_panel_with_global_nav_capturing, 
 use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::network_chooser_screen::chooser_network_label;
 use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -2030,7 +2031,7 @@ impl WalletsBalancesScreen {
                             ui.vertical(|ui| {
                                 ui.set_width(left_width);
 
-                                // Wallet name + [DEV] badge
+                                // Wallet name + network badge
                                 ui.horizontal(|ui| {
                                     ui.heading(
                                         RichText::new(alias.clone())
@@ -2038,8 +2039,11 @@ impl WalletsBalancesScreen {
                                             .size(25.0),
                                     );
                                     if self.app_context.user_role().at_least(UserRole::Power) {
+                                        let network =
+                                            chooser_network_label(self.app_context.network)
+                                                .to_lowercase();
                                         ui.label(
-                                            RichText::new("[DEV]")
+                                            RichText::new(format!("[{network}]"))
                                                 .color(DashColors::text_secondary(dark_mode))
                                                 .size(12.0),
                                         );
@@ -2838,6 +2842,16 @@ impl ScreenLike for WalletsBalancesScreen {
             self.rename_task = None;
             self.pending_rename_context.clear();
         }
+    }
+
+    /// A failed transfer assessment is a background read; the screen shows
+    /// its own warning for it, so it never raises the global banner.
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.platform_transfer_assessment().is_some()
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {

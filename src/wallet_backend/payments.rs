@@ -1358,7 +1358,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn asset_lock_max_probe_waits_for_wallet_manager_write_lock() {
-        use crate::app::TaskResult;
+        use crate::backend_task::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use std::sync::Arc;
@@ -1417,7 +1417,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn asset_lock_max_probe_deadline_bounds_the_wallet_manager_write_lock() {
-        use crate::app::TaskResult;
+        use crate::backend_task::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use std::time::Duration;
@@ -1472,7 +1472,7 @@ mod tests {
     /// wallet-manager write lock through unbounded builder batches.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn asset_lock_probe_deadline_bounds_the_observation_phase() {
-        use crate::app::TaskResult;
+        use crate::backend_task::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use crate::wallet_backend::AssetLockInputState;

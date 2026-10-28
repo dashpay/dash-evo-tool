@@ -559,7 +559,15 @@ fn voting_refresh_burst_yields_between_frames() {
         assert_eq!(masternodes_segment(&mut harness), MasternodesSegment::Votes);
         let sender = harness.state().task_result_sender.clone();
         let mut queued = 0;
-        while sender.try_send(TaskResult::Refresh).is_ok() {
+        while sender
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: harness.state().current_app_context().network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Dpns,
+                },
+            ))
+            .is_ok()
+        {
             queued += 1;
         }
         assert!(
@@ -633,7 +641,14 @@ fn deferred_backend_results_preserve_success_error_order() {
                 error,
             })
             .unwrap();
-        sender.try_send(TaskResult::Refresh).unwrap();
+        sender
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: harness.state().current_app_context().network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Dpns,
+                },
+            ))
+            .unwrap();
         sender
             .try_send(TaskResult::Success {
                 context: BackendTaskContext::Unknown,
@@ -1810,7 +1825,12 @@ fn contest_notifications_do_not_refresh_a_screen_without_contest_data() {
         let sender = harness.state().task_result_sender.clone();
         for _ in 0..3 {
             sender
-                .try_send(TaskResult::DpnsContestsChanged)
+                .try_send(TaskResult::CacheUpdated(
+                    dash_evo_tool::backend_task::CacheUpdate {
+                        network: harness.state().current_app_context().network(),
+                        domain: dash_evo_tool::backend_task::CacheDomain::Dpns,
+                    },
+                ))
                 .expect("queue the contest notification");
             harness.run_steps(2);
         }
@@ -1821,7 +1841,12 @@ fn contest_notifications_do_not_refresh_a_screen_without_contest_data() {
         );
 
         sender
-            .try_send(TaskResult::Refresh)
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: harness.state().current_app_context().network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Identities,
+                },
+            ))
             .expect("queue the refresh");
         harness.run_steps(2);
         assert_eq!(
@@ -1860,7 +1885,12 @@ fn contest_notifications_update_the_open_votes_view() {
         harness
             .state()
             .task_result_sender
-            .try_send(TaskResult::DpnsContestsChanged)
+            .try_send(TaskResult::CacheUpdated(
+                dash_evo_tool::backend_task::CacheUpdate {
+                    network: harness.state().current_app_context().network(),
+                    domain: dash_evo_tool::backend_task::CacheDomain::Dpns,
+                },
+            ))
             .expect("queue the contest notification");
         harness.run_steps(3);
 

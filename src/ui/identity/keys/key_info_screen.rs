@@ -1181,11 +1181,14 @@ impl KeyInfoScreen {
                     )
                 });
             match updated {
-                Ok(fresh) => {
-                    // Resolved from the record just persisted, so the screen
-                    // shows exactly what was filed.
-                    self.private_key_data = fresh.private_keys.held_private_key_data(&self.key);
-                    self.identity = fresh;
+                Ok(edited) => {
+                    // `edited` is the record as changed in memory, holding the
+                    // key in plaintext; the store filed it in the vault. Drop
+                    // that copy and show the record as stored, and clear the
+                    // input so a later removal does not offer the key again.
+                    drop(edited);
+                    self.private_key_input.clear();
+                    self.reload_identity();
                 }
                 Err(error) => {
                     // An input refusal dismisses on its own; a record that
@@ -2366,7 +2369,7 @@ mod tests {
     /// A key and the private key that opens it, so the paste path's validation
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
-        let secret_bytes = [0x2A; 32];
+        let secret_bytes = rand::random::<[u8; 32]>();
         let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
@@ -2506,6 +2509,170 @@ mod tests {
         assert!(
             banner_texts.contains(&TaskError::IdentityKeyProtectionDowngrade.to_string()),
             "the refusal must speak through its own typed message, got {banner_texts:?}",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// `identity` with `key` published and its private half held only in the
+    /// per-key encrypted form of early versions, which this version cannot
+    /// open.
+    fn hold_as_legacy(identity: &mut QualifiedIdentity, key: &IdentityPublicKey) {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let mut published = identity.identity.public_keys().clone();
+        published.insert(key.id(), key.clone());
+        identity.identity.set_public_keys(published);
+        identity.private_keys.insert_at(
+            (MAIN, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                PrivateKeyData::Encrypted(rand::random::<[u8; 48]>().to_vec()),
+            ),
+        );
+    }
+
+    /// The data `identity` holds for `key`, without its wallet details.
+    fn held_data(identity: &QualifiedIdentity, key: &IdentityPublicKey) -> Option<PrivateKeyData> {
+        identity
+            .private_keys
+            .held_private_key_data(key)
+            .map(|(data, _)| data)
+    }
+
+    /// Re-entering a key an early version saved in its legacy encrypted form
+    /// overwrites that slot in the vault. Afterwards the screen holds no
+    /// plaintext copy, and the input is empty, so removing the key later does
+    /// not show it again for a one-click re-add.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reentering_a_legacy_key_files_it_in_the_vault_and_forgets_it() {
+        let (app_context, _dir) = offline_ctx().await;
+        let (key, secret) = keypair(1, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(0x5D, &[]);
+        hold_as_legacy(&mut stored, &key);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let held = stored.private_keys.held_private_key_data(&key);
+        let mut screen = KeyInfoScreen::new(stored, key.clone(), held, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert_eq!(
+            held_data(&on_disk, &key),
+            Some(PrivateKeyData::InVault),
+            "the legacy slot is overwritten with the vault copy",
+        );
+        assert_eq!(
+            screen.private_key_data.as_ref().map(|(data, _)| data),
+            Some(&PrivateKeyData::InVault),
+            "the screen shows the stored placement, not the plaintext",
+        );
+        assert_eq!(
+            held_data(&screen.identity, &key),
+            Some(PrivateKeyData::InVault)
+        );
+        assert!(
+            screen.private_key_input.is_empty(),
+            "the entered key does not stay in the input",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A key that does not match is refused while the slot holds the legacy
+    /// encrypted form, and the slot is left as it was.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wrong_key_does_not_replace_a_legacy_key() {
+        let (app_context, _dir) = offline_ctx().await;
+        let (key, _) = keypair(1, Purpose::AUTHENTICATION);
+        let (_, other_secret) = keypair(2, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(0x5E, &[]);
+        hold_as_legacy(&mut stored, &key);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let held = stored.private_keys.held_private_key_data(&key);
+        let mut screen = KeyInfoScreen::new(stored, key.clone(), held, &app_context);
+        screen.private_key_input.set_text(hex::encode(other_secret));
+        screen.validate_and_store_private_key();
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(matches!(
+            held_data(&on_disk, &key),
+            Some(PrivateKeyData::Encrypted(_))
+        ));
+        assert!(matches!(
+            screen.private_key_data,
+            Some((PrivateKeyData::Encrypted(_), _))
+        ));
+        assert_eq!(
+            crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx()),
+            ["Private key does not match the public key."]
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// On a password-protected identity a re-entered legacy key cannot be
+    /// stored without its password, so the keyless persist is refused with
+    /// its own message and the legacy slot is left as it was.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reentering_a_legacy_key_of_a_protected_identity_is_refused() {
+        let (app_context, _dir) = offline_ctx().await;
+        let sealed = public_key(0, Purpose::AUTHENTICATION);
+        let (key, secret) = keypair(1, Purpose::AUTHENTICATION);
+        let mut stored = protected_identity(&app_context, 0x7D, &sealed, &[]);
+        hold_as_legacy(&mut stored, &key);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("a record with no resident plaintext inserts cleanly");
+
+        let held = stored.private_keys.held_private_key_data(&key);
+        let mut screen = KeyInfoScreen::new(stored, key.clone(), held, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(matches!(
+            held_data(&on_disk, &key),
+            Some(PrivateKeyData::Encrypted(_))
+        ));
+        assert!(matches!(
+            screen.private_key_data,
+            Some((PrivateKeyData::Encrypted(_), _))
+        ));
+        let banner_texts =
+            crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+        assert!(
+            banner_texts.contains(&TaskError::IdentityKeyProtectionDowngrade.to_string()),
+            "got {banner_texts:?}",
         );
 
         app_context

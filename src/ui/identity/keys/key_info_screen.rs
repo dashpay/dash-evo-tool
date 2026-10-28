@@ -48,6 +48,7 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 use zxcvbn::zxcvbn;
 
 pub struct KeyInfoScreen {
@@ -1103,15 +1104,16 @@ impl KeyInfoScreen {
     }
 
     fn validate_and_store_private_key(&mut self) {
-        // Convert the input string to bytes (hex decoding)
-        let private_key_bytes = match hex::decode(self.private_key_input.text()) {
-            Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let bytes: [u8; 32] = private_key_bytes_vec
-                    .try_into()
-                    .expect("invariant: length checked to be 32 in the match guard");
-                bytes
-            }
-            Ok(_) => {
+        // Convert the input string to bytes (hex, then WIF). The parsed key is
+        // held in `Zeroizing`, so it is wiped when this function returns.
+        let input = self.private_key_input.text();
+        let is_hex =
+            input.len().is_multiple_of(2) && input.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let private_key_bytes = if is_hex {
+            // Decoded straight into the zeroizing buffer, so no plain copy of
+            // the key is left behind; the only error left is a wrong length.
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            if hex::decode_to_slice(input, bytes.as_mut_slice()).is_err() {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Private key not 32 bytes",
@@ -1119,8 +1121,10 @@ impl KeyInfoScreen {
                 );
                 return;
             }
-            Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
-                Ok(key) => *key.inner.to_bytes(),
+            bytes
+        } else {
+            match PrivateKey::from_wif(input) {
+                Ok(key) => key.inner.to_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -1129,7 +1133,7 @@ impl KeyInfoScreen {
                     );
                     return;
                 }
-            },
+            }
         };
 
         let validation_result = self
@@ -1162,7 +1166,7 @@ impl KeyInfoScreen {
                     let target = Self::filed_at_in(fresh, &self.key)?;
                     fresh.private_keys.insert_non_encrypted(
                         (target, self.key.id()),
-                        (self.key.clone().into(), private_key_bytes),
+                        (self.key.clone().into(), *private_key_bytes),
                     )
                 });
             match updated {
@@ -2253,6 +2257,63 @@ mod tests {
             .expect("backend")
             .shutdown()
             .await;
+    }
+
+    /// Pastes `input(secret)` as the private key of a key the identity
+    /// publishes, and reports whether the record on disk then holds that key.
+    async fn held_after_paste(id_byte: u8, input: impl FnOnce(&[u8; 32]) -> String) -> bool {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(id_byte, &[]);
+        stored.identity = Identity::new_with_id_and_keys(
+            Identifier::from([id_byte; 32]),
+            BTreeMap::from([(pasted.id(), pasted.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing the pasted key");
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+
+        screen.private_key_input.set_text(input(&secret));
+        screen.validate_and_store_private_key();
+
+        let held = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored")
+            .private_keys
+            .candidates(&pasted)
+            .next()
+            .is_some();
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+        held
+    }
+
+    /// A key pasted as WIF is read and saved, like one pasted as hex.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_pasted_as_wif_is_saved() {
+        let held = held_after_paste(0x5A, |secret| {
+            PrivateKey::from_byte_array(secret, Network::Testnet)
+                .expect("valid secret key")
+                .to_wif()
+        })
+        .await;
+        assert!(held, "a valid WIF key must be saved");
+    }
+
+    /// Valid hex that is not 32 bytes long is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hex_key_of_the_wrong_length_is_not_saved() {
+        let held = held_after_paste(0x5B, |secret| hex::encode(&secret[..31])).await;
+        assert!(!held, "a 31-byte hex key must not be saved");
     }
 
     /// The removal's mirror of `a_write_behind_the_screen_survives_a_paste`:

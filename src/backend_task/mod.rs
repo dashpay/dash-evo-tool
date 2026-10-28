@@ -1605,7 +1605,7 @@ impl AppContext {
         let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
         if cancellation_token.is_cancelled() {
             if let Ok(backend) = new_ctx.wallet_backend() {
-                backend.shutdown_built().await;
+                backend.shutdown_bounded().await;
             }
             return Err(TaskError::TaskManagerShuttingDown);
         }
@@ -1666,8 +1666,7 @@ impl AppContext {
         if cancellation_token.is_cancelled()
             && let Ok(backend) = new_ctx.wallet_backend()
         {
-            backend.forget_all_secrets();
-            backend.shutdown().await;
+            backend.shutdown_bounded().await;
             spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {

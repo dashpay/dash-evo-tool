@@ -557,8 +557,8 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
-/// Upper bound for [`WalletBackend::shutdown_built`].
-const BUILT_BACKEND_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Upper bound for [`WalletBackend::shutdown_bounded`].
+const BOUNDED_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
@@ -647,7 +647,7 @@ impl WalletBackend {
         ));
 
         // From here on the manager runs its wallet-event adapter, so every
-        // failure below tears it down through `Self::shutdown_built`, never a
+        // failure below tears it down through `Self::shutdown_bounded`, never a
         // plain drop.
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
@@ -761,30 +761,32 @@ impl WalletBackend {
             initialized = initialize => initialized,
         };
         if let Err(error) = initialized {
-            backend.shutdown_built().await;
+            backend.shutdown_bounded().await;
             return Err(error);
         }
 
         Ok(backend)
     }
 
-    /// Tear down a backend that never started chain sync, bounded by
-    /// [`BUILT_BACKEND_SHUTDOWN_TIMEOUT`].
+    /// Forget cached secrets and tear the backend down through the upstream
+    /// shutdown, bounded by [`BOUNDED_SHUTDOWN_TIMEOUT`].
     ///
     /// Use it instead of dropping the backend: the upstream manager's `Drop`
     /// only cancels its wallet-event adapter and may lose buffered events.
-    /// [`Self::shutdown`] drains the adapter first. A backend that never
-    /// started has no chain sync or sync passes to wait for, so the bound is
-    /// a backstop only.
-    pub(crate) async fn shutdown_built(&self) {
+    /// [`Self::shutdown`] stops chain sync, drains the sync passes and joins
+    /// the adapter. A backend that never started has only the adapter to
+    /// drain. One that started and overruns the bound is reported. A later
+    /// shutdown, such as the app's exit drain for a registered context, joins
+    /// what is left.
+    pub(crate) async fn shutdown_bounded(&self) {
         self.forget_all_secrets();
-        if tokio::time::timeout(BUILT_BACKEND_SHUTDOWN_TIMEOUT, self.shutdown())
+        if tokio::time::timeout(BOUNDED_SHUTDOWN_TIMEOUT, self.shutdown())
             .await
             .is_err()
         {
             tracing::warn!(
-                timeout_secs = BUILT_BACKEND_SHUTDOWN_TIMEOUT.as_secs(),
-                "Teardown of an unstarted wallet backend timed out; continuing"
+                timeout_secs = BOUNDED_SHUTDOWN_TIMEOUT.as_secs(),
+                "Wallet backend teardown timed out; continuing"
             );
         }
     }

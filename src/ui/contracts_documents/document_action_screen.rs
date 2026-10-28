@@ -276,6 +276,14 @@ impl DocumentActionScreen {
         self.fetched_price = None;
     }
 
+    /// Start the form over on `app_context`'s network. Nothing selected,
+    /// fetched or sent on the previous network stays, and no fetch or broadcast
+    /// from it is still awaited.
+    pub fn reset_for_network_switch(&mut self, app_context: Arc<AppContext>) {
+        self.refresh_banner.take_and_clear();
+        *self = Self::new(app_context, None, self.action_type.clone());
+    }
+
     fn reset_screen(&mut self) {
         self.refresh_banner.take_and_clear();
         self.no_documents_found = false;
@@ -2371,6 +2379,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A network switch starts the form over on the new network: no fetch or
+    /// broadcast from the old one is still awaited, so neither stays disabled.
+    #[test]
+    fn a_network_switch_drops_fetches_and_broadcasts_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.set_fetching_banner(&ctx, "Broadcasting...");
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = crate::context::test_support::test_app_context_for_network(
+            other_dir.path(),
+            dash_sdk::dpp::dashcore::Network::Devnet,
+        );
+        let mut wrapped = crate::ui::Screen::DocumentActionScreen(screen);
+        wrapped.change_context(other.clone());
+        let crate::ui::Screen::DocumentActionScreen(screen) = wrapped else {
+            unreachable!("change_context keeps the screen variant");
+        };
+
+        assert!(Arc::ptr_eq(&screen.app_context, &other));
+        assert!(screen.action_type == DocumentActionType::Delete);
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.document_id_input.is_empty());
     }
 
     fn named_identity(byte: u8, name: &str) -> QualifiedIdentity {

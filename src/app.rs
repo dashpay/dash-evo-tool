@@ -2555,16 +2555,10 @@ impl App for AppState {
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            if tracked_top_up
-                                && !owner_in_view
-                                && !matches!(route, ResultRoute::PreviousNetwork(_))
-                            {
-                                // Not this screen's top-up, but the balances it shows changed.
-                                self.visible_screen_mut().refresh();
-                            }
-                            // No refresh for any other task whose screen is closed:
-                            // `refresh()` resets some screens, such as a running
-                            // document query, and the screen in view did not send it.
+                            // No screen is refreshed for a task whose screen is
+                            // gone: `refresh()` resets some screens, such as a
+                            // running document query. Data a task changed
+                            // reaches screens as a cache notification instead.
                             if route.sender_gone()
                                 && !tracked_top_up
                                 && let Some(message) = closed_send_form_message(&unboxed_message)

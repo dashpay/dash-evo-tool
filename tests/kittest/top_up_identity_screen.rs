@@ -356,6 +356,48 @@ fn reopened_add_funds_shows_the_balance_its_top_up_left() {
     });
 }
 
+/// A top-up whose Add Funds screen was closed ends while a document query
+/// runs on the screen in view. The query is not the top-up's to reset: it
+/// keeps waiting for its own answer. The balances that changed reach screens
+/// as a cache notification, never as a screen refresh.
+#[test]
+fn a_top_up_ending_elsewhere_leaves_a_running_query_alone() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        let identity = test_identity(harness.state().current_app_context().network());
+        open_add_funds(&mut harness, &identity);
+        let dispatch = begin_top_up(&mut harness);
+        continue_in_background(&mut harness);
+        harness.state_mut().screen_stack.clear();
+        harness.run_steps(3);
+
+        let query = documents(&mut harness)
+            .begin_fetch_for_test()
+            .expect("the query is the screen's dispatch");
+        harness.state_mut().test_record_visible_dispatch(&query);
+
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert_eq!(count(&harness, DONE_BANNER), 1, "the top-up is confirmed");
+        assert!(
+            documents(&mut harness).fetch_pending_for_test(),
+            "the query still waits for its own answer"
+        );
+    });
+}
+
+fn documents(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenDocumentQuery)
+    {
+        Some(Screen::DocumentQueryScreen(screen)) => screen,
+        _ => panic!("the Documents screen is open"),
+    }
+}
+
 /// A failed background top-up must not hand Wallet Send its form back while
 /// the transfer it sent is still running: sending again would pay twice.
 #[test]

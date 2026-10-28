@@ -8,6 +8,11 @@ trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/data" "$scratch/bin"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# Workflows run this script directly, not through bash.
+[ -x "$SCRIPT_DIR/download-fixtures.sh" ] || fail 'download-fixtures.sh is not executable'
+echo 'PASS: workflow-invoked scripts are executable'
+
 printf 'MCP_API_KEY=\nTESTNET_core_rpc_password=""\nTESTNET_core_rpc_user=\n' > "$scratch/data/.env"
 bash "$SCRIPT_DIR/pack.sh" "$scratch/data" "$scratch/clean" > "$scratch/pack.log"
 for key in MCP_API_KEY TESTNET_core_rpc_password MAINNET_core_rpc_user LOCAL_wallet_private_key; do

@@ -557,6 +557,9 @@ pub(crate) fn all_networks() -> [Network; 4] {
 /// — that directory holds the disposable, resyncable chain cache, while this file
 /// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
 /// created and locked down at boot, so no directory work happens here.
+/// Upper bound for [`WalletBackend::shutdown_built`].
+const BUILT_BACKEND_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
     data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
 }
@@ -643,20 +646,10 @@ impl WalletBackend {
             Arc::clone(&ctx.platform_sync_cursors),
         ));
 
+        // From here on the manager runs its wallet-event adapter, so every
+        // failure below tears it down through `Self::shutdown_built`, never a
+        // plain drop.
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
-
-        // Wire the upstream shielded coordinator into the manager.
-        //
-        // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — the single source of truth for
-        // all Orchard state. The coordinator starts empty — no wallets are bound
-        // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
-        // calls with the same path are idempotent (upstream no-ops).
-        pwm.configure_shielded(shielded_database_path(ctx.data_dir(), network))
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })?;
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
 
@@ -727,18 +720,73 @@ impl WalletBackend {
             }),
         };
 
-        // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
-        // seed-envelope sidecars before the loader runs. The legacy
-        // `db.get_wallets` row → `Wallet` mapping moved here once the
-        // sidecars became the authoritative source. `register_persisted_wallets`
-        // expects the wallet context's HD registry to be populated so it can re-provision
-        // identity funding accounts (a5538dc8) for every persisted
-        // identity, so hydration must precede registration.
-        backend.hydrate_context_wallets(ctx)?;
+        let initialize = async {
+            // Wire the upstream shielded coordinator into the manager.
+            //
+            // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
+            // entirely by the upstream coordinator — the single source of truth for
+            // all Orchard state. The coordinator starts empty — no wallets are bound
+            // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
+            // calls with the same path are idempotent (upstream no-ops).
+            backend
+                .inner
+                .pwm
+                .configure_shielded(shielded_database_path(ctx.data_dir(), network))
+                .await
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
 
-        backend.register_persisted_wallets(ctx).await?;
+            // T-W-01 cold-boot: rebuild the wallet context's HD registry from the wallet-meta +
+            // seed-envelope sidecars before the loader runs. The legacy
+            // `db.get_wallets` row → `Wallet` mapping moved here once the
+            // sidecars became the authoritative source. `register_persisted_wallets`
+            // expects the wallet context's HD registry to be populated so it can re-provision
+            // identity funding accounts (a5538dc8) for every persisted
+            // identity, so hydration must precede registration.
+            backend.hydrate_context_wallets(ctx)?;
+
+            backend.register_persisted_wallets(ctx).await
+        };
+        // Closing the app stops the build at its next await. Stopping there
+        // is safe: no step here writes the wallet database itself. Opening
+        // the shielded store is synchronous, and the persisted-wallet load
+        // only reads.
+        // Whatever the load left half-done lives only in this manager, and
+        // the manager is torn down below.
+        let cancellation_token = ctx.subtasks.cancellation_token.clone();
+        let initialized = tokio::select! {
+            biased;
+            _ = cancellation_token.cancelled() => Err(TaskError::TaskManagerShuttingDown),
+            initialized = initialize => initialized,
+        };
+        if let Err(error) = initialized {
+            backend.shutdown_built().await;
+            return Err(error);
+        }
 
         Ok(backend)
+    }
+
+    /// Tear down a backend that never started chain sync, bounded by
+    /// [`BUILT_BACKEND_SHUTDOWN_TIMEOUT`].
+    ///
+    /// Use it instead of dropping the backend: the upstream manager's `Drop`
+    /// only cancels its wallet-event adapter and may lose buffered events.
+    /// [`Self::shutdown`] drains the adapter first. A backend that never
+    /// started has no chain sync or sync passes to wait for, so the bound is
+    /// a backstop only.
+    pub(crate) async fn shutdown_built(&self) {
+        self.forget_all_secrets();
+        if tokio::time::timeout(BUILT_BACKEND_SHUTDOWN_TIMEOUT, self.shutdown())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout_secs = BUILT_BACKEND_SHUTDOWN_TIMEOUT.as_secs(),
+                "Teardown of an unstarted wallet backend timed out; continuing"
+            );
+        }
     }
 
     /// Refill the wallet context's HD and imported-key registries from the
@@ -3816,6 +3864,34 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wallet backend still being built when the app closes stops instead
+    /// of finishing, and releases the wallet database it opened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_interrupted_by_exit_stops_and_releases_its_storage() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        ctx.subtasks.cancellation_token.cancel();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let error = ctx
+            .ensure_wallet_backend(sender)
+            .await
+            .expect_err("closing the app stops the build");
+        assert!(
+            matches!(error, TaskError::TaskManagerShuttingDown),
+            "unexpected error: {error:?}"
+        );
+        assert!(ctx.wallet_backend().is_err(), "nothing was wired");
+        platform_compatibility::open(SqlitePersisterConfig::new(wallet_database_path(
+            ctx.data_dir(),
+            ctx.network,
+        )))
+        .expect("the stopped build released the wallet database");
+    }
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;

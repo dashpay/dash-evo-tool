@@ -1550,71 +1550,65 @@ impl AppContext {
     where
         F: Future<Output = Result<(), TaskError>>,
     {
+        // Closing the app cancels the token, which this process does only at
+        // exit. The switch then stops between its steps instead of holding the
+        // exit for the task manager's whole shutdown budget: the test hold
+        // point and the wallet backend build stop at their next await, and a
+        // backend that was built is torn down through the upstream shutdown,
+        // never a plain drop.
         let cancellation_token = self.subtasks.cancellation_token.clone();
 
-        // The build below can take a long time on a first visit. Shutdown
-        // cancels the token, and the switch stops at its next await instead
-        // of holding the exit for the task manager's whole shutdown budget.
-        // That is safe because the token is cancelled only at app exit, so no
-        // later open in this process can trip on what is abandoned here.
-        // Storage opens and upgrades run synchronously between awaits, so
-        // they always finish. The wallet load is read-only, and the address
-        // bootstrap is idempotent and runs again on the next start. A backend
-        // that was already wired is shut down below. One that is still being
-        // built is dropped, and the upstream manager's `Drop` stops its event
-        // adapter.
-        let mut built_ctx: Option<Arc<Self>> = None;
-        let build = async {
-            #[cfg(feature = "testing")]
-            drop(self.test_network_switch_gate.lock().await);
-
-            // Create a new AppContext for the target network, reusing shared
-            // resources (db, subtasks, connection_status) from the current context.
-            // Wrapped in block_in_place because AppContext::new() does DB init
-            // and file I/O which would block the async runtime.
-            let data_dir = self.data_dir.clone();
-            let db = self.db.clone();
-            let subtasks = self.subtasks.clone();
-            let connection_status = self.connection_status.clone();
-            let egui_ctx = self.egui_ctx().clone();
-            let app_kv = self.app_kv();
-            let secret_store = self.secret_store();
-            // Share the app-global role cell so the freshly-switched context
-            // observes the same value (and live changes) as the rest of the
-            // app — never a fresh per-context cell.
-            let user_role = self.user_role_cell();
-            let new_ctx = tokio::task::block_in_place(|| {
-                AppContext::new(
-                    data_dir,
-                    network,
-                    db,
-                    subtasks,
-                    connection_status,
-                    egui_ctx,
-                    app_kv,
-                    secret_store,
-                    user_role,
-                )
-            })
-            .ok_or(TaskError::NetworkContextCreationFailed { network })?;
-            new_ctx.install_secret_prompt(self.secret_prompt());
-            let new_ctx = Arc::clone(built_ctx.insert(new_ctx));
-            let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
-            Ok::<_, TaskError>((new_ctx, wiring))
-        };
-        let built = tokio::select! {
+        #[cfg(feature = "testing")]
+        tokio::select! {
             biased;
-            _ = cancellation_token.cancelled() => None,
-            built = build => Some(built?),
-        };
-        let Some((new_ctx, wiring)) = built else {
-            if let Some(backend) = built_ctx.and_then(|context| context.wallet_backend().ok()) {
-                backend.forget_all_secrets();
-                backend.shutdown().await;
-            }
-            // Never shown: shutdown drains task results without displaying them.
+            _ = cancellation_token.cancelled() => return Err(TaskError::TaskManagerShuttingDown),
+            gate = self.test_network_switch_gate.lock() => drop(gate),
+        }
+
+        // Create a new AppContext for the target network, reusing shared
+        // resources (db, subtasks, connection_status) from the current context.
+        // Wrapped in block_in_place because AppContext::new() does DB init
+        // and file I/O which would block the async runtime.
+        let data_dir = self.data_dir.clone();
+        let db = self.db.clone();
+        let subtasks = self.subtasks.clone();
+        let connection_status = self.connection_status.clone();
+        let egui_ctx = self.egui_ctx().clone();
+        let app_kv = self.app_kv();
+        let secret_store = self.secret_store();
+        // Share the app-global role cell so the freshly-switched context
+        // observes the same value (and live changes) as the rest of the
+        // app — never a fresh per-context cell.
+        let user_role = self.user_role_cell();
+        let new_ctx = tokio::task::block_in_place(|| {
+            AppContext::new(
+                data_dir,
+                network,
+                db,
+                subtasks,
+                connection_status,
+                egui_ctx,
+                app_kv,
+                secret_store,
+                user_role,
+            )
+        })
+        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        // Never shown: shutdown drains task results without displaying them.
+        if cancellation_token.is_cancelled() {
             return Err(TaskError::TaskManagerShuttingDown);
-        };
+        }
+        new_ctx.install_secret_prompt(self.secret_prompt());
+
+        // Stops on its own when the app closes, tearing down a backend it had
+        // not finished building.
+        let wiring = new_ctx.ensure_wallet_backend(sender.clone()).await;
+        if cancellation_token.is_cancelled() {
+            if let Ok(backend) = new_ctx.wallet_backend() {
+                backend.shutdown_built().await;
+            }
+            return Err(TaskError::TaskManagerShuttingDown);
+        }
 
         let backend_wired = match wiring {
             Ok(()) => {

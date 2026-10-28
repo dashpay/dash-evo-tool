@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn test_dip14_derivation_compatibility() {
         // Test that derivation with index < 2^32 matches standard BIP32
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         let master = ExtendedPrivKey::new_master(network, &seed).unwrap();
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_dashpay_identity_derivation() {
         // Test DashPay contact relationship derivation
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         // Create two test identity IDs

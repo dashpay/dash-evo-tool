@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn valid_hex_decodes_to_bytes() {
-        let bytes = [7u8; 32];
+        let bytes = crate::test_support::keys::secret_bytes();
         let hex_str = hex::encode(bytes);
         assert_eq!(
             verify_key_input(Secret::new(hex_str), "User Key")
@@ -149,9 +149,10 @@ mod tests {
     /// wiped when it is dropped.
     #[test]
     fn decoded_key_is_returned_zeroizing() {
+        let secret = crate::test_support::keys::secret_bytes();
         let key: Option<Zeroizing<[u8; 32]>> =
-            verify_key_input(Secret::new(hex::encode([5u8; 32])), "Owner").unwrap();
-        assert_eq!(key.as_deref(), Some(&[5u8; 32]));
+            verify_key_input(Secret::new(hex::encode(secret)), "Owner").unwrap();
+        assert_eq!(key.as_deref(), Some(&secret));
     }
 
     #[test]
@@ -169,7 +170,7 @@ mod tests {
 
     #[test]
     fn valid_wif_round_trips_to_secret_bytes() {
-        let bytes = [9u8; 32];
+        let bytes = crate::test_support::keys::secret_bytes();
         let wif = PrivateKey::from_byte_array(&bytes, Network::Testnet)
             .expect("valid private key")
             .to_wif();
@@ -216,7 +217,7 @@ mod tests {
 
     #[test]
     fn surrounding_whitespace_is_trimmed_before_decoding() {
-        let bytes = [3u8; 32];
+        let bytes = crate::test_support::keys::secret_bytes();
         let padded = format!("  {}\n", hex::encode(bytes));
         assert_eq!(
             verify_key_input(Secret::new(padded), "User Key")

@@ -81,7 +81,10 @@ pub(crate) fn on_error(
     context: &BackendTaskContext,
     error: &TaskError,
 ) -> bool {
-    DOMAINS.iter().fold(false, |quiet, domain| {
-        domain.on_error(feedback, context, error) || quiet
-    })
+    // A loop, not `any`: every domain reacts, quiet or not.
+    let mut quiet = false;
+    for domain in DOMAINS {
+        quiet |= domain.on_error(feedback, context, error);
+    }
+    quiet
 }

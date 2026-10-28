@@ -215,6 +215,13 @@ impl fmt::Display for BackendTaskJoinError {
 
 impl std::error::Error for BackendTaskJoinError {}
 
+/// Lets `?` on a joined task keep the panic message out of the error.
+impl From<tokio::task::JoinError> for TaskError {
+    fn from(source: tokio::task::JoinError) -> Self {
+        Self::JoinError(source.into())
+    }
+}
+
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
@@ -1609,9 +1616,10 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
-    /// Tokio task join errors.
+    /// Tokio task join errors. Held redacted: a raw `JoinError` repeats the
+    /// task's panic message in its `Debug` and `Display`.
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
-    JoinError(#[from] tokio::task::JoinError),
+    JoinError(#[source] BackendTaskJoinError),
 
     /// A backend task panicked or was cancelled before returning a result.
     #[error("The requested action stopped before it finished. Please try again. If it keeps stopping, restart the app.")]
@@ -1622,8 +1630,8 @@ pub enum TaskError {
 
     /// A caught task panic. The payload is kept out of this error, whose
     /// `Debug` reaches the banner's details panel. The process panic hook in
-    /// `logging.rs` still logs the payload, as it does for every panic, so a
-    /// panic message must never contain secrets.
+    /// `logging.rs` logs only a literal panic message; a formatted one is
+    /// redacted there.
     #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
     BackendTaskPanicked,
 
@@ -4862,6 +4870,40 @@ mod tests {
 
     const DAPI_EXHAUSTED_MESSAGE: &str =
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    /// A joined task's panic message can embed any value. `TaskError`'s
+    /// `Debug` reaches the banner's details panel and the log, so neither it
+    /// nor anything in the error chain may repeat that message.
+    #[test]
+    fn join_error_never_repeats_the_panic_message() {
+        const SYNTHETIC_SECRET: &str = "synthetic-secret-4be1d2";
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let join_error = runtime
+            .block_on(async {
+                tokio::spawn(async {
+                    let secret = std::hint::black_box(SYNTHETIC_SECRET.to_owned());
+                    panic!("could not decrypt {secret}");
+                })
+                .await
+            })
+            .expect_err("the task panics");
+        assert!(join_error.is_panic());
+
+        let error = TaskError::from(join_error);
+        let mut rendered = vec![format!("{error:?}"), error.to_string()];
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            rendered.push(format!("{cause:?}"));
+            rendered.push(cause.to_string());
+            source = cause.source();
+        }
+        for text in &rendered {
+            assert!(!text.contains(SYNTHETIC_SECRET), "leaked: {text}");
+        }
+        assert!(format!("{error:?}").contains("panicked: true"), "{error:?}");
+    }
 
     /// The missing-wallet message offers both self-service paths: re-import
     /// from the recovery phrase on the same network, or the Settings restore.

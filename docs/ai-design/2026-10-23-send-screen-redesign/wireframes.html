@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send Screen Redesign — Wireframes (2026-10-23)</title>
+<style>
+:root{
+  --bg:#eceae4;--app:#f6f5f1;--surface:#fff;--border:#d6d3cb;--border-strong:#b9b5ab;
+  --text:#1d1f22;--text-2:#5b6068;--accent:#0a6cb8;--accent-h:#07528c;--accent-soft:#e7f1fa;--accent-soft-b:#b9d4ec;
+  --avatar-bg:#dfe7ef;--avatar-t:#0a4f86;--success:#1f7a4d;--success-soft:#e5f3ec;
+  --warn-bg:#fff4d6;--warn-b:#e0b44a;--warn-t:#6b4e00;--danger:#b3261e;--muted:#e4e1da;--scrim:rgba(20,22,25,.45);
+  --anno:#7a3e8f;
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:32px 28px 80px;font-size:14px;line-height:1.45}
+a{color:var(--accent)}a:hover{color:var(--accent-h)}
+code{font-family:var(--mono);font-size:12.5px}
+h1.doc{font-size:24px;margin:0 0 6px}
+.lead{color:var(--text-2);max-width:980px;margin:0 0 14px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:1100px;margin-bottom:28px;font-size:13px;columns:2}
+.toc a{display:block;padding:2px 0;text-decoration:none}
+section{margin:44px 0 0;max-width:1100px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+.sec-h .id{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 8px;color:var(--text-2)}
+.sec-h h2{font-size:17px;margin:0}
+.persona{font-size:12px;border-radius:10px;padding:2px 9px;font-weight:600}
+.p-alex{background:var(--accent-soft);color:var(--avatar-t)}
+.p-priya{background:#efe7f8;color:#5a3290}
+.p-jordan{background:#e3f1e9;color:#1d6440}
+.cap{font-size:13.5px;margin:0 0 8px;max-width:980px}
+.notes{font-size:12.5px;color:var(--text-2);margin:0 0 12px;padding-left:18px;max-width:1100px}
+.notes li{margin:2px 0}
+.notes b{color:var(--text)}
+.muted{color:var(--text-2)}
+.small{font-size:12.5px}
+.mono{font-family:var(--mono)}
+h3{font-size:16px;margin:0 0 4px}
+h4{font-size:13.5px;margin:0 0 10px}
+
+/* App shell (same as 2026-10-01) */
+.app{background:var(--app);border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;box-shadow:0 8px 24px rgba(30,30,25,.10);position:relative}
+.top{height:56px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 20px;border-bottom:1px solid var(--border)}
+.crumb{font-size:13px;color:var(--text-2);display:flex;gap:8px;align-items:center;min-width:0;white-space:nowrap;overflow:hidden}
+.crumb b{color:var(--text);font-weight:500}
+.chip-net{display:flex;align-items:center;gap:8px;font-size:12.5px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 12px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block}
+.row{display:flex}
+.nav{width:148px;flex:none;border-right:1px solid var(--border);padding:14px 8px;display:flex;flex-direction:column;gap:2px;min-height:560px}
+.nav a{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;color:var(--text-2);font-size:13px;text-decoration:none}
+.nav a:hover{background:var(--muted);color:var(--text)}
+.nav a.on{background:var(--accent-soft);color:var(--avatar-t);font-weight:600}
+.nav svg{flex:none}
+.island{flex:1;margin:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;min-width:0}
+
+/* controls (same tokens as 2026-10-01) */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:38px;padding:0 16px;border-radius:8px;font:600 13px inherit;font-family:inherit;cursor:pointer;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);white-space:nowrap}
+.btn:hover{background:#f1efea}
+.btn:focus-visible,.linkbtn:focus-visible,.dd:focus-visible,summary:focus-visible{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:var(--accent-h)}
+.btn.sm{height:32px;padding:0 12px;font-size:12.5px}
+.btn[disabled]{background:var(--muted);border-color:var(--muted);color:#8a877f;cursor:not-allowed}
+.linkbtn{background:none;border:none;color:var(--accent);font:600 12.5px inherit;font-family:inherit;cursor:pointer;padding:0}
+.linkbtn:hover{text-decoration:underline}
+.card{border:1px solid var(--border);border-radius:10px;padding:16px;background:var(--surface)}
+.sumrow{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13.5px}
+.sumrow + .sumrow{border-top:1px solid #eeece6}
+.sumrow .mono{font-weight:500;white-space:nowrap}
+.total{font-weight:700}
+.scrim{position:absolute;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:5;padding:12px}
+.modal{background:var(--surface);border-radius:14px;width:480px;max-width:100%;box-shadow:0 18px 44px rgba(0,0,0,.3);overflow:hidden}
+.modal .mh{padding:18px 22px 6px;font-size:17px;font-weight:600}
+.modal .mb{padding:6px 22px 16px;font-size:13.5px}
+.modal .mf{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid var(--border)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;color:var(--text-2);font-weight:600;font-size:12px;padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid #eeece6;vertical-align:top}
+
+/* ---- Send form ---- */
+.sf{padding:22px 28px 24px;max-width:780px}
+.sf .title{font-size:20px;margin:0 0 6px}
+.gl{font-size:11.5px;font-weight:700;letter-spacing:.07em;color:var(--text-2);text-transform:uppercase;margin:18px 0 8px;padding-top:12px;border-top:1px solid #eeece6}
+.gl.first{border-top:none;padding-top:0;margin-top:6px}
+.fr{display:grid;grid-template-columns:100px minmax(0,1fr);gap:4px 12px;align-items:start;margin:8px 0}
+.fr > .lab{font-size:13px;color:var(--text-2);padding-top:7px}
+.fr > .ctl{min-width:0}
+.dd{height:38px;width:100%;max-width:460px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);font:13.5px inherit;font-family:inherit;color:var(--text);padding:0 10px;cursor:pointer}
+.dd:hover{border-color:var(--text-2)}
+.chiprow{display:flex;flex-wrap:wrap;gap:8px}
+/* single-select chip: a real radio, styled */
+.chip{position:relative;display:inline-flex}
+.chip input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.chip > span{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 13px;border:1px solid var(--border-strong);border-radius:16px;font-size:13px;font-weight:500;background:var(--surface);color:var(--text);cursor:pointer;white-space:nowrap}
+.chip > span i{font-style:normal;font-family:var(--mono);font-size:12px;color:var(--text-2)}
+.chip:hover > span{background:var(--accent-soft);border-color:var(--accent-soft-b)}
+.chip input:checked + span{background:var(--accent);border:2px solid var(--accent-h);color:#fff;font-weight:600;padding:0 12px}
+.chip input:checked + span::before{content:"\2713"}
+.chip input:checked + span i{color:#e3effa}
+.chip input:focus-visible + span{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+.chip input:disabled + span{background:var(--muted);border:1px dashed #c9c5bb;color:#7d7a72;cursor:not-allowed}
+.chip input:disabled + span i{color:#8a877f}
+/* two-way switch (Someone else | My wallets) */
+.sw{display:inline-flex;border:1px solid var(--border-strong);border-radius:9px;overflow:hidden;background:var(--surface);max-width:100%}
+.sw label{position:relative;display:flex}
+.sw input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.sw span{display:flex;align-items:center;gap:6px;padding:0 15px;height:34px;font-size:13px;font-weight:600;color:var(--text-2);cursor:pointer;white-space:nowrap}
+.sw label + label span{border-left:1px solid var(--border-strong)}
+.sw span:hover{background:#f1efea;color:var(--text)}
+.sw input:checked + span{background:var(--accent-soft);color:var(--avatar-t);box-shadow:inset 0 -3px 0 var(--accent)}
+.sw input:checked + span::before{content:"\25CF";font-size:10px}
+.sw input:focus-visible + span{outline:3px solid var(--accent-soft-b);outline-offset:-3px}
+/* status / info / error lines */
+.st{font-size:13px;margin:6px 0 0;color:var(--text)}
+.st b{font-weight:700}
+.st .mono{font-size:12.5px}
+.info{display:flex;gap:8px;align-items:flex-start;font-size:13px;background:var(--accent-soft);border:1px solid var(--accent-soft-b);border-radius:8px;padding:6px 10px;margin:6px 0 0;color:var(--avatar-t)}
+.err{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--warn-t);margin:7px 0 0}
+.err .g{flex:none;font-weight:700}
+.err .btn{margin-top:6px}
+.lockl{display:flex;gap:8px;font-size:13px;margin:6px 0 0}
+/* address field */
+.af{display:flex;align-items:center;gap:8px;height:42px;border:1.5px solid var(--border-strong);border-radius:9px;padding:0 8px 0 12px;width:100%;max-width:520px;background:var(--surface)}
+.af:focus-within,.af.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.af.bad{border-color:var(--warn-b);box-shadow:0 0 0 3px var(--warn-bg)}
+.af input{border:none;outline:none;font:14px var(--mono);flex:1;min-width:0;background:transparent;color:var(--text)}
+.af input::placeholder{font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;color:#8a877f}
+.kind{font-size:11.5px;font-weight:600;border-radius:10px;padding:2px 8px;white-space:nowrap;background:var(--success-soft);color:var(--success)}
+.kind.n{background:#f1efea;color:var(--text-2)}
+.amt{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.amt .af{width:190px;flex:none;max-width:100%}
+.amt .unit{font-size:13px;color:var(--text-2);font-weight:600}
+.maxb[aria-pressed="true"]{background:var(--accent);border:2px solid var(--accent-h);color:#fff}
+.maxb[aria-pressed="true"]::before{content:"\2713"}
+.sub{font-size:12.5px;color:var(--text-2);margin:6px 0 0}
+/* summary card */
+.sum{border:1px solid var(--border);border-radius:10px;padding:12px 16px 8px;background:#fbfaf7;max-width:560px;margin-top:16px}
+.sum h4{margin:0 0 2px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-2)}
+.route{font-size:13.5px;font-weight:600;margin:0 0 4px}
+.snote{font-size:12.5px;color:var(--text-2);padding:8px 0 6px;border-top:1px solid #eeece6}
+details.fo,details.dt{border-top:1px solid #eeece6;padding:7px 0;font-size:13.5px}
+details.fo > summary,details.dt > summary{cursor:pointer;list-style:none;border-radius:4px}
+details.fo > summary::-webkit-details-marker,details.dt > summary::-webkit-details-marker{display:none}
+details.fo > summary::after,details.dt > summary::after{content:" \25B8";color:var(--text-2)}
+details[open].fo > summary::after,details[open].dt > summary::after{content:" \25BE"}
+details.fo > summary:hover,details.dt > summary:hover{color:var(--accent)}
+.radio{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:13px}
+.radio:hover{background:#f1efea}
+.radio input{accent-color:var(--accent);margin:0}
+.radio .dflt{font-size:11.5px;color:var(--text-2)}
+.added{background:var(--success-soft);border-radius:6px;padding-left:6px;padding-right:6px}
+/* actions */
+.act{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:20px;flex-wrap:wrap}
+.act .btns{display:flex;gap:10px;margin-left:auto}
+.hint{font-size:13px;color:var(--text-2)}
+/* fragments, panels, annotations */
+.frag{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 18px 14px;min-width:0}
+.frag > .vl{font-size:11.5px;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:.05em;margin:0 0 4px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:14px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.panel{border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:#fbfaf7;margin-top:10px;max-width:520px}
+.cb{display:flex;gap:10px;align-items:center;font-size:13px;padding:5px 6px;border-radius:6px;cursor:pointer}
+.cb:hover{background:#f1efea}
+.cb input{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.cb .amtv{margin-left:auto;font-family:var(--mono)}
+.tip{display:inline-block;position:relative;background:#2a2c30;color:#fff;font-size:12px;border-radius:6px;padding:5px 9px;margin:8px 0 0;max-width:100%}
+.tip::before{content:"";position:absolute;top:-5px;left:18px;border:5px solid transparent;border-top:none;border-bottom-color:#2a2c30}
+.tip .tl{opacity:.7;margin-right:4px}
+.anno{font-size:11.5px;color:var(--anno);font-style:italic;margin:6px 0 0}
+.anno::before{content:"\21B3  "}
+.rrow{display:grid;grid-template-columns:minmax(0,1fr) 120px auto auto;gap:8px;align-items:center;margin:0 0 8px;max-width:620px}
+.rrow .af{height:38px}
+.x{width:32px;height:32px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text-2);cursor:pointer}
+.x:hover{background:#f1efea;color:var(--text)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px;margin-top:12px}
+.flow .fb{border:1px solid var(--border-strong);border-radius:8px;padding:6px 10px;background:var(--surface)}
+.flow .ar{color:var(--text-2)}
+.cg{display:grid;grid-template-columns:72px minmax(0,1fr);gap:7px 14px;font-size:13.5px;margin:4px 0 12px}
+.cg .k{color:var(--text-2)}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px 18px;font-size:12.5px}
+.legend > div{display:flex;flex-direction:column;gap:5px}
+.dtab td:first-child{font-family:var(--mono);white-space:nowrap}
+.dtab td b{color:var(--text)}
+.idx{columns:2;column-gap:28px;font-size:12.5px;color:var(--text-2);padding:0;list-style:none;margin:0}
+.idx li{break-inside:avoid;margin:0 0 5px}
+.idx li b{font-family:var(--mono);color:var(--text);font-weight:600;margin-right:6px}
+.idx li:target{background:var(--warn-bg);outline:2px solid var(--warn-b);border-radius:4px}
+.placeholder{border:1px dashed var(--border-strong);border-radius:10px;padding:12px;font-size:12.5px;color:var(--text-2);text-align:center;margin-top:14px;max-width:560px}
+/* phone frame */
+.phone{width:360px;max-width:100%;margin:0 auto;border:10px solid #26282c;border-radius:30px;background:var(--surface);overflow:hidden;box-shadow:0 10px 26px rgba(0,0,0,.18)}
+.phone .pbar{height:18px;background:#26282c}
+.phone .sf{padding:14px 14px 18px}
+.phone .fr{grid-template-columns:1fr;margin:4px 0}
+.phone .fr > .lab{padding-top:0}
+.phone .sw{display:flex;flex-direction:column;width:100%}
+.phone .sw label + label span{border-left:none;border-top:1px solid var(--border-strong)}
+.phone .sw span{flex:1}
+.phone .amt .af{width:150px}
+.stk .sumrow{display:block}
+.stk .sumrow .mono{display:block;padding-left:14px}
+.btn.full{width:100%}
+.phone .act .btns{flex-direction:column;width:100%;margin-left:0}
+
+/* responsive: the page itself follows spec §13 */
+@media (max-width:820px){
+  body{padding:20px 12px 60px}
+  .nav{display:none}
+  .island{margin:8px}
+  .toc,.idx{columns:1}
+  .top{padding:0 12px}
+  .sf{padding:16px}
+}
+@media (max-width:640px){
+  .fr{grid-template-columns:1fr}
+  .fr > .lab{padding-top:0}
+  .rrow{grid-template-columns:minmax(0,1fr) auto}
+  .rrow .af:first-child{grid-column:1 / -1}
+  .chip-net .t{display:none}
+}
+@media (max-width:420px){
+  .act .btns{flex-direction:column-reverse;width:100%;margin-left:0}
+  .act .btns .btn{width:100%}
+  .sum .sumrow{display:block}
+  .sum .sumrow .mono{display:block;padding-left:14px}
+}
+</style>
+</head>
+<body>
+
+<h1 class="doc">Send screen redesign — wireframes</h1>
+<p class="lead">Dash Evo Tool, 2026-10-23. HTML rendering of the ASCII frames in <a href="03-wireframes.md"><code>03-wireframes.md</code></a>; rules in <a href="02-ux-spec.md"><code>02-ux-spec.md</code></a>, requirements in <a href="01-requirements.md"><code>01-requirements.md</code></a>. Today's Send screen asks people to understand Core, Platform, Identity and Shielded <i>before</i> it knows who they are paying, and runs two separate forms (Simple and "Advanced Options"). The redesign is one form with two sections, <b>From</b> and <b>To</b>. <b>Auto</b> is the default way to pick the balance: once the recipient is known, the app picks the cheapest balance that can pay and says what it chose in a plain sentence. Paying your own wallets is its own mode (<b>My wallets</b>), so nobody copies their own address. Advanced becomes an Expert-view option inside each section, and every fee fact lives in one <b>Summary</b> card. Same visual system as the 2026-10-01 usernames canvas. Chips, switches, Max, checkboxes, Fee options and Details are live: click, hover (chip tooltips) and Tab through them. Narrow the window below 640&nbsp;px to see labels move above their controls (spec &sect;13).</p>
+<p class="lead small">Example data, the same throughout: wallet <b>Main</b>: Core 0.8123, Platform 0.3000, Shielded 0.1000, identity <i>alice</i> 0.2000 (total 1.4123 DASH). Wallet <b>Savings</b>: Core 2.0000, identity <i>carol</i> 0.0500. Network: Testnet.</p>
+
+<nav class="toc" aria-label="Frames">
+  <a href="#decisions">Decisions Q1–Q5 (resolved)</a>
+  <a href="#legend">Legend</a>
+  <a href="#w1">W1 Default (just opened)</a>
+  <a href="#w2">W2 Happy path: Auto resolves from the recipient</a>
+  <a href="#w3">W3 Source options (explicit)</a>
+  <a href="#w4">W4 Destination options</a>
+  <a href="#w5">W5 Auto on source: fallback</a>
+  <a href="#w6">W6 Auto on destination pins the source</a>
+  <a href="#w7">W7 Identity source, destination Auto</a>
+  <a href="#w8">W8 Advanced (Expert view)</a>
+  <a href="#w9">W9 Max with Auto</a>
+  <a href="#w10">W10 Validation errors</a>
+  <a href="#w11">W11 Locked wallet</a>
+  <a href="#w12">W12 Confirmation</a>
+  <a href="#w13">W13 Narrow (&lt; 420 pt)</a>
+  <a href="#w14">W14 Preset: Shield</a>
+  <a href="#ids">Referenced IDs (SR / D / AC)</a>
+</nav>
+
+<!-- ================= Decisions ================= -->
+<section id="decisions">
+  <div class="sec-h"><span class="id">Q</span><h2>Decisions (resolved open questions)</h2></div>
+  <div class="card" style="padding:6px 8px">
+    <table class="dtab">
+      <tr><th>#</th><th>Question</th><th>User decision</th></tr>
+      <tr><td>Q1</td><td>Should To open on <b>Someone else</b> rather than "current wallet + Core/Platform"? (<a href="#d-02">D-02</a>, <a href="#d-07">D-07</a>)</td><td><b>Yes.</b> Someone else / My wallets switch; the default is Someone else.</td></tr>
+      <tr><td>Q2</td><td>Should Advanced drop per-address amounts and use one Amount field? (<a href="#d-11">D-11</a>)</td><td><b>Yes.</b></td></tr>
+      <tr><td>Q3</td><td>Should Auto never spend identity credits, and spend shielded funds only for shielded destinations? (<a href="#d-05">D-05</a>)</td><td><b>Yes.</b></td></tr>
+      <tr><td>Q4</td><td>Should Auto never split a payment across sources and offer the largest single-source amount instead? (<a href="#d-06">D-06</a>)</td><td><b>Yes.</b></td></tr>
+      <tr><td>Q5</td><td>Should Advanced and multiple recipients be Expert/Developer only, and should fee strategies be reduced? (<a href="#d-12">D-12</a>, <a href="#d-13">D-13</a>)</td><td><b>Expert-only: yes. Fee strategies: keep all 4</b>, in a collapsed "Fee options ▸" row in the Summary card, default unchanged (<a href="#sr-22">SR-22</a>).</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ================= Legend ================= -->
+<section id="legend">
+  <div class="sec-h"><span class="id">L</span><h2>Legend</h2></div>
+  <div class="card">
+    <div class="legend">
+      <div><span class="small muted">Chip, selected (fill, 2 px border <b>and</b> ✓, not colour alone)</span><div class="chiprow"><label class="chip"><input type="radio" name="lg1" checked><span>Core <i>0.8123</i></span></label></div></div>
+      <div><span class="small muted">Chip, available (hover, Tab for focus)</span><div class="chiprow"><label class="chip"><input type="radio" name="lg2"><span>Platform <i>0.3000</i></span></label></div></div>
+      <div><span class="small muted">Chip, disabled (always with a tooltip reason)</span><div class="chiprow"><label class="chip" title="Platform has no funds in Main."><input type="radio" name="lg3" disabled><span>Platform <i>0</i></span></label></div></div>
+      <div><span class="small muted">Auto status line (always starts with "Auto:")</span><p class="st" style="margin:0"><b>Auto:</b> paying from Core · 0.8123 DASH available</p></div>
+      <div><span class="small muted">One-time info line</span><div class="info" style="margin:0"><span>ⓘ</span><span>Pay from is set to Core so Receive into can choose automatically.</span></div></div>
+      <div><span class="small muted">Inline error (⚠ + text, warning colour)</span><div class="err" style="margin:0"><span class="g">⚠</span><span>Fix shown under the field it concerns.</span></div></div>
+      <div><span class="small muted">Tooltip (shown statically in frames)</span><span class="tip" style="margin:4px 0 0">Platform has no funds in Main.</span></div>
+      <div><span class="small muted">Designer annotation (not UI copy)</span><p class="anno" style="margin:0">explains the frame, not shown to users</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W1 ================= -->
+<section id="w1">
+  <div class="sec-h"><span class="id">W1</span><h2>Default (just opened)</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">The form Alex sees from Wallet › Send: who is paying is filled in, the cursor waits in the recipient field, and Auto promises to pick a balance.</p>
+  <ul class="notes">
+    <li>One form, From then To, then Amount and actions; no "Advanced Options" checkbox (<a href="#sr-01">SR-01</a>, <a href="#d-01">D-01</a>).</li>
+    <li>Defaults: From = the current wallet + <b>Auto</b>; To = <b>Someone else</b> with the field focused (<a href="#sr-12">SR-12</a>, <a href="#d-07">D-07</a>, Q1).</li>
+    <li>Everyday view: Shielded and Advanced are hidden; Identity shows because Main has an identity (<a href="02-ux-spec.md#31-pay-from-source">spec §3.1</a>, <a href="#d-13">D-13</a>). Short chip labels with info tooltips (<a href="#d-14">D-14</a>); hover a chip.</li>
+    <li>Send is disabled and the hint names the first missing step; the button always says <b>Send</b> (<a href="#sr-17">SR-17</a>, <a href="#d-09">D-09</a>, <a href="02-ux-spec.md#8-validation-and-error-copy">spec §8</a>).</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Wallets <span>&rsaquo;</span> Main <span>&rsaquo;</span> <b>Send</b></div><div class="chip-net"><span class="dot"></span><span class="t">Testnet &middot; </span>Connected</div></div>
+    <div class="row">
+      <div class="nav">
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-6 8-6s8 2 8 6"></path></svg>Identities</a>
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"></rect><rect x="3" y="14" width="18" height="6" rx="1"></rect></svg>Masternodes</a>
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>Contracts</a>
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="12" r="8"></circle></svg>Tokens</a>
+        <a href="#w1" class="on"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><rect x="3" y="7" width="18" height="12" rx="2"></rect></svg>Wallets</a>
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><path d="M14 4l6 6-9 9H5v-6z"></path></svg>Tools</a>
+        <a href="#w1"><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><circle cx="12" cy="12" r="8"></circle></svg>Settings</a>
+      </div>
+      <div class="island">
+        <div class="sf">
+          <h3 class="title">Send Dash</h3>
+          <div class="gl first">From</div>
+          <div class="fr"><label class="lab" for="w1w">Wallet</label><div class="ctl"><select class="dd" id="w1w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+          <div class="fr"><span class="lab" id="w1pl">Pay from</span><div class="ctl">
+            <div class="chiprow" role="radiogroup" aria-labelledby="w1pl">
+              <label class="chip"><input type="radio" name="w1s" checked><span>Auto</span></label>
+              <label class="chip" title="Your regular Dash balance. Works with any Dash address."><input type="radio" name="w1s"><span>Core <i>0.8123</i></span></label>
+              <label class="chip" title="Your balance on Dash Platform. Fast and cheap to send to Platform addresses and identities."><input type="radio" name="w1s"><span>Platform <i>0.3000</i></span></label>
+              <label class="chip" title="Credits held by one of your identities."><input type="radio" name="w1s"><span>Identity</span></label>
+            </div>
+            <p class="st"><b>Auto:</b> picks a balance once you enter who you're paying.</p>
+          </div></div>
+          <div class="gl">To</div>
+          <div class="fr"><span class="lab"></span><div class="ctl">
+            <div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w1m" checked><span>Someone else</span></label><label><input type="radio" name="w1m"><span>My wallets</span></label></div>
+            <div class="af focus" style="margin-top:10px"><input aria-label="Recipient" placeholder="Address, username or identity ID"></div>
+          </div></div>
+          <div class="gl">Amount</div>
+          <div class="fr"><span class="lab"></span><div class="ctl">
+            <div class="amt"><div class="af"><input aria-label="Amount" placeholder="0.00"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+          </div></div>
+          <div class="act"><span class="hint">Enter who you're paying.</span><div class="btns"><button class="btn">Cancel</button><button class="btn pri" disabled title="Enter who you're paying.">Send</button></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W2 ================= -->
+<section id="w2">
+  <div class="sec-h"><span class="id">W2</span><h2>Happy path: Auto resolves from the recipient</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">Alex pastes a Core address and types 0.5. Auto picks Core, says so, and the Summary shows the only money facts on the screen.</p>
+  <ul class="notes">
+    <li>The address kind is detected in the field (<b>Core ✓</b>) and drives Auto (<a href="#sr-11">SR-11</a>). For a Core destination Auto tries Core, then Platform (<a href="#sr-06">SR-06</a>, <a href="#ac-01">AC-01</a>).</li>
+    <li>The status line names the balance and what it holds, and updates live (<a href="#sr-07">SR-07</a>).</li>
+    <li>Summary appears once there is a destination and an amount. The route sentence replaces the old "Transaction type" hint and the per-route button verb; the total names its source (<a href="#sr-14">SR-14</a>, <a href="#d-08">D-08</a>, <a href="02-ux-spec.md#7-summary-card">spec §7</a>).</li>
+  </ul>
+  <div class="app">
+    <div class="top"><div class="crumb">Wallets <span>&rsaquo;</span> Main <span>&rsaquo;</span> <b>Send</b></div><div class="chip-net"><span class="dot"></span><span class="t">Testnet &middot; </span>Connected</div></div>
+    <div class="row">
+      <div class="nav"><a href="#w2">Identities</a><a href="#w2">Masternodes</a><a href="#w2">Contracts</a><a href="#w2">Tokens</a><a href="#w2" class="on">Wallets</a><a href="#w2">Tools</a><a href="#w2">Settings</a></div>
+      <div class="island">
+        <div class="sf">
+          <h3 class="title">Send Dash</h3>
+          <div class="gl first">From</div>
+          <div class="fr"><label class="lab" for="w2w">Wallet</label><div class="ctl"><select class="dd" id="w2w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+          <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+            <div class="chiprow" role="radiogroup" aria-label="Pay from">
+              <label class="chip"><input type="radio" name="w2s" checked><span>Auto</span></label>
+              <label class="chip" title="Your regular Dash balance. Works with any Dash address."><input type="radio" name="w2s"><span>Core <i>0.8123</i></span></label>
+              <label class="chip" title="Your balance on Dash Platform. Fast and cheap to send to Platform addresses and identities."><input type="radio" name="w2s"><span>Platform <i>0.3000</i></span></label>
+              <label class="chip" title="Credits held by one of your identities."><input type="radio" name="w2s"><span>Identity</span></label>
+            </div>
+            <p class="st"><b>Auto:</b> paying from Core · 0.8123 DASH available</p>
+          </div></div>
+          <div class="gl">To</div>
+          <div class="fr"><span class="lab"></span><div class="ctl">
+            <div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w2m" checked><span>Someone else</span></label><label><input type="radio" name="w2m"><span>My wallets</span></label></div>
+            <div class="af" style="margin-top:10px"><input aria-label="Recipient" value="yX12pQ…9fab" title="Full address; click to copy"><span class="kind">Core ✓</span></div>
+          </div></div>
+          <div class="gl">Amount</div>
+          <div class="fr"><span class="lab"></span><div class="ctl">
+            <div class="amt"><div class="af"><input aria-label="Amount" value="0.5"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+            <div class="sum">
+              <h4>Summary</h4>
+              <p class="route">Pay from Main · Core to <span class="mono">yX12…9fab</span></p>
+              <div class="sumrow"><span>You send</span><span class="mono">0.5000 DASH</span></div>
+              <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0001 DASH</span></div>
+              <div class="sumrow total"><span>Total from Core</span><span class="mono">≈ 0.5001 DASH</span></div>
+            </div>
+          </div></div>
+          <div class="act"><span class="hint"></span><div class="btns"><button class="btn">Cancel</button><button class="btn pri">Send</button></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W3 ================= -->
+<section id="w3">
+  <div class="sec-h"><span class="id">W3</span><h2>Source options (explicit)</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya · Expert</span></div>
+  <p class="cap">Every Pay from option a person can pick by hand, plus how an unavailable one looks.</p>
+  <ul class="notes">
+    <li>An explicit choice is never switched automatically, even when it can't cover the amount; an inline error explains instead (<a href="02-ux-spec.md#41-source-auto">spec §4.1</a>, <a href="#w10">W10</a>).</li>
+    <li>Identity: the dropdown appears only when the wallet has more than one identity (shown here as if it does). Default: the app-selected identity, else the highest balance (<a href="02-ux-spec.md#31-pay-from-source">spec §3.1</a>).</li>
+    <li>Shielded needs Expert view, the feature gate and a balance; Advanced is Expert/Developer only (<a href="#sr-21">SR-21</a>, <a href="#d-13">D-13</a>).</li>
+    <li>Disable with a reason, never refuse late (<a href="#sr-20">SR-20</a>). Tooltips are drawn as bubbles below; hovering the chips shows the same text.</li>
+  </ul>
+  <div class="grid2">
+    <div class="frag"><p class="vl">Core</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+        <label class="chip"><input type="radio" name="w3a"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w3a" checked><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w3a"><span>Platform <i>0.3000</i></span></label>
+        <label class="chip"><input type="radio" name="w3a"><span>Identity</span></label></div></div></div>
+    </div>
+    <div class="frag"><p class="vl">Platform</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+        <label class="chip"><input type="radio" name="w3b"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w3b"><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w3b" checked><span>Platform <i>0.3000</i></span></label>
+        <label class="chip"><input type="radio" name="w3b"><span>Identity</span></label></div></div></div>
+    </div>
+    <div class="frag"><p class="vl">Identity</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+        <label class="chip"><input type="radio" name="w3c"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w3c"><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w3c"><span>Platform <i>0.3000</i></span></label>
+        <label class="chip"><input type="radio" name="w3c" checked><span>Identity</span></label></div></div></div>
+      <div class="fr"><label class="lab" for="w3ci">Identity</label><div class="ctl"><select class="dd" id="w3ci"><option>alice — 0.2000 DASH</option></select></div></div>
+    </div>
+    <div class="frag"><p class="vl">Shielded <span class="persona p-priya" style="text-transform:none;letter-spacing:0">Expert view, gate on</span></p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+        <label class="chip"><input type="radio" name="w3d"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w3d"><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w3d"><span>Platform <i>0.3000</i></span></label>
+        <label class="chip"><input type="radio" name="w3d"><span>Identity</span></label>
+        <label class="chip" title="Your private balance. Sending from it to a non-private address reveals the amount."><input type="radio" name="w3d" checked><span>Shielded <i>0.1000</i></span></label>
+        <label class="chip" title="Choose exactly which addresses to spend from."><input type="radio" name="w3d"><span>Advanced</span></label></div></div></div>
+    </div>
+    <div class="frag" style="grid-column:1 / -1"><p class="vl">Disabled examples</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+        <label class="chip"><input type="radio" name="w3e" checked><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w3e"><span>Core <i>0.8123</i></span></label>
+        <label class="chip" title="Platform has no funds in Main."><input type="radio" name="w3e" disabled><span>Platform <i>0</i></span></label>
+        <span class="muted" style="align-self:center">…</span></div>
+        <span class="tip"><span class="tl">Platform:</span>Platform has no funds in Main.</span></div></div>
+      <div class="fr"><span class="lab"></span><div class="ctl"><div class="chiprow">
+        <label class="chip" title="Your private balance is still being checked."><input type="radio" name="w3f" disabled><span>Shielded <i>0.1000</i></span></label></div>
+        <span class="tip"><span class="tl">Shielded:</span>Your private balance is still being checked.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W4 ================= -->
+<section id="w4">
+  <div class="sec-h"><span class="id">W4</span><h2>Destination options</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya · Expert</span></div>
+  <p class="cap">Paying someone else by username, and every Receive into choice when moving money between your own wallets.</p>
+  <ul class="notes">
+    <li><b>Someone else</b>: one field takes an address, username or identity ID; a username resolves inline to its identity (<a href="#sr-03">SR-03</a>, <a href="#sr-11">SR-11</a>).</li>
+    <li><b>My wallets</b>: To wallet picker plus Receive into. The line under the chips names the wallet, the kind and the short address; Core/Platform use a fresh unused address (<a href="#sr-08">SR-08</a>, <a href="#sr-10">SR-10</a>, <a href="#ac-05">AC-05</a>). No Advanced chip on this side (<a href="#d-03">D-03</a>).</li>
+    <li>Same wallet with an explicit Core source: the identical account is disabled, with a reason (<a href="02-ux-spec.md#32-receive-into-destination-my-wallets-only">spec §3.2</a>, <a href="#sr-20">SR-20</a>). Shielded appears only with the shielded gate on.</li>
+  </ul>
+  <div class="grid2">
+    <div class="frag"><p class="vl">Someone else, username</p>
+      <div class="fr"><span class="lab">To</span><div class="ctl">
+        <div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w4a" checked><span>Someone else</span></label><label><input type="radio" name="w4a"><span>My wallets</span></label></div>
+        <div class="af" style="margin-top:10px"><input aria-label="Recipient" value="bob"></div>
+        <p class="st">bob · identity <span class="mono">7Hk2…Qp1</span> <span style="color:var(--success);font-weight:700">✓</span></p>
+      </div></div>
+    </div>
+    <div class="frag"><p class="vl">My wallets · Core</p>
+      <div class="fr"><span class="lab">To</span><div class="ctl"><div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w4b"><span>Someone else</span></label><label><input type="radio" name="w4b" checked><span>My wallets</span></label></div></div></div>
+      <div class="fr"><label class="lab" for="w4bw">Wallet</label><div class="ctl"><select class="dd" id="w4bw"><option>HD: Savings — 2.0000 DASH</option><option>HD: Main — 1.4123 DASH</option></select></div></div>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w4bc"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w4bc" checked><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w4bc"><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w4bc"><span>Identity</span></label>
+        <label class="chip"><input type="radio" name="w4bc"><span>Shielded</span></label></div>
+        <p class="st">To a new Core address in Savings · <span class="mono" title="Full address; click to copy">yQb7…2c1d</span></p></div></div>
+    </div>
+    <div class="frag"><p class="vl">My wallets · Platform</p>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w4c"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w4c"><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w4c" checked><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w4c"><span>Identity</span></label>
+        <label class="chip"><input type="radio" name="w4c"><span>Shielded</span></label></div>
+        <p class="st">To a new Platform address in Savings · <span class="mono">tdash1qx…9f3k</span></p></div></div>
+    </div>
+    <div class="frag"><p class="vl">My wallets · Identity</p>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w4d"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w4d"><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w4d"><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w4d" checked><span>Identity</span></label>
+        <label class="chip"><input type="radio" name="w4d"><span>Shielded</span></label></div></div></div>
+      <div class="fr"><label class="lab" for="w4di">Identity</label><div class="ctl"><select class="dd" id="w4di"><option>carol — 0.0500 DASH</option></select></div></div>
+    </div>
+    <div class="frag"><p class="vl">My wallets · Shielded</p>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w4e"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w4e"><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w4e"><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w4e"><span>Identity</span></label>
+        <label class="chip"><input type="radio" name="w4e" checked><span>Shielded</span></label></div>
+        <p class="st">To your private balance in Savings</p></div></div>
+    </div>
+    <div class="frag"><p class="vl">Same wallet, explicit source Core</p>
+      <div class="fr"><label class="lab" for="w4fw">Wallet</label><div class="ctl"><select class="dd" id="w4fw"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w4f"><span>Auto</span></label>
+        <label class="chip" title="You're paying from this balance. Pick a different one, or a different wallet."><input type="radio" name="w4f" disabled><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w4f" checked><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w4f"><span>Identity</span></label></div>
+        <span class="tip"><span class="tl">Core:</span>You're paying from this balance. Pick a different one, or a different wallet.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W5 ================= -->
+<section id="w5">
+  <div class="sec-h"><span class="id">W5</span><h2>Auto on source: fallback</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">A Platform address and 0.5 DASH: Platform (0.3) can't cover it, so Auto falls back to Core and says why.</p>
+  <ul class="notes">
+    <li>For a Platform destination Auto tries Platform, then Core; it never spends Identity and never splits one payment (<a href="#sr-06">SR-06</a>, <a href="#d-05">D-05</a>, <a href="#d-06">D-06</a>, <a href="#ac-03">AC-03</a>).</li>
+    <li>The status line says <i>why</i> it fell back (<a href="#sr-07">SR-07</a>). Core → Platform takes the fee from the amount, so <b>Recipient gets</b> appears, plus one route note (<a href="02-ux-spec.md#7-summary-card">spec §7</a>).</li>
+  </ul>
+  <div class="frag">
+    <div class="sf" style="padding:6px 0 0;max-width:none">
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w5s" checked><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w5s"><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w5s"><span>Platform <i>0.3000</i></span></label>
+          <label class="chip"><input type="radio" name="w5s"><span>Identity</span></label>
+        </div>
+        <p class="st"><b>Auto:</b> paying from Core · Platform can't cover 0.5000 DASH plus the fee.</p>
+      </div></div>
+      <div class="fr"><span class="lab">To</span><div class="ctl">
+        <div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w5m" checked><span>Someone else</span></label><label><input type="radio" name="w5m"><span>My wallets</span></label></div>
+        <div class="af" style="margin-top:10px"><input aria-label="Recipient" value="tdash1qz8…m4ve"><span class="kind">Platform ✓</span></div>
+      </div></div>
+      <div class="fr"><span class="lab">Amount</span><div class="ctl">
+        <div class="amt"><div class="af"><input aria-label="Amount" value="0.5"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+        <div class="sum">
+          <h4>Summary</h4>
+          <p class="route">Pay from Main · Core to <span class="mono">tdash1qz8…m4ve</span></p>
+          <div class="sumrow"><span>You send</span><span class="mono">0.5000 DASH</span></div>
+          <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0002 DASH</span></div>
+          <div class="sumrow"><span>Recipient gets</span><span class="mono">≈ 0.4998 DASH</span></div>
+          <div class="sumrow total"><span>Total from Core</span><span class="mono">0.5000 DASH</span></div>
+          <div class="snote">Your Dash is moved to Platform first, so this takes a little longer than a regular payment.</div>
+        </div>
+      </div></div>
+    </div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--border-strong)">
+      <p class="vl small muted" style="margin:0;font-weight:700">After changing the amount to 0.2 (re-resolves live)</p>
+      <p class="st"><b>Auto:</b> paying from Platform · 0.3000 DASH available</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W6 ================= -->
+<section id="w6">
+  <div class="sec-h"><span class="id">W6</span><h2>Auto on destination pins the source</h2><span class="persona p-priya">Priya · Expert</span></div>
+  <p class="cap">From the defaults, Priya picks My wallets, then Auto under Receive into. Only one side can be Auto, so Pay from is pinned to what its Auto had chosen.</p>
+  <ul class="notes">
+    <li>The side touched last wins; the other side is pinned, not disabled, and a one-time info line says so (<a href="#sr-05">SR-05</a>, <a href="#d-04">D-04</a>, <a href="#ac-04">AC-04</a>, <a href="02-ux-spec.md#43-auto-on-both-sides">spec §4.3</a>).</li>
+    <li>Same wallet, so destination Auto uses the other kind and shows the new address (<a href="#sr-08">SR-08</a>, <a href="#sr-10">SR-10</a>). Core under Receive into is disabled because it is the explicit source.</li>
+  </ul>
+  <div class="stack">
+    <div class="frag">
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w6s"><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w6s" checked><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w6s"><span>Platform <i>0.3000</i></span></label>
+          <label class="chip"><input type="radio" name="w6s"><span>Identity</span></label>
+        </div>
+        <div class="info"><span>ⓘ</span><span>Pay from is set to Core so Receive into can choose automatically.</span></div>
+      </div></div>
+      <div class="fr"><span class="lab">To</span><div class="ctl"><div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w6m"><span>Someone else</span></label><label><input type="radio" name="w6m" checked><span>My wallets</span></label></div></div></div>
+      <div class="fr"><label class="lab" for="w6w">Wallet</label><div class="ctl"><select class="dd" id="w6w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+      <div class="fr"><span class="lab">Receive into</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Receive into">
+          <label class="chip"><input type="radio" name="w6d" checked><span>Auto</span></label>
+          <label class="chip" title="You're paying from this balance. Pick a different one, or a different wallet."><input type="radio" name="w6d" disabled><span>Core</span></label>
+          <label class="chip"><input type="radio" name="w6d"><span>Platform</span></label>
+          <label class="chip"><input type="radio" name="w6d"><span>Identity</span></label>
+        </div>
+        <p class="st"><b>Auto:</b> to a new Platform address in Main · <span class="mono">tdash1qx…9f3k</span></p>
+        <p class="anno">same wallet, so Auto chose the other balance</p>
+      </div></div>
+    </div>
+    <div class="grid2">
+      <div class="frag"><p class="vl">Variant: To wallet set to Savings</p>
+        <p class="st"><b>Auto:</b> to a new Core address in Savings · <span class="mono">yQb7…2c1d</span></p>
+      </div>
+      <div class="frag"><p class="vl">Variant: Auto clicked under Pay from again</p>
+        <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow">
+          <label class="chip"><input type="radio" name="w6vs" checked><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w6vs"><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w6vs"><span>Platform <i>0.3000</i></span></label></div></div></div>
+        <div class="fr"><span class="lab">Receive into</span><div class="ctl"><div class="chiprow">
+          <label class="chip"><input type="radio" name="w6vd"><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w6vd"><span>Core</span></label>
+          <label class="chip"><input type="radio" name="w6vd" checked><span>Platform</span></label></div>
+          <div class="info"><span>ⓘ</span><span>Receive into is set to Platform so Pay from can choose automatically.</span></div>
+          <p class="anno">mirror wording of the line above (spec §4.3); exact copy to confirm</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W7 ================= -->
+<section id="w7">
+  <div class="sec-h"><span class="id">W7</span><h2>Identity source, destination Auto</h2><span class="persona p-priya">Priya · Expert</span></div>
+  <p class="cap">Moving alice's credits back into the wallet: destination Auto always lands on a new Platform address.</p>
+  <ul class="notes">
+    <li>Source Identity → destination Auto = a new Platform address (<a href="#sr-09">SR-09</a>, <a href="#ac-05">AC-05</a>).</li>
+    <li>Identity → Shielded is not a supported route, so Shielded is disabled with a reason instead of failing after Send (<a href="#sr-20">SR-20</a>, <a href="02-ux-spec.md#32-receive-into-destination-my-wallets-only">spec §3.2</a>).</li>
+  </ul>
+  <div class="frag">
+    <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow" role="radiogroup" aria-label="Pay from">
+      <label class="chip"><input type="radio" name="w7s"><span>Auto</span></label>
+      <label class="chip"><input type="radio" name="w7s"><span>Core <i>0.8123</i></span></label>
+      <label class="chip"><input type="radio" name="w7s"><span>Platform <i>0.3000</i></span></label>
+      <label class="chip"><input type="radio" name="w7s" checked><span>Identity</span></label></div></div></div>
+    <div class="fr"><label class="lab" for="w7i">Identity</label><div class="ctl"><select class="dd" id="w7i"><option>alice — 0.2000 DASH</option></select></div></div>
+    <div class="fr"><span class="lab">To</span><div class="ctl"><div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w7m"><span>Someone else</span></label><label><input type="radio" name="w7m" checked><span>My wallets</span></label></div></div></div>
+    <div class="fr"><label class="lab" for="w7w">Wallet</label><div class="ctl"><select class="dd" id="w7w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+    <div class="fr"><span class="lab">Receive into</span><div class="ctl">
+      <div class="chiprow" role="radiogroup" aria-label="Receive into">
+        <label class="chip"><input type="radio" name="w7d" checked><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w7d"><span>Core</span></label>
+        <label class="chip"><input type="radio" name="w7d"><span>Platform</span></label>
+        <label class="chip"><input type="radio" name="w7d"><span>Identity</span></label>
+        <label class="chip" title="Private funds can't go straight to an identity. Receive into Platform first, then top up the identity."><input type="radio" name="w7d" disabled><span>Shielded</span></label>
+      </div>
+      <p class="st"><b>Auto:</b> to a new Platform address in Main · <span class="mono">tdash1qx…9f3k</span></p>
+      <span class="tip"><span class="tl">Shielded:</span>Private funds can't go straight to an identity. Receive into Platform first, then top up the identity.</span>
+    </div></div>
+  </div>
+</section>
+
+<!-- ================= W8 ================= -->
+<section id="w8">
+  <div class="sec-h"><span class="id">W8</span><h2>Advanced (Expert view): coin control, Fee options, several recipients</h2><span class="persona p-priya">Priya · Expert</span><span class="persona p-jordan">Jordan · Developer</span></div>
+  <p class="cap">Everything the old "Advanced Options" form did, now as options inside the one form, visible only in Expert and Developer view.</p>
+  <ul class="notes">
+    <li><b>Advanced source</b> = "spend only from these addresses": one checklist of Core <i>or</i> Platform addresses that hold a balance. No per-address amounts; the amount still comes from the one Amount field (<a href="#sr-21">SR-21</a>, <a href="#d-11">D-11</a>, Q2). Everything starts unticked; shown after ticking one. Platform allows at most {max} ticks (<a href="02-ux-spec.md#33-advanced-source-panel">spec §3.3</a>).</li>
+    <li><b>Fee options</b> keeps all 4 strategies in a collapsed row inside the Summary. The header shows the current choice, so it's useful while collapsed. Shown only in Expert/Developer view, with Advanced source or several recipients, and Platform involved; default "Deduct from first input" (<a href="#sr-22">SR-22</a>, <a href="#d-12">D-12</a>, Q5). Choosing a "Reduce … output" strategy adds <b>Recipient gets</b>.</li>
+    <li><b>Several recipients</b> live under Someone else, not as a To option; all rows must be the same kind (<a href="#sr-04">SR-04</a>, <a href="#d-03">D-03</a>, <a href="#d-13">D-13</a>, <a href="02-ux-spec.md#34-several-recipients-expertdeveloper-view">spec §3.4</a>).</li>
+  </ul>
+  <div class="stack">
+    <div class="frag"><p class="vl">Advanced source</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w8s"><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w8s"><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w8s"><span>Platform <i>0.3000</i></span></label>
+          <label class="chip"><input type="radio" name="w8s"><span>Identity</span></label>
+          <label class="chip"><input type="radio" name="w8s"><span>Shielded <i>0.1000</i></span></label>
+          <label class="chip" title="Choose exactly which addresses to spend from."><input type="radio" name="w8s" checked><span>Advanced</span></label>
+        </div>
+        <div class="panel">
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><span class="small muted">Spend from</span>
+            <div class="sw" role="radiogroup" aria-label="Spend from"><label><input type="radio" name="w8k" checked><span>Core addresses</span></label><label><input type="radio" name="w8k"><span>Platform addresses</span></label></div></div>
+          <label class="cb"><input type="checkbox" checked><span class="mono">yXa1…9f02</span><span class="amtv">0.5000 DASH</span></label>
+          <label class="cb"><input type="checkbox"><span class="mono">yQb7…2c1d</span><span class="amtv">0.3123 DASH</span></label>
+          <p class="small" style="margin:8px 6px 0"><b>Selected: 0.5000 DASH</b></p>
+        </div>
+      </div></div>
+    </div>
+    <div class="grid2">
+      <div class="frag"><p class="vl">Summary with Fee options, collapsed (default)</p>
+        <div class="sum" style="margin-top:6px">
+          <h4>Summary</h4>
+          <p class="route">Pay from Main · Platform to <span class="mono">tdash1qz8…m4ve</span></p>
+          <div class="sumrow"><span>You send</span><span class="mono">0.2000 DASH</span></div>
+          <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0001 DASH</span></div>
+          <div class="sumrow total"><span>Total from Platform</span><span class="mono">≈ 0.2001 DASH</span></div>
+          <details class="fo"><summary>Fee options: <b>Deduct from first input</b></summary>
+            <label class="radio" title="The network fee is taken from the first address you spend from."><input type="radio" name="w8fa" checked>Deduct from first input <span class="dflt">default</span></label>
+            <label class="radio"><input type="radio" name="w8fa">Deduct from last input</label>
+            <label class="radio" title="Reduce first output: the first recipient receives the amount minus the fee."><input type="radio" name="w8fa">Reduce first output</label>
+            <label class="radio"><input type="radio" name="w8fa">Reduce last output</label>
+          </details>
+          <details class="dt"><summary>Details</summary><p class="small muted" style="margin:6px 0">Addresses used and the amount from each (today's "Source breakdown").</p></details>
+        </div>
+      </div>
+      <div class="frag"><p class="vl">Fee options expanded, "Reduce first output" chosen</p>
+        <div class="sum" style="margin-top:6px">
+          <h4>Summary</h4>
+          <p class="route">Pay from Main · Platform to <span class="mono">tdash1qz8…m4ve</span></p>
+          <div class="sumrow"><span>You send</span><span class="mono">0.2000 DASH</span></div>
+          <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0001 DASH</span></div>
+          <div class="sumrow total"><span>Total from Platform</span><span class="mono">≈ 0.2001 DASH</span></div>
+          <details class="fo" open><summary>Fee options: <b>Reduce first output</b></summary>
+            <label class="radio"><input type="radio" name="w8fb">Deduct from first input <span class="dflt">default</span></label>
+            <label class="radio"><input type="radio" name="w8fb">Deduct from last input</label>
+            <label class="radio" title="Reduce first output: the first recipient receives the amount minus the fee."><input type="radio" name="w8fb" checked>Reduce first output</label>
+            <label class="radio"><input type="radio" name="w8fb">Reduce last output</label>
+          </details>
+          <div class="sumrow added"><span>Recipient gets</span><span class="mono">≈ 0.1999 DASH</span></div>
+          <p class="anno">row added by the "Reduce … output" choice</p>
+        </div>
+      </div>
+    </div>
+    <div class="frag"><p class="vl">Several recipients</p>
+      <div class="fr"><span class="lab">To</span><div class="ctl">
+        <div class="sw" role="radiogroup" aria-label="Who you're paying" style="margin-bottom:10px"><label><input type="radio" name="w8m" checked><span>Someone else</span></label><label><input type="radio" name="w8m"><span>My wallets</span></label></div>
+        <div class="rrow"><div class="af"><input aria-label="Recipient 1" value="yX12…9fab"></div><div class="amt"><div class="af" style="width:110px"><input aria-label="Amount for recipient 1" value="0.2"></div><span class="unit">DASH</span></div><button class="x" aria-label="Remove recipient 1">✕</button></div>
+        <div class="rrow"><div class="af"><input aria-label="Recipient 2" value="yP44…71aa"></div><div class="amt"><div class="af" style="width:110px"><input aria-label="Amount for recipient 2" value="0.1"></div><span class="unit">DASH</span></div><button class="x" aria-label="Remove recipient 2">✕</button></div>
+        <div class="rrow" style="margin-bottom:0"><div class="af bad"><input aria-label="Recipient 3" value="tdash1qz8…m4ve" aria-describedby="w8e"></div><div class="amt"><div class="af" style="width:110px"><input aria-label="Amount for recipient 3" value="0.05"></div><span class="unit">DASH</span></div><button class="x" aria-label="Remove recipient 3">✕</button></div>
+        <div class="err" id="w8e"><span class="g">⚠</span><span>All recipients in one payment must be the same kind. Send to this address separately.</span></div>
+        <button class="linkbtn" style="margin-top:12px">+ Add another recipient</button>
+        <p class="anno">the single Amount field is hidden; the Summary totals the rows</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W9 ================= -->
+<section id="w9">
+  <div class="sec-h"><span class="id">W9</span><h2>Max with Auto</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">Max means "everything I can send". With Auto, it picks the largest single balance and stays Max until the amount is edited.</p>
+  <ul class="notes">
+    <li>Max is an intent: the field reads "Max", a second line says what it means, typing any digit returns to an exact amount (<a href="#sr-13">SR-13</a>, <a href="02-ux-spec.md#6-amount-and-max">spec §6</a>, #1106).</li>
+    <li>With Auto, Max fixes Auto on the candidate with the largest maximum while Max is active (<a href="02-ux-spec.md#41-source-auto">spec §4.1</a>).</li>
+  </ul>
+  <div class="grid2">
+    <div class="frag" style="grid-column:1 / -1">
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w9s" checked><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w9s"><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w9s"><span>Platform <i>0.3000</i></span></label>
+          <label class="chip"><input type="radio" name="w9s"><span>Identity</span></label>
+        </div>
+        <p class="st"><b>Auto:</b> paying from Core · Max uses the largest balance.</p>
+      </div></div>
+      <div class="fr"><span class="lab">To</span><div class="ctl"><div class="af"><input aria-label="Recipient" value="yX12…9fab"><span class="kind">Core ✓</span></div></div></div>
+      <div class="fr"><span class="lab">Amount</span><div class="ctl">
+        <div class="amt"><div class="af"><input aria-label="Amount" value="Max"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="true">Max</button></div>
+        <p class="sub">Everything available in Core · ≈ 0.8121 DASH</p>
+        <div class="sum">
+          <h4>Summary</h4>
+          <div class="sumrow"><span>You send</span><span class="mono">≈ 0.8121 DASH</span></div>
+          <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0002 DASH</span></div>
+          <div class="sumrow total"><span>Total from Core</span><span class="mono">0.8123 DASH (all of it)</span></div>
+        </div>
+      </div></div>
+    </div>
+    <div class="frag"><p class="vl">Core → Shielded Max (#1106): Summary note</p>
+      <div class="snote" style="border-top:none;color:var(--text)">Moves your whole Core balance. If the app closes, you can finish it from the Shielded tab.</div>
+    </div>
+    <div class="frag"><p class="vl">While the quote loads (#1107)</p>
+      <div class="amt"><div class="af"><input aria-label="Amount" value="" placeholder="Checking the available amount…" disabled></div><span class="unit">DASH</span><button class="btn sm" disabled title="Checking the available amount…">Max</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W10 ================= -->
+<section id="w10">
+  <div class="sec-h"><span class="id">W10</span><h2>Validation errors</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">Each problem appears under the field it concerns, says what to do, and where possible fixes itself in one click.</p>
+  <ul class="notes">
+    <li>Validated on blur or a completed paste, never on every keystroke. ⚠ glyph plus text, never colour alone (<a href="02-ux-spec.md#8-validation-and-error-copy">spec §8</a>, <a href="02-ux-spec.md#14-accessibility-wcag-22-aa-within-eguis-limits">§14</a>).</li>
+    <li>Nothing covers: names the largest single-payment amount and offers it (<a href="#sr-15">SR-15</a>, <a href="#d-06">D-06</a>, Q4, <a href="#ac-02">AC-02</a>). Changing Pay from keeps the typed address and explains under it (<a href="#sr-16">SR-16</a>, <a href="#ac-06">AC-06</a>). An explicit source is never switched for you.</li>
+  </ul>
+  <div class="grid2">
+    <div class="frag"><p class="vl">No single balance covers the amount (Auto)</p>
+      <p class="st" style="margin-top:2px"><b>Auto:</b> no single balance in Main covers 2.0000 DASH plus the fee.</p>
+      <div class="fr"><span class="lab">Amount</span><div class="ctl">
+        <div class="amt"><div class="af bad"><input aria-label="Amount" value="2.0" aria-describedby="w10a"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+        <div class="err" id="w10a"><span class="g">⚠</span><div>The most one payment can send is 0.8121 DASH, from Core.<br><button class="btn sm">Send 0.8121 instead</button></div></div>
+      </div></div>
+      <div class="act" style="margin-top:12px"><span class="hint">Fix the highlighted field.</span><div class="btns"><button class="btn sm">Cancel</button><button class="btn sm pri" disabled title="Fix the highlighted field.">Send</button></div></div>
+    </div>
+    <div class="frag"><p class="vl">Bad address / wrong network</p>
+      <div class="fr"><span class="lab">To</span><div class="ctl">
+        <div class="af bad"><input aria-label="Recipient" value="XpAbc…zz" aria-describedby="w10b"></div>
+        <div class="err" id="w10b"><span class="g">⚠</span><span>This is a Mainnet address, but you're on Testnet. Ask the recipient for a Testnet address.</span></div>
+      </div></div>
+    </div>
+    <div class="frag"><p class="vl">Explicit source can't reach this kind</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow">
+        <label class="chip"><input type="radio" name="w10c"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w10c"><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w10c"><span>Platform <i>0.3000</i></span></label>
+        <label class="chip"><input type="radio" name="w10c" checked><span>Identity</span></label><span class="muted" style="align-self:center">…</span></div></div></div>
+      <div class="fr"><span class="lab">To</span><div class="ctl">
+        <div class="af bad"><input aria-label="Recipient" value="dash1z…shield" aria-describedby="w10c"><span class="kind n">Shielded</span></div>
+        <div class="err" id="w10c"><span class="g">⚠</span><span>You can't send from an identity to a private address. Choose Auto or Platform under Pay from.</span></div>
+      </div></div>
+    </div>
+    <div class="frag"><p class="vl">Amount above an explicit source</p>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl"><div class="chiprow">
+        <label class="chip"><input type="radio" name="w10d"><span>Auto</span></label>
+        <label class="chip"><input type="radio" name="w10d"><span>Core <i>0.8123</i></span></label>
+        <label class="chip"><input type="radio" name="w10d" checked><span>Platform <i>0.3000</i></span></label><span class="muted" style="align-self:center">…</span></div></div></div>
+      <div class="fr"><span class="lab">Amount</span><div class="ctl">
+        <div class="amt"><div class="af bad"><input aria-label="Amount" value="0.5" aria-describedby="w10d"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+        <div class="err" id="w10d"><span class="g">⚠</span><div>Platform can send at most 0.2999 DASH after the fee.<br><button class="btn sm">Use 0.2999</button></div></div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W11 ================= -->
+<section id="w11">
+  <div class="sec-h"><span class="id">W11</span><h2>Locked wallet</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">A locked wallet no longer hides the form. Alex fills it in, sees what will happen, and is asked for the password only when pressing Send.</p>
+  <ul class="notes">
+    <li>Balances come from the snapshot; 🔒 glyph plus text (<a href="#sr-18">SR-18</a>, <a href="#d-10">D-10</a>, <a href="#ac-07">AC-07</a>, <a href="02-ux-spec.md#9-locked-wallets-sync-network">spec §9</a>).</li>
+    <li>Send → the existing <code>WalletUnlockPopup</code> → on success the confirmation (<a href="#w12">W12</a>). Cancelling the unlock returns here with nothing changed.</li>
+  </ul>
+  <div class="frag">
+    <div class="fr"><label class="lab" for="w11w">Wallet</label><div class="ctl">
+      <select class="dd" id="w11w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select>
+      <p class="lockl"><span aria-hidden="true">🔒</span><span>Locked. You'll be asked for the password when you send.</span></p>
+    </div></div>
+    <p class="anno" style="margin-left:112px">form fully usable: Pay from, To, Amount and Summary as in W2</p>
+    <div class="act"><span class="hint"></span><div class="btns"><button class="btn">Cancel</button><button class="btn pri">Send</button></div></div>
+    <div class="flow" aria-label="What happens after Send">
+      <span class="fb">Send</span><span class="ar">→</span><span class="fb">Unlock popup (password)</span><span class="ar">→ unlocked →</span><a class="fb" href="#w12">Confirmation (W12)</a>
+      <span class="muted">&nbsp;·&nbsp; Cancel unlock → back here, nothing changed</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W12 ================= -->
+<section id="w12">
+  <div class="sec-h"><span class="id">W12</span><h2>Confirmation</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">The last look before money moves: the resolved route, in full, in one place.</p>
+  <ul class="notes">
+    <li>The button still says <b>Send</b>; the dialog states source, destination, amount, fee and total, plus the route note if any (<a href="#sr-17">SR-17</a>, <a href="#d-09">D-09</a>, <a href="02-ux-spec.md#10-confirmation-and-after-sending">spec §10</a>).</li>
+    <li>The action is built when Send is pressed, so the dialog shows exactly what will be sent even if Auto would re-resolve later. Escape = Cancel; Send on the right.</li>
+  </ul>
+  <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1fr))">
+    <div class="app" style="height:470px">
+      <div class="top"><div class="crumb">Wallets <span>&rsaquo;</span> Main <span>&rsaquo;</span> <b>Send</b></div><div class="chip-net"><span class="dot"></span><span class="t">Testnet &middot; </span>Connected</div></div>
+      <div class="sf" style="opacity:.6" aria-hidden="true"><h3 class="title">Send Dash</h3><div class="gl first">From</div><p class="small">HD: Main — 1.4123 DASH</p><div class="gl">To</div><p class="small mono">yX12…9fab</p><div class="gl">Amount</div><p class="small">0.5 DASH</p></div>
+      <div class="scrim">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="w12t">
+          <div class="mh" id="w12t">Send 0.5000 DASH?</div>
+          <div class="mb">
+            <div class="cg">
+              <span class="k">From</span><span>Main · Core</span>
+              <span class="k">To</span><span>bob (<span class="mono">yX12…9fab</span>)</span>
+              <span class="k">Amount</span><span class="mono">0.5000 DASH</span>
+              <span class="k">Fee</span><span class="mono">≈ 0.0001 DASH</span>
+              <span class="k">Total</span><span class="mono" style="font-weight:700">≈ 0.5001 DASH</span>
+            </div>
+            <p style="margin:0">Check the recipient. Payments can't be undone.</p>
+          </div>
+          <div class="mf"><button class="btn">Cancel</button><button class="btn pri">Send</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="frag" style="align-self:start"><p class="vl">Own-wallet example: the To row</p>
+      <div class="cg" style="margin:6px 0 0"><span class="k">To</span><span>Savings · new Core address (<span class="mono">yQb7…2c1d</span>)</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W13 ================= -->
+<section id="w13">
+  <div class="sec-h"><span class="id">W13</span><h2>Narrow (&lt; 420 pt)</h2><span class="persona p-alex">Alex · Everyday</span></div>
+  <p class="cap">The same W2 send on a narrow window: everything stacks, nothing is cut off.</p>
+  <ul class="notes">
+    <li>Labels above controls; chips wrap and drop their balance text (it stays in the chip tooltip and the status line). The Summary becomes stacked label/value pairs. Buttons go full width, Send on top (<a href="02-ux-spec.md#13-responsive-layout">spec §13</a>).</li>
+    <li>Status lines wrap and are never truncated; addresses are middle-ellipsised with the full value in a tooltip.</li>
+  </ul>
+  <div class="phone">
+    <div class="pbar"></div>
+    <div class="sf">
+      <h3 class="title" style="font-size:18px">Send Dash</h3>
+      <div class="gl first">From</div>
+      <div class="fr"><label class="lab" for="w13w">Wallet</label><div class="ctl"><select class="dd" id="w13w"><option>HD: Main — 1.4123 DASH</option></select></div></div>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w13s" checked><span>Auto</span></label>
+          <label class="chip" title="Core · 0.8123 DASH"><input type="radio" name="w13s"><span>Core</span></label>
+          <label class="chip" title="Platform · 0.3000 DASH"><input type="radio" name="w13s"><span>Platform</span></label>
+          <label class="chip" title="Credits held by one of your identities."><input type="radio" name="w13s"><span>Identity</span></label>
+        </div>
+        <p class="st"><b>Auto:</b> paying from Core · 0.8123 DASH available</p>
+      </div></div>
+      <div class="gl">To</div>
+      <div class="sw" role="radiogroup" aria-label="Who you're paying"><label><input type="radio" name="w13m" checked><span>Someone else</span></label><label><input type="radio" name="w13m"><span>My wallets</span></label></div>
+      <div class="af" style="margin-top:10px"><input aria-label="Recipient" value="yX12…9fab"><span class="kind">Core ✓</span></div>
+      <div class="gl">Amount</div>
+      <div class="amt"><div class="af"><input aria-label="Amount" value="0.5"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+      <div class="sum stk">
+        <h4>Summary</h4>
+        <div class="sumrow"><span>You send</span><span class="mono">0.5000 DASH</span></div>
+        <div class="sumrow"><span>Network fee</span><span class="mono">≈ 0.0001 DASH</span></div>
+        <div class="sumrow total"><span>Total from Core</span><span class="mono">≈ 0.5001 DASH</span></div>
+      </div>
+      <div class="act"><div class="btns"><button class="btn pri full">Send</button><button class="btn full">Cancel</button></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= W14 ================= -->
+<section id="w14">
+  <div class="sec-h"><span class="id">W14</span><h2>Preset: Shield (from the Shielded tab)</h2><span class="persona p-priya">Priya · Expert</span><span class="persona p-jordan">Jordan · Developer</span></div>
+  <p class="cap">Shield opens this same form with To already set to the private balance; only what Shield doesn't decide stays editable.</p>
+  <ul class="notes">
+    <li>Presets reuse the one form; a fixed section shows its value as text with "Set by Shield" and has no chips (<a href="#sr-19">SR-19</a>, <a href="02-ux-spec.md#11-entry-points-and-presets-sr-19">spec §11</a>).</li>
+    <li>Pay from offers Core and Platform only. For a shielded destination Auto tries Shielded → Platform → Core and skips the destination account itself, so here it picks Platform (<a href="#sr-06">SR-06</a>).</li>
+  </ul>
+  <div class="frag">
+    <div class="sf" style="padding:6px 0 0;max-width:none">
+      <h3 class="title">Shield</h3>
+      <p class="small muted" style="margin:0 0 6px">Move funds from your wallet or Platform balance into your private balance.</p>
+      <div class="gl first" style="margin-top:12px">From</div>
+      <div class="fr"><label class="lab" for="w14w">Wallet</label><div class="ctl"><select class="dd" id="w14w"><option>HD: Main — 1.4123 DASH</option><option>HD: Savings — 2.0000 DASH</option></select></div></div>
+      <div class="fr"><span class="lab">Pay from</span><div class="ctl">
+        <div class="chiprow" role="radiogroup" aria-label="Pay from">
+          <label class="chip"><input type="radio" name="w14s" checked><span>Auto</span></label>
+          <label class="chip"><input type="radio" name="w14s"><span>Core <i>0.8123</i></span></label>
+          <label class="chip"><input type="radio" name="w14s"><span>Platform <i>0.3000</i></span></label>
+        </div>
+        <p class="st"><b>Auto:</b> paying from Platform · 0.3000 DASH available</p>
+      </div></div>
+      <div class="gl">To</div>
+      <div class="fr"><span class="lab"></span><div class="ctl"><p style="margin:0;font-size:13.5px">Your private balance in Main <span class="muted small" style="margin-left:8px">Set by Shield</span></p></div></div>
+      <div class="gl">Amount</div>
+      <div class="fr"><span class="lab"></span><div class="ctl">
+        <div class="amt"><div class="af"><input aria-label="Amount" value="0.2"></div><span class="unit">DASH</span><button class="btn sm maxb" aria-pressed="false">Max</button></div>
+        <div class="placeholder">Summary and Send, as in W2</div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= IDs ================= -->
+<section id="ids">
+  <div class="sec-h"><span class="id">IDs</span><h2>Referenced IDs</h2></div>
+  <p class="cap muted small">One-line digests; the authoritative text is in <a href="01-requirements.md">01-requirements.md</a> (§4 requirements and acceptance criteria, §5 deviations).</p>
+  <div class="card">
+    <ul class="idx">
+      <li id="sr-01"><b>SR-01</b>One form: From, To, then Amount, Summary, actions. No separate Advanced form.</li>
+      <li id="sr-02"><b>SR-02</b>From = wallet picker + Pay from: Auto · Core · Platform · Identity · Shielded · Advanced.</li>
+      <li id="sr-03"><b>SR-03</b>To = Someone else | My wallets; My wallets = wallet picker + Receive into.</li>
+      <li id="sr-04"><b>SR-04</b>Several recipients = "+ Add another recipient" under the Someone-else field.</li>
+      <li id="sr-05"><b>SR-05</b>Auto on at most one side; the side touched last wins, the other is pinned.</li>
+      <li id="sr-06"><b>SR-06</b>Source Auto candidate order per destination kind; never Identity, Shielded only for private destinations, no split, skip the destination account.</li>
+      <li id="sr-07"><b>SR-07</b>Source Auto status line names the balance and amount, updates live, says why on fallback.</li>
+      <li id="sr-08"><b>SR-08</b>Destination Auto receives into an unused address; same wallet → the other kind.</li>
+      <li id="sr-09"><b>SR-09</b>Source Identity → destination Auto = a new Platform address.</li>
+      <li id="sr-10"><b>SR-10</b>Destination Auto status line names wallet, kind and short address.</li>
+      <li id="sr-11"><b>SR-11</b>Someone else: the destination kind comes from the typed value.</li>
+      <li id="sr-12"><b>SR-12</b>Defaults: current wallet + Auto; To = Someone else, field focused; My wallets defaults.</li>
+      <li id="sr-13"><b>SR-13</b>Max works on the resolved source and is an intent until the amount is edited.</li>
+      <li id="sr-14"><b>SR-14</b>One Summary card holds all fee information; Details in Expert view.</li>
+      <li id="sr-15"><b>SR-15</b>Nothing covers → inline error offers the largest single-payment amount in one click.</li>
+      <li id="sr-16"><b>SR-16</b>Changing one section never clears the other; incompatibility shows an inline reason.</li>
+      <li id="sr-17"><b>SR-17</b>The button always says Send; the confirmation states route, source, destination, amount, fee, total.</li>
+      <li id="sr-18"><b>SR-18</b>A locked wallet keeps the form; Send asks to unlock, then confirms.</li>
+      <li id="sr-19"><b>SR-19</b>Presets open the same form pre-filled; fixed fields are read-only.</li>
+      <li id="sr-20"><b>SR-20</b>Unsupported routes are disabled with a reason, not refused after Send.</li>
+      <li id="sr-21"><b>SR-21</b>Advanced source = checklist of Core or Platform addresses; Expert/Developer only.</li>
+      <li id="sr-22"><b>SR-22</b>All 4 fee strategies in a collapsed Fee options row in the Summary (Expert, Advanced/several recipients, Platform involved).</li>
+      <li id="d-01"><b>D-01</b>Advanced is an option inside the one form, not a separate form.</li>
+      <li id="d-02"><b>D-02</b>Someone else / My wallets switch instead of a wallet choice and a typed address competing.</li>
+      <li id="d-03"><b>D-03</b>No Advanced chip under To; several recipients belong to Someone else.</li>
+      <li id="d-04"><b>D-04</b>Last-touched side wins; the other is pinned, not disabled.</li>
+      <li id="d-05"><b>D-05</b>Full candidate order; Identity never spent automatically; Shielded only for shielded destinations.</li>
+      <li id="d-06"><b>D-06</b>Auto never splits one payment across two sources.</li>
+      <li id="d-07"><b>D-07</b>Default To = Someone else; U10 applies in My wallets (same wallet → the other kind).</li>
+      <li id="d-08"><b>D-08</b>One Summary card replaces four fee/route read-outs.</li>
+      <li id="d-09"><b>D-09</b>The button always says "Send"; the route verb moves to the Summary and confirmation.</li>
+      <li id="d-10"><b>D-10</b>Unlock when Send is pressed, not up front.</li>
+      <li id="d-11"><b>D-11</b>Advanced drops per-address amounts; one Amount field.</li>
+      <li id="d-12"><b>D-12</b>All 4 fee strategies kept, moved to Summary › Fee options.</li>
+      <li id="d-13"><b>D-13</b>Advanced and "+ Add another recipient" are Expert/Developer only.</li>
+      <li id="d-14"><b>D-14</b>Short chip labels (Core, Platform, Identity, Shielded) plus info tooltips.</li>
+      <li id="ac-01"><b>AC-01</b>Core address + 0.5 → "Auto: paying from Core · … available"; Send enabled.</li>
+      <li id="ac-02"><b>AC-02</b>Amount 1.0 → "no single balance in Main covers …"; max-offer link; Send disabled.</li>
+      <li id="ac-03"><b>AC-03</b>Platform address + 0.5 → Auto falls back to Core and says Platform can't cover it.</li>
+      <li id="ac-04"><b>AC-04</b>Auto picked under To → From pinned to its resolved option, with an info line.</li>
+      <li id="ac-05"><b>AC-05</b>From Identity alice, To My wallets · Auto → "Auto: to a new Platform address in Main · …".</li>
+      <li id="ac-06"><b>AC-06</b>Changing Pay from keeps the typed address; an inline reason appears if it can't be paid.</li>
+      <li id="ac-07"><b>AC-07</b>Locked wallet: Send → unlock → confirmation; cancelling the unlock changes nothing.</li>
+      <li id="ac-08"><b>AC-08</b>Shielded destination with Shielded balance 0 → Auto resolves to Platform, then Core.</li>
+    </ul>
+  </div>
+</section>
+
+</body>
+</html>

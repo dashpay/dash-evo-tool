@@ -537,6 +537,50 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
 - While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
+### SND-019: Let the app choose which balance pays [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want the Send screen to pick which of my balances pays for a payment, and tell me what it picked, so that I can pay someone without knowing the difference between Core and Platform.
+
+- The form has two sections, From and To. From is a wallet plus "Pay from": Auto, Core, Platform, Identity (when the wallet has identities), Shielded (when shielded sending is available) and Advanced (Expert view). Auto is the default.
+- Auto pays from the same kind of balance as the recipient (Core address → Core, Platform address → Platform, private address → private balance), then falls back to Platform, then Core. It never spends identity credits, never unshields private funds for a non-private recipient, and never splits one payment across two balances.
+- A line under Pay from says what Auto chose and how much that balance holds, and why when it fell back. The line updates as the recipient, amount or balances change. The confirmation repeats the chosen balance.
+- When no single balance covers the amount and fee, the form says so and offers the largest amount one payment can send.
+- Changing Pay from never clears the recipient. A choice that cannot reach the recipient is disabled or explained inline, never refused after pressing Send.
+- Design: `docs/ai-design/2026-10-23-send-screen-redesign/`.
+
+### SND-020: Move funds between my own wallets and balances [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want to send to one of my own wallets, balances or identities by picking it, so that I never have to copy my own address.
+
+- To offers "Someone else" (address, username or identity ID) and "My wallets" (a wallet plus "Receive into": Auto, Core, Platform, Identity, Shielded).
+- Receive into Core, Platform or Shielded uses an unused receiving address of the chosen wallet, shown on screen. Identity tops up the chosen identity.
+- Auto under Receive into uses the same kind of balance as the sender. Within the same wallet it uses the other kind (Core ↔ Platform), and from an identity it always uses a Platform address. A line says where the funds will go.
+- Auto can be on only one side. Choosing it on one side fixes the other side to what its Auto had chosen, and says so.
+- The balance being paid from cannot also be chosen as the destination.
+
+### SND-021: One Summary of what a send costs [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want a single summary of the route, fee and total before I press Send, so that I do not have to piece it together from several hints.
+
+- One Summary card shows: which balance pays and to whom, the amount, the estimated fee, the total taken from the named balance, and what the recipient gets when the fee comes out of the amount.
+- Route-specific notes (withdrawals take a while; moving to Platform first) appear at most once, in the Summary.
+- The Send button always says "Send". A disabled Send has a line saying the next step needed.
+- "Max" means "everything available" and stays that way until the amount is edited. With Auto, Max uses the balance that can send the most.
+- A locked wallet does not hide the form; Send asks for the password, then shows the confirmation.
+
+### SND-022: Choose exactly which addresses pay, or pay several recipients [Gap]
+**Persona:** Priya, Jordan
+
+As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
+
+- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. The amount still comes from the single Amount field.
+- When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
+- "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
+- Replaces the separate "Advanced Options" form and its per-address amounts.
+
 ---
 
 ## Asset Locks (ALK)
@@ -1042,6 +1086,8 @@ As a user, I want to see my contacts and their profiles so that I can manage my 
 
 - Lists all accepted contacts.
 - View individual contact details and profile.
+- In the Identity Hub Contacts tab, selecting a contact shows its picture, name, username, and
+  bio beside the list, or under it on a narrow window.
 
 ### DPY-006: Send payment to contact [Implemented]
 **Persona:** Alex, Priya
@@ -1076,7 +1122,11 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
-- Changes persist locally.
+- The Identity Hub contact details edit the private note, which is saved encrypted on Dash
+  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
+  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  legacy DashPay screens can continue to show an older local note.
+- Edits made through the legacy contact-details screen persist in its local memo.
 
 ### DPY-010: Remove a contact [Gap]
 **Persona:** Alex, Priya
@@ -1272,6 +1322,17 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 - The row comes back when the user asks for it again: re-importing the token restores it for every identity that dismissed it, and checking that one balance restores just that pair.
 
 ---
+
+### TOK-019: Create a token each identity can claim once [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
+
+- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The fee estimate includes the network's extra fee for this distribution.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
 
 ### TOK-020: Create a token holders cannot transfer [Implemented]
 **Persona:** Jordan
@@ -1743,6 +1804,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
 - Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Selecting a contact in Home's preview opens Contacts with that person's profile and private note selected in Contact details. The selection stays visible while the list refreshes.
 - Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]

@@ -399,7 +399,13 @@ mod tests {
         let kv = kv();
         let lock = Mutex::new(());
         let wallets = WalletContext::default();
-        let wallet = Wallet::new_from_seed([7; 64], Network::Testnet, None, None).unwrap();
+        let wallet = Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            Network::Testnet,
+            None,
+            None,
+        )
+        .unwrap();
         let seed = wallet.seed_hash();
         wallets.insert_test_wallet(seed, Arc::new(RwLock::new(wallet)));
         let view = AuthPubkeyCacheView::new(&kv, &lock, &wallets);

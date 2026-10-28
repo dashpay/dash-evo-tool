@@ -1371,7 +1371,7 @@ mod tests {
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
 
-        let seed = [0x41; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -1429,7 +1429,7 @@ mod tests {
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
 
-        let seed = [0x42; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -1488,7 +1488,7 @@ mod tests {
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
 
-        let seed = [0x44; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,

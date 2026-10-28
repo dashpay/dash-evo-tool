@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn unprotected_round_trip_preserves_key_bytes() {
-        let raw = [0x77u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let entry = SingleKeyEntry::unprotected(raw);
         let bytes = entry.encode().expect("encode");
         let decoded = SingleKeyEntry::decode(&bytes).expect("decode");
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn protected_round_trip_requires_correct_passphrase() {
-        let raw = [0x11u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let entry = SingleKeyEntry::protected(&raw, "correct horse battery", None, Vec::new())
             .expect("encrypt");
         let bytes = entry.encode().expect("encode");
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn legacy_32_byte_blob_decodes_as_unprotected() {
-        let raw = [0xABu8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let decoded = SingleKeyEntry::decode(&raw).expect("decode legacy");
         assert!(!decoded.has_passphrase);
         assert!(decoded.salt.is_empty());
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn debug_output_does_not_expose_private_bytes() {
-        let raw = [0x42u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let entry = SingleKeyEntry::unprotected(raw);
         let dbg = format!("{entry:?}");
         // The raw key byte 0x42 must not appear verbatim in the debug string.
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn passphrase_hint_round_trips() {
-        let raw = [0x22u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let entry = SingleKeyEntry::protected(
             &raw,
             "pp",

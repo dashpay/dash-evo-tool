@@ -1728,15 +1728,13 @@ mod tests {
         imported.address
     }
 
+    /// A testnet WIF that is stable for the whole test process.
     fn known_testnet_wif() -> String {
-        use dash_sdk::dpp::dashcore::PrivateKey;
-        use dash_sdk::dpp::secp256k1::SecretKey;
-        let mut bytes = [0u8; 32];
-        bytes[31] = 1;
-        let sk = SecretKey::from_secret_bytes(bytes).unwrap();
-        PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
-            .expect("valid secret key")
-            .to_wif()
+        crate::test_support::keys::labelled_wif(
+            "wallet_backend::secret_access::known_testnet_wif",
+            0,
+            Network::Testnet,
+        )
     }
 
     /// Write a legacy DET AES-GCM `SingleKeyEntry` straight to the vault Tier-1 —
@@ -1874,8 +1872,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let addr_a = "single-key-address-A".to_string();
         let addr_b = "single-key-address-B".to_string();
-        let key_a = [0xA7u8; 32];
-        let key_b = [0xB8u8; 32];
+        let key_a = crate::test_support::keys::secret_bytes();
+        let key_b = crate::test_support::keys::secret_bytes();
         let pw_a = SecretString::new("single-key-A-pwpwpwpw");
         let pw_b = SecretString::new("single-key-B-pwpwpwpw");
         let seam = SecretSeam::new(&store);
@@ -2003,7 +2001,7 @@ mod tests {
         let store = fresh_store(dir.path());
         let seed_a: WalletSeedHash = [0xA1; 32];
         let seed_b: WalletSeedHash = [0xB2; 32];
-        let seed_b_bytes = [0x77u8; 64];
+        let seed_b_bytes = crate::test_support::keys::seed();
         store_protected_hd(&store, &seed_a, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
         store_protected_hd(&store, &seed_b, &seed_b_bytes, SENTINEL_PASSPHRASE);
 
@@ -2107,7 +2105,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x33u8; 32];
-        let key = [0xC7u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key(
             &store,
             identity_id,
@@ -2190,7 +2188,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x51u8; 32];
-        let key = [0xD4u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             identity_id,
@@ -2244,7 +2242,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x52u8; 32];
-        let key = [0xE5u8; 32];
+        let key = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             identity_id,
@@ -2280,6 +2278,7 @@ mod tests {
     /// still resolves headless (covered by TS-FAST-01).
     #[tokio::test]
     async fn ts_t2_ik_03_headless_protected_identity_key_is_unavailable() {
+        let secret_f6 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x53u8; 32];
@@ -2288,7 +2287,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0xF6u8; 32],
+            &secret_f6,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2318,8 +2317,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let id_a = [0xA1u8; 32];
         let id_b = [0xB2u8; 32];
-        let key_a = [0x1Au8; 32];
-        let key_b = [0x2Bu8; 32];
+        let key_a = crate::test_support::keys::secret_bytes();
+        let key_b = crate::test_support::keys::secret_bytes();
         store_identity_key_protected(
             &store,
             id_a,
@@ -2392,6 +2391,7 @@ mod tests {
     /// index degrades to a generic label, never an error.
     #[tokio::test]
     async fn protected_identity_key_prompt_uses_identity_prompt_index() {
+        let secret_77 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x54u8; 32];
@@ -2400,7 +2400,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             1,
-            &[0x77u8; 32],
+            &secret_77,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2430,6 +2430,7 @@ mod tests {
     /// fails, and it unseals to the exact bytes under the same password.
     #[tokio::test]
     async fn seal_new_identity_key_seals_tier2_under_verified_password() {
+        let secret_10 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x61u8; 32];
@@ -2439,10 +2440,10 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x10u8; 32],
+            &secret_10,
             SENTINEL_PASSPHRASE,
         );
-        let new_key = [0x20u8; 32];
+        let new_key = crate::test_support::keys::secret_bytes();
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(Arc::clone(&store), prompt.clone());
@@ -2492,6 +2493,8 @@ mod tests {
     /// (`SecretPromptUnavailable`) and writes NOTHING — no keyless key lands.
     #[tokio::test]
     async fn seal_new_identity_key_headless_fails_closed() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_20 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x62u8; 32];
@@ -2500,7 +2503,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x11u8; 32],
+            &secret_11,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2516,7 +2519,7 @@ mod tests {
                 &verify,
                 &PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 5,
-                &[0x20u8; 32],
+                &secret_20,
             )
             .await
             .expect_err("headless cannot seal");
@@ -2540,6 +2543,8 @@ mod tests {
     /// then seals the new key on the correct password.
     #[tokio::test]
     async fn seal_new_identity_key_wrong_password_reasks() {
+        let secret_12 = crate::test_support::keys::secret_bytes();
+        let secret_20 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x63u8; 32];
@@ -2548,7 +2553,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x12u8; 32],
+            &secret_12,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2567,7 +2572,7 @@ mod tests {
             &verify,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             5,
-            &[0x20u8; 32],
+            &secret_20,
         )
         .await
         .expect("retry then seal");
@@ -2594,6 +2599,7 @@ mod tests {
     /// halves usable around an intervening on-chain broadcast.
     #[tokio::test]
     async fn verify_up_front_then_seal_after_broadcast_one_prompt() {
+        let secret_13 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x64u8; 32];
@@ -2602,10 +2608,10 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x13u8; 32],
+            &secret_13,
             SENTINEL_PASSPHRASE,
         );
-        let new_key = [0x21u8; 32];
+        let new_key = crate::test_support::keys::secret_bytes();
 
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(Arc::clone(&store), prompt.clone());
@@ -2659,6 +2665,7 @@ mod tests {
     /// the on-chain state transition — no on-chain/local divergence.
     #[tokio::test]
     async fn verify_identity_object_password_headless_fails_closed_before_seal() {
+        let secret_14 = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let identity_id = [0x65u8; 32];
@@ -2667,7 +2674,7 @@ mod tests {
             identity_id,
             &PrivateKeyTarget::PrivateKeyOnMainIdentity,
             0,
-            &[0x14u8; 32],
+            &secret_14,
             SENTINEL_PASSPHRASE,
         );
 
@@ -2750,9 +2757,9 @@ mod tests {
         let store = fresh_store(dir.path());
         let seed_hash: WalletSeedHash = [0x5E; 32];
         // Legacy holds one seed; raw holds a DIFFERENT one — proving which won.
-        let legacy_seed = [0x11u8; 64];
+        let legacy_seed = crate::test_support::keys::seed();
         store_unprotected_hd(&store, &seed_hash, &legacy_seed);
-        let raw_seed = [0x99u8; 64];
+        let raw_seed = crate::test_support::keys::seed();
         WalletSeedView::new(&store)
             .set_raw(&seed_hash, &raw_seed)
             .unwrap();
@@ -2940,8 +2947,8 @@ mod tests {
         let store = fresh_store(dir.path());
         let hash_a: WalletSeedHash = [0xAA; 32];
         let hash_b: WalletSeedHash = [0xBB; 32];
-        let seed_a = [0xA1u8; 64];
-        let seed_b = [0xB2u8; 64];
+        let seed_a = crate::test_support::keys::seed();
+        let seed_b = crate::test_support::keys::seed();
         let pw_a = SecretString::new("password-A-aaaaaaaaaa");
         let pw_b = SecretString::new("password-B-bbbbbbbbbb");
         let view = WalletSeedView::new(&store);

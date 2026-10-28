@@ -207,7 +207,6 @@ mod tests {
     use std::sync::Arc;
 
     const SENTINEL_PASSPHRASE: &str = "correct-horse-battery-staple-SENTINEL";
-    const SENTINEL_SEED: [u8; 64] = [0x5A; 64];
 
     fn store_with_protected_hd(
         dir: &std::path::Path,
@@ -218,7 +217,7 @@ mod tests {
             ciphertext: encrypted_seed,
             salt,
             nonce,
-        } = encrypt_message(&SENTINEL_SEED, SENTINEL_PASSPHRASE).expect("enc");
+        } = encrypt_message(&crate::test_support::keys::seed(), SENTINEL_PASSPHRASE).expect("enc");
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(encrypted_seed),
             salt,
@@ -271,7 +270,9 @@ mod tests {
     const PINNED_TESTNET_PUBKEY_HEX: &str =
         "03a9a554ad52bd61203ceee0c8ad65f60d019a1c43a73f657f1a080d9f321730f3";
 
-    /// The deterministic seed both parity vectors derive from.
+    /// The deterministic seed both parity vectors derive from. Fixed on
+    /// purpose: [`PINNED_TESTNET_PUBKEY_HEX`] is derived from it, so it is a
+    /// golden vector, exempt from runtime key generation.
     const PARITY_SEED: [u8; 64] = [0x5A; 64];
 
     /// FUND-SAFETY PARITY: `DetSigner::sign_ecdsa` (the HD signer surface that
@@ -471,9 +472,7 @@ mod tests {
             Network::Testnet,
             None,
         );
-        let mut key_bytes = [0u8; 32];
-        key_bytes[31] = 1;
-        let sk = secp256k1::SecretKey::from_secret_bytes(key_bytes).unwrap();
+        let sk = crate::test_support::keys::secret_key();
         let wif = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
             .to_wif();
@@ -526,7 +525,7 @@ mod tests {
     /// never the bytes.
     #[test]
     fn debug_redacts_held_secret() {
-        let seed = Zeroizing::new([0x42u8; 64]);
+        let seed = Zeroizing::new(crate::test_support::keys::seed());
         let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&seed), Network::Testnet);
         let dbg = format!("{signer:?}");
         assert!(dbg.contains("HdSeed"), "kind tag present: {dbg}");

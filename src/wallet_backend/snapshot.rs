@@ -1277,9 +1277,13 @@ mod tests {
         ))
         .await
         .expect("the wallet backend starts offline");
-        let wallet =
-            crate::model::wallet::Wallet::new_from_seed([0x51; 64], Network::Testnet, None, None)
-                .expect("wallet");
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            Network::Testnet,
+            None,
+            None,
+        )
+        .expect("wallet");
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(std::sync::RwLock::new(wallet)));
@@ -1363,7 +1367,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
@@ -1398,7 +1402,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
@@ -1531,7 +1535,7 @@ mod tests {
 
         const CURRENT_HEIGHT: u32 = 200;
         let wallet = UpstreamWallet::from_seed_bytes(
-            [0x51; 64],
+            crate::test_support::keys::seed(),
             Network::Testnet,
             WalletAccountCreationOptions::Default,
         )
@@ -1637,7 +1641,7 @@ mod tests {
 
         const CURRENT_HEIGHT: u32 = 200;
         let wallet = UpstreamWallet::from_seed_bytes(
-            [0x53; 64],
+            crate::test_support::keys::seed(),
             Network::Testnet,
             WalletAccountCreationOptions::Default,
         )
@@ -1697,7 +1701,7 @@ mod tests {
         const SUB_DUST_DUFFS: u64 = 300;
 
         let wallet = UpstreamWallet::from_seed_bytes(
-            [0x55; 64],
+            crate::test_support::keys::seed(),
             Network::Testnet,
             WalletAccountCreationOptions::Default,
         )
@@ -1762,7 +1766,7 @@ mod tests {
             .expect("wallet backend");
         let backend = app_context.wallet_backend().expect("wired backend");
 
-        let seed = [0x46; 64];
+        let seed = crate::test_support::keys::seed();
         let det_wallet = crate::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -2285,8 +2289,8 @@ mod tests {
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).
     fn addr(n: u8) -> Address {
-        let mut sk_bytes = [1u8; 32];
-        sk_bytes[31] = n.max(1);
+        let sk_bytes =
+            crate::test_support::keys::labelled_secret("wallet_backend::snapshot::addr", n.into());
         let sk = SecretKey::from_secret_bytes(sk_bytes).unwrap();
         let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)
@@ -2582,7 +2586,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
@@ -2608,7 +2612,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)

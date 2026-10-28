@@ -3117,6 +3117,8 @@ mod tests {
     // inputs `(TEST_SEED, Testnet, account_index 0, sender 0x11, recipient
     // 0x22, TEST_SECRET)`. They guard the DashPay derivation seam against a
     // silent upstream drift; update only with a deliberate review.
+    // `TEST_SEED` and `TEST_SECRET` are fixed because these vectors depend on
+    // them: golden inputs, exempt from runtime key generation.
     const ACCOUNT_REFERENCE_TESTNET_PINNED: u32 = 173_734_745;
     const CONTACT_INFO_KEY1_TESTNET_PINNED: [u8; 32] = [
         158, 54, 59, 142, 202, 216, 7, 142, 110, 245, 93, 36, 97, 242, 74, 190, 160, 34, 128, 221,
@@ -3482,8 +3484,8 @@ mod tests {
         let (sender, recipient) = contact_ids();
 
         // Two distinct HD seeds → two wallets with distinct seed hashes.
-        let seed_a = [0x11u8; 64];
-        let seed_b = [0x99u8; 64];
+        let seed_a = crate::test_support::keys::seed();
+        let seed_b = crate::test_support::keys::seed();
         let wallet_a = Wallet::new_from_seed(seed_a, network, None, None).expect("wallet a");
         let wallet_b = Wallet::new_from_seed(seed_b, network, None, None).expect("wallet b");
         let hash_a = wallet_a.seed_hash();

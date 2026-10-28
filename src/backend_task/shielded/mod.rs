@@ -149,26 +149,21 @@ impl AppContext {
                 // The upstream op selects the funding platform addresses; DET
                 // only supplies the wallet's address→path index for signing.
                 let path_index = self.platform_path_index(&seed_hash)?;
-                // Held until the sync pass below reads the spend back: until
-                // then the live Platform balances still show the spent
-                // credits, so no shield Max is quoted. Dropped on every exit.
-                let _shielding = backend.begin_platform_shield(&seed_hash);
-                backend
-                    .shield_from_balance(
+                self.shield_from_platform_then_sync(
+                    backend,
+                    &seed_hash,
+                    backend.shield_from_balance(
                         &seed_hash,
                         &path_index,
                         0,
                         crate::wallet_backend::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT,
                         amount,
-                    )
-                    .await?;
-
-                self.refresh_shielded_balance_snapshot(&seed_hash).await;
-                // The spent credits stay in both the planner's and DET's
-                // Platform balances until a pass reads them back.
-                backend
-                    .sync_platform_addresses_after_spend(POST_SHIELD_ADDRESS_SYNC_WAIT)
-                    .await;
+                    ),
+                    // The spent credits stay in both the planner's and DET's
+                    // Platform balances until a pass reads them back.
+                    backend.sync_platform_addresses_after_spend(POST_SHIELD_ADDRESS_SYNC_WAIT),
+                )
+                .await?;
 
                 Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
             }
@@ -244,6 +239,32 @@ impl AppContext {
     /// Keeps the UI balance current immediately after a spend, without waiting
     /// for the next `on_shielded_sync_completed` push from the 60-second sync
     /// loop. Best-effort — a failed read leaves the previous snapshot in place.
+    /// Run `shield`, a shield from `seed_hash`'s Platform balance, then
+    /// `sync`, the pass that reads its spend back, with the wallet's shield
+    /// guard held across both: until the pass lands, the live Platform
+    /// balances still show the spent credits, so no shield Max is quoted.
+    /// The guard drops on every exit, including a failed shield.
+    ///
+    /// The window narrows but does not close: `sync` gives up waiting after
+    /// [`POST_SHIELD_ADDRESS_SYNC_WAIT`] and the guard drops with it, so a
+    /// slower pass leaves the balances stale for a while longer. A shield Max
+    /// quoted then can still be refused by the shield's own planner check.
+    /// The guard is deliberately not held for the background pass, which has
+    /// no bound.
+    async fn shield_from_platform_then_sync(
+        self: &Arc<Self>,
+        backend: &crate::wallet_backend::WalletBackend,
+        seed_hash: &WalletSeedHash,
+        shield: impl std::future::Future<Output = Result<(), TaskError>>,
+        sync: impl std::future::Future<Output = ()>,
+    ) -> Result<(), TaskError> {
+        let _shielding = backend.begin_platform_shield(seed_hash);
+        shield.await?;
+        self.refresh_shielded_balance_snapshot(seed_hash).await;
+        sync.await;
+        Ok(())
+    }
+
     async fn refresh_shielded_balance_snapshot(self: &Arc<Self>, seed_hash: &WalletSeedHash) {
         let backend = match self.wallet_backend() {
             Ok(backend) => backend,
@@ -469,6 +490,83 @@ mod tests {
         assert_eq!(version_at_sizing, 13);
         assert_eq!(shield.lock_duffs, 100_000 + 212_852);
         assert_eq!(shield.shielded_credits, 100_000_800);
+    }
+
+    /// The shield guard is held from before the shield until the post-spend
+    /// sync pass returns: the key moves when the shield opens, stays put
+    /// through the sync, and moves again only once the sync is done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shield_from_platform_holds_the_shield_guard_through_the_sync_pass() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5e; 32];
+        let before = backend.platform_shield_quote_revision(&seed_hash);
+        let during_shield = std::sync::Mutex::new(None);
+        let during_sync = std::sync::Mutex::new(None);
+
+        ctx.shield_from_platform_then_sync(
+            &backend,
+            &seed_hash,
+            async {
+                *during_shield.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+                Ok(())
+            },
+            async {
+                *during_sync.lock().expect("lock") =
+                    Some(backend.platform_shield_quote_revision(&seed_hash));
+            },
+        )
+        .await
+        .expect("shield");
+        let after = backend.platform_shield_quote_revision(&seed_hash);
+
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        let during_sync = during_sync.into_inner().expect("lock").expect("sync ran");
+        assert_ne!(during_shield, before, "the guard opens before the shield");
+        assert_eq!(
+            during_sync, during_shield,
+            "the guard is still open in the sync"
+        );
+        assert_ne!(after, during_sync, "the guard closes after the sync");
+    }
+
+    /// A failed shield skips the sync and still closes the guard.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_shield_from_platform_closes_the_shield_guard() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let seed_hash: WalletSeedHash = [0x5f; 32];
+        let during_shield = std::sync::Mutex::new(None);
+        let synced = std::sync::atomic::AtomicBool::new(false);
+
+        let result = ctx
+            .shield_from_platform_then_sync(
+                &backend,
+                &seed_hash,
+                async {
+                    *during_shield.lock().expect("lock") =
+                        Some(backend.platform_shield_quote_revision(&seed_hash));
+                    Err(TaskError::WalletLocked)
+                },
+                async { synced.store(true, std::sync::atomic::Ordering::SeqCst) },
+            )
+            .await;
+
+        assert!(matches!(result, Err(TaskError::WalletLocked)), "{result:?}");
+        assert!(!synced.load(std::sync::atomic::Ordering::SeqCst));
+        let during_shield = during_shield
+            .into_inner()
+            .expect("lock")
+            .expect("shield ran");
+        assert_ne!(
+            backend.platform_shield_quote_revision(&seed_hash),
+            during_shield,
+            "the guard closes when the shield fails"
+        );
     }
 
     /// A context whose wallet backend runs on protocol 13.

@@ -2957,7 +2957,8 @@ impl WalletBackend {
 
     /// Mark a shield from `seed_hash`'s Platform balance in flight for as
     /// long as the returned guard lives: through the shield and the sync pass
-    /// that reads its spend back.
+    /// that reads its spend back, for as long as that pass is waited on (see
+    /// `AppContext::shield_from_platform_then_sync`).
     pub(crate) fn begin_platform_shield(
         &self,
         seed_hash: &WalletSeedHash,

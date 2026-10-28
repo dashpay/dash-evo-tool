@@ -7152,6 +7152,7 @@ mod tests {
             revision
         };
         let before = key(&screen);
+        let balances = screen.live_platform_balances_revision();
         let seed_hash = screen
             .selected_wallet_seed_hash
             .expect("selected wallet seed hash");
@@ -7171,8 +7172,16 @@ mod tests {
         assert_ne!(during, before, "a quote from before the shield is stale");
         drop(shielding);
         let after = key(&screen);
+        assert_eq!(
+            screen.live_platform_balances_revision(),
+            balances,
+            "precondition: the balances never moved, only the shield did"
+        );
         assert_ne!(after, during, "a quote from during the shield is stale");
-        assert_ne!(after, before, "a quote from before the shield stays stale");
+        assert_ne!(
+            after, before,
+            "at the same balances, a quote from before the shield stays stale"
+        );
     }
 
     /// While another transaction from the wallet is in progress, the backend

@@ -1702,6 +1702,8 @@ impl WalletBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 
     fn id_from_byte(b: u8) -> Identifier {
         Identifier::from([b; 32])
@@ -2188,8 +2190,7 @@ mod tests {
     fn profile_signing_key_requires_an_available_eligible_key() {
         use crate::backend_task::dashpay::errors::DashPayError;
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
         let mut identity = dash_sdk::platform::Identity::default_versioned(
             dash_sdk::dpp::version::LATEST_PLATFORM_VERSION,
@@ -2205,16 +2206,13 @@ mod tests {
             .map(|(id, key_type, security_level)| {
                 (
                     id,
-                    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                    identity_public_key(
                         id,
-                        purpose: Purpose::AUTHENTICATION,
+                        Purpose::AUTHENTICATION,
                         security_level,
-                        contract_bounds: None,
                         key_type,
-                        read_only: false,
-                        data: vec![0; key_type.default_size()].into(),
-                        disabled_at: None,
-                    }),
+                        vec![0; key_type.default_size()],
+                    ),
                 )
             })
             .collect(),
@@ -2242,8 +2240,7 @@ mod tests {
     fn profile_signing_key_policy_accepts_supported_authentication_keys() {
         use crate::backend_task::dashpay::errors::DashPayError;
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
         let mut identity = dash_sdk::platform::Identity::default_versioned(
             dash_sdk::dpp::version::LATEST_PLATFORM_VERSION,
@@ -2356,19 +2353,19 @@ mod tests {
             ),
         ] {
             identity.set_public_keys(
-                [(
-                    0,
-                    IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                        id: 0,
+                [(0, {
+                    let mut key = identity_public_key(
+                        0,
                         purpose,
-                        security_level: level,
-                        contract_bounds: None,
+                        level,
                         key_type,
-                        read_only: false,
-                        data: vec![0; key_type.default_size()].into(),
-                        disabled_at: disabled.then_some(1),
-                    }),
-                )]
+                        vec![0; key_type.default_size()],
+                    );
+                    if disabled {
+                        key.set_disabled_at(1);
+                    }
+                    key
+                })]
                 .into(),
             );
             assert_eq!(

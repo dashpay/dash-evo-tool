@@ -34,6 +34,7 @@ use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::network_chooser_screen::chooser_network_label;
 use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -2042,7 +2043,7 @@ impl WalletsBalancesScreen {
                             ui.vertical(|ui| {
                                 ui.set_width(left_width);
 
-                                // Wallet name + [DEV] badge
+                                // Wallet name + network badge
                                 ui.horizontal(|ui| {
                                     ui.heading(
                                         RichText::new(alias.clone())
@@ -2050,8 +2051,11 @@ impl WalletsBalancesScreen {
                                             .size(25.0),
                                     );
                                     if self.app_context.user_role().at_least(UserRole::Power) {
+                                        let network =
+                                            chooser_network_label(self.app_context.network)
+                                                .to_lowercase();
                                         ui.label(
-                                            RichText::new("[DEV]")
+                                            RichText::new(format!("[{network}]"))
                                                 .color(DashColors::text_secondary(dark_mode))
                                                 .size(12.0),
                                         );

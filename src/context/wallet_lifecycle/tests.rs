@@ -1,6 +1,6 @@
 use super::*;
-use crate::app::TaskResult;
 use crate::app_dir::{ensure_data_dir_exists, ensure_env_file};
+use crate::backend_task::TaskResult;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::context::migration_status::{MigrationState, MigrationStep};

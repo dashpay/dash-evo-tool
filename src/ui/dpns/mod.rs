@@ -6,6 +6,7 @@ pub mod copy;
 pub mod dpns_contested_names_screen;
 pub mod node_set_picker;
 pub mod progress_drawer;
+pub(crate) mod task_feedback;
 
 /// Sub-view of the Masternodes ▸ Votes segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

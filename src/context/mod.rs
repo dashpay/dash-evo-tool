@@ -1331,11 +1331,11 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
         proof_error: dash_sdk::Error,
-        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
-        use crate::app::TaskResult;
         use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
 
         // Give the network time to propagate the block before re-fetching.
@@ -1374,7 +1374,7 @@ impl AppContext {
     /// Subsequent calls are no-ops (first writer wins).
     pub async fn ensure_wallet_backend(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         // Fast path: already wired, no lock needed.
         if self.wallet_backend.load().is_some() {
@@ -2157,8 +2157,8 @@ mod tests {
     /// store is a real, writable DB the accessors read from. Returns the temp
     /// dir (kept alive by the caller) alongside the context.
     async fn offline_ctx() -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;

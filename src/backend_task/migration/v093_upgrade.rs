@@ -716,7 +716,7 @@ fn boot_on(dir: &std::path::Path, network: Network) -> (Arc<AppContext>, AppSett
 /// Wire the real wallet seam offline — the backend builds and hydrates its
 /// sidecars without touching the network.
 async fn wire_backend(ctx: &Arc<AppContext>) -> Arc<WalletBackend> {
-    let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
     ctx.ensure_wallet_backend(sender)
         .await

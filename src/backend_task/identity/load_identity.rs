@@ -1001,8 +1001,8 @@ pub(super) fn identity_key_scan_bound(highest_identity_key_id: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;

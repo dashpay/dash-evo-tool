@@ -1680,6 +1680,10 @@ impl DocumentActionScreen {
     }
 
     fn can_broadcast(&self) -> bool {
+        // A running fetch's result would overwrite the broadcast's progress or success.
+        if self.pending_fetch.is_pending() {
+            return false;
+        }
         if matches!(
             self.action_type,
             DocumentActionType::Create | DocumentActionType::Replace
@@ -2267,6 +2271,38 @@ mod tests {
         assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
         assert!(screen.refresh_banner.is_some());
         assert!(!screen.pending_fetch.is_pending());
+    }
+
+    /// Nothing is sent while a fetch is running, so its result cannot
+    /// overwrite a broadcast's progress or success; once it lands, the action
+    /// can be sent.
+    #[test]
+    fn a_running_fetch_blocks_broadcast() {
+        for action_type in [
+            DocumentActionType::Delete,
+            DocumentActionType::SetPrice,
+            DocumentActionType::Transfer,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+            screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+            screen.price_input = "1".into();
+            screen.recipient_id_input = Identifier::new([8; 32]).to_string(Encoding::Base58);
+            assert!(screen.can_broadcast(), "{action_type:?} is ready to send");
+
+            let fetch = dispatched_context(screen.dispatch_fetch(fetch_query()));
+            assert!(
+                !screen.can_broadcast(),
+                "{action_type:?} waits for the fetch"
+            );
+
+            screen.display_backend_task_result(&fetch, fetched(7));
+            assert!(
+                screen.can_broadcast(),
+                "{action_type:?} can be sent after the fetch"
+            );
+        }
     }
 
     fn named_identity(byte: u8, name: &str) -> QualifiedIdentity {

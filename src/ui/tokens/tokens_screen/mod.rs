@@ -3439,6 +3439,54 @@ mod tests {
         }
     }
 
+    /// My Tokens joins identities and tokens, so it is recomputed after a
+    /// change to either domain, or to all; a change to a domain it does not
+    /// join leaves it as it was.
+    #[test]
+    fn my_tokens_is_recomputed_after_a_change_to_a_domain_it_joins() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        for (domain, recomputed) in [
+            (CacheDomain::Identities, true),
+            (CacheDomain::Tokens, true),
+            (CacheDomain::All, true),
+            (CacheDomain::Dpns, false),
+        ] {
+            let (mut screen, marker, context, _tmp) = screen_with_unstored_entries();
+            // A stale entry: the store holds no balance, so a recomputation
+            // drops it.
+            let identity = screen.identities.get(&marker).unwrap().clone();
+            let token = screen.all_known_tokens.get(&marker).unwrap().clone();
+            let stale = IdentityTokenBalance {
+                token_id: marker,
+                token_alias: token.token_name.clone(),
+                token_config: token.token_configuration.clone(),
+                identity_id: marker,
+                balance: 7,
+                estimated_unclaimed_rewards: None,
+                data_contract_id: Identifier::from([0x33; 32]),
+                token_position: 0,
+            };
+            let key = IdentityTokenIdentifier {
+                identity_id: marker,
+                token_id: marker,
+            };
+            screen.my_tokens.insert(
+                key,
+                stale.into_with_actions(&identity, &token.data_contract, false, None),
+            );
+
+            screen.cached_data_changed(CacheUpdate {
+                network: context.network,
+                domain,
+            });
+            assert_eq!(
+                !screen.my_tokens.contains_key(&key),
+                recomputed,
+                "{domain:?} recomputes My Tokens"
+            );
+        }
+    }
+
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
         pub fn set_all_fields_for_testing(&mut self) {

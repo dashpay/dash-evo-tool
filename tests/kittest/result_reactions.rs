@@ -275,3 +275,45 @@ fn a_settings_task_failure_settles_only_its_own_task() {
         assert_eq!(harness.state().test_dispatch_owner_count(), 0);
     });
 }
+
+/// A scheduled-vote sweep that fails is reported by one banner, unless the
+/// sweep found no voting identity on this device, which is no news: that
+/// failure is quiet.
+#[test]
+fn a_sweep_failure_is_reported_unless_it_is_quiet() {
+    fn no_voting_identity() -> TaskError {
+        TaskError::NoVotingIdentity {
+            identity_id: "voter-id".to_owned(),
+        }
+    }
+    fn vote_unavailable() -> TaskError {
+        TaskError::DpnsCurrentVoteUnavailable
+    }
+    for (source, reported) in [
+        (no_voting_identity as fn() -> TaskError, false),
+        (vote_unavailable as fn() -> TaskError, true),
+    ] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+            let network = harness.state().current_app_context().network();
+            let error = TaskError::ScheduledVoteSweepFailed {
+                network,
+                source: Box::new(source()),
+            };
+            let message = error.to_string();
+            deliver(
+                &mut harness,
+                TaskResult::Error {
+                    context: BackendTaskContext::ScheduledVoteSweep { network },
+                    error,
+                },
+            );
+            assert_eq!(
+                count(&harness, &message),
+                usize::from(reported),
+                "a sweep failing with {:?} is reported: {reported}",
+                source()
+            );
+        });
+    }
+}

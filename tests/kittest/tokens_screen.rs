@@ -884,12 +884,12 @@ fn group_mint_co_signer_cannot_change_the_proposed_recipient() {
             f.harness.query_by_label("Recipient:").is_none(),
             "a co-signer must not get a recipient selector"
         );
-        assert_eq!(
+        // The app's panels hold no text fields, so any field would be the
+        // form's own.
+        assert!(
             f.harness
-                .query_all_by_role(egui::accesskit::Role::TextInput)
-                .filter(|node| node.rect().left() >= 360.0)
-                .count(),
-            0,
+                .query_by_role(egui::accesskit::Role::TextInput)
+                .is_none(),
             "a co-signer has nothing to type in"
         );
     });

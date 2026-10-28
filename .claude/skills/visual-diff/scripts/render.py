@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render spotlight-style annotated screenshots from a JSON spec.
 
-usage: render.py SPEC.json --new-dir DIR --old-dir DIR --out-dir DIR [--scale 2]
+usage: render.py SPEC.json --new-dir DIR [--old-dir DIR] --out-dir DIR [--scale 2]
 
 SPEC: {"<image name>": [{"kind": "new|changed|removed|screen",
                          "rect": [x0, y0, x1, y1],          # capture pixels (1x)
@@ -12,7 +12,9 @@ SPEC: {"<image name>": [{"kind": "new|changed|removed|screen",
 
 Reads <new-dir>/<name>.png (and <old-dir>/<name>.png for the self-check and
 insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png.
-Exit code 1 if a self-check fails (see selfcheck()); warnings do not change it.
+Without --old-dir (NEW-only mode) the rect self-check is skipped and insets are
+refused. Exit code 1 if a self-check fails (see selfcheck()); warnings do not
+change it.
 """
 
 import argparse
@@ -121,7 +123,9 @@ def build(name, els, a, labels):
         rr(d, [px, py, px + w, py + h], 8 * s, fill=c)
         d.text((px + 14 * s, py + h / 2), lab, fill="white", font=f, anchor="lm")
         ins = e.get("inset")
-        if ins:
+        if ins and old_dir is None:
+            BAD.append((name, lab, "inset needs --old-dir"))
+        elif ins:
             o = (
                 Image.open(os.path.join(old_dir, ins["old"] + ".png"))
                 .convert("RGB")
@@ -177,6 +181,8 @@ def selfcheck(name, els, a):
     Compared in RGB, so a change of colour alone counts. Only a rect with no
     differing pixel at all fails; a rect that differs very little is reported
     as a warning, because a subtle restyle is a legitimate highlight."""
+    if a.old_dir is None:
+        return  # NEW-only mode: no OLD capture to compare against
     op = os.path.join(a.old_dir, name + ".png")
     if not os.path.exists(op):
         return  # new-only screen: nothing to compare
@@ -207,12 +213,14 @@ def main():
     )
     p.add_argument("spec")
     p.add_argument("--new-dir", required=True)
-    p.add_argument("--old-dir", required=True)
+    p.add_argument("--old-dir", help="OLD captures; omit for NEW-only mode")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--scale", type=int, default=2)
     a = p.parse_args()
     spec = json.load(open(a.spec))
     os.makedirs(os.path.join(a.out_dir, "clean"), exist_ok=True)
+    if a.old_dir is None:
+        print("NEW-only mode: rect self-check skipped, check every rect by eye")
     for name, els in spec.items():
         selfcheck(name, els, a)
         build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))

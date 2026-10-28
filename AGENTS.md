@@ -11,8 +11,8 @@ This file provides guidance to AI coding agents (Claude Code, Codex, and others)
 ## Build Commands
 
 ```bash
-cargo build                    # Debug build
-cargo build --release          # Release build
+cargo build                    # Debug build (the normal local build)
+cargo build --release          # Distribution build: fat LTO, one codegen unit; slow and memory-heavy
 cargo run                      # Run application
 cargo fmt --all                # Format code
 cargo clippy --all-features --all-targets -- -D warnings  # Lint (warnings as errors)

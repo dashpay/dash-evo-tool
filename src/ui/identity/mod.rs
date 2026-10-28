@@ -431,8 +431,10 @@ mod tests {
     /// offers no unlock for a wallet it needs.
     #[test]
     fn a_wallet_is_found_under_a_later_placement_too() {
+        let seed_11 = crate::test_support::keys::seed();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let seed_hash = [0x66; 32];
-        let wallet = Wallet::new_from_seed([0x11; 64], Network::Testnet, None, None)
+        let wallet = Wallet::new_from_seed(seed_11, Network::Testnet, None, None)
             .expect("build a test wallet");
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
 
@@ -441,7 +443,7 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
+                PrivateKeyData::Clear(secret_22),
             ),
         );
         private_keys.insert_at(

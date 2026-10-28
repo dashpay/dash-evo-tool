@@ -5287,9 +5287,10 @@ mod tests {
     }
 
     fn send_screen() -> (WalletSendScreen, tempfile::TempDir) {
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, temp_dir) = offline_ctx();
         let wallet = Wallet::new_from_seed(
-            [1u8; 64],
+            seed_1,
             Network::Testnet,
             Some("Test wallet".to_string()),
             None,
@@ -5457,6 +5458,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn identity_top_up_is_recorded_under_an_index_no_earlier_top_up_holds() {
         use crate::backend_task::identity::{IdentityTask, TopUpIdentityFundingMethod};
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, _dir) = offline_ctx();
         // Identities and their top-up history live in the wallet backend's store.
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
@@ -5466,8 +5468,8 @@ mod tests {
         ))
         .await
         .expect("wallet backend");
-        let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
-            .expect("wallet from seed");
+        let wallet =
+            Wallet::new_from_seed(seed_1, Network::Testnet, None, None).expect("wallet from seed");
         let mut identity = bound_identity();
         identity
             .associated_wallets
@@ -5505,9 +5507,10 @@ mod tests {
     #[test]
     fn a_running_top_up_holds_back_another_top_up_of_the_same_identity() {
         use crate::backend_task::identity::IdentityTask;
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, _dir) = offline_ctx();
         let wallet = || {
-            let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+            let wallet = Wallet::new_from_seed(seed_1, Network::Testnet, None, None)
                 .expect("wallet from seed");
             Arc::new(RwLock::new(wallet))
         };
@@ -5749,16 +5752,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_move_to_wallet_withdraws_only_to_an_address_of_a_loaded_wallet() {
         use crate::model::wallet::DerivationPathHelpers;
-        const SEED: [u8; 64] = [9; 64];
+        let seed = crate::test_support::keys::seed();
 
         let (ctx, _dir) = offline_ctx();
         // Loaded before the backend is wired, so nothing registers the wallet
         // in the background and the awaited calls below are the only writers.
-        let wallet = Wallet::new_from_seed(SEED, Network::Testnet, None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         let (seed_hash, _) = ctx
             .register_wallet(
                 wallet,
-                &SEED,
+                &seed,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .expect("loaded wallet");
@@ -5771,7 +5774,7 @@ mod tests {
         .expect("offline wallet backend");
         ctx.wallet_backend()
             .expect("wallet backend")
-            .register_wallet_from_seed(&seed_hash, &SEED, None)
+            .register_wallet_from_seed(&seed_hash, &seed, None)
             .await
             .expect("wallet addresses");
         let owned = ctx
@@ -7045,6 +7048,7 @@ mod tests {
             identity::{Identity, accessors::IdentitySettersV0},
             version::PlatformVersion,
         };
+        let seed_1 = crate::test_support::keys::seed();
         let (mut screen, _dir) = send_screen();
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
         screen
@@ -7055,12 +7059,12 @@ mod tests {
             ))
             .await
             .unwrap();
-        let wallet = Wallet::new_from_seed([1; 64], Network::Testnet, None, None).unwrap();
+        let wallet = Wallet::new_from_seed(seed_1, Network::Testnet, None, None).unwrap();
         let (hash, wallet) = screen
             .app_context
             .register_wallet(
                 wallet,
-                &[1; 64],
+                &seed_1,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .unwrap();
@@ -7224,14 +7228,10 @@ mod tests {
 
     #[test]
     fn address_input_snapshot_signature_tracks_paths_and_balances() {
+        let seed_7 = crate::test_support::keys::seed();
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed(
-                [7u8; 64],
-                Network::Testnet,
-                Some("Wallet".to_string()),
-                None,
-            )
-            .expect("wallet from seed"),
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("Wallet".to_string()), None)
+                .expect("wallet from seed"),
         ));
         let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new(), None)];
         let empty_signature = WalletSendScreen::address_input_snapshot_signature(&empty_wallets);

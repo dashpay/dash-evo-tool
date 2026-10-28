@@ -1612,6 +1612,7 @@ mod tests {
 
     #[test]
     fn receive_deposit_dispatch_rejects_amount_above_deposit_address_balance() {
+        let seed_32 = crate::test_support::keys::seed();
         const DEPOSIT_ADDRESS_DUFFS: u64 = 10_000_000;
         const REQUESTED_DUFFS: u64 = 20_000_000;
         const WALLET_CEILING_DUFFS: u64 = 100_000_000;
@@ -1619,7 +1620,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x32; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_32, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -2063,6 +2064,7 @@ mod tests {
     async fn funding_transactions_are_read_only_from_wallets_ready_to_answer() {
         use crate::context::test_support::wired_test_app_context;
         use crate::model::secret::Secret;
+        let seed_73 = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = wired_test_app_context(temp_dir.path()).await;
@@ -2072,19 +2074,19 @@ mod tests {
                 .expect("wallet")
         };
 
-        let ready_seed = [0x71; 64];
+        let ready_seed = crate::test_support::keys::seed();
         let ready = add_wallet_to_registry(&app_context, open_wallet(ready_seed, "Everyday"));
         backend
             .register_wallet_from_seed(&ready, &ready_seed, None)
             .await
             .expect("register the ready wallet");
 
-        let registering_seed = [0x72; 64];
+        let registering_seed = crate::test_support::keys::seed();
         let registering =
             add_wallet_to_registry(&app_context, open_wallet(registering_seed, "Savings"));
 
         let mut locked_wallet = Wallet::new_from_seed(
-            [0x73; 64],
+            seed_73,
             Network::Testnet,
             Some("Vault".to_string()),
             Some(&Secret::new("a long enough password")),
@@ -2821,12 +2823,13 @@ mod tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_34 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x34; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_34, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &old_context);

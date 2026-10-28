@@ -68,11 +68,13 @@ async fn identity_list_reports_only_the_persisted_wallet_binding() {
     use dash_sdk::dpp::{dashcore::Network, identity::Identity, prelude::Identifier};
     use rmcp::handler::server::router::tool::AsyncTool;
     use std::sync::Arc;
+    let seed_92 = crate::test_support::keys::seed();
+    let seed_93 = crate::test_support::keys::seed();
 
     let dir = tempfile::tempdir().unwrap();
     let ctx = legacy_wallet_context(dir.path());
     let mut hashes = Vec::new();
-    for (seed, alias) in [([0x92; 64], "Owner"), ([0x93; 64], "Unrelated")] {
+    for (seed, alias) in [(seed_92, "Owner"), (seed_93, "Unrelated")] {
         let hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
         let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
         crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
@@ -187,7 +189,7 @@ async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
 
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let ctx = legacy_wallet_context(temp_dir.path());
-    let seed = [0x91u8; 64];
+    let seed = crate::test_support::keys::seed();
     let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
     let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
     crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(

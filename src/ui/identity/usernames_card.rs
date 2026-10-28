@@ -804,9 +804,10 @@ mod tests {
     #[test]
     fn key_from_a_missing_wallet_says_to_import_the_wallet() {
         use egui_kittest::kittest::Queryable;
+        let secret_5a = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key([0x5A; 32]));
+        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key(secret_5a));
 
         assert!(!register_button_opens_registration(&mut harness));
         assert!(harness.query_by_label(IMPORT_WALLET).is_some());
@@ -829,9 +830,10 @@ mod tests {
     #[test]
     fn upgraded_install_with_a_missing_wallet_also_points_to_the_settings_restore() {
         use egui_kittest::kittest::Queryable;
+        let secret_5a = crate::test_support::keys::secret_bytes();
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = upgraded_context(dir.path());
-        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key([0x5A; 32]));
+        let mut harness = mount_card(ctx, identity_with_a_wallet_signing_key(secret_5a));
 
         assert!(!register_button_opens_registration(&mut harness));
         assert!(

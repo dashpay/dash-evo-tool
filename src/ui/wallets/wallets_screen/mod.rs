@@ -3465,8 +3465,10 @@ mod tests {
             ctx: &Arc<AppContext>,
             key_byte: u8,
         ) -> (SingleKeyHash, Arc<RwLock<SingleKeyWallet>>) {
-            let mut pk = [1u8; 32];
-            pk[31] = key_byte.max(1);
+            let pk = crate::test_support::keys::labelled_secret(
+                "ui::wallets::wallets_screen::seed_sk",
+                key_byte.into(),
+            );
             let wallet =
                 SingleKeyWallet::new(pk, Network::Testnet, None, Some(format!("sk-{key_byte}")))
                     .expect("sk wallet");

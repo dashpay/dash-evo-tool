@@ -2081,7 +2081,7 @@ mod funding_method_tests {
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
-        let seed = [0x31; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = Arc::new(RwLock::new(
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
         ));
@@ -2210,12 +2210,13 @@ mod funding_method_tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_33 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x33; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_33, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read_recover().seed_hash();
         let mut screen = AddNewIdentityScreen::new(&old_context);

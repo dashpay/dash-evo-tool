@@ -227,6 +227,15 @@ impl DocumentActionScreen {
         }
     }
 
+    /// A fetch button, disabled while a broadcast runs: the fetch result would
+    /// clear the broadcast's progress or replace its success.
+    fn fetch_button(&self, ui: &mut Ui, label: &str) -> egui::Response {
+        ui.add_enabled(
+            self.broadcast_status != BroadcastStatus::Broadcasting,
+            egui::Button::new(label),
+        )
+    }
+
     fn set_fetching_banner(&mut self, ctx: &egui::Context, text: &str) {
         self.refresh_banner.take_and_clear();
         let handle = MessageBanner::set_global(ctx, text, crate::ui::MessageType::Info);
@@ -487,7 +496,7 @@ impl DocumentActionScreen {
                     });
                     ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
                     ui.add_space(10.0);
-                    if ui.button("Fetch Owned Documents").clicked() {
+                    if self.fetch_button(ui, "Fetch Owned Documents").clicked() {
                         self.set_fetching_banner(ui.ctx(), "Fetching owned documents...");
                         action = self.dispatch_fetch(query);
                     }
@@ -589,7 +598,9 @@ impl DocumentActionScreen {
 
         // Add fetch button
         ui.add_space(10.0);
-        if ui.button("Fetch Document Price").clicked() && !self.document_id_input.is_empty() {
+        if self.fetch_button(ui, "Fetch Document Price").clicked()
+            && !self.document_id_input.is_empty()
+        {
             if let Ok(doc_id) = Identifier::from_string(&self.document_id_input, Encoding::Base58) {
                 if let (Some(contract), Some(doc_type)) =
                     (&self.selected_contract, &self.selected_document_type)
@@ -643,7 +654,7 @@ impl DocumentActionScreen {
                 dark_mode,
             ));
 
-            if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
+            if self.fetch_button(ui, "Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
                     Identifier::from_string(&self.document_id_input, Encoding::Base58)
                 {
@@ -2302,6 +2313,63 @@ mod tests {
                 screen.can_broadcast(),
                 "{action_type:?} can be sent after the fetch"
             );
+        }
+    }
+
+    /// No fetch can start while a broadcast is running, so a fetch result
+    /// cannot clear the broadcast's progress or replace its success.
+    #[test]
+    fn a_running_broadcast_disables_fetching() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        // Its "withdrawal" type has an index on $ownerId, which Delete needs.
+        let withdrawals =
+            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+                .expect("withdrawals contract");
+        for (action_type, label) in [
+            (DocumentActionType::Delete, "Fetch Owned Documents"),
+            (DocumentActionType::Purchase, "Fetch Document Price"),
+            (DocumentActionType::Replace, "Fetch"),
+        ] {
+            for (status, disabled) in [
+                (BroadcastStatus::NotBroadcasted, false),
+                (BroadcastStatus::Broadcasting, true),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let context = crate::context::test_support::test_app_context(dir.path());
+                let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+                screen.selected_document_type =
+                    withdrawals.document_type_cloned_for_name("withdrawal").ok();
+                screen.selected_contract = Some(QualifiedContract {
+                    contract: withdrawals.clone(),
+                    alias: None,
+                });
+                screen.selected_identity = Some(named_identity(1, "alice"));
+                screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+                screen.broadcast_status = status;
+
+                let mut harness = Harness::builder()
+                    .with_size(egui::vec2(1200.0, 800.0))
+                    .build_ui_state(
+                        |ui, screen: &mut DocumentActionScreen| {
+                            let _ = screen.render_action_specific_inputs(ui);
+                        },
+                        screen,
+                    );
+                // A running broadcast shows a spinner, which repaints forever.
+                harness.run_steps(3);
+
+                assert_eq!(
+                    harness.get_by_label(label).accesskit_node().is_disabled(),
+                    disabled,
+                    "{action_type:?}: \"{label}\" disabled while broadcasting"
+                );
+            }
         }
     }
 

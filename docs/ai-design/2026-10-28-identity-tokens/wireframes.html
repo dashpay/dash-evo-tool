@@ -161,7 +161,12 @@ select{height:36px;border:1.5px solid var(--border-strong);border-radius:9px;bac
 .tsub{font-size:12px;color:var(--text-2);display:flex;gap:8px;align-items:center;margin-top:2px}
 .tbal{text-align:right}
 .tbal .v{font-family:var(--mono);font-weight:600;font-size:14px}
-.tbal .v.zero{color:var(--text-2);font-weight:500}
+/* D4: a fetched zero balance is a normal row — no muted styling */
+.chkbox{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text);cursor:pointer;user-select:none}
+.chkbox input{width:16px;height:16px;margin:0;accent-color:var(--accent);cursor:pointer}
+.chkbox input:focus-visible{outline:3px solid var(--accent-soft-b);outline-offset:2px}
+.chkbox:hover{color:var(--accent-h)}
+.ctrls{display:flex;gap:14px;align-items:center;margin:0 0 10px;flex-wrap:wrap}
 .tbal .s{font-size:12px;color:var(--text-2);margin-top:2px}
 .tbal .s.claim{color:var(--success);font-weight:600}
 .tbal .s.chk{display:inline-flex;gap:6px;align-items:center}
@@ -193,7 +198,7 @@ kbd{font:11px var(--mono);border:1px solid var(--border-strong);border-bottom-wi
 <div class="toolbar"><button class="toggle" id="themeToggle" aria-pressed="false" onclick="toggleTheme()"><span aria-hidden="true">◐</span> <span id="themeLabel">Dark theme</span></button></div>
 
 <h1 class="doc">Tokens in the Identity Hub — wireframes</h1>
-<p class="lead">Dash Evo Tool, 2026-10-28. Companion to <code>README.md</code>. Mid-fi, same visual system as the 2026-10-01 usernames canvas; light and dark themes mirror <code>DashColors</code> light/dark roles (toggle top right). Hover, focus (<kbd>Tab</kbd>) and open-menu states are live. Frames marked <span class="phase mvp">MVP</span> ship in phase 1; <span class="phase">P2</span>/<span class="phase">P3</span> later. No administrative token action (mint, burn, freeze, pause, price, config) appears anywhere in the hub; the only link to them is the Power-only "Manage in Tokens screen" menu item (optional).</p>
+<p class="lead">Dash Evo Tool, 2026-10-28. Companion to <code>README.md</code>. Mid-fi, same visual system as the 2026-10-01 usernames canvas; light and dark themes mirror <code>DashColors</code> light/dark roles (toggle top right). Hover, focus (<kbd>Tab</kbd>) and open-menu states are live. Frames marked <span class="phase mvp">MVP</span> ship in phase 1; <span class="phase">P2</span>/<span class="phase">P3</span> later. No administrative token action (mint, burn, freeze, pause, price, config) appears anywhere in the hub; the only link to them is the "Manage in Tokens screen" menu item, shown solely when this identity holds an administrative permission on that token (README §11 D3). Decisions D1–D5 from README §11 are applied throughout; <code>implementation-checklist.md</code> is the authoritative build list.</p>
 
 <nav class="toc" aria-label="Frames">
   <a href="#t0">T0 IA: before and after</a>
@@ -231,10 +236,13 @@ Masternodes ▸ node ▸ "Claim token rewards ›"</pre></div>
    └ <span class="new">Tokens tab</span>  identity-first, this identity only
         row ▸ Send · Claim · ••• Check now · Details
                                   Copy ID · Stop tracking
-                                  (Power) Manage in Tokens screen
+                                  Manage in Tokens screen
+                                  (only if identity holds an admin permission)
         [Refresh] [Add a token ▾]  "How do I receive tokens?"
+        [ ] Hide tokens with zero balance   (always visible, per device)
         ▸ <span class="new">Token detail</span> page (P2)
-Tokens ▸ My Tokens · Search · Creator   unchanged (admin stays here)
+Tokens ▸ My Tokens · Search · Creator   admin stays here;
+        row button <span class="del">Transfer</span> <span class="new">Send</span> (D2)
 Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
   </div>
 </section>
@@ -244,8 +252,9 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
   <div class="sec-h"><span class="id">T1</span><h2>Hub › Tokens tab, populated</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya</span><span class="phase mvp">MVP</span></div>
   <ul class="notes">
     <li>Tab bar becomes <b>Home · Contacts · Tokens · Profile</b> (supersedes the 3-tab strip in 2026-10-01 U1/U2). The tab shows a count only when a claim is waiting, never the token count.</li>
-    <li>One row per tracked token, for the selected identity only. Balance uses the token's own decimals and alias (<code>Amount::from(&amp;IdentityTokenBalance)</code>). Sorted: claimable first, then balance descending, zeros last.</li>
-    <li>Row actions: <b>Send</b> (holder has a balance and the token is transferable) and <b>Claim</b> (a distribution this identity can take). Everything else lives under <b>•••</b>. The menu is shown open on row 2 to demo it.</li>
+    <li>One row per tracked token, for the selected identity only. Balance uses the token's own decimals and alias (<code>Amount::from(&amp;IdentityTokenBalance)</code>). Sorted: claimable first, then balance descending, zeros last. A fetched 0 is a <b>normal row</b>, not muted (D4).</li>
+    <li><b>Hide tokens with zero balance</b> is a checkbox always shown above the list (not only at 8+ rows), remembered per device. It hides only rows with a fetched 0; "Checking balance…" rows always stay, because unknown is not zero (D4).</li>
+    <li>Row actions: <b>Send</b> (holder has a balance and the token is transferable) and <b>Claim</b> (a distribution this identity can take). Everything else lives under <b>•••</b>. The menu is shown open on the Platform Points row to demo it: that is the only row where "Manage in Tokens screen" appears, because Alice holds admin permissions on that token (D3). DashCoffee's menu has four items and no separator.</li>
     <li>"Last updated" is the time of the last successful balance sync; <b>Refresh</b> re-registers the watch set and forces a pass (existing <code>QueryMyTokenBalances</code>).</li>
   </ul>
   <div class="app">
@@ -269,36 +278,37 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
             </div>
           </div>
           <div class="statebar"><span>Last updated 2026-10-28 14:02.</span><span>&middot;</span><button class="linkbtn">How do I receive tokens?</button></div>
+          <div class="ctrls"><label class="chkbox" title="Hides tokens whose balance is 0. Tokens still being checked always stay visible."><input type="checkbox" id="hz1" onchange="hideZero(this,'t1')">Hide tokens with zero balance</label><span class="small muted" id="t1-hidden"></span></div>
 
-          <div class="tlist">
-            <div class="trow" tabindex="0" aria-label="AirDrop Token, 0 AIR, you can claim 100 AIR once">
+          <div class="tlist" id="t1-list">
+            <div class="trow" tabindex="0" aria-label="AirDrop Token, 0 AIR, you can claim 100 AIR once" data-zero>
               <div class="tav c6">AI</div>
               <div><div class="tname">AirDrop Token</div><div class="tsub"><span class="mono">AIR</span><span>&middot;</span><span class="mono">9Qm3&hellip;k7Lp</span></div></div>
-              <div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div>
+              <div class="tbal"><div class="v">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div>
               <div class="tacts"><button class="btn xs pri">Claim</button></div>
               <button class="kebab" aria-label="More actions for AirDrop Token">&bull;&bull;&bull;</button>
             </div>
-            <div class="trow focus" tabindex="0" aria-label="DashCoffee, 1,250.00 DCF, rewards may be waiting">
+            <div class="trow" tabindex="0" aria-label="DashCoffee, 1,250.00 DCF, rewards may be waiting">
               <div class="tav c1">DC</div>
               <div><div class="tname">DashCoffee</div><div class="tsub"><span class="mono">DCF</span><span>&middot;</span><span class="mono">7Yk2&hellip;d1Rt</span></div></div>
               <div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div>
               <div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div>
-              <button class="kebab" aria-label="More actions for DashCoffee" aria-expanded="true">&bull;&bull;&bull;</button>
+              <button class="kebab" aria-label="More actions for DashCoffee">&bull;&bull;&bull;</button>
+            </div>
+            <div class="trow focus" tabindex="0" aria-label="Platform Points, 48 PTS, issued by you">
+              <div class="tav c2">PP</div>
+              <div><div class="tname">Platform Points <span class="badge-s b-main">Issued by you</span></div><div class="tsub"><span class="mono">PTS</span><span>&middot;</span><span class="mono">3Hb9&hellip;zz1Q</span></div></div>
+              <div class="tbal"><div class="v">48 PTS</div></div>
+              <div class="tacts"><button class="btn xs">Send</button></div>
+              <button class="kebab" aria-label="More actions for Platform Points" aria-expanded="true">&bull;&bull;&bull;</button>
               <div class="menu" role="menu">
                 <button role="menuitem">Check balance now</button>
                 <button role="menuitem">Token details</button>
                 <button role="menuitem">Copy token ID</button>
                 <button role="menuitem">Stop tracking</button>
                 <hr>
-                <button role="menuitem">Manage in Tokens screen<span class="pw">Expert view</span></button>
+                <button role="menuitem">Manage in Tokens screen<span class="pw">you can mint</span></button>
               </div>
-            </div>
-            <div class="trow" tabindex="0" aria-label="Platform Points, 48 PTS, issued by you">
-              <div class="tav c2">PP</div>
-              <div><div class="tname">Platform Points <span class="badge-s b-main">Issued by you</span></div><div class="tsub"><span class="mono">PTS</span><span>&middot;</span><span class="mono">3Hb9&hellip;zz1Q</span></div></div>
-              <div class="tbal"><div class="v">48 PTS</div></div>
-              <div class="tacts"><button class="btn xs">Send</button></div>
-              <button class="kebab" aria-label="More actions for Platform Points">&bull;&bull;&bull;</button>
             </div>
             <div class="trow" tabindex="0" aria-label="Fan Badge, 1 FAN, cannot be sent">
               <div class="tav c3">FB</div>
@@ -306,6 +316,13 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
               <div class="tbal"><div class="v">1 FAN</div></div>
               <div class="tacts"><button class="btn xs" disabled title="This token cannot be sent to other identities.">Send</button></div>
               <button class="kebab" aria-label="More actions for Fan Badge">&bull;&bull;&bull;</button>
+            </div>
+            <div class="trow" tabindex="0" aria-label="Grid Token, 0 GRT" data-zero>
+              <div class="tav c4">GT</div>
+              <div><div class="tname">Grid Token</div><div class="tsub"><span class="mono">GRT</span><span>&middot;</span><span class="mono">Lk4e&hellip;r9Vb</span></div></div>
+              <div class="tbal"><div class="v">0 GRT</div></div>
+              <div class="tacts"></div>
+              <button class="kebab" aria-label="More actions for Grid Token">&bull;&bull;&bull;</button>
             </div>
             <div class="trow" tabindex="0" aria-label="Test Token, balance not checked yet">
               <div class="tav c5">TT</div>
@@ -316,6 +333,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
             </div>
           </div>
           <p class="muted small" style="margin:12px 0 0">Balances are checked in the background. A token you don't see here can be added with <b>Add a token</b>.</p>
+          <p class="muted small" style="margin:6px 0 0"><span class="anno">try it</span> Tick the checkbox: AirDrop Token (0 AIR, claimable) and Grid Token (0 GRT) hide; Test Token ("Checking balance…") stays.</p>
         </div>
       </div>
     </div>
@@ -327,15 +345,15 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
   <div class="sec-h"><span class="id">T1b</span><h2>Token row: every state</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
   <ul class="notes">
     <li>Exactly one status line per row. Status is text first; colour and badge only reinforce it. Disabled buttons always carry the reason as a tooltip, and the same sentence is repeated in the detail page so it is reachable without hover.</li>
-    <li>"Checking balance…" is the snapshot's <code>None</code> (identity not synced yet, or token not in its synced set) — never shown as 0. A real fetched 0 shows <b>0 TKN</b>.</li>
+    <li>"Checking balance…" is the snapshot's <code>None</code> (identity not synced yet, or token not in its synced set) — never shown as 0. A real fetched 0 shows <b>0 TKN</b> in the same weight and colour as any other balance (D4: no muted styling). Only fetched-0 rows respond to "Hide tokens with zero balance"; "Checking balance…" and "Could not check" rows never hide.</li>
   </ul>
   <div class="tlist" style="max-width:900px">
     <div class="trow"><div class="tav c1">DC</div><div><div class="tname">Synced, transferable</div><div class="tsub">default row</div></div><div class="tbal"><div class="v">1,250.00 DCF</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c1">DC</div><div><div class="tname">Rewards available</div><div class="tsub">perpetual or pre-programmed distribution this identity can take</div></div><div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div><div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
-    <div class="trow"><div class="tav c6">AI</div><div><div class="tname">Once-per-identity claim, not taken</div><div class="tsub">balance 0, claim is the only action</div></div><div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c6">AI</div><div><div class="tname">Once-per-identity claim, not taken</div><div class="tsub">balance 0, claim is the only action; hidden by the hide-zero checkbox like any fetched 0</div></div><div class="tbal"><div class="v">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c6">AI</div><div><div class="tname">Once-per-identity claim, taken</div><div class="tsub">device remembers the claim (<code>once_per_identity_claimed_at</code>)</div></div><div class="tbal"><div class="v">100 AIR</div><div class="s">Claimed on 2026-10-20.</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c3">FB</div><div><div class="tname">Fan Badge <span class="badge-s b-dim">Can't be sent</span></div><div class="tsub">non-transferable token</div></div><div class="tbal"><div class="v">1 FAN</div></div><div class="tacts"><button class="btn xs" disabled title="This token cannot be sent to other identities.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
-    <div class="trow"><div class="tav c4">GT</div><div><div class="tname">Zero balance</div><div class="tsub">tracked, nothing held; sorted last</div></div><div class="tbal"><div class="v zero">0 GRT</div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+    <div class="trow"><div class="tav c4">GT</div><div><div class="tname">Zero balance</div><div class="tsub">tracked, nothing held; sorted last; normal styling; hidden when "Hide tokens with zero balance" is on</div></div><div class="tbal"><div class="v">0 GRT</div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c5">TT</div><div><div class="tname">Checking balance</div><div class="tsub">identity not synced yet for this token</div></div><div class="tbal"><div class="s chk"><span style="width:12px;height:12px;border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite"></span>Checking balance&hellip;</div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c5">TT</div><div><div class="tname">Could not check</div><div class="tsub">last refresh for this pair failed; no stale value to show</div></div><div class="tbal"><div class="s"><span class="bad">&#9650;</span> Couldn't check this balance. <button class="linkbtn">Try again</button></div></div><div class="tacts"></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
     <div class="trow"><div class="tav c2">PP</div><div><div class="tname">View-only identity</div><div class="tsub">no signing key on this device</div></div><div class="tbal"><div class="v">48 PTS</div><div class="s">Add a key to this identity to send or claim tokens.</div></div><div class="tacts"><button class="btn xs" disabled title="Add a key to this identity to send or claim tokens.">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
@@ -390,7 +408,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
 <section id="t4">
   <div class="sec-h"><span class="id">T4</span><h2>Many tokens (8 or more)</h2><span class="persona p-priya">Priya</span><span class="persona p-jordan">Jordan</span><span class="phase">P2</span></div>
   <ul class="notes">
-    <li>Controls appear only past the threshold: a filter box (name, alias or ID), a sort select, and <b>Hide zero balances</b> (remembered per device). Rows go compact; the list scrolls inside the island so the header and controls stay put at 800 px window height.</li>
+    <li>Past the threshold the filter box (name, alias or ID) and the sort select appear (P2). The <b>Hide tokens with zero balance</b> checkbox is the same MVP control as in T1 — always present, remembered per device together with filter and sort. Rows go compact; the list scrolls inside the island so the header and controls stay put at 800 px window height.</li>
     <li>Filter has no debounce issue — it is local. <kbd>/</kbd> focuses the filter when the list has focus.</li>
   </ul>
   <div class="app" style="height:560px">
@@ -408,11 +426,11 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
             <div class="field" style="width:260px"><span class="muted" aria-hidden="true">&#8981;</span><input placeholder="Filter by name or ID" aria-label="Filter tokens by name or ID"></div>
             <label class="small muted" for="sort">Sort</label>
             <select id="sort"><option>Claimable first, then balance</option><option>Balance, high to low</option><option>Name, A to Z</option><option>Recently updated</option></select>
-            <button class="toggle-sw" role="switch" aria-checked="true" onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')!=='true')"><i></i>Hide zero balances</button>
+            <label class="chkbox" title="Hides tokens whose balance is 0. Tokens still being checked always stay visible."><input type="checkbox" checked>Hide tokens with zero balance</label>
             <span class="small muted">3 hidden</span>
           </div>
           <div class="tlist" style="overflow:auto;flex:1;min-height:0">
-            <div class="trow compact"><div class="tav c6">AI</div><div><div class="tname">AirDrop Token</div></div><div class="tbal"><div class="v zero">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
+            <div class="trow compact" style="opacity:.55"><div class="tav c6">AI</div><div><div class="tname">AirDrop Token <span class="anno">hidden while the box is ticked — shown here only to document the claimable-zero case</span></div></div><div class="tbal"><div class="v">0 AIR</div><div class="s claim">You can claim 100 AIR once.</div></div><div class="tacts"><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
             <div class="trow compact"><div class="tav c1">DC</div><div><div class="tname">DashCoffee</div></div><div class="tbal"><div class="v">1,250.00 DCF</div><div class="s claim">Rewards may be waiting for you.</div></div><div class="tacts"><button class="btn xs">Send</button><button class="btn xs pri">Claim</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
             <div class="trow compact"><div class="tav c7">ME</div><div><div class="tname">Meridian</div></div><div class="tbal"><div class="v">98,400 MRD</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
             <div class="trow compact"><div class="tav c4">GR</div><div><div class="tname">Grid Credits</div></div><div class="tbal"><div class="v">12,000.5 GRD</div></div><div class="tacts"><button class="btn xs">Send</button></div><button class="kebab" aria-label="More">&bull;&bull;&bull;</button></div>
@@ -435,7 +453,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
   <div class="sec-h"><span class="id">T5</span><h2>Token detail (pushed page)</h2><span class="persona p-alex">Alex</span><span class="persona p-priya">Priya</span><span class="phase">P2</span></div>
   <ul class="notes">
     <li>Opened from a row (click, <kbd>Enter</kbd>, or ••• Token details). Answers: how much do I have, can I send it, is anything waiting for me, who issued it. Plain words; IDs are copyable handles, not jargon.</li>
-    <li>"Recent activity" is a placeholder until the token-history query lands (P3). Power/Developer only: the "Manage in Tokens screen" link (optional; routes to <code>RootScreenMyTokenBalances</code> with this token selected).</li>
+    <li>"Recent activity" is a placeholder for a P3 feature that is <b>out of scope</b> for this delivery; the card may be omitted. The "Manage in Tokens screen" link follows D3: shown only when this identity holds an admin permission on this token (routes to <code>RootScreenMyTokenBalances</code> with the token selected). For DashCoffee, which Alice merely holds, the link is absent — it is drawn below for the Platform Points case.</li>
     <li>Replaces My Tokens' "Token Configuration Details" window for holders; issuers keep that window in the Tokens screen.</li>
   </ul>
   <div class="app">
@@ -465,7 +483,8 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
                   <dt>Tracked since</dt><dd>2026-09-02</dd>
                 </dl>
                 <div style="border-top:1px solid var(--border);margin:14px 0 12px"></div>
-                <div style="display:flex;gap:14px;flex-wrap:wrap"><button class="linkbtn">Check balance now</button><button class="linkbtn">Stop tracking</button><button class="linkbtn">Manage in Tokens screen <span class="pw small muted">(Expert view)</span></button></div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap"><button class="linkbtn">Check balance now</button><button class="linkbtn">Stop tracking</button></div>
+                <p class="muted small" style="margin:10px 0 0">When this identity holds an admin permission on the token (e.g. Platform Points, "Issued by you"), a third link follows: <button class="linkbtn">Manage in Tokens screen</button> <span class="anno">D3</span></p>
               </div>
             </div>
             <div style="flex:1">
@@ -484,7 +503,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
   <div class="sec-h"><span class="id">T6</span><h2>Send and Claim hand-off (existing screens, pre-scoped)</h2><span class="persona p-alex">Alex</span><span class="phase mvp">MVP</span></div>
   <ul class="notes">
     <li>Both buttons push the screens My Tokens already uses — <code>TransferTokensScreen::new(IdentityTokenBalance)</code> and <code>ClaimTokensScreen::new(basic, contract, config)</code> (the Masternodes "Claim token rewards ›" pattern). The sending identity is fixed; the hub never shows an identity picker.</li>
-    <li>Only change requested on those screens: align the heading with the button that opened it (<i>Send DashCoffee</i>, <i>Claim DashCoffee rewards</i>) — the label→title lesson from 2026-07-24 item 4. Open question Q2 in README.</li>
+    <li>D2 (Send everywhere): the pushed <code>TransferTokensScreen</code> adopts Send wording end to end — breadcrumb and heading <i>Send DashCoffee</i>, primary button <i>Send</i>, confirm dialog <i>Send tokens?</i> / <i>Send</i>, progress <i>Sending 50 DCF…</i>, success <i>Sent 50 DCF to @bob.</i> The Claim screen heading becomes <i>Claim DashCoffee rewards</i> (label→title lesson from 2026-07-24 item 4). Tokens › My Tokens' row button "Transfer" becomes "Send" so the same action has one name app-wide. Internal type and task names stay.</li>
   </ul>
   <div class="mini">
     <div class="card">
@@ -497,7 +516,8 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
       <div class="field" style="width:100%;height:44px"><input value="50" style="font-family:var(--mono);font-size:15px"><span class="muted mono">DCF</span><button class="linkbtn">Max</button></div>
       <div class="sumrow" style="margin-top:14px"><span>Network fee</span><span class="mono">about 0.0001 DASH from identity balance</span></div>
       <div style="display:flex;justify-content:space-between;margin-top:18px"><button class="btn">Cancel</button><button class="btn pri">Send 50 DCF</button></div>
-      <p class="muted small" style="margin:10px 0 0">Existing <code>TransferTokensScreen</code>; sketch only. A network refusal is explained in a banner (TOK-020).</p>
+      <div class="banner info" style="margin-top:12px"><span class="ic">i</span><div class="grow"><b>Confirm:</b> "Send 50 DCF to @bob?" — buttons <i>Send</i> / <i>Cancel</i>. <b>Progress:</b> "Sending 50 DCF…" (banner with elapsed time). <b>Success:</b> "Sent 50 DCF to @bob." with <i>Back to tokens</i>.</div></div>
+      <p class="muted small" style="margin:10px 0 0">Existing <code>TransferTokensScreen</code> with Send wording (D2); sketch only. A network refusal is explained in a banner (TOK-020).</p>
     </div>
     <div class="card">
       <div class="crumb" style="margin-bottom:10px">Identities <span>&rsaquo;</span> @alice <span>&rsaquo;</span> <b>Claim DashCoffee rewards</b></div>
@@ -539,7 +559,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
 <section id="t8">
   <div class="sec-h"><span class="id">T8</span><h2>Home: Tokens card</h2><span class="persona p-alex">Alex</span><span class="phase">P2</span></div>
   <ul class="notes">
-    <li>Home is the glance surface, so the card appears only when it has something to say: the identity holds at least one token with a balance, or a claim is waiting. Otherwise Home is unchanged — the tab is the entry.</li>
+    <li>D5: the card appears when <b>any balance &gt; 0 or a claim is pending</b>; with neither, no card and Home is unchanged — the tab is the entry. Rows with a fetched 0 do not count towards "any balance"; a token still being checked does not count either.</li>
     <li>Up to three rows by balance, one claim line, one link. No actions on Home other than the claim shortcut; the tab owns actions.</li>
   </ul>
   <div class="mini">
@@ -552,7 +572,7 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
     </div>
     <div class="card homecard" style="opacity:.75">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h4 style="margin:0">Tokens</h4><button class="linkbtn">See all tokens</button></div>
-      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c6" style="width:22px;height:22px;font-size:9px">AI</span>AirDrop Token</span><span class="mono muted">0 AIR</span></div>
+      <div class="hr"><span style="display:flex;gap:8px;align-items:center"><span class="tav c6" style="width:22px;height:22px;font-size:9px">AI</span>AirDrop Token</span><span class="mono">0 AIR</span></div>
       <div class="banner okb" style="margin-top:10px;padding:8px 12px"><span class="ic ok">&#9679;</span><div class="grow small">You can claim 100 AIR once. <button class="linkbtn">Claim</button></div></div>
       <p class="muted small" style="margin:10px 0 0">Variant: nothing held, but a claim waits — the card still earns its place. With neither, no card.</p>
     </div>
@@ -569,6 +589,9 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
       <tr><td>Tab subtitle</td><td>Tokens this identity holds or keeps an eye on.</td><td></td></tr>
       <tr><td>State bar</td><td>Last updated {time}.</td><td><code>model::datetime</code>, local time</td></tr>
       <tr><td>State bar, stale</td><td>Showing balances from {time}.</td><td>after a failed refresh</td></tr>
+      <tr><td>Checkbox</td><td>Hide tokens with zero balance</td><td>always visible above the list; remembered per device (D4)</td></tr>
+      <tr><td>Checkbox tooltip</td><td>Hides tokens whose balance is 0. Tokens still being checked always stay visible.</td><td></td></tr>
+      <tr><td>Checkbox, count</td><td>{count} hidden</td><td>shown next to the checkbox when it hides at least one row; plural handled as a whole sentence per locale</td></tr>
       <tr><td>Row status</td><td>Rewards may be waiting for you.</td><td>perpetual/pre-programmed claim available</td></tr>
       <tr><td>Row status</td><td>You can claim {amount} once.</td><td>once-per-identity, amount from token config</td></tr>
       <tr><td>Row status</td><td>Claimed on {date}.</td><td>once-per-identity taken</td></tr>
@@ -586,8 +609,14 @@ Masternodes ▸ node ▸ "Claim token rewards ›"   unchanged</pre></div>
       <tr><td>Error</td><td>Updating token balances is taking longer than usual. Try again in a moment.</td><td><code>TokenBalanceRefreshTimeout</code></td></tr>
       <tr><td>Error</td><td>This token's details aren't available yet. Refresh and try again.</td><td>contract missing when opening Claim (replaces "Token contract not found")</td></tr>
       <tr><td>Receive</td><td>A token you receive shows under Tokens once you add it.</td><td>+ "Add a token" link</td></tr>
-      <tr><td>Menu</td><td>Check balance now &middot; Token details &middot; Copy token ID &middot; Stop tracking &middot; Manage in Tokens screen</td><td>last item Power+ only</td></tr>
+      <tr><td>Menu</td><td>Check balance now &middot; Token details &middot; Copy token ID &middot; Stop tracking &middot; Manage in Tokens screen</td><td>last item (and its separator) only when this identity holds an admin permission on the token (D3); never role-gated</td></tr>
       <tr><td>Confirm</td><td>Stop tracking {token} for {identity}? You can add it again at any time.</td><td>confirm "Stop tracking" / cancel</td></tr>
+      <tr><td>Send screen, breadcrumb + heading</td><td>Send {token}</td><td><code>TransferTokensScreen</code>, D2 (was "Transfer {token}" / "Transfer Tokens")</td></tr>
+      <tr><td>Send screen, button</td><td>Send</td><td>primary button (was "Transfer")</td></tr>
+      <tr><td>Send screen, confirm</td><td>Send {amount} to {recipient}?</td><td>dialog title "Send tokens?", buttons Send / Cancel (was "Confirm Transfer" / "Are you sure you want to transfer…")</td></tr>
+      <tr><td>Send screen, progress</td><td>Sending {amount}&hellip;</td><td>info banner with elapsed time (was "Transferring tokens...")</td></tr>
+      <tr><td>Send screen, success</td><td>Sent {amount} to {recipient}.</td><td>success screen title (was "Transfer Successful!"); link "Back to tokens"</td></tr>
+      <tr><td>My Tokens, row button</td><td>Send</td><td>was "Transfer"; disabled reason stays "This token cannot be sent to other identities." (fixes UX-004)</td></tr>
     </tbody>
   </table>
 </section>
@@ -602,6 +631,12 @@ function toggleTheme(){
   document.getElementById('themeLabel').textContent=dark?'Dark theme':'Light theme';
 }
 if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){toggleTheme();}
+function hideZero(box,id){
+  var rows=document.querySelectorAll('#'+id+'-list .trow[data-zero]');
+  rows.forEach(function(r){r.style.display=box.checked?'none':'';});
+  var c=document.getElementById(id+'-hidden');
+  if(c){c.textContent=box.checked?rows.length+' hidden':'';}
+}
 </script>
 </body>
 </html>

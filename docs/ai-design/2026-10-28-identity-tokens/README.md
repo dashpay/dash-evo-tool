@@ -8,7 +8,11 @@ price, update config, token creator, distributions) stays in the Tokens screen
 untouched.
 
 Companion wireframes: [`wireframes.html`](wireframes.html) (T0–T9, light and
-dark). Design only; no Rust changed by this note.
+dark). Design only; no Rust changed by this note. The user's answers to the
+open questions are recorded in §11 (Decisions) and, item by item, in
+[`implementation-checklist.md`](implementation-checklist.md) — **the
+checklist is the authoritative list of what gets built**; where this note and
+the checklist disagree, the checklist wins.
 
 Source of truth reviewed: `src/ui/identity/{hub_screen,tabs,identity_hub_tab_bar,home}.rs`,
 `src/ui/tokens/tokens_screen/{structs,my_tokens}.rs`,
@@ -38,12 +42,15 @@ tokens and claims airdrops to test them).
 (Home · Contacts · **Tokens** · Profile) that lists this identity's tracked
 tokens with balance, a plain-words status line, and exactly two inline actions —
 **Send** and **Claim** — plus a quiet menu (check now, details, copy ID, stop
-tracking, and for Expert view a link to the Tokens screen). Reuse the existing
-Transfer and Claim screens as-is, pre-scoped to the identity. Phase 2 adds a
-Home card (only when there is something to show), a token detail page and
-many-token controls. No data model or backend change is needed for the MVP: the
-balance snapshot, registry, dismissals and refresh task already exist and are
-identity-keyed.
+tracking, and — only when this identity holds an administrative permission on
+that token — a link to the Tokens screen). Reuse the existing Transfer and
+Claim screens pre-scoped to the identity; the Transfer screen and My Tokens'
+"Transfer" button adopt **Send** wording (D2). A "Hide tokens with zero
+balance" checkbox sits above the list from day one (D4). Phase 2 adds a Home
+card (only when there is something to show), a token detail page and
+filter/sort controls. No data model or backend change is needed for the MVP:
+the balance snapshot, registry, dismissals and refresh task already exist and
+are identity-keyed.
 
 ## 2. Personas and jobs
 
@@ -53,10 +60,13 @@ identity-keyed.
 | Priya (Power, holder) | the same, per identity; stop tracking noise tokens; see "issued by me" at a glance; jump to admin when she *is* the issuer | same | per-identity view needs a click per token; no issuer badge from the holder side |
 | Jordan (Developer) | claim test airdrops fast, verify a transfer landed, see raw IDs | same | fine functionally; benefits from identity-first list on testnet |
 
-Progressive disclosure (`docs/personas/README.md`): Alex sees the tab, rows,
-Send/Claim, Add a token. Priya additionally sees "Issued by you" and the
-"Manage in Tokens screen" menu item. Jordan sees everything Priya sees; raw
-credit/fee context stays on the pushed screens where it already lives.
+Progressive disclosure (`docs/personas/README.md`): everyone sees the tab,
+rows, Send/Claim, Add a token, the hide-zero checkbox and the "Issued by you"
+badge. The "Manage in Tokens screen" menu item is **not** role-gated: it
+appears for whichever identity actually holds at least one administrative
+permission on that token (D3) — in practice Priya and Jordan as issuers, but
+Alex too if a token's rules grant him one. Raw credit/fee context stays on the
+pushed screens where it already lives.
 
 ## 3. User needs, prioritised
 
@@ -73,8 +83,9 @@ credit/fee context stays on the pushed screens where it already lives.
 | N9 | Stop tracking a token for this identity; get it back | Priya | P1 | MVP | menu, T2 right |
 | N10 | Glance from Home when something is held or claimable | Alex | P1 | P2 | T8 |
 | N11 | Token detail page: facts in plain words, copyable IDs | Alex, Priya | P1 | P2 | T5 |
-| N12 | Scale to many tokens: filter, sort, hide zeros | Priya, Jordan | P1 | P2 | T4 |
-| N13 | Discreet link to admin flows when the identity is the issuer | Priya, Jordan | P2, optional | P2 | menu, T5 |
+| N12a | Hide tokens with a zero balance (checkbox always visible, remembered per device; never hides "Checking balance…" rows) | Alex, Priya | P1 | MVP | T1, T4 |
+| N12b | Scale to many tokens: filter, sort | Priya, Jordan | P1 | P2 | T4 |
+| N13 | Discreet link to admin flows when the identity holds an admin permission on the token | Priya, Jordan | P1 | MVP (menu), P2 (detail) | menu, T5 |
 | N14 | Token activity (sends, receipts, claims) | Alex | P2 | P3 | T5 placeholder |
 | N15 | Buy a priced token from the row | Priya | P2 | P3 | — |
 | N16 | Show the estimated reward amount inline before claiming | Jordan | P3 | P3 | — |
@@ -96,8 +107,10 @@ conditional: an empty "Tokens" card would advertise a secondary feature to
 people who have none — the tab label alone is enough discoverability.
 
 Tab order `Home · Contacts · Tokens · Profile` keeps Profile (settings-like)
-last. The tab bar shows a count badge only for pending claims, never the token
-count (a count that is not actionable is noise).
+last. The tab bar shows a count badge only for pending claims (no badge at
+zero), never the token count (a count that is not actionable is noise) — D1.
+The Home card appears when any balance is above zero *or* a claim is pending
+— D5.
 
 Alternatives rejected:
 - *Profile tab card* — Profile is public-facing settings; balances do not belong there.
@@ -113,19 +126,23 @@ Identities ▸ hub ▸ [ Home | Contacts | Tokens | Profile ]
   Tokens (MVP)
     header: "Tokens" · Refresh · Add a token ▾ (Find by name · Add by ID)
     state bar: Last updated {time} · How do I receive tokens? → Receive dialog
+    controls: [ ] Hide tokens with zero balance   (always visible; per device; never hides "Checking balance…")
+              ≥ 8 rows (P2): filter · sort
     list, one row per tracked token of the selected identity
        row: avatar · name [+badge] · symbol · short ID │ balance · status │ Send · Claim │ •••
-       •••: Check balance now · Token details · Copy token ID · Stop tracking · ─ · Manage in Tokens screen (Expert view)
+       •••: Check balance now · Token details · Copy token ID · Stop tracking
+            · ─ · Manage in Tokens screen   (only if this identity holds an admin permission on the token)
        row click / Enter → Token detail (P2)
-    ≥ 8 rows (P2): filter · sort · Hide zero balances
-Pushed screens (existing): TransferTokensScreen · ClaimTokensScreen · AddTokenByIdScreen
-Root screens (existing): Tokens › Search (find by name) · Tokens › My Tokens (manage)
+Pushed screens (existing): TransferTokensScreen (Send wording) · ClaimTokensScreen · AddTokenByIdScreen
+Root screens (existing): Tokens › Search (find by name) · Tokens › My Tokens (manage; "Transfer" button → "Send")
 ```
 
-Vocabulary: **Send** (matches Home's Send for Dash; the Tokens screen's
-"Transfer" is the same operation — see Q2), **Claim**, **Stop tracking**
-(matches TOK-018), **Add a token**. Never in hub copy: transfer, distribution
-type, perpetual, pre-programmed, contract owner, state transition, nonce.
+Vocabulary: **Send** everywhere a holder moves tokens — the hub rows, the
+pushed `TransferTokensScreen` (heading, buttons, confirmation, progress and
+success messages) and My Tokens' row button; only internal type and function
+names keep "transfer" (D2). **Claim**, **Stop tracking** (matches TOK-018),
+**Add a token**. Never in hub copy: transfer, distribution type, perpetual,
+pre-programmed, contract owner, state transition, nonce.
 
 ## 6. Data source (investigated, not guessed)
 
@@ -135,7 +152,7 @@ Everything the MVP reads already exists and is identity-keyed:
 |---|---|---|
 | Rows | `AppContext::get_all_known_tokens()` (registry, global per device) minus `untracked_token_balances()` for `(identity, token)` | registry is device-wide; dismissals are per pair |
 | Balance | `AppContext::identity_token_balances()` → `IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>`; underneath `WalletBackend::token_balances()` (`UpstreamTokenBalances`, lock-free, frame-safe) | `None` = identity not synced / token not in its synced set → "Checking balance…"; `Some(0)` = real zero (TB2–TB4 in `token_balance.rs`) |
-| Actions | `IdentityTokenBalance::into_with_actions(identity, contract, in_dev_mode, pricing)` → `can_transfer`, `can_claim`, `can_maybe_purchase` (ignore the admin flags) | needs `get_contract_by_token_id`; `in_dev_mode = user_role().at_least(Power)` as in My Tokens |
+| Actions | `IdentityTokenBalance::into_with_actions(identity, contract, in_dev_mode, pricing)` → `can_transfer`, `can_claim`, `can_maybe_purchase` for the row buttons | needs `get_contract_by_token_id`. The admin flags feed **only** the "Manage in Tokens screen" link, through a helper that answers "does this identity hold any admin permission per the token's config rules" and ignores the dev-mode display override (checklist P0.2) — never pass `in_dev_mode = true` to decide the link |
 | Once-per-identity | `model::token::once_per_identity_amount(config)`, `AppContext::once_per_identity_claimed_at(token, identity)` | drives "You can claim {amount} once." / "Claimed on {date}." |
 | Issuer badge | `contract.owner_id() == identity.id()` | My Tokens colours the ID dark green; the hub uses a text badge |
 | Refresh | `TokenTask::QueryMyTokenBalances` (all identities, single-flight; `TokenBalanceRefreshInProgress`, `TokenBalanceRefreshTimeout`), `TokenTask::QueryIdentityTokenBalance(pair)` (also re-tracks), `TokenTask::StopTrackingTokenBalance(pair)` | success sends `TaskResult::Refresh`; in-flight flag `AppContext::token_balance_refresh_in_flight` (crate-visible) |
@@ -180,7 +197,7 @@ Edge: once-per-identity already taken → row shows "Claimed on {date}", Claim h
 
 ```
 Flow: Send | Entry: row Send
-Steps: 1. Push TransferTokensScreen(IdentityTokenBalance) -> 2. recipient (username or ID) + amount -> 3. confirm -> back, banner, balance updated
+Steps: 1. Push TransferTokensScreen(IdentityTokenBalance), heading "Send {token}" -> 2. recipient (username or ID) + amount -> 3. confirm "Send" -> progress "Sending {amount}…" -> back, "Sent {amount} to {recipient}." banner, balance updated
 Errors: non-transferable → Send disabled "This token cannot be sent to other identities."; zero balance → Send hidden
 ```
 
@@ -202,7 +219,8 @@ Edge: last row → T2 right empty state with "Track tokens again"
 ```
 Component: IdentityTokensTab (ui/identity/tokens_tab.rs) | Purpose: render the tab from view-state
 Variants: populated · empty-untracked · empty-all-dismissed · first-load · stale-error · many (P2)
-States: rows default/hover/focus; Refresh default/in-flight(disabled+spinner)/disabled-not-synced
+States: rows default/hover/focus (a fetched zero balance is a normal row, not muted); Refresh default/in-flight(disabled+spinner)/disabled-not-synced;
+  hide-zero checkbox on/off (always rendered above the list; hides rows with a fetched 0, never "Checking balance…" rows)
 Props: &AppContext, &QualifiedIdentity, &mut IdentityTokensState, ProfileCache not needed
 Accessibility: rows are focusable (Tab), Enter opens detail, ••• is a real button with aria-label naming the token;
   status is text; disabled buttons carry disabled_tooltip and the same sentence appears in detail; count badge has a title
@@ -211,7 +229,7 @@ Responsive: grid 40|1.4fr|1fr|auto|30; below 640 px the balance+status drop unde
 
 ```
 State: IdentityTokensState (ui/state/identity_tokens.rs) | renders nothing
-Holds: last_refresh_dispatched_at, arriving flag, per-pair last error, sort/filter/hide-zero (P2), pending stop-tracking confirmation
+Holds: last_refresh_dispatched_at, arriving flag, per-pair last error, hide-zero (MVP, persisted per device), sort/filter (P2, persisted alongside), pending stop-tracking confirmation
 Returns: BackendTask for arrival/manual refresh via the hub's single dispatch slot (same rule as home::load_action)
 ```
 
@@ -241,17 +259,28 @@ from token ID (deterministic), initials from alias. No new colour constants.
 - **Extends** `2026-04-22-identity-dashpay-redesign/design-spec.md` §A.2 tab
   catalog with row 5 "Tokens"; §A.1 left-nav is unchanged (Tokens root stays).
 - **Consistent with** `2026-07-24-identity-home-actions/README.md` (one
-  primary per row; label→title alignment — applied here as Q2).
+  primary per row; label→title alignment — applied here as D2).
 - Leaves `2026-04-23-identity-hub-impl` dev plan intact; this is a new phase.
 
 ## 10. Implementation plan
 
+**Scope.** Phases 0, 1 and 2 are in scope. **Phase 3 is explicitly out of
+scope** (token activity, Buy from row, inline reward estimate) and is listed
+only so nobody designs around it by accident. The item-by-item checklist the
+developer works from — with tests per item — is
+[`implementation-checklist.md`](implementation-checklist.md); it is the
+authoritative source for what ships, and this section is the narrative behind
+it.
+
 **Phase 0 — prep (≈0.5 day).** Move `IdentityTokenIdentifier`,
 `IdentityTokenBalance*`, `IdentityTokenBasicInfo`,
-`get_available_token_actions_for_identity` from
-`ui/tokens/tokens_screen/structs.rs` to `model/token/` (mechanical; they are
-shared data types, and `tokens/` already imports from `identity/` — a reverse
-import would couple the two UI modules). Keep `pub use` shims in `tokens_screen`.
+`IdentityTokenAvailableActions`, `get_available_token_actions_for_identity`
+from `ui/tokens/tokens_screen/structs.rs` to `model/token/` (mechanical; they
+are shared data types, and `tokens/` already imports from `identity/` — a
+reverse import would couple the two UI modules). Keep `pub use` shims in
+`tokens_screen`. Add a helper on the actions type answering "does this identity
+hold any admin permission on this token" that ignores the dev-mode display
+override (D3; checklist P0.2).
 
 **Phase 1 — MVP tab (≈2–3 days).**
 1. `IdentityHubTab::Tokens` + label + accessible description; `ALL` becomes 4
@@ -264,22 +293,32 @@ import would couple the two UI modules). Keep `pub use` shims in `tokens_screen`
    identity change, `display_task_result` for `FetchedTokenBalances` /
    `TokenBalanceRefreshAlreadyInFlight`, `display_task_error` swallowing
    `TokenBalanceRefreshInProgress` and recording per-tab error.
-4. Row actions → existing screens; ••• via `action_menu::show_action_menu`;
-   Stop tracking via `ConfirmationDialog`.
+4. Row actions → existing screens; ••• via `action_menu::show_action_menu`
+   (Check balance now · Token details · Copy token ID · Stop tracking · Manage
+   in Tokens screen under the D3 rule); Stop tracking via `ConfirmationDialog`.
+   "Issued by you" badge and "Can't be sent" status on rows.
 5. Empty states + Add a token menu; Receive dialog extra sentence
    (`home::render_receive` gains a `tokens_hint: bool`).
-6. Tests: unit (row sorting, status derivation, copy constants end with a
+6. "Hide tokens with zero balance" checkbox above the list, always visible,
+   persisted per device; never hides "Checking balance…" rows (D4). Zero rows
+   render as normal rows.
+7. Send wording (D2): `TransferTokensScreen` heading, buttons, confirmation,
+   progress and success messages; My Tokens' row button "Transfer" → "Send".
+   Internal type/fn names unchanged. Affected tests/kittests updated.
+8. Tests: unit (row sorting, status derivation, copy constants end with a
    period), kittest (tab renders rows from a seeded snapshot; empty; error
    banner keeps rows; Claim pushes `ClaimTokensScreen`).
-7. `docs/user-stories.md`: TOK-021 `[Gap]` → `[Implemented]`.
+9. `docs/user-stories.md`: TOK-021 `[Gap]` → `[Implemented]`.
 
-**Phase 2 (≈2 days).** Home Tokens card (conditional), Token detail page,
-many-token controls (filter/sort/hide-zero, remembered per device), "Issued by
-you" + Manage link (Expert view).
+**Phase 2 (≈2 days).** Home Tokens card (shown iff any balance > 0 or a claim
+is pending, D5; Claim reachable from the card), Token detail page (Send/Claim,
+Manage under the D3 rule, Stop tracking), many-token controls (filter and
+sort, remembered per device together with hide-zero).
 
-**Phase 3 (≈3+ days, needs backend).** Token activity on detail (token history
-contract queries), Buy from row when priced (`QueryTokenPricing` per token),
-inline reward estimate.
+**Phase 3 — OUT OF SCOPE (≈3+ days, needs backend).** Token activity on
+detail (token history contract queries), Buy from row when priced
+(`QueryTokenPricing` per token), inline reward estimate. Not part of this
+design's delivery; T5's "Recent activity" placeholder may be omitted.
 
 Risks:
 - Snapshot granularity (per identity) means the whole tab skeletons while any
@@ -288,26 +327,44 @@ Risks:
 - Shared single-flight refresh guard: a refresh started from My Tokens makes the
   hub's Refresh disabled for its duration — intended, but the tooltip must say
   "Balances are being checked." not "Refresh".
-- Heading mismatch on pushed screens (Q2) if left as-is.
+- Send rename (D2) touches strings asserted by existing My Tokens /
+  TransferTokensScreen tests; update them in the same change.
+- Manage link (D3): the existing `in_dev_mode` path of `into_with_actions`
+  flips every admin flag on for Power+ roles; deriving the link from those
+  flags would show it to every Power user. Use the P0.2 helper.
 - 800 px window height (known hub constraint): the list must scroll inside the
   island; header and controls stay fixed (T4).
 
-## 11. Open questions for the user
+## 11. Decisions
 
-- **Q1 Tab order and count badge.** `Home · Contacts · Tokens · Profile` with a
-  badge only for pending claims — agreed? (Alternative: no badge at all in MVP.)
-- **Q2 Verb.** "Send" in the hub (matches Home) while the pushed screen is titled
-  "Transfer Tokens". Rename the pushed headings to "Send {token}" / "Claim
-  {token} rewards" in Phase 1 (small string change on existing screens), or use
-  "Transfer" in the hub?
-- **Q3 Expert-view link.** Keep the optional "Manage in Tokens screen" menu
-  item for Power/Developer when the identity is the issuer, or drop any admin
-  link from the hub entirely?
-- **Q4 Zero-balance rows.** Show tracked tokens with a fetched 0 (sorted last,
-  muted) or hide them by default behind the "Hide zero balances" toggle from
-  day one? Proposal: show (Alex waiting for a payment needs to see the row).
-- **Q5 Home card threshold.** Show the card when any balance > 0 *or* a claim
-  waits (proposal), or only when a claim waits?
+Answers from the user (2026-10-28) to the questions this note raised; the
+same decisions are recorded in `implementation-checklist.md` § "User
+decisions", which wins on any discrepancy.
+
+- **D1 Tab order and count badge.** `Home · Contacts · Tokens · Profile`.
+  The tab badge shows **only** the number of pending claims; no badge when
+  zero. *(Was Q1.)*
+- **D2 Verb: Send everywhere.** Holder transfers are called **Send** in the
+  hub, in the pushed `TransferTokensScreen` (heading "Send {token}", confirm
+  dialog, primary button, progress "Sending…" and success "Sent…" messages,
+  breadcrumb) and in Tokens › My Tokens, whose row button "Transfer" becomes
+  "Send". Internal type and function names (`TransferTokensScreen`,
+  `TokenTask::TransferTokens`, …) stay as they are. *(Was Q2.)*
+- **D3 Manage link by permission, not by role.** "Manage in Tokens screen"
+  stays in the ••• menu and on the detail page, shown **only when the selected
+  identity actually holds at least one administrative permission on that
+  token** (mint, burn, freeze, unfreeze, destroy frozen funds, emergency
+  action, set price, update config) as authorised by the token's configuration
+  rules. Not tied to user role, not tied to being the issuer, and **not**
+  derived from the developer-mode override that lights up every button.
+  *(Was Q3.)*
+- **D4 Zero balances: normal rows, opt-in hiding.** A fetched 0 renders as a
+  normal row (no muted styling). A **"Hide tokens with zero balance"** checkbox
+  is always visible above the list — not only at ≥ 8 rows — and is remembered
+  per device. It never hides "Checking balance…" rows, because an unknown
+  balance is not a zero. *(Was Q4.)*
+- **D5 Home card threshold.** The Home Tokens card is shown when **any balance
+  > 0 or a claim is pending**; otherwise it is hidden. *(Was Q5.)*
 
 ## 12. Findings in the existing surface (candy tally)
 
@@ -322,6 +379,6 @@ design.
 | UX-004 | Low | `my_tokens.rs:711` disabled-Transfer reason "Transfer not available" is circular. |
 | UX-005 | Low | `my_tokens.rs:466` contract-owner marker is a hardcoded dark-green `Color32::from_rgb(0,100,0)` on the ID text — colour-only signal, not theme-aware, outside `DashColors`. |
 | UX-006 | Low | Holder and issuer actions share one row (`render_actions`): Transfer/Claim next to Mint/Burn/Freeze/Destroy for the same user; progressive disclosure not applied. |
-| UX-007 | Info | Vocabulary split: Home says "Send", My Tokens says "Transfer", Masternodes says "Claim token rewards ›" — same operations, three verbs. |
+| UX-007 | Info | Vocabulary split: Home says "Send", My Tokens says "Transfer", Masternodes says "Claim token rewards ›" — same operations, three verbs. Resolved for tokens by D2. |
 
 Tally: 0 Critical · 0 High · 2 Medium · 4 Low · 1 Info — 7 candies.

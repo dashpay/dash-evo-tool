@@ -895,6 +895,64 @@ fn group_mint_co_signer_cannot_change_the_proposed_recipient() {
     });
 }
 
+/// A typo in Update Config's Max Supply field must not be sent as "no
+/// limit": the field keeps the text, explains the problem and holds back the
+/// Update Config button until the value parses.
+#[test]
+fn update_config_holds_back_a_max_supply_that_does_not_parse() {
+    use egui::accesskit::Role;
+    const FIELD: &str = "New maximum supply:";
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.open(ScreenType::UpdateTokenConfigScreen(f.info.clone()));
+        f.harness.get_by_value("No Change").click();
+        f.harness.run_steps(5);
+        f.harness.get_by_label("Max Supply").click();
+        f.harness.run_steps(5);
+
+        let type_into_field = |f: &mut TokenFixture, text: &str| {
+            f.harness
+                .get_by_role_and_label(Role::TextInput, FIELD)
+                .focus();
+            f.harness.run_steps(2);
+            f.harness
+                .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            f.harness
+                .get_by_role_and_label(Role::TextInput, FIELD)
+                .type_text(text);
+            f.harness.run_steps(5);
+        };
+        let update_button = |f: &TokenFixture| {
+            f.harness
+                .query_all_by_role_and_label(Role::Button, "Update Config")
+                .any(|node| node.rect().top() > 60.0) // not the breadcrumb
+        };
+
+        type_into_field(&mut f, "12a");
+        assert_eq!(
+            f.harness
+                .get_by_role_and_label(Role::TextInput, FIELD)
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("12a"),
+            "the typo stays in the field"
+        );
+        f.harness.get_by_label(
+            "Enter the maximum supply as a whole number, or leave it empty for no limit.",
+        );
+        assert!(
+            !update_button(&f),
+            "a typo must not be sent as \"no limit\""
+        );
+
+        type_into_field(&mut f, "1000");
+        assert!(update_button(&f), "a whole number can be sent");
+    });
+}
+
 /// Each token form shows one page heading, with Advanced Options on its row,
 /// and numbers its steps from 1. Breadcrumbs use plain words.
 #[test]

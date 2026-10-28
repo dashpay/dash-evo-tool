@@ -5,7 +5,10 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::token::token_change_item_is_supported;
+use crate::model::token::{
+    TokenConfigInputError, parse_max_supply_input, parse_new_tokens_destination_input,
+    token_change_item_is_supported,
+};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -57,6 +60,11 @@ pub struct UpdateTokenConfigScreen {
     pub change_item: TokenConfigurationChangeItem,
     update_text: String,
     text_input_error: String,
+    /// Text of the Max Supply or New-Tokens Destination field as typed, kept
+    /// while it does not parse so a typo is not replaced by "none".
+    field_text: Option<String>,
+    /// Why `field_text` does not parse; blocks the update until fixed.
+    field_error: Option<TokenConfigInputError>,
     signing_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
@@ -110,6 +118,8 @@ impl UpdateTokenConfigScreen {
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
             update_text: "".to_string(),
             text_input_error: "".to_string(),
+            field_text: None,
+            field_error: None,
             signing_key: possible_key,
             show_advanced_options: false,
             public_note: None,
@@ -167,6 +177,7 @@ impl UpdateTokenConfigScreen {
 
         // Clone the token configuration to avoid borrowing issues
         let default_token_configuration = self.identity_token_info.token_config.clone();
+        let item_before_selection = self.change_item.clone();
 
         ui.horizontal(|ui| {
             let label = token_change_item_label(&self.change_item);
@@ -492,6 +503,12 @@ impl UpdateTokenConfigScreen {
                 });
 
 
+        if self.change_item != item_before_selection {
+            // A newly chosen item starts from its own current value.
+            self.field_text = None;
+            self.field_error = None;
+        }
+
         ui.add_space(10.0);
 
         /* ========== PER‑VARIANT EDITING ========== */
@@ -527,21 +544,43 @@ impl UpdateTokenConfigScreen {
                 });
             }
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
-                let mut txt = opt_amt.map(|a| a.to_string()).unwrap_or_default();
-                if ui.text_edit_singleline(&mut txt).changed() {
-                    *opt_amt = txt.parse::<u64>().ok();
+                let text = self
+                    .field_text
+                    .get_or_insert_with(|| opt_amt.map(|a| a.to_string()).unwrap_or_default());
+                if labelled_text_field(ui, "New maximum supply:", text) {
+                    // An empty field means no limit; a typo keeps the
+                    // earlier value and blocks the update.
+                    match parse_max_supply_input(text) {
+                        Ok(max_supply) => {
+                            *opt_amt = max_supply;
+                            self.field_error = None;
+                        }
+                        Err(e) => self.field_error = Some(e),
+                    }
                 }
+                show_field_error(ui, self.field_error.as_ref());
             }
             TokenConfigurationChangeItem::MintingAllowChoosingDestination(b) => {
                 ui.checkbox(b, "Allow user to choose destination when minting");
             }
             TokenConfigurationChangeItem::NewTokensDestinationIdentity(opt_id) => {
-                let mut txt = opt_id
-                    .map(|id| id.to_string(Encoding::Base58))
-                    .unwrap_or_default();
-                if ui.text_edit_singleline(&mut txt).changed() {
-                    *opt_id = Identifier::from_string(&txt, Encoding::Base58).ok();
+                let text = self.field_text.get_or_insert_with(|| {
+                    opt_id
+                        .map(|id| id.to_string(Encoding::Base58))
+                        .unwrap_or_default()
+                });
+                if labelled_text_field(ui, "New default destination identity:", text) {
+                    // An empty field means no default destination; a typo
+                    // keeps the earlier value and blocks the update.
+                    match parse_new_tokens_destination_input(text) {
+                        Ok(destination) => {
+                            *opt_id = destination;
+                            self.field_error = None;
+                        }
+                        Err(e) => self.field_error = Some(e),
+                    }
                 }
+                show_field_error(ui, self.field_error.as_ref());
             }
             TokenConfigurationChangeItem::PerpetualDistribution(opt_json) => {
                 ui.add_space(5.0);
@@ -676,7 +715,11 @@ impl UpdateTokenConfigScreen {
         );
 
         if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
-            && change_item_can_be_submitted(&self.change_item, &self.text_input_error)
+            && change_item_can_be_submitted(
+                &self.change_item,
+                &self.text_input_error,
+                self.field_error.as_ref(),
+            )
         {
             ui.add_space(20.0);
             if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
@@ -1045,15 +1088,45 @@ impl ScreenLike for UpdateTokenConfigScreen {
 /// The conventions editor keeps the last valid conventions while its text
 /// does not parse, so `conventions_parse_error` must be empty before
 /// conventions are sent: otherwise the update would carry the earlier value
-/// instead of what the editor shows.
+/// instead of what the editor shows. Likewise `field_error` must be `None`
+/// before the Max Supply or New-Tokens Destination field is sent.
 fn change_item_can_be_submitted(
     item: &TokenConfigurationChangeItem,
     conventions_parse_error: &str,
+    field_error: Option<&TokenConfigInputError>,
 ) -> bool {
-    token_change_item_is_supported(item)
-        && *item != TokenConfigurationChangeItem::TokenConfigurationNoChange
-        && (!matches!(item, TokenConfigurationChangeItem::Conventions(_))
-            || conventions_parse_error.is_empty())
+    if !token_change_item_is_supported(item) {
+        return false;
+    }
+    match item {
+        TokenConfigurationChangeItem::TokenConfigurationNoChange => false,
+        TokenConfigurationChangeItem::Conventions(_) => conventions_parse_error.is_empty(),
+        TokenConfigurationChangeItem::MaxSupply(_)
+        | TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => field_error.is_none(),
+        _ => true,
+    }
+}
+
+/// A single-line text field named by the label before it; returns whether
+/// the text changed.
+fn labelled_text_field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
+    ui.horizontal(|ui| {
+        let label = ui.label(label);
+        ui.text_edit_singleline(text)
+            .labelled_by(label.id)
+            .changed()
+    })
+    .inner
+}
+
+/// Shows why the typed value cannot be used, if it cannot.
+fn show_field_error(ui: &mut Ui, error: Option<&TokenConfigInputError>) {
+    if let Some(error) = error {
+        ui.colored_label(
+            DashColors::error_color(ui.style().visuals.dark_mode),
+            error.to_string(),
+        );
+    }
 }
 
 /// Returns a simple label for UI display
@@ -1157,18 +1230,42 @@ mod sdk_adapter_tests {
         );
         assert!(!change_item_can_be_submitted(
             &conventions,
-            "Invalid JSON: expected value"
+            "Invalid JSON: expected value",
+            None
         ));
-        assert!(change_item_can_be_submitted(&conventions, ""));
+        assert!(change_item_can_be_submitted(&conventions, "", None));
         // A parse error left over from the conventions editor does not block
         // other items, which do not use that editor.
         assert!(change_item_can_be_submitted(
             &TokenConfigurationChangeItem::MaxSupply(Some(17)),
-            "Invalid JSON: expected value"
+            "Invalid JSON: expected value",
+            None
         ));
         assert!(!change_item_can_be_submitted(
             &TokenConfigurationChangeItem::TokenConfigurationNoChange,
-            ""
+            "",
+            None
         ));
+    }
+
+    /// A Max Supply or New-Tokens Destination field that does not parse
+    /// still holds the earlier value, so it must not be sent as "none".
+    #[test]
+    fn a_field_that_does_not_parse_cannot_be_submitted() {
+        let max_supply = TokenConfigurationChangeItem::MaxSupply(None);
+        let destination = TokenConfigurationChangeItem::NewTokensDestinationIdentity(None);
+        assert!(!change_item_can_be_submitted(
+            &max_supply,
+            "",
+            Some(&TokenConfigInputError::MaxSupplyNotANumber)
+        ));
+        assert!(!change_item_can_be_submitted(
+            &destination,
+            "",
+            Some(&TokenConfigInputError::DestinationNotAnIdentity)
+        ));
+        // A deliberately empty field means "none" and can be sent.
+        assert!(change_item_can_be_submitted(&max_supply, "", None));
+        assert!(change_item_can_be_submitted(&destination, "", None));
     }
 }

@@ -1193,6 +1193,9 @@ impl AppState {
             Arc::new(secret_prompt_host);
         for app_ctx in network_contexts.values() {
             app_ctx.install_secret_prompt(Arc::clone(&secret_prompt_host));
+            // The frame loop every report of this context goes to, installed
+            // before the MCP server below can hand the context a request.
+            app_ctx.install_frame_loop(task_result_sender.clone());
         }
 
         // Storage preparation for the active network. Everything the app needs

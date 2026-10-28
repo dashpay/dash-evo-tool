@@ -288,11 +288,11 @@ async fn ensure_spv_ready(
     ctx: &Arc<AppContext>,
     protocol_refresh: ProtocolRefresh,
 ) -> Result<(), McpToolError> {
-    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
-    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
-    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: the GUI's when the server is embedded,
+    // a sink in a headless process. The backend wired here keeps the sender
+    // for good, so it is never one made for this call. Mirrors
+    // `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;
     // the drain is now part of `prepare_storage`, which the chokepoint awaits

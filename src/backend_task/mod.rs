@@ -1583,6 +1583,10 @@ impl AppContext {
         })
         .ok_or(TaskError::NetworkContextCreationFailed { network })?;
         new_ctx.install_secret_prompt(self.secret_prompt());
+        // The switch runs on the frame loop of the context it leaves; the new
+        // context reports to the same one, and its backend is built on it
+        // below, before anyone else is handed the context.
+        new_ctx.install_frame_loop(sender.clone());
 
         let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
             Ok(()) => {
@@ -1834,6 +1838,53 @@ mod tests {
             .expect("registered backend")
             .shutdown()
             .await;
+    }
+
+    /// A network switch installs the frame loop it runs on as the new
+    /// context's, and builds the context's wallet backend on it, before the
+    /// context is registered or returned: a request reaching the new context
+    /// through MCP reports to the same frame loop as the GUI.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_installs_the_frame_loop_on_the_new_context() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context.install_frame_loop(SenderAsync::new(tx, context.egui_ctx().clone()));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                context.frame_loop_sender(),
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected completed network context");
+        };
+        while rx.try_recv().is_ok() {}
+
+        new_context
+            .frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the new context reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

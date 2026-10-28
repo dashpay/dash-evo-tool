@@ -1273,10 +1273,44 @@ fn a_switch_that_stops_without_a_result_releases_the_app() {
             1,
             "nothing retried the switch"
         );
-        assert!(
-            !harness.state().test_spv_start_in_flight(),
-            "nothing is left in flight at teardown"
+
+        // The stopped switch no longer counts as pending, so the user can try
+        // again: a retry dispatches a fresh switch task.
+        harness.state_mut().change_network(second);
+        assert_eq!(
+            harness
+                .state()
+                .test_captured_dispatches()
+                .iter()
+                .filter(|(task, _)| {
+                    matches!(task, BackendTask::SwitchNetwork { network, .. } if *network == second)
+                })
+                .count(),
+            2,
+            "a retry after the stopped switch dispatches a new switch"
         );
+
+        // End the retry too, so nothing is pending at teardown.
+        let retry_context = harness
+            .state()
+            .test_captured_dispatches()
+            .iter()
+            .rev()
+            .find(|(task, _)| matches!(task, BackendTask::SwitchNetwork { .. }))
+            .map(|(_, context)| context.clone())
+            .expect("the retried switch was captured");
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Error {
+                context: retry_context,
+                error: TaskError::NetworkSwitchedBeforeResult,
+            })
+            .expect("queue the retry's end");
+        step_until_painted(&mut harness, "the retry's overlay to close", |h| {
+            h.query_by_label_contains(switching).is_none()
+        });
+        assert_eq!(harness.state().current_app_context().network(), first);
     });
 }
 

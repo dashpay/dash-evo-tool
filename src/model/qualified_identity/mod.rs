@@ -1346,18 +1346,30 @@ impl QualifiedIdentity {
             return None;
         }
         let signing_hash = <[u8; 20]>::try_from(key.data().as_slice()).ok()?;
-        let wallet_seed_hash = self
-            .private_keys
-            .wallet_seed_hash_for(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, signing_key_id))?;
+        let stored_path = self.private_keys.wallet_derivation_path_for(&(
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key_id,
+        ))?;
         let mut key_hashes = MasternodeKeyHashes::from_identity(&self.identity);
-        match role {
-            MasternodeWithdrawalRole::Owner => key_hashes.owner = Some(signing_hash),
-            MasternodeWithdrawalRole::Payout => key_hashes.payout = Some(signing_hash),
-        }
+        let owner_key_index_hint = match role {
+            MasternodeWithdrawalRole::Owner => {
+                key_hashes.owner = Some(signing_hash);
+                // DIP-3 owner keys sit at a non-hardened provider index.
+                match stored_path.derivation_path.as_ref().last() {
+                    Some(ChildNumber::Normal { index }) => Some(*index),
+                    _ => None,
+                }
+            }
+            MasternodeWithdrawalRole::Payout => {
+                key_hashes.payout = Some(signing_hash);
+                None
+            }
+        };
         Some(WalletMasternodeWithdrawal {
-            wallet_seed_hash,
+            wallet_seed_hash: stored_path.wallet_seed_hash,
             role,
             key_hashes,
+            owner_key_index_hint,
         })
     }
 
@@ -3181,9 +3193,18 @@ pub(crate) mod withdrawal_key_tests {
 
     /// Store `key`'s private half as a reference into wallet `seed`.
     fn hold_in_wallet(qi: &mut QualifiedIdentity, key: &IdentityPublicKey, seed: WalletSeedHash) {
+        hold_in_wallet_at(qi, key, seed, "m/9'/1'/3'/2'/0");
+    }
+
+    fn hold_in_wallet_at(
+        qi: &mut QualifiedIdentity,
+        key: &IdentityPublicKey,
+        seed: WalletSeedHash,
+        path: &str,
+    ) {
         let path = encrypted_key_storage::WalletDerivationPath {
             wallet_seed_hash: seed,
-            derivation_path: "m/9'/1'/3'/2'/0".parse().unwrap(),
+            derivation_path: path.parse().unwrap(),
         };
         qi.private_keys.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
@@ -3237,7 +3258,7 @@ pub(crate) mod withdrawal_key_tests {
             vec![owner.clone(), payout],
             vec![],
         );
-        hold_in_wallet(&mut qi, &owner, [0x5E; 32]);
+        hold_in_wallet_at(&mut qi, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37");
 
         assert_eq!(
             qi.wallet_masternode_withdrawal(1),
@@ -3249,8 +3270,36 @@ pub(crate) mod withdrawal_key_tests {
                     payout: Some([0x11; 20]),
                     voting: None,
                 },
+                owner_key_index_hint: Some(37),
             })
         );
+    }
+
+    /// Only an owner-key withdrawal carries the owner key's stored index,
+    /// and only a non-hardened one: DIP-3 owner keys use normal indices.
+    #[test]
+    fn owner_key_index_hint_comes_from_a_normal_owner_path_only() {
+        let mut owner = key(1, Purpose::OWNER);
+        owner.set_key_type(KeyType::ECDSA_HASH160);
+        owner.set_data(BinaryData::new(vec![0x31; 20]));
+        let payout = payout_key(2, [0x11; 20]);
+
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout.clone()],
+            vec![],
+        );
+        hold_in_wallet_at(&mut qi, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37");
+        hold_in_wallet_at(&mut qi, &payout, [0x5E; 32], "m/44'/1'/0'/0/2");
+        let payout_route = qi.wallet_masternode_withdrawal(2).expect("wallet route");
+        assert_eq!(payout_route.owner_key_index_hint, None);
+
+        let mut hardened = build_identity(IdentityType::Masternode, vec![owner.clone()], vec![]);
+        hold_in_wallet_at(&mut hardened, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37'");
+        let route = hardened
+            .wallet_masternode_withdrawal(1)
+            .expect("wallet route");
+        assert_eq!(route.owner_key_index_hint, None);
     }
 
     #[test]

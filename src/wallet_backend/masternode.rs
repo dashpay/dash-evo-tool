@@ -74,6 +74,10 @@ pub struct MasternodeWithdrawal {
     /// Destination for a payout-key withdrawal; `None` pays the registered
     /// payout address. Must be `None` for an owner-key withdrawal.
     pub destination: Option<Address>,
+    /// The owner key's provider index as DET stored it, for an owner-key
+    /// withdrawal. Upstream verifies it before use, so an owner key above
+    /// its default scan window still resolves in a restored wallet.
+    pub owner_key_index_hint: Option<u32>,
 }
 
 impl WalletBackend {
@@ -117,6 +121,11 @@ impl WalletBackend {
                 break;
             }
             let Some(wallet) = self.inner.pwm.get_wallet(&wallet_id).await else {
+                tracing::warn!(
+                    ?seed_hash,
+                    ?wallet_id,
+                    "Could not load this wallet to look for masternode keys; trying the next wallet"
+                );
                 continue;
             };
             let held = match tokio::task::spawn_blocking(move || wallet_held_keys(&wallet, &hashes))
@@ -161,21 +170,12 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let hashes = withdrawal.key_hashes;
+        let hint = withdrawal.owner_key_index_hint;
         let lookup = Arc::clone(&wallet);
-        let keys = tokio::task::spawn_blocking(move || withdrawal_keys(&lookup, &hashes))
+        let keys = tokio::task::spawn_blocking(move || withdrawal_keys(&lookup, &hashes, hint))
             .await?
             .map_err(|error| map_masternode_withdraw_error(*error))?;
-
-        let request = MasternodeWithdrawalRequest {
-            pro_tx_hash: wire_pro_tx_hash(withdrawal.identity_id),
-            owner_key_hash: hashes.owner,
-            amount_credits: withdrawal.amount_credits,
-            signing_key: match withdrawal.role {
-                MasternodeWithdrawalRole::Owner => MasternodeWithdrawalKey::Owner,
-                MasternodeWithdrawalRole::Payout => MasternodeWithdrawalKey::Transfer,
-            },
-            destination: withdrawal.destination,
-        };
+        let request = withdrawal_request(&withdrawal);
 
         self.inner
             .secret_access
@@ -187,6 +187,21 @@ impl WalletBackend {
                     .map_err(map_masternode_withdraw_error)
             })
             .await
+    }
+}
+
+/// Upstream's request for `withdrawal`: which wallet key signs, and where
+/// the credits go.
+fn withdrawal_request(withdrawal: &MasternodeWithdrawal) -> MasternodeWithdrawalRequest {
+    MasternodeWithdrawalRequest {
+        pro_tx_hash: wire_pro_tx_hash(withdrawal.identity_id),
+        owner_key_hash: withdrawal.key_hashes.owner,
+        amount_credits: withdrawal.amount_credits,
+        signing_key: match withdrawal.role {
+            MasternodeWithdrawalRole::Owner => MasternodeWithdrawalKey::Owner,
+            MasternodeWithdrawalRole::Payout => MasternodeWithdrawalKey::Transfer,
+        },
+        destination: withdrawal.destination.clone(),
     }
 }
 
@@ -207,13 +222,20 @@ fn p2pkh_script(payout: &[u8; 20]) -> Vec<u8> {
 type BoxedError = Box<PlatformWalletError>;
 
 /// Upstream's owner / payout key resolution for one wallet. Blocking.
+/// `owner_key_index_hint` is the owner key's index when DET already knows
+/// it; upstream checks that index first, then scans its default window.
 fn withdrawal_keys(
     wallet: &PlatformWallet,
     hashes: &MasternodeKeyHashes,
+    owner_key_index_hint: Option<u32>,
 ) -> Result<MasternodeWithdrawalKeys, BoxedError> {
     let payout_script = hashes.payout.as_ref().map(p2pkh_script);
     wallet
-        .masternode_withdrawal_keys(hashes.owner.as_ref(), payout_script.as_deref(), None)
+        .masternode_withdrawal_keys(
+            hashes.owner.as_ref(),
+            payout_script.as_deref(),
+            owner_key_index_hint,
+        )
         .map_err(Box::new)
 }
 
@@ -230,7 +252,8 @@ fn wallet_held_keys(
     hashes: &MasternodeKeyHashes,
 ) -> Result<HeldKeys, BoxedError> {
     let (owner, payout) = if hashes.owner.is_some() || hashes.payout.is_some() {
-        let keys = withdrawal_keys(wallet, hashes)?;
+        // Discovery has no stored owner index to offer yet.
+        let keys = withdrawal_keys(wallet, hashes, None)?;
         (keys.owner_key.map(|(_, path)| path), keys.transfer_key)
     } else {
         (None, None)
@@ -334,16 +357,19 @@ fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
 mod tests {
     use super::*;
     use crate::context::test_support::wired_test_app_context;
+    use dash_sdk::dpp::dashcore::address::Payload;
     use std::str::FromStr;
+    use std::sync::LazyLock;
 
-    const SEED: [u8; 64] = [0x4D; 64];
+    /// The test wallet's seed: random per run, never committed.
+    static SEED: LazyLock<[u8; 64]> = LazyLock::new(rand::random);
 
     /// hash160 of the compressed public key at `path` — an independent DIP-3
     /// vector computed straight from the seed, not through either wallet.
     fn key_hash_at(path: &str) -> [u8; 20] {
         DerivationPath::from_str(path)
             .unwrap()
-            .derive_priv_ecdsa_for_master_seed(&SEED, Network::Testnet)
+            .derive_priv_ecdsa_for_master_seed(&*SEED, Network::Testnet)
             .unwrap()
             .to_priv()
             .public_key()
@@ -356,7 +382,7 @@ mod tests {
     ) -> (Arc<crate::context::AppContext>, WalletSeedHash) {
         let context = wired_test_app_context(dir).await;
         let wallet =
-            crate::model::wallet::Wallet::new_from_seed(SEED, Network::Testnet, None, None)
+            crate::model::wallet::Wallet::new_from_seed(*SEED, Network::Testnet, None, None)
                 .unwrap();
         let seed_hash = wallet.seed_hash();
         context
@@ -366,6 +392,123 @@ mod tests {
             .await
             .unwrap();
         (context, seed_hash)
+    }
+
+    /// A random testnet P2PKH address no test wallet holds.
+    fn foreign_address() -> Address {
+        Address::new(
+            Network::Testnet,
+            Payload::PubkeyHash(PubkeyHash::from_byte_array(rand::random())),
+        )
+    }
+
+    fn withdrawal(
+        role: MasternodeWithdrawalRole,
+        destination: Option<Address>,
+    ) -> MasternodeWithdrawal {
+        MasternodeWithdrawal {
+            identity_id: Identifier::from(rand::random::<[u8; 32]>()),
+            key_hashes: MasternodeKeyHashes {
+                owner: Some(rand::random()),
+                payout: Some(rand::random()),
+                voting: None,
+            },
+            role,
+            amount_credits: 250_000,
+            destination,
+            owner_key_index_hint: Some(7),
+        }
+    }
+
+    /// A restored wallet's owner key can sit above upstream's default scan
+    /// window; the stored index carried as the hint still resolves it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_high_index_owner_key_resolves_through_its_stored_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let (context, seed_hash) = backend_with_wallet(dir.path()).await;
+        let wallet = context
+            .wallet_backend()
+            .unwrap()
+            .resolve_wallet(&seed_hash)
+            .await
+            .unwrap();
+        let hashes = MasternodeKeyHashes {
+            owner: Some(key_hash_at("m/9'/1'/3'/2'/150")),
+            payout: None,
+            voting: None,
+        };
+
+        let (unhinted, hinted) = tokio::task::spawn_blocking(move || {
+            (
+                withdrawal_keys(&wallet, &hashes, None).unwrap(),
+                withdrawal_keys(&wallet, &hashes, Some(150)).unwrap(),
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(unhinted.owner_key, None, "outside the default scan window");
+        assert_eq!(
+            hinted.owner_key,
+            Some((150, DerivationPath::from_str("m/9'/1'/3'/2'/150").unwrap()))
+        );
+    }
+
+    /// The owner key signs an owner withdrawal, which takes no destination;
+    /// the node's owner hash and the wire-order ProTxHash go along.
+    #[test]
+    fn an_owner_withdrawal_asks_for_the_owner_key() {
+        let owner = withdrawal(MasternodeWithdrawalRole::Owner, None);
+        let request = withdrawal_request(&owner);
+        assert_eq!(request.signing_key, MasternodeWithdrawalKey::Owner);
+        assert_eq!(request.owner_key_hash, owner.key_hashes.owner);
+        assert_eq!(request.pro_tx_hash, wire_pro_tx_hash(owner.identity_id));
+        assert_eq!(request.amount_credits, owner.amount_credits);
+        assert_eq!(request.destination, None);
+    }
+
+    /// The payout key signs a payout withdrawal, and its destination is
+    /// passed through unchanged.
+    #[test]
+    fn a_payout_withdrawal_asks_for_the_transfer_key_and_keeps_its_destination() {
+        let destination = foreign_address();
+        let payout = withdrawal(MasternodeWithdrawalRole::Payout, Some(destination.clone()));
+        let request = withdrawal_request(&payout);
+        assert_eq!(request.signing_key, MasternodeWithdrawalKey::Transfer);
+        assert_eq!(request.owner_key_hash, payout.key_hashes.owner);
+        assert_eq!(request.destination, Some(destination));
+    }
+
+    /// An owner-key withdrawal to a chosen address goes through the wallet's
+    /// own withdrawal, which refuses it before anything is broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_owner_withdrawal_to_another_address_is_refused_before_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let (context, seed_hash) = backend_with_wallet(dir.path()).await;
+        let backend = context.wallet_backend().unwrap();
+        backend.wallet_seeds().set_raw(&seed_hash, &SEED).unwrap();
+
+        let owner_path = "m/9'/1'/3'/2'/3";
+        let request = MasternodeWithdrawal {
+            key_hashes: MasternodeKeyHashes {
+                owner: Some(key_hash_at(owner_path)),
+                payout: None,
+                voting: None,
+            },
+            owner_key_index_hint: Some(3),
+            ..withdrawal(MasternodeWithdrawalRole::Owner, Some(foreign_address()))
+        };
+        let error = backend
+            .masternode_withdraw(&seed_hash, request)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                TaskError::MasternodeWithdrawalFailed { source }
+                    if matches!(**source, PlatformWalletError::InvalidParameter(_))
+            ),
+            "unexpected error: {error:?}"
+        );
     }
 
     /// The owner and voting keys are found at the DIP-3 provider paths with a

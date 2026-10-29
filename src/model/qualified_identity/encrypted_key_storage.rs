@@ -460,8 +460,18 @@ impl KeyStorage {
     /// scope at all, so [`get_resolve_with_seed`](Self::get_resolve_with_seed)
     /// only prompts for genuinely wallet-derived keys.
     pub fn wallet_seed_hash_for(&self, key: &(PrivateKeyTarget, KeyID)) -> Option<WalletSeedHash> {
+        self.wallet_derivation_path_for(key)
+            .map(|path| path.wallet_seed_hash)
+    }
+
+    /// The wallet derivation reference stored at exactly `key`, or `None`
+    /// when that placement holds no wallet-derived key.
+    pub fn wallet_derivation_path_for(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<&WalletDerivationPath> {
         match self.private_keys.get(key) {
-            Some((_, PrivateKeyData::AtWalletDerivationPath(wdp))) => Some(wdp.wallet_seed_hash),
+            Some((_, PrivateKeyData::AtWalletDerivationPath(wdp))) => Some(wdp),
             _ => None,
         }
     }

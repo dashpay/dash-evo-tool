@@ -77,6 +77,11 @@ pub struct WalletMasternodeWithdrawal {
     pub role: MasternodeWithdrawalRole,
     /// The node's key hashes; the signing role's hash is the signing key's.
     pub key_hashes: MasternodeKeyHashes,
+    /// For an owner-key withdrawal, the owner key's provider index as its
+    /// stored derivation path records it. The wallet checks this index
+    /// first, so an owner key above its default scan window still resolves
+    /// after a restore. `None` for a payout-key withdrawal.
+    pub owner_key_index_hint: Option<u32>,
 }
 
 /// hash160 data of the first active `ECDSA_HASH160` key with `purpose`.

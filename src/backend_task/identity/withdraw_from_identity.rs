@@ -111,6 +111,7 @@ impl AppContext {
                             role: route.role,
                             amount_credits: credits,
                             destination: to_address,
+                            owner_key_index_hint: route.owner_key_index_hint,
                         },
                     )
                     .await?

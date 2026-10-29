@@ -902,11 +902,14 @@ impl WalletSendScreen {
     }
 
     /// The backend-quoted limit the current source and destination need, and
-    /// the wallet state it must have been quoted against.
+    /// the wallet state it must have been quoted against. A Core wallet with
+    /// no destination yet is quoted as a Core send to P2PKH (see
+    /// [`Self::core_send_limit_kind`]), so Max never falls back to the
+    /// displayed balance.
     fn spend_limit_target(&self) -> Option<(WalletSeedHash, SpendLimitKind, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
-        match (self.selected_source.as_ref()?, self.destination_kind()?) {
-            (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => Some((
+        match (self.selected_source.as_ref()?, self.destination_kind()) {
+            (SourceSelection::PlatformAddresses(_), Some(AddressKind::Shielded)) => Some((
                 seed_hash,
                 SpendLimitKind::ShieldFromPlatform,
                 // A shield in flight has spent credits the live balances
@@ -917,7 +920,7 @@ impl WalletSendScreen {
                         .platform_shield_quote_revision(&seed_hash)
                         .rotate_left(32),
             )),
-            (SourceSelection::CoreWallet, AddressKind::Core) => Some((
+            (SourceSelection::CoreWallet, Some(AddressKind::Core) | None) => Some((
                 seed_hash,
                 self.core_send_limit_kind(),
                 self.app_context.core_send_quote_revision(&seed_hash),
@@ -3031,6 +3034,10 @@ impl WalletSendScreen {
                 let mut max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read().ok().and_then(|wallet| {
                         let seed_hash = wallet.seed_hash();
+                        // Only an asset-lock route starts from the builder
+                        // ceiling: the same current-composition accessor
+                        // validation uses, so Max can never offer a stale
+                        // ceiling. A Core send takes the backend quote below.
                         let max_duffs = if matches!(
                             dest_kind,
                             Some(
@@ -3039,11 +3046,9 @@ impl WalletSendScreen {
                                     | AddressKind::Identity
                             )
                         ) {
-                            // Same current-composition accessor validation
-                            // uses, so Max can never offer a stale ceiling.
                             self.asset_lock_max_amount(&seed_hash).ok()
                         } else {
-                            Some(self.app_context.snapshot_balance(&seed_hash).spendable())
+                            None
                         };
                         max_duffs.map(|amount| amount.saturating_mul(CREDITS_PER_DUFF))
                     })
@@ -3114,9 +3119,10 @@ impl WalletSendScreen {
                             },
                         )
                     }
-                    Some(AddressKind::Core) => {
+                    Some(AddressKind::Core) | None => {
                         // Core-to-Core "Max": the backend's quote of the largest
-                        // payment the pooled build accepts, net of its fee.
+                        // payment the pooled build accepts, net of its fee;
+                        // with no destination yet, the P2PKH quote.
                         // Nothing is offered until it arrives.
                         match self.spend_limit(self.core_send_limit_kind()) {
                             // The backend states a zero as its reason; this
@@ -3146,7 +3152,6 @@ impl WalletSendScreen {
                             }
                         }
                     }
-                    _ => None,
                 };
                 (max, hint)
             }
@@ -6959,6 +6964,59 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// Before a destination is chosen, Core Max is still the backend's pooled
+    /// quote, taken for P2PKH (the larger output, so the safe bound), never
+    /// the displayed spendable balance, which can include inputs the pooled
+    /// build cannot spend and keeps no fee back.
+    #[test]
+    fn core_send_max_without_destination_is_the_p2pkh_quote() {
+        use crate::model::spend_limit::CoreDestinationScript;
+        const QUOTE_DUFFS: u64 = 7_654_321;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = None;
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind:
+                SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("with no destination, Core Max must ask for the P2PKH pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "Max with no destination must be exactly the P2PKH pooled quote"
         );
     }
 

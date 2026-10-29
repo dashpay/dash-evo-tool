@@ -1339,7 +1339,8 @@ As a token creator, I want every identity to be able to claim a fixed amount of 
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
@@ -1511,6 +1512,7 @@ As a user, I want to switch between Mainnet, Testnet, Devnet, and Local networks
 - Network chooser screen with all available networks.
 - Per-network data isolation (wallets, identities, contracts).
 - Switch without app restart.
+- While the app opens a network for the first time this session, a progress window names it ("Switching to Testnet…") and blocks the app until the switch finishes. Nothing on the previous network, such as Connect, can be pressed meanwhile, so chain sync never starts on the network being left. A failed switch closes the window and shows why.
 
 ### NET-002: Auto-update from dashmate config [Implemented]
 **Persona:** Jordan

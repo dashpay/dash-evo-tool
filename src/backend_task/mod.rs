@@ -422,6 +422,10 @@ pub enum BackendTaskContext {
         network: Network,
         operation: Box<BackendTaskContext>,
     },
+    /// Building the context of a network the app switches to. Every failure
+    /// of the switch, including a task that stops without a result, must
+    /// release the app the switch is blocking.
+    NetworkSwitch { network: Network },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -795,6 +799,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
             ) => Self::WalletRename(task.clone()),
+            BackendTask::SwitchNetwork { network, .. } => Self::NetworkSwitch { network: *network },
             _ => Self::Other,
         }
     }

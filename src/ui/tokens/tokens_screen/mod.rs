@@ -4546,8 +4546,9 @@ mod tests {
             "the user's non-transferable choice must not be overwritten"
         );
         assert_eq!(
-            screen.creation_blocked_reason(),
-            Some(TaskError::NonTransferableTokenNotSupported.to_string())
+            screen.creation_blocked_reason().as_deref(),
+            Some(TRANSFERS_OFF_HINT),
+            "the reason must say where the hidden option is"
         );
 
         crate::context::test_support::prove_protocol_version(&app_context, 14);
@@ -4556,17 +4557,101 @@ mod tests {
         assert_eq!(screen.creation_blocked_reason(), None);
     }
 
-    /// The confirmation states whether holders can send the token.
+    /// Why creating is blocked while transfers are off on a network that does
+    /// not accept it, naming where the option is: it is offered only under
+    /// Advanced, so the form may not show it.
+    const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
+
+    /// The confirmation always states the irreversible "holders cannot send"
+    /// choice; the transferable default is stated only with Advanced Options,
+    /// the only place it can be changed.
     #[test]
     fn confirmation_states_whether_holders_can_send_the_token() {
+        const CANNOT: &str =
+            "Holders cannot send this token to other identities. This cannot be changed later.";
+        assert_eq!(TokensScreen::transferability_summary(true, false), None);
         assert_eq!(
-            TokensScreen::transferability_summary(true),
-            "Holders can send this token to other identities."
+            TokensScreen::transferability_summary(true, true),
+            Some("Holders can send this token to other identities.")
         );
         assert_eq!(
-            TokensScreen::transferability_summary(false),
-            "Holders cannot send this token to other identities. This cannot be changed later."
+            TokensScreen::transferability_summary(false, false),
+            Some(CANNOT)
         );
+        assert_eq!(
+            TokensScreen::transferability_summary(false, true),
+            Some(CANNOT)
+        );
+    }
+
+    fn confirmation(
+        transferable: bool,
+        once_per_identity_amount: Option<TokenAmount>,
+        marketplace_locked: bool,
+    ) -> String {
+        TokensScreen::registration_confirmation_message(
+            "QAWk1027",
+            "0",
+            "None",
+            TokensScreen::transferability_summary(transferable, true),
+            once_per_identity_amount,
+            0.402,
+            marketplace_locked,
+        )
+    }
+
+    /// Without Advanced Options the confirmation leaves out the transferable
+    /// default, but always states that holders cannot send the token.
+    #[test]
+    fn simple_mode_confirmation_states_only_the_sending_restriction() {
+        let message = |transferable| {
+            TokensScreen::registration_confirmation_message(
+                "QAWk1027",
+                "0",
+                "None",
+                TokensScreen::transferability_summary(transferable, false),
+                None,
+                0.402,
+                false,
+            )
+        };
+        assert!(
+            message(true).contains("Max Supply: None\n\nEstimated cost"),
+            "the transferable default must leave no empty line behind"
+        );
+        assert!(!message(true).contains("Holders can"));
+        assert!(message(false).contains(
+            "Max Supply: None\nHolders cannot send this token to other identities. This cannot be changed later.\n\nEstimated cost"
+        ));
+    }
+
+    /// Regression: the confirmation did not mention the once-per-identity
+    /// distribution the user is about to sign.
+    #[test]
+    fn confirmation_names_the_once_per_identity_distribution() {
+        assert!(
+            confirmation(false, Some(5), true)
+                .contains("Each identity can claim 5 base tokens of this token, once.")
+        );
+        assert!(!confirmation(false, None, true).contains("Each identity can claim"));
+    }
+
+    /// Regression: a transferable token's confirmation carried a "NotTradeable"
+    /// warning that read as if holders could not send it. The warning is about
+    /// the marketplace only and says so in plain words.
+    #[test]
+    fn marketplace_warning_does_not_read_as_a_sending_restriction() {
+        let locked = confirmation(true, None, true);
+        assert!(locked.contains("Holders can send this token to other identities."));
+        assert!(locked.contains(
+            "WARNING: This token can never be offered for sale on the token marketplace. This cannot be changed later."
+        ));
+        assert!(!locked.contains("NotTradeable"));
+        assert!(!locked.contains("tradeable"));
+
+        let unlocked = confirmation(true, None, false);
+        assert!(!unlocked.contains("WARNING"));
+        assert!(!unlocked.contains("marketplace"));
     }
 
     /// The pending token selection is a one-shot courier: My Tokens opens on
@@ -4605,7 +4690,7 @@ mod tests {
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
         screen.transferable_input = false;
-        let unsupported = TaskError::NonTransferableTokenNotSupported.to_string();
+        let unsupported = TRANSFERS_OFF_HINT.to_owned();
 
         assert_eq!(
             screen.simple_mode_blocked_reason().as_deref(),

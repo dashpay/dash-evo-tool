@@ -272,15 +272,18 @@ fn my_tokens_create_token_button_opens_token_creator() {
     });
 }
 
-/// Simple mode shows the "holders can send this token" choice, so a choice made
-/// in Advanced mode is never hidden, and the confirmation states it.
+/// The "holders can send this token" choice is offered only in the Advanced
+/// section: Simple mode hides it, Advanced Options show it once Advanced is
+/// expanded. Simple mode's confirmation does not mention the default.
 #[test]
-fn simple_mode_shows_and_confirms_transferability() {
+fn holders_can_send_option_is_offered_only_under_advanced() {
     use crate::identity_home::{key, seed_identity};
     use dash_evo_tool::ui::RootScreenType;
     use dash_sdk::dpp::identity::Purpose;
     use egui::accesskit::Role;
     use egui_kittest::kittest::Queryable;
+
+    const OPTION: &str = "Holders can send this token to other identities";
 
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -294,10 +297,8 @@ fn simple_mode_shows_and_confirms_transferability() {
         harness.run_steps(5);
 
         assert!(
-            harness
-                .query_by_label("Holders can send this token to other identities")
-                .is_some(),
-            "Simple mode must show whether holders can send the token"
+            harness.query_by_label(OPTION).is_none(),
+            "Simple mode must not offer the holders-can-send option"
         );
 
         // Simple mode inputs, top to bottom: name, description, initial supply, max supply.
@@ -323,10 +324,39 @@ fn simple_mode_shows_and_confirms_transferability() {
 
         assert!(
             harness
-                .query_all_by_label_contains("Holders can send this token to other identities.")
+                .query_all_by_label_contains("Are you sure you want to register")
                 .next()
                 .is_some(),
-            "the confirmation must state whether holders can send the token"
+            "the confirmation must open"
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Holders can send this token to other identities.")
+                .next()
+                .is_none(),
+            "Simple mode's confirmation must not mention the transferable default"
+        );
+        harness
+            .get_by_role_and_label(Role::Button, "Cancel")
+            .click();
+        harness.run_steps(3);
+
+        harness.get_by_label("Show Advanced Options").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label(OPTION).is_none(),
+            "the option must stay hidden while Advanced is collapsed"
+        );
+
+        harness
+            .query_all_by_role_and_label(Role::Button, "+")
+            .next()
+            .expect("Advanced section toggle")
+            .click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label(OPTION).is_some(),
+            "the expanded Advanced section must offer the holders-can-send option"
         );
     });
 }

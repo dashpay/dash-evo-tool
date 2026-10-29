@@ -748,7 +748,10 @@ impl IdentityTokensState {
             self.invalidate_rows();
             return true;
         }
-        if self.track_again.settle(context).is_some() {
+        if let Some(pairs) = self.track_again.settle(context) {
+            for pair in &pairs {
+                self.failed_checks.remove(pair);
+            }
             self.invalidate_rows();
             return true;
         }
@@ -785,7 +788,13 @@ impl IdentityTokensState {
             if in_progress {
                 self.track_again_owed = Some(pairs);
             } else {
-                self.note_full_refresh_failed(error);
+                // Only the selected identity's pairs were refreshed: mark
+                // those, never every identity's unknown balances.
+                tracing::warn!(
+                    error = ?error,
+                    "Tracking token balances again for the Identity Hub failed"
+                );
+                self.failed_checks.extend(pairs);
             }
             self.invalidate_rows();
             self.swallow_next_error = true;
@@ -1301,6 +1310,32 @@ mod tests {
             Arrival::Due,
             "the next identity still needs its own refresh"
         );
+    }
+
+    /// A failed "track again" marks only its own pairs "could not check": it
+    /// is no full refresh, so another identity's unknown balances stay
+    /// unmarked after a switch. A later success clears the pairs again.
+    #[test]
+    fn a_failed_track_again_marks_only_its_pairs() {
+        let mut state = IdentityTokensState::default();
+        let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
+        let context = dispatched(state.dispatch_track_again(pairs.clone()));
+        state.record_error(&context, &TaskError::NoIdentitiesFound);
+        assert!(state.take_swallowed_error());
+        assert!(!state.full_refresh_failed);
+        assert_eq!(state.refresh_failure(), None);
+        assert!(pairs.iter().all(|pair| state.failed_checks.contains(pair)));
+
+        let context = dispatched(state.dispatch_track_again(pairs.clone()));
+        assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 3));
+        assert!(state.failed_checks.is_empty());
+
+        let context = dispatched(state.dispatch_track_again(pairs));
+        state.record_error(&context, &TaskError::NoIdentitiesFound);
+        state.reset_for_identity_change();
+        assert!(!state.full_refresh_failed);
+        assert_eq!(state.refresh_failure(), None);
+        assert!(state.failed_checks.is_empty());
     }
 
     /// Owed "track again" pairs belong to the identity that asked; switching

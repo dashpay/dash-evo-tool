@@ -1493,6 +1493,7 @@ As a user, I want to switch between Mainnet, Testnet, Devnet, and Local networks
 - Network chooser screen with all available networks.
 - Per-network data isolation (wallets, identities, contracts).
 - Switch without app restart.
+- While the app opens a network for the first time this session, a progress window names it ("Switching to Testnet…") and blocks the app until the switch finishes. Nothing on the previous network, such as Connect, can be pressed meanwhile, so chain sync never starts on the network being left. A failed switch closes the window and shows why.
 
 ### NET-002: Auto-update from dashmate config [Implemented]
 **Persona:** Jordan

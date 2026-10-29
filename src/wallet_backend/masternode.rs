@@ -25,12 +25,13 @@ use dash_sdk::dpp::dashcore::{Address, Network, PubkeyHash, ScriptBuf};
 use dash_sdk::dpp::key_wallet::account::{AccountType, ManagedAccountTrait};
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::platform::Identifier;
-use platform_wallet::PlatformWalletError;
+use platform_wallet::masternode::MasternodeListSummary;
 use platform_wallet::wallet::ProviderKeyKind;
 use platform_wallet::wallet::masternode_withdrawal::{
     MasternodeWithdrawalKey, MasternodeWithdrawalKeys, MasternodeWithdrawalRequest,
 };
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
+use platform_wallet::{PlatformWalletError, SpvRuntime};
 
 use super::{DetSigner, WalletBackend};
 use crate::backend_task::error::TaskError;
@@ -84,26 +85,11 @@ pub struct MasternodeWithdrawal {
 impl WalletBackend {
     /// The voting key hash the masternode list records for the node whose
     /// identity is `identity_id`, or `None` while the list is not current
-    /// (see [`masternode_list_is_current`]) or does not list the node. A stale
+    /// (see [`current_voting_key_hash`]) or does not list the node. A stale
     /// list could name a voting key the node has since replaced, and callers
     /// drop stored voting keys that differ from this hash.
     pub async fn masternode_voting_key_hash(&self, identity_id: Identifier) -> Option<[u8; 20]> {
-        let spv = self.inner.pwm.spv();
-        // Progress first: the list only moves forward, so a list read after a
-        // current progress snapshot is at least as new as that snapshot.
-        if !spv
-            .sync_progress()
-            .await
-            .is_some_and(|progress| masternode_list_is_current(&progress))
-        {
-            return None;
-        }
-        let summaries = spv.masternode_list_summaries().await?;
-        let wire = wire_pro_tx_hash(identity_id);
-        summaries
-            .iter()
-            .find(|summary| summary.pro_tx_hash == wire)
-            .map(|summary| summary.voting_key_id)
+        current_voting_key_hash(self.inner.pwm.spv(), identity_id).await
     }
 
     /// Find which of this device's registered wallets hold the masternode
@@ -201,6 +187,55 @@ impl WalletBackend {
             })
             .await
     }
+}
+
+/// The two SPV reads behind [`current_voting_key_hash`]; a seam so a test
+/// can move the tip between them.
+trait MasternodeListReads {
+    async fn sync_progress(&self) -> Option<SyncProgress>;
+    async fn masternode_list_summaries(&self) -> Option<Vec<MasternodeListSummary>>;
+}
+
+impl MasternodeListReads for SpvRuntime {
+    async fn sync_progress(&self) -> Option<SyncProgress> {
+        SpvRuntime::sync_progress(self).await
+    }
+
+    async fn masternode_list_summaries(&self) -> Option<Vec<MasternodeListSummary>> {
+        SpvRuntime::masternode_list_summaries(self).await
+    }
+}
+
+/// See [`WalletBackend::masternode_voting_key_hash`].
+///
+/// The list carries no height of its own, so it is bracketed by two progress
+/// reads. The list only moves forward, so the one read in between is at least
+/// as high as the list height `before` shows; that height must be current
+/// against `before` AND `after`. A tip that moves on while the list is read
+/// fails the second check, so a list it has outrun is never trusted.
+///
+/// TODO(upstream): ask `SpvRuntime` for one atomic snapshot of the list
+/// together with its height and the header and peer tips it was checked
+/// against; that would replace both progress reads.
+async fn current_voting_key_hash(
+    reads: &impl MasternodeListReads,
+    identity_id: Identifier,
+) -> Option<[u8; 20]> {
+    let before = reads.sync_progress().await?;
+    let list_height = before.masternodes().ok()?.current_height();
+    if !masternode_list_is_current_at(list_height, &before) {
+        return None;
+    }
+    let summaries = reads.masternode_list_summaries().await?;
+    let after = reads.sync_progress().await?;
+    if !masternode_list_is_current_at(list_height, &after) {
+        return None;
+    }
+    let wire = wire_pro_tx_hash(identity_id);
+    summaries
+        .iter()
+        .find(|summary| summary.pro_tx_hash == wire)
+        .map(|summary| summary.voting_key_id)
 }
 
 /// Upstream's request for `withdrawal`: which wallet key signs, and where
@@ -350,9 +385,10 @@ fn provider_key_path(
     Ok(base.child(child))
 }
 
-/// Whether `progress` shows the masternode list built at the chain tip: both
-/// the header and the masternode phase synced, and the list no lower than the
-/// stored header tip and the best height connected peers announce.
+/// Whether a masternode list built at `list_height` is current by `progress`:
+/// both the header and the masternode phase synced, and `list_height` no
+/// lower than the stored header tip, the best height connected peers announce
+/// and the header tip the masternode phase knows of.
 ///
 /// A phase's `Synced` alone is not enough: both stay `Synced` while they catch
 /// up with new blocks, so a list cached before a restart or a sleep still says
@@ -362,13 +398,13 @@ fn provider_key_path(
 /// TODO(upstream): peers' announced height is the freshest tip available
 /// here; a block no connected peer has announced yet is not seen. A
 /// list-freshness query on `SpvRuntime` would replace this check.
-fn masternode_list_is_current(progress: &SyncProgress) -> bool {
+fn masternode_list_is_current_at(list_height: u32, progress: &SyncProgress) -> bool {
     let (Ok(headers), Ok(masternodes)) = (progress.headers(), progress.masternodes()) else {
         return false;
     };
     headers.state() == SyncState::Synced
         && masternodes.state() == SyncState::Synced
-        && masternodes.current_height()
+        && list_height
             >= headers
                 .tip_height()
                 .max(headers.target_height())
@@ -397,6 +433,13 @@ mod tests {
     use crate::context::test_support::wired_test_app_context;
     use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
     use dash_sdk::dpp::dashcore::address::Payload;
+
+    /// Whether `progress` shows its own masternode list current.
+    fn masternode_list_is_current(progress: &SyncProgress) -> bool {
+        progress.masternodes().is_ok_and(|masternodes| {
+            masternode_list_is_current_at(masternodes.current_height(), progress)
+        })
+    }
 
     /// Sync progress with headers stored up to `header_tip` of the
     /// `peer_best` height peers announce, and the masternode list built at
@@ -506,6 +549,114 @@ mod tests {
         list_only.update_masternodes(masternodes);
         assert!(!masternode_list_is_current(&list_only));
         assert!(!masternode_list_is_current(&SyncProgress::default()));
+    }
+
+    /// Scripted SPV reads: each progress read returns the next snapshot, so
+    /// a test can move the tip between the reads around the list read.
+    struct ScriptedReads {
+        progress: std::sync::Mutex<std::collections::VecDeque<SyncProgress>>,
+        list: Vec<MasternodeListSummary>,
+    }
+
+    impl MasternodeListReads for ScriptedReads {
+        async fn sync_progress(&self) -> Option<SyncProgress> {
+            self.progress.lock().unwrap().pop_front()
+        }
+
+        async fn masternode_list_summaries(&self) -> Option<Vec<MasternodeListSummary>> {
+            Some(self.list.clone())
+        }
+    }
+
+    fn listed_node(pro_tx_hash: [u8; 32], voting_key_id: [u8; 20]) -> MasternodeListSummary {
+        MasternodeListSummary {
+            pro_tx_hash,
+            service_address: None,
+            platform_http_port: None,
+            operator_public_key: [0; 48],
+            voting_key_id,
+            platform_node_id: None,
+            is_valid: true,
+            is_evonode: false,
+            has_extended_net_info: false,
+        }
+    }
+
+    /// Looks up a listed node through progress snapshots `before` and
+    /// `after` the list read.
+    async fn voting_hash_across(before: SyncProgress, after: SyncProgress) -> Option<[u8; 20]> {
+        let identity_id = Identifier::from([7u8; 32]);
+        let reads = ScriptedReads {
+            progress: std::sync::Mutex::new([before, after].into()),
+            list: vec![listed_node(wire_pro_tx_hash(identity_id), [0x42; 20])],
+        };
+        current_voting_key_hash(&reads, identity_id).await
+    }
+
+    fn synced_at(header_tip: u32, peer_best: u32, list_height: u32) -> SyncProgress {
+        progress(
+            SyncState::Synced,
+            header_tip,
+            peer_best,
+            SyncState::Synced,
+            list_height,
+            header_tip,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_list_current_across_both_reads_names_the_voting_key() {
+        let hash = voting_hash_across(
+            synced_at(1_000, 1_000, 1_000),
+            synced_at(1_000, 1_000, 1_000),
+        );
+        assert_eq!(hash.await, Some([0x42; 20]));
+    }
+
+    /// Progress is current at 1 000, then the headers or the peers' best
+    /// height move on while the list read in between can still be the one
+    /// built at 1 000: its voting key may already be replaced.
+    #[tokio::test]
+    async fn a_tip_that_moves_past_the_list_between_reads_names_no_voting_key() {
+        let before = synced_at(1_000, 1_000, 1_000);
+        assert_eq!(
+            voting_hash_across(before.clone(), synced_at(1_001, 1_001, 1_000)).await,
+            None,
+            "headers moved on"
+        );
+        assert_eq!(
+            voting_hash_across(before.clone(), synced_at(1_000, 1_001, 1_000)).await,
+            None,
+            "peers announced a newer block"
+        );
+        // The list caught up too, but the list read may predate that: only
+        // the height known before the read is certain.
+        assert_eq!(
+            voting_hash_across(before, synced_at(1_001, 1_001, 1_001)).await,
+            None,
+            "list caught up after it was read"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_that_stops_being_current_between_reads_names_no_voting_key() {
+        let mut syncing = synced_at(1_000, 1_000, 1_000);
+        let mut masternodes = syncing.masternodes().unwrap().clone();
+        masternodes.set_state(SyncState::Syncing);
+        syncing.update_masternodes(masternodes);
+        assert_eq!(
+            voting_hash_across(synced_at(1_000, 1_000, 1_000), syncing).await,
+            None
+        );
+        assert_eq!(
+            voting_hash_across(
+                synced_at(1_000, 1_010, 1_000),
+                synced_at(1_000, 1_000, 1_000)
+            )
+            .await,
+            None,
+            "not current before the read"
+        );
     }
 
     use std::str::FromStr;

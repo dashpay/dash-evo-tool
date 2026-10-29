@@ -692,10 +692,7 @@ impl TokensScreen {
         ui.spacing_mut().item_spacing.x = 5.0;
         let dark_mode = ui.style().visuals.dark_mode;
 
-        for (pos, row_action) in token_row_actions(&itb.available_actions)
-            .into_iter()
-            .enumerate()
-        {
+        for (pos, row_action) in token_row_actions(&itb.available_actions).enumerate() {
             if !range.contains(&pos) {
                 continue;
             }
@@ -1082,7 +1079,9 @@ enum TokenRowAction {
 
 /// The actions a token row offers for `actions`, one slot each, in order.
 /// Transfer always has a slot: it is shown disabled when unavailable.
-fn token_row_actions(actions: &IdentityTokenAvailableActions) -> Vec<TokenRowAction> {
+fn token_row_actions(
+    actions: &IdentityTokenAvailableActions,
+) -> impl Iterator<Item = TokenRowAction> + use<> {
     [
         (true, TokenRowAction::Transfer),
         (actions.can_claim, TokenRowAction::Claim),
@@ -1100,7 +1099,6 @@ fn token_row_actions(actions: &IdentityTokenAvailableActions) -> Vec<TokenRowAct
     ]
     .into_iter()
     .filter_map(|(offered, row_action)| offered.then_some(row_action))
-    .collect()
 }
 
 #[cfg(test)]

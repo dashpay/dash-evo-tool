@@ -3191,13 +3191,13 @@ impl WalletSendScreen {
                     Some(0) => (
                         None,
                         Some(format!(
-                            "None of your Platform addresses can cover the shielding fee of approximately {fee}, so nothing can be shielded right now."
+                            "None of your Platform addresses can keep back {fee} to pay the shielding fee, so nothing can be shielded right now."
                         )),
                     ),
                     max => (
                         max,
                         Some(format!(
-                            "A shielding fee of approximately {fee} is reserved from your balance."
+                            "Up to {fee} is kept back from your balance to pay the shielding fee. What the fee does not use stays on your Platform address."
                         )),
                     ),
                 }

@@ -165,6 +165,10 @@ impl AppContext {
             qualified_identity,
             wallet_and_identity_id_info,
         )?;
+        // TODO(upstream): the record and its watermark are two separate
+        // `KvStore` writes, so a failed seed leaves the first record without
+        // a watermark until the next height-tagged write. Needs an atomic
+        // multi-key write: https://github.com/dashpay/platform/issues/5666
         self.seed_balance_watermark_locked(pending)
     }
 

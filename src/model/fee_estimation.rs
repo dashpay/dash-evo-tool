@@ -79,7 +79,15 @@ impl EstimateTolerance {
 
     /// `fee` with the headroom added; never lower than `fee`.
     pub const fn apply_fee(self, fee: u64) -> u64 {
-        let raised = fee.saturating_add(fee.saturating_mul(self.percent) / 100);
+        // Widened so a large fee or percentage saturates the result instead
+        // of shrinking the headroom.
+        let extra = (fee as u128 * self.percent as u128) / 100;
+        let extra = if extra > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            extra as u64
+        };
+        let raised = fee.saturating_add(extra);
         if raised < self.floor {
             self.floor
         } else {
@@ -91,11 +99,17 @@ impl EstimateTolerance {
     /// `fee`, so a Max and the fee shown beside it still add up to what
     /// upstream says the coins cover.
     pub const fn apply_max(self, max: u64, fee: u64) -> u64 {
-        max.saturating_sub(self.apply_fee(fee) - fee)
+        max.saturating_sub(self.apply_fee(fee).saturating_sub(fee))
     }
 }
 
 /// Every [`EstimateTolerance`] DET applies, by estimate kind.
+///
+/// This module is the only place DET corrects an upstream fee, size, limit or
+/// Max. Any new estimator calls the upstream function and then one of these
+/// constants (add one for a new kind of estimate); call sites never apply a
+/// margin of their own. A constant may only make a result safer: a fee up, a
+/// Max down.
 pub mod tolerance {
     use super::EstimateTolerance;
 
@@ -2097,6 +2111,32 @@ mod tests {
                 usize::from(pv.dpp.state_transitions.max_address_inputs)
             );
         }
+    }
+
+    /// The tolerance never overflows: a huge fee or percentage saturates at
+    /// `u64::MAX` instead of wrapping to a smaller fee, and a Max smaller than
+    /// the headroom is zero, never a wrapped-around large amount.
+    #[test]
+    fn estimate_tolerance_saturates_at_the_extremes() {
+        let huge = EstimateTolerance::percent(u64::MAX).with_floor(u64::MAX);
+        assert_eq!(huge.apply_fee(0), u64::MAX);
+        assert_eq!(huge.apply_fee(u64::MAX), u64::MAX);
+        assert_eq!(huge.apply_max(u64::MAX, 0), 0);
+        assert_eq!(huge.apply_max(12_345, 1), 0);
+
+        let margin = EstimateTolerance::percent(50);
+        assert_eq!(margin.apply_fee(u64::MAX), u64::MAX);
+        // Half of `u64::MAX` plus half again, not a headroom cut short by an
+        // intermediate overflow.
+        assert_eq!(margin.apply_fee(u64::MAX / 2), u64::MAX / 2 + u64::MAX / 4);
+        assert_eq!(
+            EstimateTolerance::percent(200).apply_fee(u64::MAX / 2),
+            u64::MAX
+        );
+        assert_eq!(margin.apply_max(0, 1_000), 0);
+        assert_eq!(margin.apply_max(10, 1_000), 0);
+        assert_eq!(margin.apply_max(u64::MAX, u64::MAX), u64::MAX);
+        assert_eq!(EstimateTolerance::NONE.apply_max(0, u64::MAX), 0);
     }
 
     /// A tolerance only ever raises a fee and lowers a Max, and lowers the Max

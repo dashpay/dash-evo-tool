@@ -1977,6 +1977,16 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The request needs a Platform feature the network does not serve yet
+    /// (SdkError::ProtocolVersionNotActive); the SDK refused it without sending it.
+    #[error(
+        "This feature is not active on the network yet. Try again later, after the network upgrade."
+    )]
+    PlatformFeatureNotActive {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Platform rejected the request (StateTransitionBroadcastError, unclassified cause).
     #[error("The platform rejected this request. Please check your input and try again.")]
     PlatformRejected {
@@ -4792,6 +4802,9 @@ impl From<SdkError> for TaskError {
             SdkError::StaleNode(_) => TaskError::DapiStaleNode {
                 source_error: boxed,
             },
+            SdkError::ProtocolVersionNotActive { .. } => TaskError::PlatformFeatureNotActive {
+                source_error: boxed,
+            },
             SdkError::NoAvailableAddressesToRetry(_) => TaskError::DapiAllAddressesExhausted {
                 source: std::sync::Arc::new(TaskError::SdkError {
                     source_error: boxed,
@@ -5705,6 +5718,46 @@ mod tests {
                 }
                 other => panic!("expected PlatformEntryConflict, got {other:?}"),
             }
+        }
+    }
+
+    fn protocol_version_not_active(cause: Option<Box<SdkError>>) -> SdkError {
+        SdkError::ProtocolVersionNotActive {
+            method: "get_contract_fee_pots",
+            required: 15,
+            network: 14,
+            pinned: false,
+            cause,
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_protocol_version_not_active_maps_to_platform_feature_not_active() {
+        let transient_cause = Box::new(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ));
+        for sdk_err in [
+            protocol_version_not_active(None),
+            protocol_version_not_active(Some(transient_cause)),
+        ] {
+            let err = TaskError::from(sdk_err);
+            match &err {
+                TaskError::PlatformFeatureNotActive { source_error } => assert!(
+                    matches!(**source_error, SdkError::ProtocolVersionNotActive { .. }),
+                    "source not preserved: {source_error:?}"
+                ),
+                other => panic!("expected PlatformFeatureNotActive, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn platform_feature_not_active_display_is_user_friendly() {
+        let msg = TaskError::from(protocol_version_not_active(None)).to_string();
+        assert!(msg.contains("Try again"), "no action in: {msg}");
+        let lower = msg.to_lowercase();
+        for jargon in ["protocol", "sdk", "version", "get_contract_fee_pots", "15"] {
+            assert!(!lower.contains(jargon), "jargon {jargon:?} in: {msg}");
         }
     }
 

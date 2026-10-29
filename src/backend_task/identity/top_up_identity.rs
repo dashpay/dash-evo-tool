@@ -173,7 +173,8 @@ impl AppContext {
             }
             TopUpRoute::ForeignIdentity => {
                 // TODO(upstream): no `top_up_identity_with_private_key` variant
-                // returns the response metadata, so this balance has no height.
+                // returns the response metadata, so this balance has no height
+                // (https://github.com/dashpay/platform/issues/5658).
                 let balance = self
                     .top_up_foreign_identity(sdk, &qualified_identity.identity, &seed_hash, funding)
                     .await?;

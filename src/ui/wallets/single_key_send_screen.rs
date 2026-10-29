@@ -7,6 +7,9 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_duffs_as_dash;
+use crate::model::fee_estimation::{
+    estimate_core_l1_send_fee_duffs, estimate_core_l1_send_size_bytes,
+};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -17,7 +20,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::wallets_screen::SINGLE_KEY_SEND_UNAVAILABLE;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
@@ -109,24 +111,6 @@ impl SingleKeyWalletSendScreen {
         amount.dash_to_duffs()
     }
 
-    /// Estimate transaction size for P2PKH transactions
-    fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
-        fn varint_size(value: usize) -> usize {
-            match value {
-                0..=0xfc => 1,
-                0xfd..=0xffff => 3,
-                0x1_0000..=0xffff_ffff => 5,
-                _ => 9,
-            }
-        }
-        let mut size = 8; // version/type/lock_time
-        size += varint_size(inputs);
-        size += varint_size(outputs);
-        size += inputs * 148; // P2PKH input size
-        size += outputs * 34; // P2PKH output size
-        size
-    }
-
     /// Calculate estimated fee based on UTXO selection for the send amount
     fn estimate_fee(&self) -> Option<(u64, usize, usize)> {
         let wallet = self.selected_wallet.as_ref()?;
@@ -143,19 +127,23 @@ impl SingleKeyWalletSendScreen {
             .filter_map(|r| Self::parse_amount_to_duffs(&r.amount).ok())
             .sum();
 
+        let output_count = self.recipients.len();
+        let priced = |inputs: usize| {
+            (
+                estimate_core_l1_send_fee_duffs(inputs, output_count),
+                inputs,
+                estimate_core_l1_send_size_bytes(inputs, output_count),
+            )
+        };
+
         if total_output == 0 {
             // No valid amounts entered yet, show estimate for minimum tx
-            let output_count = self.recipients.len().max(1) + 1;
-            let estimated_size = Self::estimate_p2pkh_tx_size(1, output_count);
-            let fee = FeeRate::normal().calculate_fee(estimated_size);
-            return Some((fee, 1, estimated_size));
+            return Some(priced(1));
         }
 
         // Sort UTXOs by value descending to estimate how many we'd need
         let mut utxo_values: Vec<u64> = wallet_guard.utxos.values().map(|tx| tx.value).collect();
         utxo_values.sort_by(|a, b| b.cmp(a));
-
-        let output_count = self.recipients.len() + 1; // +1 for change
 
         // Select UTXOs until we have enough (simulating the backend logic)
         let mut selected_count = 0;
@@ -166,18 +154,14 @@ impl SingleKeyWalletSendScreen {
             selected_total += value;
 
             // Recalculate fee with current input count
-            let current_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
-            let current_fee = FeeRate::normal().calculate_fee(current_size);
-
-            if selected_total >= total_output + current_fee {
-                return Some((current_fee, selected_count, current_size));
+            let current = priced(selected_count);
+            if selected_total >= total_output + current.0 {
+                return Some(current);
             }
         }
 
         // Not enough funds - show what we'd need with all UTXOs
-        let estimated_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
-        let fee = FeeRate::normal().calculate_fee(estimated_size);
-        Some((fee, selected_count, estimated_size))
+        Some(priced(selected_count))
     }
 
     /// Parse the required fee from a "min relay fee not met" error message
@@ -1014,9 +998,48 @@ mod tests {
     fn send_screen() -> (SingleKeyWalletSendScreen, tempfile::TempDir) {
         let (ctx, temp_dir) = offline_ctx();
         let wallet =
-            SingleKeyWallet::new([1u8; 32], Network::Testnet, None, None).expect("single key");
+            SingleKeyWallet::new(rand::random(), Network::Testnet, None, None).expect("single key");
         let screen = SingleKeyWalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
         (screen, temp_dir)
+    }
+
+    /// The fee shown is the model's Core payment fee for the coins the
+    /// payment needs, change included: one coin, one recipient and change.
+    #[test]
+    fn the_fee_estimate_is_the_models_core_payment_fee() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
+
+        let (mut screen, _dir) = send_screen();
+        {
+            let wallet = screen.selected_wallet.as_ref().expect("wallet");
+            let mut wallet = wallet.write().expect("wallet lock");
+            for (tag, value) in [(1_u8, 1_000_000), (2, 400_000)] {
+                wallet.utxos.insert(
+                    OutPoint::new(Txid::from_byte_array([tag; 32]), 0),
+                    TxOut {
+                        value,
+                        script_pubkey: ScriptBuf::new(),
+                    },
+                );
+            }
+        }
+        screen.recipients[0].amount = "0.001".to_string();
+        let (fee, inputs, size) = screen.estimate_fee().expect("a fee estimate");
+        assert_eq!(inputs, 1);
+        assert_eq!(size, 226);
+        assert_eq!(
+            fee,
+            crate::model::fee_estimation::estimate_core_l1_send_fee_duffs(1, 1)
+        );
+
+        screen.recipients[0].amount = "0.0129".to_string();
+        let (fee, inputs, _) = screen.estimate_fee().expect("a fee estimate");
+        assert_eq!(inputs, 2, "the larger coin alone does not cover it");
+        assert_eq!(
+            fee,
+            crate::model::fee_estimation::estimate_core_l1_send_fee_duffs(2, 1)
+        );
     }
 
     /// The busy flag means "a send is in flight". Every single-key send is

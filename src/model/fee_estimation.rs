@@ -1391,8 +1391,14 @@ pub fn estimate_core_payment_fee_duffs(
 /// chosen coins returns what it does not spend, and leaving it out understates
 /// the fee. Both counts are clamped to at least 1.
 pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) -> u64 {
-    let size = estimate_tx_size(num_inputs.max(1), num_outputs.max(1), true);
+    let size = estimate_core_l1_send_size_bytes(num_inputs, num_outputs);
     tolerance::CORE_SEND.apply_fee(core_fee_rate().calculate_fee(size))
+}
+
+/// Size, in bytes, of the payment [`estimate_core_l1_send_fee_duffs`]
+/// prices: `num_inputs` coins into `num_outputs` outputs plus change.
+pub fn estimate_core_l1_send_size_bytes(num_inputs: usize, num_outputs: usize) -> usize {
+    estimate_tx_size(num_inputs.max(1), num_outputs.max(1), true)
 }
 
 /// Core transaction fee, in duffs, to allow for when `num_inputs` payments

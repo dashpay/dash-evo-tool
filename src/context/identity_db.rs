@@ -1523,6 +1523,17 @@ impl AppContext {
         let _record_guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.delete_local_qualified_identity_locked(identifier)
+    }
+
+    /// [`Self::delete_local_qualified_identity_with_outcome`] for a caller
+    /// that already holds the storage-migration gate (checked that no
+    /// migration is running) and `identifier`'s record guard, taken in that
+    /// order. Calling it without both reopens the races those locks close.
+    pub(crate) fn delete_local_qualified_identity_locked(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(

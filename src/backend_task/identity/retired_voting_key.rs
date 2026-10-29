@@ -69,61 +69,74 @@ impl AppContext {
     /// [`Self::remove_retired_voting_key`] against `current`, the voting key
     /// hash just read from the masternode list.
     ///
-    /// A separate record an older version kept for the old voter identity is
-    /// removed first, so a failure there leaves the node as it was and the
-    /// notice in place for a retry. The node's own read-modify-write then
-    /// runs under its record lock (taken by `edit_local_qualified_identity`)
-    /// and recomputes what is retired, so the keys removed are the ones
-    /// stored now. Vault secrets go before the record entries: a stored
-    /// placement is what makes a vault label reachable, so a failure after
-    /// the secrets are gone leaves a removal the user can simply repeat.
+    /// Everything is decided and done under the node's record guard, so the
+    /// keys and voter identity removed are the ones the record names now, not
+    /// before a concurrent reload changed them. Lock order: the
+    /// storage-migration gate, the node's record guard, then the record guard
+    /// of a separate voter record (as identity removal takes them). This is
+    /// the only place two record guards nest; the gate serializes it against
+    /// every identity removal, and nothing takes a voter's guard before its
+    /// node's.
+    ///
+    /// A separate voter record an older version kept is removed first, so a
+    /// failure there leaves the node as it was for a retry. Vault secrets go
+    /// before the record entries: a stored placement is what makes a vault
+    /// label reachable, so a failure after the secrets are gone leaves a
+    /// removal the user can simply repeat.
     fn remove_retired_voting_key_against(
         &self,
         identity_id: Identifier,
         current: Option<[u8; 20]>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let current = current.ok_or(TaskError::VotingKeyCheckUnavailable)?;
-        let node = self
+        let _migration_guard = self
+            .try_lock_prepare_gate()
+            .map_err(|_| TaskError::WalletStorageNotReady)?;
+        if self.migration_status().state().is_in_progress() {
+            return Err(TaskError::WalletStorageNotReady);
+        }
+        let lock = self.identity_record_lock(identity_id);
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut node = self
             .get_local_qualified_identity(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
-        if retired_voting_keys(&node, current).voter_identity
+        let retired = retired_voting_keys(&node, current);
+        if retired.is_empty() {
+            return Ok(BackendTaskSuccessResult::RetiredVotingKeyKept { identity_id });
+        }
+        if retired.voter_identity
             && let Some((voter, _)) = node.associated_voter_identity.as_ref()
             && voter.id() != identity_id
         {
-            self.remove_voter_record(voter.id())?;
+            self.remove_voter_record_locked(voter.id())?;
         }
-        let mut kept = false;
-        self.edit_local_qualified_identity(&identity_id, |node| {
-            let retired = retired_voting_keys(node, current);
-            if retired.is_empty() {
-                kept = true;
-                return Ok(());
-            }
-            self.delete_identity_key_secrets(&identity_id, retired.placements.clone())?;
-            for placement in &retired.placements {
-                node.private_keys.remove_at(placement);
-            }
-            if retired.voter_identity {
-                node.associated_voter_identity = None;
-            }
-            Ok(())
-        })?;
-        Ok(if kept {
-            BackendTaskSuccessResult::RetiredVotingKeyKept { identity_id }
-        } else {
-            BackendTaskSuccessResult::RetiredVotingKeyRemoved { identity_id }
-        })
+        self.delete_identity_key_secrets(&identity_id, retired.placements.clone())?;
+        for placement in &retired.placements {
+            node.private_keys.remove_at(placement);
+        }
+        if retired.voter_identity {
+            node.associated_voter_identity = None;
+        }
+        self.write_local_qualified_identity_locked(&node)?;
+        Ok(BackendTaskSuccessResult::RetiredVotingKeyRemoved { identity_id })
     }
 
     /// Remove the separate record an older version kept for a node's voter
-    /// identity, if there is one. A failure that leaves the record listed is
-    /// returned; one after it was delisted is not, as the next start finishes
-    /// that cleanup.
-    fn remove_voter_record(&self, voter_id: Identifier) -> Result<(), TaskError> {
+    /// identity, if there is one. The caller holds the storage-migration gate
+    /// and the node's record guard. A failure that leaves the record listed
+    /// is returned; one after it was delisted is not, as the next start
+    /// finishes that cleanup.
+    fn remove_voter_record_locked(&self, voter_id: Identifier) -> Result<(), TaskError> {
+        let lock = self.identity_record_lock(voter_id);
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.is_identity_listed(&voter_id)? {
             return Ok(());
         }
-        match self.delete_local_qualified_identity_with_outcome(&voter_id) {
+        match self.delete_local_qualified_identity_locked(&voter_id) {
             Ok(_) => Ok(()),
             Err(error) if self.is_identity_listed(&voter_id).unwrap_or(true) => Err(error),
             Err(error) => {
@@ -255,6 +268,70 @@ mod tests {
         assert!(stored(&staged).associated_voter_identity.is_none());
         assert!(!staged.ctx.is_identity_listed(&voter_id).unwrap());
         assert!(staged.ctx.is_identity_listed(&staged.id).unwrap());
+    }
+
+    /// A reload can switch the node's voter identity from A to B while the
+    /// removal waits for the node's record. The removal must act on what the
+    /// record names once it holds it: B's separate record goes with B's
+    /// association, and A's record, which the node no longer names, stays.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_voter_switched_while_waiting_is_the_one_removed() {
+        use crate::context::lock_probe::{LockProbe, LockSite};
+        use crate::context::test_staging::qi_with_plaintext_and_derived_at;
+        let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
+        let voter_a = staged.voter_id.unwrap();
+        let mut voter_b = qi_with_plaintext_and_derived_at(
+            Identifier::from([0x3D; 32]),
+            rand::random(),
+            rand::random(),
+        );
+        voter_b.private_keys = Default::default();
+        staged
+            .ctx
+            .insert_local_qualified_identity(&voter_b, &None)
+            .unwrap();
+        let mut switched = stored(&staged);
+        switched.associated_voter_identity = Some((
+            voter_b.identity.clone(),
+            IdentityPublicKey::random_key(5, Some(5), PlatformVersion::latest()),
+        ));
+
+        let probe = LockProbe::new();
+        let removal_probe = probe.clone();
+        let lock = staged.ctx.identity_record_lock(staged.id);
+        let guard = lock.lock().unwrap();
+        let ctx = std::sync::Arc::clone(&staged.ctx);
+        let node_id = staged.id;
+        let removal = std::thread::spawn(move || {
+            let _attached = removal_probe.attach();
+            ctx.remove_retired_voting_key_against(node_id, Some([0xEE; 20]))
+        });
+        while probe.count(LockSite::RecordRequest) == 0 {
+            std::thread::yield_now();
+        }
+        staged
+            .ctx
+            .write_local_qualified_identity_locked(&switched)
+            .unwrap();
+        drop(guard);
+        let result = removal.join().unwrap().unwrap();
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
+        ));
+        assert!(stored(&staged).associated_voter_identity.is_none());
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&voter_b.identity.id())
+                .unwrap(),
+            "the voter the node named when the removal ran is removed"
+        );
+        assert!(
+            staged.ctx.is_identity_listed(&voter_a).unwrap(),
+            "a voter the node no longer names is left alone"
+        );
     }
 
     /// By the time of the click the list names the stored key again: nothing

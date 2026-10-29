@@ -6490,7 +6490,7 @@ mod tests {
             .send_core_to_shielded(seed_hash)
             .expect_err("one duff above Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "validation should report the builder-derived ceiling: {error}"
         );
 
@@ -6537,7 +6537,7 @@ mod tests {
             .send_core_to_identity(seed_hash)
             .expect_err("one duff above Identity Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "validation should report the builder-derived identity ceiling: {error}"
         );
 
@@ -6581,7 +6581,7 @@ mod tests {
             .send_core_to_platform(seed_hash)
             .expect_err("one duff above Platform Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "Platform validation should report the builder-derived ceiling: {error}"
         );
     }

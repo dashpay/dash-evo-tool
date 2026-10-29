@@ -238,6 +238,32 @@ pub async fn send_contact_request_with_proof(
     account_label: Option<String>,
     qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    send_contact_request_inner(
+        app_context,
+        sdk,
+        identity,
+        signing_key,
+        to_username_or_id,
+        account_label,
+        qr_code,
+        None,
+    )
+    .await
+}
+
+/// Body of [`send_contact_request_with_proof`]; `held` is the request-action
+/// lock a caller already holds for the recipient, if any.
+#[allow(clippy::too_many_arguments)]
+async fn send_contact_request_inner(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    signing_key: IdentityPublicKey,
+    to_username_or_id: String,
+    account_label: Option<String>,
+    qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
+    held: Option<&HeldPeerLock<'_>>,
+) -> Result<BackendTaskSuccessResult, TaskError> {
     if let Some(label) = account_label.as_deref()
         && let Err(error) = crate::model::dashpay::validate_account_label(label)
     {
@@ -592,31 +618,73 @@ pub async fn send_contact_request_with_proof(
         created_at_ts,
     );
     if let Ok(backend) = app_context.wallet_backend() {
-        if let Err(err) = backend
-            .record_sent_contact_request(&seed_hash, &owner_id, contact_record)
-            .await
-        {
-            tracing::warn!(
-                %err,
-                "record_sent_contact_request failed; contact was sent but \
-                 local wallet-manager state not updated",
-            );
-        }
-
-        // Sending to someone retires an earlier decline of their request and an
-        // earlier withdrawal of ours: the user has deliberately re-engaged, so
-        // neither direction may stay filtered out of the list.
-        re_engage_after_send(&PlatformReEngage {
-            backend: &backend,
-            owner: owner_id,
-            peer: to_identity_id,
-        })
+        finish_send(
+            &backend,
+            &seed_hash,
+            owner_id,
+            to_identity_id,
+            contact_record,
+            held,
+        )
         .await?;
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
     ))
+}
+
+/// A caller's borrow of the request-action lock it holds for `owner` and
+/// `peer` (see `WalletBackend::dashpay_lock_contact_request_action`). The lock
+/// is not reentrant, so code running under it is handed this instead of
+/// locking again.
+struct HeldPeerLock<'a> {
+    owner: Identifier,
+    peer: Identifier,
+    _guard: &'a tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Record a just-published request locally and re-engage its recipient.
+async fn finish_send(
+    backend: &crate::wallet_backend::WalletBackend,
+    seed_hash: &crate::model::wallet::WalletSeedHash,
+    owner_id: Identifier,
+    to_identity_id: Identifier,
+    contact_record: UpstreamContactRequest,
+    held: Option<&HeldPeerLock<'_>>,
+) -> Result<(), TaskError> {
+    // A cancel ignores the person and then records the withdrawal; a
+    // re-engagement landing in between would leave this fresh request
+    // withdrawn, so it waits for the person's lock.
+    let _peer_guard = match held {
+        Some(held) if held.owner == owner_id && held.peer == to_identity_id => None,
+        _ => Some(
+            backend
+                .dashpay_lock_contact_request_action(&owner_id, &to_identity_id)
+                .await,
+        ),
+    };
+
+    if let Err(err) = backend
+        .record_sent_contact_request(seed_hash, &owner_id, contact_record)
+        .await
+    {
+        tracing::warn!(
+            %err,
+            "record_sent_contact_request failed; contact was sent but \
+             local wallet-manager state not updated",
+        );
+    }
+
+    // Sending to someone retires an earlier decline of their request and an
+    // earlier withdrawal of ours: the user has deliberately re-engaged, so
+    // neither direction may stay filtered out of the list.
+    re_engage_after_send(&PlatformReEngage {
+        backend,
+        owner: owner_id,
+        peer: to_identity_id,
+    })
+    .await
 }
 
 async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
@@ -665,7 +733,7 @@ pub async fn accept_contact_request(
     // Accept, decline and cancel lock on the person too: a cancel of the
     // owner's request to them must not record a withdrawal while this accept
     // establishes the contact.
-    let _peer_guard = app_context
+    let peer_guard = app_context
         .wallet_backend()?
         .dashpay_lock_contact_request_action(&owner_id, &from_identity_id)
         .await;
@@ -778,13 +846,21 @@ pub async fn accept_contact_request(
         }
     }
 
-    let result = send_contact_request(
+    // The reply is sent under the person's lock taken above, which the send
+    // would otherwise wait on forever.
+    let result = send_contact_request_inner(
         app_context,
         sdk,
         identity,
         signing_key,
         from_identity_id.to_string(Encoding::Base58),
         Some("Accepted contact".to_string()),
+        None,
+        Some(&HeldPeerLock {
+            owner: owner_id,
+            peer: from_identity_id,
+            _guard: &peer_guard,
+        }),
     )
     .await;
 
@@ -1470,6 +1546,96 @@ mod tests {
             outgoing.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![id(12)]
         );
+    }
+
+    /// A request record for `finish_send`; this test wallet has no such
+    /// identity, so recording it only logs.
+    fn sent_record(owner: Identifier, peer: Identifier) -> UpstreamContactRequest {
+        UpstreamContactRequest::new(
+            owner,
+            peer,
+            0,
+            0,
+            0,
+            bip39::rand::random::<[u8; 32]>().to_vec(),
+            0,
+            0,
+        )
+    }
+
+    /// A cancel holding the person's lock is not undone halfway: the send
+    /// waits for it, then retires the withdrawal it recorded, so the fresh
+    /// request stays listed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_send_finishing_during_a_cancel_waits_and_then_retires_the_withdrawal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = app_context.wallet_backend().expect("backend");
+        let (owner, peer) = (id(1), id(2));
+        let cancel_guard = backend
+            .dashpay_lock_contact_request_action(&owner, &peer)
+            .await;
+
+        let send_backend = Arc::clone(&backend);
+        let seed_hash = bip39::rand::random::<[u8; 32]>();
+        let send = tokio::spawn(async move {
+            finish_send(
+                &send_backend,
+                &seed_hash,
+                owner,
+                peer,
+                sent_record(owner, peer),
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!send.is_finished(), "the send must wait for the cancel");
+
+        backend
+            .dashpay_mark_withdrawn(&owner, &peer)
+            .expect("withdraw");
+        drop(cancel_guard);
+        send.await.expect("send task").expect("send finished");
+
+        assert!(!backend.dashpay_disengaged_from(&owner, &peer));
+    }
+
+    /// An accept sends its reply under the person's lock it already holds;
+    /// finishing that send must not wait on the same lock again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_send_under_the_callers_own_lock_finishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = app_context.wallet_backend().expect("backend");
+        let (owner, peer) = (id(1), id(2));
+        backend
+            .dashpay_mark_withdrawn(&owner, &peer)
+            .expect("withdraw");
+        let guard = backend
+            .dashpay_lock_contact_request_action(&owner, &peer)
+            .await;
+
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            finish_send(
+                &backend,
+                &bip39::rand::random::<[u8; 32]>(),
+                owner,
+                peer,
+                sent_record(owner, peer),
+                Some(&HeldPeerLock {
+                    owner,
+                    peer,
+                    _guard: &guard,
+                }),
+            ),
+        )
+        .await
+        .expect("the send must not wait on its caller's lock");
+
+        finished.expect("send finished");
+        assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
 
     /// Every send re-engages, a first one included: a declined or withdrawn

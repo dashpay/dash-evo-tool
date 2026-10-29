@@ -1804,8 +1804,8 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
-    /// Core (L1) transaction fee shown for a send that spends every UTXO.
+    /// Number of UTXOs in the wallet's display snapshot, in every account.
+    /// Sizes the Core fee a wallet deposit is asked to bring on top.
     ///
     /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
     /// selection or a Max amount — those come from the backend builder.
@@ -1813,6 +1813,19 @@ impl AppContext {
         self.wallet_backend()
             .map(|wb| wb.utxo_count(seed_hash))
             .unwrap_or(0)
+    }
+
+    /// Core fee, in duffs, a pooled send of the wallet's whole balance is
+    /// shown with: the fee the pooled build charges at the Max, over the coins
+    /// the wallet's snapshot holds in the pooled send accounts.
+    ///
+    /// DISPLAY-ONLY: the Max itself comes from the backend quote.
+    pub fn snapshot_core_send_fee_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        crate::model::fee_estimation::estimate_core_send_fee_duffs(
+            self.wallet_backend()
+                .map(|wb| wb.core_send_input_count(seed_hash))
+                .unwrap_or(0),
+        )
     }
 
     /// Whether the wallet's snapshot shows any confirmed or unconfirmed

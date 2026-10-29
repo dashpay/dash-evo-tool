@@ -3017,6 +3017,13 @@ impl WalletBackend {
         self.inner.snapshots.utxo_count(seed_hash)
     }
 
+    /// How many coins a pooled Core send of the wallet's whole balance
+    /// spends, per the display snapshot. DISPLAY-ONLY: it prices the Core fee
+    /// shown beside the Max; the Max itself comes from the backend quote.
+    pub fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.core_send_input_count(seed_hash)
+    }
+
     /// UTXO-derived per-address balances for the wallet.
     pub fn address_balances(
         &self,

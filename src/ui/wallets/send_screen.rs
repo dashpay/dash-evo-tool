@@ -3133,14 +3133,12 @@ impl WalletSendScreen {
                             }
                             Some(max_credits) => {
                                 max = Some(max_credits);
-                                let utxo_count = self
+                                let fee_duffs = self
                                     .selected_wallet_seed_hash
                                     .map(|seed_hash| {
-                                        self.app_context.snapshot_utxo_count(&seed_hash)
+                                        self.app_context.snapshot_core_send_fee_duffs(&seed_hash)
                                     })
-                                    .unwrap_or(0);
-                                let fee_duffs =
-                                    estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                                    .unwrap_or_default();
                                 let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
                                 Some(format!(
                                     "A network fee of approximately {fee} is reserved from your balance."
@@ -3424,9 +3422,10 @@ impl WalletSendScreen {
         match (self.selected_source.as_ref()?, dest_kind) {
             // Core → Core: L1 network fee, paid on top (reserved from balance).
             (SourceSelection::CoreWallet, AddressKind::Core) => {
+                // The fee the pooled build charges at the Max, over the same
+                // coins and rate the Max quote prices.
                 let seed_hash = self.selected_wallet_seed_hash?;
-                let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
-                let fee_duffs = estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                let fee_duffs = self.app_context.snapshot_core_send_fee_duffs(&seed_hash);
                 let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }

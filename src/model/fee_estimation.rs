@@ -19,6 +19,7 @@ use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress}
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::{FeeRate, estimate_tx_size};
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
@@ -34,6 +35,65 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 use dash_sdk::dpp::version::fee::data_contract_registration::FeeDataContractRegistrationVersion;
+
+/// DET's correction to an upstream estimate: the single place where a fee is
+/// raised or a Max lowered beyond what upstream computes.
+///
+/// Upstream functions are the source of every fee, size and limit; a
+/// tolerance only ever makes their result safer — a fee up, a Max down —
+/// so a correction for an estimate found to be short is one constant in
+/// [`tolerance`], not an edit at each call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EstimateTolerance {
+    /// Headroom on top of the upstream fee, in percent of it.
+    percent: u64,
+    /// The smallest fee the estimate may show, in the estimate's unit.
+    floor: u64,
+}
+
+impl EstimateTolerance {
+    /// No correction: upstream's number as is.
+    pub const NONE: Self = Self::percent(0);
+
+    /// `percent` of the upstream fee on top of it.
+    pub const fn percent(percent: u64) -> Self {
+        Self { percent, floor: 0 }
+    }
+
+    /// The same, never below `floor`.
+    pub const fn with_floor(self, floor: u64) -> Self {
+        Self { floor, ..self }
+    }
+
+    /// `fee` with the headroom added; never lower than `fee`.
+    pub const fn apply_fee(self, fee: u64) -> u64 {
+        let raised = fee.saturating_add(fee.saturating_mul(self.percent) / 100);
+        if raised < self.floor {
+            self.floor
+        } else {
+            raised
+        }
+    }
+
+    /// `max` lowered by exactly the headroom [`Self::apply_fee`] adds to
+    /// `fee`, so a Max and the fee shown beside it still add up to what
+    /// upstream says the coins cover.
+    pub const fn apply_max(self, max: u64, fee: u64) -> u64 {
+        max.saturating_sub(self.apply_fee(fee) - fee)
+    }
+}
+
+/// Every [`EstimateTolerance`] DET applies, by estimate kind.
+pub mod tolerance {
+    use super::EstimateTolerance;
+
+    /// A pooled Core send. Upstream's pooled Max is an amount its build
+    /// accepts, and the fee is priced the same way, so no headroom is needed.
+    pub const CORE_SEND: EstimateTolerance = EstimateTolerance::NONE;
+    /// The Core fee of an asset lock. No upstream function sizes its payload,
+    /// so the plain-transaction size gets this reserve on top.
+    pub const ASSET_LOCK_CORE_FEE: EstimateTolerance = EstimateTolerance::percent(15);
+}
 
 /// Keep contested document creation within its contest's base fund — the
 /// moderation fund for a moderation election, the contested document fund
@@ -1357,40 +1417,63 @@ pub(crate) fn allocate_platform_addresses(
     })
 }
 
-/// Estimate the Core (L1) network fee, in duffs, for a simple wallet send.
+/// The rate DET's Core transactions build at: the upstream builder's default.
+fn core_fee_rate() -> FeeRate {
+    FeeRate::normal()
+}
+
+/// The most coins one standard Core transaction may spend.
 ///
-/// Mirrors the upstream key-wallet `TransactionBuilder` used by
-/// `WalletBackend::send_payment`: it builds at the default `FeeRate::normal()`
-/// (1 duff per byte) and sizes a non-SegWit P2PKH transaction as
-/// `10 + inputs × 148 + outputs × 34` bytes. A "Max" send spends every UTXO
-/// into a single recipient output with no change, so pass the wallet's full
-/// UTXO count as `num_inputs` and the recipient count as `num_outputs`.
-///
-/// A 15% safety margin is added on top of the raw size-based fee so the
-/// reserved amount comfortably covers the fee the builder actually charges
-/// (which rounds up, and may vary slightly with real script sizes). Reserving
-/// marginally more than needed leaves a few dust duffs in the wallet — always
-/// safe — whereas under-reserving would make the send fail.
-///
-/// `num_inputs` and `num_outputs` are clamped to a minimum of 1.
+/// key-wallet enforces this limit but keeps its constant private, and
+/// platform-wallet's `pooled_max_sendable` mirrors it as
+/// `MAX_STANDARD_TX_INPUTS`; DET mirrors the same value.
+// TODO(upstream): import the limit once key-wallet exports it.
+pub const CORE_STANDARD_TX_MAX_INPUTS: usize = 500;
+
+/// Fee, in duffs, one more input adds to a Core payment, from key-wallet's
+/// own `estimate_tx_size`. A coin worth no more than this costs more to spend
+/// than it brings, and a pooled send of the whole balance leaves it out.
+pub fn core_send_input_fee_duffs() -> u64 {
+    let per_input = estimate_tx_size(1, 1, false).saturating_sub(estimate_tx_size(0, 1, false));
+    core_fee_rate().calculate_fee(per_input)
+}
+
+/// Fee, in duffs, a pooled send of `input_count` coins into one output
+/// costs, priced as platform-wallet's `pooled_max_sendable` prices it: one
+/// rounding for the transaction without inputs, one per input.
+// TODO(upstream): call platform-wallet once it exports this pricing; it is
+// inline in `CoreWallet::pooled_max_sendable` today.
+fn pooled_send_fee_duffs(input_count: usize) -> u64 {
+    core_fee_rate()
+        .calculate_fee(estimate_tx_size(0, 1, false))
+        .saturating_add(core_send_input_fee_duffs().saturating_mul(input_count as u64))
+}
+
+/// Fee, in duffs, a pooled Core send of `input_count` coins into one output
+/// is shown with: the fee the pooled build charges when it sends the Max over
+/// the same coins. `input_count` is clamped to at least 1.
+pub fn estimate_core_send_fee_duffs(input_count: usize) -> u64 {
+    tolerance::CORE_SEND.apply_fee(pooled_send_fee_duffs(input_count.max(1)))
+}
+
+/// The Core send Max offered for `upstream_max_duffs`, the largest payment the
+/// pooled build accepts from `input_count` coins. It is lowered by the
+/// headroom [`estimate_core_send_fee_duffs`] adds, so the two never add up to
+/// more than the coins hold.
+pub fn core_send_max_duffs(upstream_max_duffs: u64, input_count: usize) -> u64 {
+    tolerance::CORE_SEND.apply_max(
+        upstream_max_duffs,
+        pooled_send_fee_duffs(input_count.max(1)),
+    )
+}
+
+/// Core (L1) fee, in duffs, of a payment spending `num_inputs` coins into
+/// `num_outputs` outputs without change, sized by key-wallet's
+/// `estimate_tx_size` at the rate the send builds with. Both counts are
+/// clamped to at least 1.
 pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) -> u64 {
-    const TX_BASE_BYTES: u64 = 10;
-    const BYTES_PER_INPUT: u64 = 148;
-    const BYTES_PER_OUTPUT: u64 = 34;
-    /// Default `FeeRate::normal()` in the upstream builder: 1 duff per byte.
-    const DUFFS_PER_BYTE: u64 = 1;
-    /// Extra headroom over the raw size estimate, in percent.
-    const SAFETY_MARGIN_PERCENT: u64 = 15;
-
-    let inputs = num_inputs.max(1) as u64;
-    let outputs = num_outputs.max(1) as u64;
-
-    let size_bytes = TX_BASE_BYTES
-        .saturating_add(inputs.saturating_mul(BYTES_PER_INPUT))
-        .saturating_add(outputs.saturating_mul(BYTES_PER_OUTPUT));
-
-    let raw_fee = size_bytes.saturating_mul(DUFFS_PER_BYTE);
-    raw_fee.saturating_add(raw_fee.saturating_mul(SAFETY_MARGIN_PERCENT) / 100)
+    let size = estimate_tx_size(num_inputs.max(1), num_outputs.max(1), false);
+    tolerance::CORE_SEND.apply_fee(core_fee_rate().calculate_fee(size))
 }
 
 /// Core transaction fee, in duffs, to allow for when `num_inputs` payments
@@ -1398,12 +1481,14 @@ pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) ->
 ///
 /// What the funding builder can lock is the spent amount less this fee, so a
 /// deposit meant to be used whole must bring it on top. Never understates
-/// what the builder charges.
+/// what the builder charges: the transaction is sized as two plain outputs
+/// (the burn output and the credit output carried in the payload), and
+/// [`tolerance::ASSET_LOCK_CORE_FEE`] covers the payload bytes upstream does
+/// not size. A test in `wallet_backend::payments` holds this against the
+/// builder.
 pub fn estimate_asset_lock_core_fee_duffs(num_inputs: usize) -> u64 {
-    // Sized as two outputs: the burn output and the credit output carried in
-    // the payload. A test in `wallet_backend::payments` holds this against
-    // the builder.
-    estimate_core_l1_send_fee_duffs(num_inputs, 2)
+    let size = estimate_tx_size(num_inputs.max(1), 2, false);
+    tolerance::ASSET_LOCK_CORE_FEE.apply_fee(core_fee_rate().calculate_fee(size))
 }
 
 /// Compute the exact shielded fee for a given number of Orchard actions.
@@ -1438,8 +1523,7 @@ pub fn shield_from_balance_fee_estimate(platform_version: &PlatformVersion) -> u
 /// bytes instead of `priced_script_len`, at the default rate the send builds
 /// with. Zero when the script is not smaller.
 pub fn core_output_script_fee_saved_duffs(priced_script_len: usize, script_len: usize) -> u64 {
-    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
-    FeeRate::normal().calculate_fee(priced_script_len.saturating_sub(script_len))
+    core_fee_rate().calculate_fee(priced_script_len.saturating_sub(script_len))
 }
 
 /// Balance (credits) shielding from Platform keeps back for its fee: the
@@ -2081,40 +2165,78 @@ mod tests {
         assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
     }
 
+    /// The Core fee is key-wallet's own size estimate at its default rate:
+    /// 10 + 148 per input + 34 per output bytes at 1 duff per byte.
     #[test]
-    fn test_core_l1_send_fee_matches_builder_size_model() {
-        // 1 input, 1 output (Max send: all funds to one recipient, no change).
-        // Upstream size = 10 + 148 + 34 = 192 bytes at 1 duff/byte = 192 duffs.
-        // With the 15% margin: 192 + floor(192 * 15 / 100) = 192 + 28 = 220.
-        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 220);
-
-        // 2 inputs, 1 output: 10 + 296 + 34 = 340 bytes → 340 + 51 = 391.
-        assert_eq!(estimate_core_l1_send_fee_duffs(2, 1), 391);
-
-        // Fee grows with input count.
-        assert!(estimate_core_l1_send_fee_duffs(5, 1) > estimate_core_l1_send_fee_duffs(1, 1));
-    }
-
-    #[test]
-    fn test_core_l1_send_fee_clamps_to_minimum_one() {
-        // Zero inputs/outputs are clamped to 1 each — never a zero-byte tx.
+    fn core_l1_send_fee_is_the_upstream_size_at_the_default_rate() {
+        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 192);
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 1), 340);
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 3), 408);
         assert_eq!(
             estimate_core_l1_send_fee_duffs(0, 0),
-            estimate_core_l1_send_fee_duffs(1, 1)
+            estimate_core_l1_send_fee_duffs(1, 1),
+            "zero counts are clamped to one each"
         );
     }
 
+    /// A pooled send is priced as platform-wallet's `pooled_max_sendable`
+    /// prices it, which at a whole duff per byte is the plain size estimate.
     #[test]
-    fn test_core_l1_send_fee_covers_actual_builder_fee() {
-        // The estimate must be >= the raw size-based fee the builder charges,
-        // so reserving it always leaves enough for the real fee.
+    fn core_send_fee_and_max_follow_the_pooled_pricing() {
+        assert_eq!(core_send_input_fee_duffs(), 148);
         for inputs in 1..=10 {
-            let raw_size = 10 + inputs as u64 * 148 + 34; // 1 output, no change
-            let estimate = estimate_core_l1_send_fee_duffs(inputs, 1);
-            assert!(
-                estimate >= raw_size,
-                "estimate {estimate} must cover raw fee {raw_size} for {inputs} inputs"
+            assert_eq!(
+                estimate_core_send_fee_duffs(inputs),
+                estimate_core_l1_send_fee_duffs(inputs, 1)
             );
+            assert_eq!(core_send_max_duffs(1_000_000, inputs), 1_000_000);
+        }
+        assert_eq!(
+            estimate_core_send_fee_duffs(0),
+            estimate_core_send_fee_duffs(1)
+        );
+    }
+
+    /// The asset-lock Core fee keeps its reserve over the plain size: the
+    /// builder's payload bytes are not in upstream's estimate.
+    #[test]
+    fn asset_lock_core_fee_reserves_over_the_upstream_size() {
+        // 10 + 148 + 2 × 34 = 226 bytes, plus 15 %.
+        assert_eq!(estimate_asset_lock_core_fee_duffs(1), 259);
+        // 10 + 296 + 68 = 374 bytes, plus 15 %.
+        assert_eq!(estimate_asset_lock_core_fee_duffs(2), 430);
+    }
+
+    /// A tolerance only ever raises a fee and lowers a Max, and lowers the Max
+    /// by exactly what it adds to the fee.
+    #[test]
+    fn estimate_tolerance_only_makes_results_safer() {
+        let none = EstimateTolerance::NONE;
+        assert_eq!(none.apply_fee(1_234), 1_234);
+        assert_eq!(none.apply_max(10_000, 1_234), 10_000);
+
+        let margin = EstimateTolerance::percent(15);
+        assert_eq!(margin.apply_fee(200), 230);
+        assert_eq!(margin.apply_max(10_000, 200), 9_970);
+
+        let floored = EstimateTolerance::percent(50).with_floor(10_000);
+        assert_eq!(floored.apply_fee(1_000), 10_000);
+        assert_eq!(floored.apply_fee(30_000), 45_000);
+        assert_eq!(
+            floored.apply_max(5_000, 1_000),
+            0,
+            "a Max never wraps below zero"
+        );
+
+        for fee in [0, 1, 99, 1_000, u64::MAX / 200] {
+            for tolerance in [none, margin, floored] {
+                let raised = tolerance.apply_fee(fee);
+                assert!(raised >= fee);
+                assert_eq!(
+                    tolerance.apply_max(u64::MAX, fee),
+                    u64::MAX - (raised - fee)
+                );
+            }
         }
     }
 

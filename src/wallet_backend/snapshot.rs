@@ -57,7 +57,9 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
-use super::payments::{AssetLockFundingPool, ProbeDeadline, pooled_send_utxos};
+use super::payments::{
+    AssetLockFundingPool, ProbeDeadline, pooled_send_input_count, pooled_send_utxos,
+};
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
@@ -156,6 +158,10 @@ pub struct WalletSnapshot {
     /// [`core_send_inputs_key`]); unlike `generation`, unchanged by events
     /// that leave them as they were.
     pub(super) core_send_inputs_key: u64,
+    /// How many of those coins a pooled send of the whole balance spends;
+    /// prices the Core fee shown beside the Max (see
+    /// [`pooled_send_input_count`]).
+    pub(super) core_send_input_count: usize,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -229,6 +235,7 @@ struct SnapshotState {
     balance: DetWalletBalance,
     asset_lock_inputs: AssetLockInputState,
     core_send_inputs_key: u64,
+    core_send_input_count: usize,
     utxos: Vec<DetUtxo>,
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
@@ -600,6 +607,7 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
         balance: prior.balance,
         asset_lock_inputs: prior.asset_lock_inputs.clone(),
         core_send_inputs_key: prior.core_send_inputs_key,
+        core_send_input_count: prior.core_send_input_count,
         utxos: prior.utxos.clone(),
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
@@ -730,6 +738,15 @@ impl SnapshotStore {
             .load()
             .get(seed_hash)
             .map_or(0, |snapshot| snapshot.utxos.len())
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, per the
+    /// published snapshot; 0 before the first publish.
+    pub(super) fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.core_send_input_count)
     }
 
     /// The key naming the coins a pooled Core send can draw on; 0 before
@@ -991,6 +1008,8 @@ impl SnapshotStore {
                 };
                 let core_send_inputs_key =
                     pooled_send_inputs_key(state.wallet(), &state.core_wallet);
+                let core_send_input_count =
+                    pooled_send_input_count(state.wallet(), &state.core_wallet);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -1006,6 +1025,7 @@ impl SnapshotStore {
                     balance,
                     asset_lock_inputs,
                     core_send_inputs_key,
+                    core_send_input_count,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
@@ -1057,6 +1077,7 @@ impl SnapshotStore {
             asset_lock_inputs: state.asset_lock_inputs,
             asset_lock_input_revision,
             core_send_inputs_key: state.core_send_inputs_key,
+            core_send_input_count: state.core_send_input_count,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -1141,6 +1162,7 @@ mod tests {
             &wid,
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1185,6 +1207,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos,
@@ -1222,6 +1245,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 0,
                     unconfirmed: 1_000,
@@ -1244,6 +1268,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1276,6 +1301,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1338,6 +1364,7 @@ mod tests {
             &wid(9),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: USABLE_DUFFS,
                     unconfirmed: NOT_YET_USABLE_DUFFS,
@@ -1380,6 +1407,7 @@ mod tests {
             &wid(9),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1627,6 +1655,7 @@ mod tests {
             &wid(0x51),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: before,
                 utxos: Vec::new(),
@@ -1669,6 +1698,7 @@ mod tests {
             &wid(0x51),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: after,
                 utxos: Vec::new(),
@@ -2301,6 +2331,7 @@ mod tests {
         address_paths.insert(b.clone(), DerivationPath::from(Vec::new()));
         WalletSnapshot {
             core_send_inputs_key: 0,
+            core_send_input_count: 0,
             generation: 1,
             asset_lock_inputs: AssetLockInputState::from_inputs([(
                 OutPoint::new(Txid::from_byte_array([1; 32]), 0),
@@ -2625,6 +2656,7 @@ mod tests {
             &wid(20),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: total,
                     unconfirmed: 0,

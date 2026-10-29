@@ -151,7 +151,7 @@ impl WalletBackend {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let sdk = self.sdk().clone();
         let scope = Self::hd_scope(seed_hash);
-        // TODO(upstream): <placeholder> — switch to
+        // TODO(upstream): switch to
         // `PlatformWallet::top_up_from_addresses` once it accepts identities
         // the paying wallet does not manage and keeps the typed SDK error.
         let (address_infos, new_balance, proof_height) = self

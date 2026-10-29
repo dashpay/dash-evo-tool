@@ -131,6 +131,11 @@ fn next_page_start(
     page_last_end_time: Option<TimestampMillis>,
     range_end: TimestampMillis,
 ) -> Option<PageStart> {
+    // TODO(upstream): <link to the dashpay/platform issue>. An empty page does not prove
+    // the rest of the range empty: the limit also counts empty end-time trees, which a
+    // proved page never returns, so a page of `limit` legacy empty trees comes back
+    // empty and ends the walk before the polls behind them. Proved queries refuse an
+    // offset, so no request can page past them.
     let last = page_last_end_time?;
     let next = match last.cmp(&page_start.0) {
         Ordering::Greater => (last, true),
@@ -245,6 +250,8 @@ mod tests {
 
     #[test]
     fn an_empty_page_ends_the_walk() {
+        // Pins the current behaviour, which can miss polls behind a page of empty
+        // end-time trees; see the TODO(upstream) in `next_page_start`.
         assert_eq!(next_page_start((20, true), None, 100), None);
         assert_eq!(next_page_start((20, false), None, 100), None);
         assert_eq!(walk(&[], (0, 100), 3), (BTreeSet::new(), 1));

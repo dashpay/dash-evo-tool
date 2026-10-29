@@ -10,7 +10,9 @@
 //! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
-use crate::model::spend_limit::{CoreDestinationScript, CoreSendShortfall, SpendLimitKind};
+use crate::model::spend_limit::{
+    CoreDestinationScript, CoreSendQuoteFee, CoreSendShortfall, SpendLimitKind, SpendLimitQuote,
+};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
@@ -722,6 +724,19 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         kind: SpendLimitKind,
     ) -> Result<u64, TaskError> {
+        self.spend_limit(seed_hash, kind)
+            .await
+            .map(|quote| quote.max_credits)
+    }
+
+    /// [`Self::spend_limit_credits`], with what a Core send's Max was proven
+    /// against: the fee its build charged and the coins the build could spend,
+    /// which price the fee a Core send shows.
+    pub async fn spend_limit(
+        &self,
+        seed_hash: &WalletSeedHash,
+        kind: SpendLimitKind,
+    ) -> Result<SpendLimitQuote, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let quote_failed = |source| TaskError::SpendLimitQueryFailed {
             source: Arc::new(source),
@@ -758,19 +773,23 @@ impl WalletBackend {
                     };
                     return Err(TaskError::CoreSendMaxUnavailable { reason });
                 }
-                let (proven_duffs, timed_out, input_count) = self
+                let search = self
                     .core_send_max_within_reservations(&wallet, upper_duffs, destination)
                     .await?;
-                let duffs = core_send_search_outcome(proven_duffs, timed_out)?;
-                match crate::model::fee_estimation::core_send_max_duffs(
-                    duffs,
-                    input_count,
-                    destination,
-                ) {
+                let (proven_duffs, fee_at_max_duffs) = search.proven.unwrap_or_default();
+                let duffs = core_send_search_outcome(proven_duffs, search.timed_out)?;
+                match crate::model::fee_estimation::core_send_max_duffs(duffs, fee_at_max_duffs) {
                     0 => Err(TaskError::CoreSendMaxUnavailable {
                         reason: CoreSendShortfall::BelowFee,
                     }),
-                    max_duffs => Ok(max_duffs.saturating_mul(CREDITS_PER_DUFF)),
+                    max_duffs => Ok(SpendLimitQuote {
+                        max_credits: max_duffs.saturating_mul(CREDITS_PER_DUFF),
+                        core_fee: Some(CoreSendQuoteFee {
+                            fee_at_max_duffs,
+                            spendable_input_count: search.spendable_input_count,
+                            spendable_total_duffs: search.spendable_total_duffs,
+                        }),
+                    }),
                 }
             }
             SpendLimitKind::ShieldFromPlatform => {
@@ -782,15 +801,16 @@ impl WalletBackend {
                     // The payment account `ShieldFromBalance` shields from.
                     .shielded_shield_preflight(super::SHIELD_FROM_BALANCE_PAYMENT_ACCOUNT)
                     .await
-                    .map(|preflight| {
-                        if preflight.can_shield {
+                    .map(|preflight| SpendLimitQuote {
+                        max_credits: if preflight.can_shield {
                             crate::model::fee_estimation::shield_from_balance_max_credits(
                                 preflight.max_shieldable_credits,
                                 self.sdk().version(),
                             )
                         } else {
                             0
-                        }
+                        },
+                        core_fee: None,
                     })
                     .map_err(quote_failed)
             }
@@ -807,8 +827,9 @@ impl WalletBackend {
     /// confirmed with the same reservation-aware dry run a send runs; when a
     /// reservation bites, the largest amount that builds is searched for
     /// below it, under the wallet-manager write lock and a deadline that
-    /// settles on the largest amount already proven. Also returns how many
-    /// coins the pooled send of the whole balance spends, which prices its fee.
+    /// settles on the largest amount already proven. Under the same lock it
+    /// also counts the coins the pooled build can spend, through an all-coins
+    /// drain, so the fee shown is priced from the same selection as the Max.
     // TODO(upstream): make `CoreWallet::pooled_max_sendable` leave out
     // reserved inputs so this search can go (no dashpay/platform issue yet).
     async fn core_send_max_within_reservations(
@@ -816,9 +837,14 @@ impl WalletBackend {
         wallet: &platform_wallet::PlatformWallet,
         upper_duffs: u64,
         destination: CoreDestinationScript,
-    ) -> Result<(u64, bool, usize), TaskError> {
+    ) -> Result<CoreSendMaxSearch, TaskError> {
         if upper_duffs == 0 {
-            return Ok((0, false, 0));
+            return Ok(CoreSendMaxSearch {
+                proven: None,
+                timed_out: false,
+                spendable_input_count: 0,
+                spendable_total_duffs: Some(0),
+            });
         }
         let wallet_id = wallet.wallet_id();
         let network = self.inner.network;
@@ -837,8 +863,22 @@ impl WalletBackend {
                 upper_duffs,
                 &deadline,
             );
-            let input_count = pooled_send_input_count(key_wallet, &info.core_wallet);
-            Ok((largest, deadline.timed_out(), input_count))
+            // More coins than one transaction spends: upstream refuses the
+            // drain, and no build can select more than the input cap.
+            let (spendable_input_count, spendable_total_duffs) =
+                match pooled_spendable_coins(key_wallet, &info.core_wallet, &recipient) {
+                    Ok((count, total)) => (count, Some(total)),
+                    Err(_) => (
+                        crate::model::fee_estimation::CORE_STANDARD_TX_MAX_INPUTS,
+                        None,
+                    ),
+                };
+            Ok(CoreSendMaxSearch {
+                proven: largest,
+                timed_out: deadline.timed_out(),
+                spendable_input_count,
+                spendable_total_duffs,
+            })
         })
         .await?
     }
@@ -1051,8 +1091,9 @@ impl WalletBackend {
             .get_wallet_and_info(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
         let requested = requested_duffs(recipients);
-        dry_run_core_payment(key_wallet, &info.core_wallet, recipients).map_err(|source| {
-            match source {
+        dry_run_core_payment(key_wallet, &info.core_wallet, recipients)
+            .map(|_| ())
+            .map_err(|source| match source {
                 BuilderError::InsufficientFunds {
                     available,
                     required,
@@ -1076,8 +1117,7 @@ impl WalletBackend {
                 other => TaskError::WalletPaymentBuildFailed {
                     source: Box::new(other),
                 },
-            }
-        })
+            })
     }
 
     /// Build, track, and broadcast an asset lock whose credit output DET itself
@@ -1284,56 +1324,99 @@ fn dry_run_core_payment(
     wallet: &Wallet,
     info: &ManagedWalletInfo,
     recipients: &[(dash_sdk::dpp::dashcore::Address, u64)],
-) -> Result<(), BuilderError> {
+) -> Result<u64, BuilderError> {
+    dry_build_pooled(wallet, info, core_payment_builder(recipients)).map(|(_, fee)| fee)
+}
+
+/// The coins the pooled send build can spend now, spendable and not reserved
+/// by another build, as upstream's all-coins drain to `recipient` selects
+/// them: how many, and what they hold in duffs. A drain needing more inputs
+/// than one transaction takes is refused like any build.
+fn pooled_spendable_coins(
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
+    recipient: &dash_sdk::dpp::dashcore::Address,
+) -> Result<(usize, u64), BuilderError> {
+    let builder = core_payment_builder(&[(recipient.clone(), 1)])
+        .set_selection_strategy(SelectionStrategy::All);
+    let (transaction, fee) = dry_build_pooled(wallet, info, builder)?;
+    let sent: u64 = transaction.output.iter().map(|output| output.value).sum();
+    Ok((transaction.input.len(), sent.saturating_add(fee)))
+}
+
+/// Build `builder` unsigned, funded from the pooled send accounts the way
+/// upstream's finalizer funds a payment, then release what it reserved, and
+/// return the transaction and the fee it charges.
+///
+/// The accounts are clones sharing the live `ReservationSet`, so the release
+/// MUST run on success; the owner guard frees only this build's reservation.
+fn dry_build_pooled(
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
+    builder: TransactionBuilder,
+) -> Result<(dash_sdk::dpp::dashcore::Transaction, u64), BuilderError> {
     let mut accounts = pooled_funding_accounts(
         wallet,
         &info.accounts,
         &platform_wallet::SEND_FUNDING_SOURCES,
         DEFAULT_BIP44_ACCOUNT,
     );
-    let mut builder =
-        core_payment_builder(recipients).set_current_height(asset_lock_builder_height(info));
+    let mut builder = builder.set_current_height(asset_lock_builder_height(info));
     for (managed, account) in accounts.iter_mut() {
         builder = builder.add_funding(managed, account);
     }
-    let (transaction, _, reservation) = builder.build_unsigned_reserved()?;
+    let (transaction, fee, reservation) = builder.build_unsigned_reserved()?;
     if let Some(token) = reservation {
         for (managed, _) in &accounts {
             managed.release_reservation_if_owner(&transaction, token);
         }
     }
-    Ok(())
+    Ok((transaction, fee))
 }
 
 /// The largest single payment of at most `upper_duffs` the pooled send
-/// build accepts now, reservations included. Buildability falls with the
-/// amount, so a binary search finds it; when `deadline` expires first, the
-/// largest amount already proven to build is returned, never a guess.
+/// build accepts now, reservations included, with the fee that build charges.
+/// Buildability falls with the amount, so a binary search finds it; when
+/// `deadline` expires first, the largest amount already proven to build is
+/// returned, never a guess. `None` when no amount was proven.
 fn largest_core_payment_at_most(
     wallet: &Wallet,
     info: &ManagedWalletInfo,
     recipient: &dash_sdk::dpp::dashcore::Address,
     upper_duffs: u64,
     deadline: &ProbeDeadline,
-) -> u64 {
-    let builds =
-        |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).is_ok();
-    if builds(upper_duffs) {
-        return upper_duffs;
+) -> Option<(u64, u64)> {
+    let fee_of =
+        |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).ok();
+    if let Some(fee) = fee_of(upper_duffs) {
+        return Some((upper_duffs, fee));
     }
-    let (mut low, mut high) = (0, upper_duffs - 1);
+    let mut proven = None;
+    let (mut low, mut high) = (0, upper_duffs.saturating_sub(1));
     while low < high {
         if deadline.expired() {
             break;
         }
         let candidate = low + (high - low).div_ceil(2);
-        if builds(candidate) {
-            low = candidate;
-        } else {
-            high = candidate - 1;
+        match fee_of(candidate) {
+            Some(fee) => {
+                low = candidate;
+                proven = Some((candidate, fee));
+            }
+            None => high = candidate - 1,
         }
     }
-    low
+    proven
+}
+
+/// What the reservation-aware Core send Max search found, and the coins the
+/// pooled build could spend while it held the lock.
+struct CoreSendMaxSearch {
+    /// The largest proven payment and the fee its build charged.
+    proven: Option<(u64, u64)>,
+    timed_out: bool,
+    spendable_input_count: usize,
+    spendable_total_duffs: Option<u64>,
 }
 
 /// The Core send Max a reservation-aware search settled on. Zero is never
@@ -1648,6 +1731,55 @@ mod tests {
         assert_eq!(preview, charged, "the preview is the fee the build charges");
     }
 
+    /// A Max the search settles on carries the fee its proven build charged.
+    /// 699,360 duffs from one 700,000-duff coin leaves 414 duffs of change,
+    /// which the build gives the miner: the fee is 640, not the 192 of the
+    /// one-coin drain.
+    #[test]
+    fn core_send_max_search_keeps_the_fee_its_proven_build_charged() {
+        const COIN_DUFFS: u64 = 700_000;
+        const CURRENT_HEIGHT: u32 = 200;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut info = ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        info.update_last_processed_height(CURRENT_HEIGHT);
+        let bip44 = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let address = managed
+            .next_receive_address(Some(&bip44.account_xpub), true)
+            .expect("BIP44 address");
+        let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: COIN_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed.utxos.insert(outpoint, utxo);
+        let recipient = payment_recipient();
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let proven =
+            super::largest_core_payment_at_most(&wallet, &info, &recipient, 699_360, &deadline);
+        assert_eq!(proven, Some((699_360, 640)));
+        let (_, charged) = pooled_build_charge(&wallet, &info, recipient.clone(), 699_360);
+        assert_eq!(charged, 640);
+
+        let spendable = super::pooled_spendable_coins(&wallet, &info, &recipient)
+            .expect("the free coins are counted");
+        assert_eq!(spendable, (1, COIN_DUFFS));
+    }
+
     /// Build a payment of `amount` to `recipient` the way the pooled send
     /// funds it, release its reservation, and return how many coins it spent
     /// and the fee it charged.
@@ -1723,13 +1855,28 @@ mod tests {
             &PublicKey::from_slice(&[0x02; 33]).expect("valid compressed public key"),
             Network::Testnet,
         );
-        let max = COIN_DUFFS
-            - estimate_core_send_fee_duffs(input_count, CoreDestinationScript::PubkeyHash);
+        let quote_for = |recipient: &Address| {
+            let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+            let (max, fee_at_max_duffs) = super::largest_core_payment_at_most(
+                &wallet, &info, recipient, COIN_DUFFS, &deadline,
+            )
+            .expect("a Max builds");
+            let (spendable_input_count, total) =
+                super::pooled_spendable_coins(&wallet, &info, recipient).expect("coins counted");
+            (
+                max,
+                crate::model::spend_limit::CoreSendQuoteFee {
+                    fee_at_max_duffs,
+                    spendable_input_count,
+                    spendable_total_duffs: Some(total),
+                },
+            )
+        };
         let preview = estimate_core_payment_fee_duffs(
-            input_count,
             CoreDestinationScript::PubkeyHash,
             PAYMENT_DUFFS,
-            Some(max),
+            Some(quote_for(&p2pkh)),
+            input_count,
         );
         let (_, charged) = pooled_build_charge(&wallet, &info, p2pkh, PAYMENT_DUFFS);
         assert_eq!(charged, 226, "one coin, one payment and change");
@@ -1741,13 +1888,17 @@ mod tests {
                 dash_sdk::dpp::dashcore::ScriptHash::from_byte_array(rand::random()),
             ),
         );
-        let max = COIN_DUFFS
-            - estimate_core_send_fee_duffs(input_count, CoreDestinationScript::ScriptHash);
+        let (max, quote) = quote_for(&p2sh);
+        assert_eq!(
+            max,
+            COIN_DUFFS
+                - estimate_core_send_fee_duffs(input_count, CoreDestinationScript::ScriptHash)
+        );
         let preview = estimate_core_payment_fee_duffs(
-            input_count,
             CoreDestinationScript::ScriptHash,
             max,
-            Some(max),
+            Some((max, quote)),
+            input_count,
         );
         let (_, charged) = pooled_build_charge(&wallet, &info, p2sh, max);
         assert_eq!(
@@ -3425,21 +3576,33 @@ mod tests {
             assert!(reservation.is_some(), "the in-flight build holds its input");
         }
 
-        let max_duffs = backend
-            .spend_limit_credits(
+        let quote = backend
+            .spend_limit(
                 &seed_hash,
                 SpendLimitKind::CoreSend {
                     destination: Default::default(),
                 },
             )
             .await
-            .expect("Core send maximum")
-            / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+            .expect("Core send maximum");
+        let max_duffs = quote.max_credits / dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 
         assert!(
             max_duffs > 0 && max_duffs < FREE_DUFFS,
             "Max must come from the unreserved input only: {max_duffs}"
         );
+        // The fee shown beside it is the free coin's, not that of both coins
+        // the snapshot holds: Max and fee add up to the free coin exactly.
+        let core_fee = quote.core_fee.expect("a Core quote carries its fee");
+        assert_eq!(core_fee.spendable_input_count, 1);
+        assert_eq!(core_fee.spendable_total_duffs, Some(FREE_DUFFS));
+        let shown = crate::model::fee_estimation::estimate_core_payment_fee_duffs(
+            CoreDestinationScript::PubkeyHash,
+            max_duffs,
+            Some((max_duffs, core_fee)),
+            2,
+        );
+        assert_eq!(max_duffs + shown, FREE_DUFFS);
         backend
             .ensure_core_payment_builds(&seed_hash, &[(payment_recipient(), max_duffs)])
             .await

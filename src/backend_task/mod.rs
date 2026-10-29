@@ -1026,6 +1026,9 @@ pub enum BackendTaskSuccessResult {
         kind: crate::model::spend_limit::SpendLimitKind,
         request_id: u64,
         max_credits: u64,
+        /// For a Core send, what the Max was proven against; prices the fee
+        /// shown beside it.
+        core_fee: Option<crate::model::spend_limit::CoreSendQuoteFee>,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1777,15 +1780,15 @@ impl AppContext {
                 seed_hash,
                 kind,
                 request_id,
-            } => backend
-                .spend_limit_credits(&seed_hash, kind)
-                .await
-                .map(|max_credits| BackendTaskSuccessResult::SpendLimit {
+            } => backend.spend_limit(&seed_hash, kind).await.map(|quote| {
+                BackendTaskSuccessResult::SpendLimit {
                     seed_hash,
                     kind,
                     request_id,
-                    max_credits,
-                }),
+                    max_credits: quote.max_credits,
+                    core_fee: quote.core_fee,
+                }
+            }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }

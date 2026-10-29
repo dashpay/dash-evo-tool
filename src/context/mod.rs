@@ -1814,36 +1814,22 @@ impl AppContext {
             .unwrap_or(0)
     }
 
-    /// Fee, in duffs, the pooled Core send of the Max to a `destination`
-    /// script charges, over the coins the wallet's snapshot counts.
-    ///
-    /// DISPLAY-ONLY: the Max itself comes from the backend quote.
-    pub fn snapshot_core_send_fee_duffs(
-        &self,
-        seed_hash: &WalletSeedHash,
-        destination: crate::model::spend_limit::CoreDestinationScript,
-    ) -> u64 {
-        crate::model::fee_estimation::estimate_core_send_fee_duffs(
-            self.snapshot_core_send_input_count(seed_hash),
-            destination,
-        )
-    }
-
     /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
-    /// `destination` script, never below what the build charges. `max_duffs`
-    /// is the quoted Max for the same destination, when known.
+    /// `destination` script, never below what the build charges. `quote` is
+    /// the quoted Max for the same destination and what it was proven
+    /// against; without it, the coins the snapshot counts stand in.
     pub fn snapshot_core_payment_fee_duffs(
         &self,
         seed_hash: &WalletSeedHash,
         destination: crate::model::spend_limit::CoreDestinationScript,
         amount_duffs: u64,
-        max_duffs: Option<u64>,
+        quote: Option<(u64, crate::model::spend_limit::CoreSendQuoteFee)>,
     ) -> u64 {
         crate::model::fee_estimation::estimate_core_payment_fee_duffs(
-            self.snapshot_core_send_input_count(seed_hash),
             destination,
             amount_duffs,
-            max_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
         )
     }
 

@@ -11,10 +11,11 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount}
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
     PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
-    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
-    max_spendable_credits, shield_from_balance_fee_headroom,
+    core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
+    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -962,6 +963,16 @@ impl WalletSendScreen {
             })
             .collect();
         platform_balances_revision(&addresses)
+    }
+
+    /// What the loaded Core send Max was proven against, for the current
+    /// destination.
+    fn core_send_quote_fee(&self) -> Option<crate::model::spend_limit::CoreSendQuoteFee> {
+        let (seed_hash, target_kind, revision) = self.spend_limit_target()?;
+        let kind = self.core_send_limit_kind();
+        (target_kind == kind)
+            .then(|| self.spend_limits.core_fee(&seed_hash, kind, revision))
+            .flatten()
     }
 
     /// The quoted Max, in credits, for the current source and destination.
@@ -3146,13 +3157,9 @@ impl WalletSendScreen {
                             }
                             Some(max_credits) => {
                                 max = Some(max_credits);
-                                let destination = self.core_send_destination();
                                 let fee_duffs = self
-                                    .selected_wallet_seed_hash
-                                    .map(|seed_hash| {
-                                        self.app_context
-                                            .snapshot_core_send_fee_duffs(&seed_hash, destination)
-                                    })
+                                    .core_send_quote_fee()
+                                    .map(|quote| core_send_fee_at_max_duffs(&quote))
                                     .unwrap_or_default();
                                 let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
                                 Some(format!(
@@ -3442,15 +3449,15 @@ impl WalletSendScreen {
                 // Never below what the pooled build charges for this amount
                 // and destination; at the Max, exactly the Max's fee.
                 let seed_hash = self.selected_wallet_seed_hash?;
-                let destination = self.core_send_destination();
-                let max_duffs = self
+                let quote = self
                     .spend_limit(self.core_send_limit_kind())
-                    .map(|max_credits| max_credits / CREDITS_PER_DUFF);
+                    .zip(self.core_send_quote_fee())
+                    .map(|(max_credits, quote)| (max_credits / CREDITS_PER_DUFF, quote));
                 let fee_duffs = self.app_context.snapshot_core_payment_fee_duffs(
                     &seed_hash,
-                    destination,
+                    self.core_send_destination(),
                     amount_credits / CREDITS_PER_DUFF,
-                    max_duffs,
+                    quote,
                 );
                 let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::on_top(amount_credits, fee_credits))
@@ -5051,10 +5058,11 @@ impl WalletSendScreen {
             kind,
             request_id,
             max_credits,
+            core_fee,
         } = result
         {
             self.spend_limits
-                .store(*seed_hash, *kind, *request_id, *max_credits);
+                .store(*seed_hash, *kind, *request_id, *max_credits, *core_fee);
             return true;
         }
         if Self::task_result_updates_address_input(result) {
@@ -6734,6 +6742,7 @@ mod tests {
             kind: SpendLimitKind::ShieldFromPlatform,
             request_id,
             max_credits: QUOTE_CREDITS,
+            core_fee: None,
         };
         assert!(screen.refresh_form_inputs(&quote));
 
@@ -6814,6 +6823,7 @@ mod tests {
                 kind: SpendLimitKind::ShieldFromPlatform,
                 request_id,
                 max_credits: 0,
+                core_fee: None,
             })
         );
 
@@ -6883,6 +6893,7 @@ mod tests {
                 kind: SpendLimitKind::ShieldFromPlatform,
                 request_id,
                 max_credits: QUOTE_CREDITS,
+                core_fee: None,
             })
         );
         assert_eq!(
@@ -6972,6 +6983,7 @@ mod tests {
                 },
                 request_id,
                 max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
             })
         );
 
@@ -7025,6 +7037,7 @@ mod tests {
                 },
                 request_id,
                 max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
             })
         );
 

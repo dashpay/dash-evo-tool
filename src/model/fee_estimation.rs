@@ -13,7 +13,7 @@
 //! endpoint (when available).
 
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::spend_limit::CoreDestinationScript;
+use crate::model::spend_limit::{CoreDestinationScript, CoreSendQuoteFee};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
@@ -1348,57 +1348,58 @@ pub fn estimate_core_send_fee_duffs(input_count: usize, destination: CoreDestina
     tolerance::CORE_SEND.apply_fee(pooled_send_fee_duffs(input_count.max(1), destination))
 }
 
-/// The Core send Max offered for `upstream_max_duffs`, the largest payment to
-/// a `destination` script the pooled build accepts from `input_count` coins.
-/// It is lowered by the headroom [`estimate_core_send_fee_duffs`] adds, so the
-/// two never add up to more than the coins hold.
-pub fn core_send_max_duffs(
-    upstream_max_duffs: u64,
-    input_count: usize,
-    destination: CoreDestinationScript,
-) -> u64 {
-    tolerance::CORE_SEND.apply_max(
-        upstream_max_duffs,
-        pooled_send_fee_duffs(input_count.max(1), destination),
-    )
+/// The Core send Max offered for `proven_max_duffs`, the largest payment the
+/// pooled build was proven to accept, charging `fee_at_max_duffs`. It is
+/// lowered by the headroom [`core_send_fee_at_max_duffs`] adds, so the Max and
+/// the fee shown beside it never add up to more than that build spent.
+pub fn core_send_max_duffs(proven_max_duffs: u64, fee_at_max_duffs: u64) -> u64 {
+    tolerance::CORE_SEND.apply_max(proven_max_duffs, fee_at_max_duffs)
+}
+
+/// Fee, in duffs, shown beside a quoted Core send Max: what its pooled build
+/// charged.
+pub fn core_send_fee_at_max_duffs(quote: &CoreSendQuoteFee) -> u64 {
+    tolerance::CORE_SEND.apply_fee(quote.fee_at_max_duffs)
 }
 
 /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
-/// `destination` script, spending at most `input_count` coins. It is never
-/// below what the build charges.
+/// `destination` script. It is never below what the build charges.
 ///
-/// Which coins the build picks, and whether it returns change, depends on its
-/// coin selection, so below the Max the fee is bounded: the transaction of
-/// every coin with change, plus the remainder the build may give the miner
-/// instead of change. It never exceeds what the coins hold beyond the amount,
-/// known from `max_duffs`, the quoted Max for the same destination, so at the
-/// Max it is exactly the Max's fee.
+/// `quote` is the quoted Max and what it was proven against. At that Max the
+/// fee is the one its build charged. Otherwise which coins the build picks,
+/// and whether it returns change, depends on coin selection, so the fee is
+/// bounded: the transaction of every coin the build could spend, with change,
+/// plus the remainder the build may give the miner instead of change, and
+/// never more than what those coins hold beyond the amount. Without a quote,
+/// `fallback_input_count` (every coin the wallet holds in the pooled accounts,
+/// reserved ones included) stands in for the coins the build could spend.
 // TODO(upstream): show the fee the build would charge once platform-wallet can
 // quote a payment's fee without building and reserving it.
 pub fn estimate_core_payment_fee_duffs(
-    input_count: usize,
     destination: CoreDestinationScript,
     amount_duffs: u64,
-    max_duffs: Option<u64>,
+    quote: Option<(u64, CoreSendQuoteFee)>,
+    fallback_input_count: usize,
 ) -> u64 {
-    let input_count = input_count.max(1);
+    if let Some((max_duffs, quote)) = quote
+        && amount_duffs == max_duffs
+    {
+        return core_send_fee_at_max_duffs(&quote);
+    }
+    let input_count = quote
+        .map(|(_, quote)| quote.spendable_input_count)
+        .unwrap_or(fallback_input_count)
+        .max(1);
     let change_output_fee = core_fee_rate()
         .calculate_fee(estimate_tx_size(0, 2, false).saturating_sub(estimate_tx_size(0, 1, false)));
-    let below_max = tolerance::CORE_SEND.apply_fee(
+    let bound = tolerance::CORE_SEND.apply_fee(
         pooled_send_fee_duffs(input_count, destination)
             .saturating_add(change_output_fee)
             .saturating_add(CORE_CHANGE_FORGONE_MAX_DUFFS),
     );
-    match max_duffs {
-        Some(max_duffs) => {
-            let max_fee = estimate_core_send_fee_duffs(input_count, destination);
-            // What the coins hold beyond the amount: the Max and its fee.
-            let beyond_amount = max_duffs
-                .saturating_add(max_fee)
-                .saturating_sub(amount_duffs);
-            below_max.min(beyond_amount.max(max_fee))
-        }
-        None => below_max,
+    match quote.and_then(|(_, quote)| quote.spendable_total_duffs) {
+        Some(total_duffs) => bound.min(total_duffs.saturating_sub(amount_duffs)),
+        None => bound,
     }
 }
 
@@ -2181,14 +2182,64 @@ mod tests {
             let p2pkh = core_fee_rate().calculate_fee(estimate_tx_size(inputs, 1, false));
             assert_eq!(estimate_core_send_fee_duffs(inputs, PubkeyHash), p2pkh);
             assert_eq!(estimate_core_send_fee_duffs(inputs, ScriptHash), p2pkh - 2);
-            assert_eq!(
-                core_send_max_duffs(1_000_000, inputs, ScriptHash),
-                1_000_000
-            );
+            assert_eq!(core_send_max_duffs(1_000_000, p2pkh), 1_000_000);
         }
         assert_eq!(
             estimate_core_send_fee_duffs(0, PubkeyHash),
             estimate_core_send_fee_duffs(1, PubkeyHash)
+        );
+    }
+
+    /// With a Max quote, the fee shown at the Max is the fee the quoted build
+    /// charged, and below it the cap is what the unreserved coins hold. A Max
+    /// cut short by the deadline (699,360 duffs from one free 700,000-duff
+    /// coin, built without change and charged 640) shows 640, not the 340 of
+    /// a full drain; with a second coin reserved by another build, the Max of
+    /// the free coin shows that coin's fee, so Max + fee is the free coin.
+    #[test]
+    fn core_payment_fee_comes_from_the_quoted_build() {
+        use crate::model::spend_limit::CoreDestinationScript::PubkeyHash;
+        use crate::model::spend_limit::CoreSendQuoteFee;
+        const FREE_DUFFS: u64 = 700_000;
+
+        let partial = CoreSendQuoteFee {
+            fee_at_max_duffs: 640,
+            spendable_input_count: 1,
+            spendable_total_duffs: Some(FREE_DUFFS),
+        };
+        assert_eq!(core_send_fee_at_max_duffs(&partial), 640);
+        assert_eq!(
+            core_send_max_duffs(699_360, partial.fee_at_max_duffs),
+            699_360
+        );
+        let at_max =
+            estimate_core_payment_fee_duffs(PubkeyHash, 699_360, Some((699_360, partial)), 2);
+        assert_eq!(at_max, 640);
+        assert!(699_360 + at_max <= FREE_DUFFS);
+        assert_eq!(
+            estimate_core_payment_fee_duffs(PubkeyHash, 699_000, Some((699_360, partial)), 2),
+            226 + 546,
+            "below the Max, priced over the one free coin, not the two the snapshot holds"
+        );
+        assert_eq!(
+            estimate_core_payment_fee_duffs(PubkeyHash, 699_500, Some((699_360, partial)), 2),
+            500,
+            "never more than what the free coin holds beyond the amount"
+        );
+
+        let reserved = CoreSendQuoteFee {
+            fee_at_max_duffs: 192,
+            spendable_input_count: 1,
+            spendable_total_duffs: Some(FREE_DUFFS),
+        };
+        let at_max =
+            estimate_core_payment_fee_duffs(PubkeyHash, 699_808, Some((699_808, reserved)), 2);
+        assert_eq!(at_max, 192);
+        assert_eq!(699_808 + at_max, FREE_DUFFS);
+        assert_eq!(
+            estimate_core_payment_fee_duffs(PubkeyHash, 100_000, Some((699_808, reserved)), 2),
+            226 + 546,
+            "far below the Max, one free coin with change plus the forgone remainder"
         );
     }
 
@@ -2200,28 +2251,32 @@ mod tests {
     #[test]
     fn core_payment_fee_covers_change_and_adds_up_at_the_max() {
         use crate::model::spend_limit::CoreDestinationScript::{PubkeyHash, ScriptHash};
+        use crate::model::spend_limit::CoreSendQuoteFee;
         const COINS_DUFFS: u64 = 2_000_000;
 
-        let far_below_max = estimate_core_payment_fee_duffs(1, PubkeyHash, 100_000, Some(999_808));
-        assert_eq!(far_below_max, 226 + 546);
         assert_eq!(
-            estimate_core_payment_fee_duffs(1, PubkeyHash, 100_000, None),
-            far_below_max,
+            estimate_core_payment_fee_duffs(PubkeyHash, 100_000, None, 1),
+            226 + 546,
             "with no Max quoted yet, the bound stands alone"
         );
         assert_eq!(
-            estimate_core_payment_fee_duffs(1, ScriptHash, 100_000, None),
+            estimate_core_payment_fee_duffs(ScriptHash, 100_000, None, 1),
             224 + 546
         );
 
         for destination in [PubkeyHash, ScriptHash] {
             let max_fee = estimate_core_send_fee_duffs(2, destination);
             let max = COINS_DUFFS - max_fee;
-            let at_max = estimate_core_payment_fee_duffs(2, destination, max, Some(max));
+            let quote = CoreSendQuoteFee {
+                fee_at_max_duffs: max_fee,
+                spendable_input_count: 2,
+                spendable_total_duffs: Some(COINS_DUFFS),
+            };
+            let at_max = estimate_core_payment_fee_duffs(destination, max, Some((max, quote)), 2);
             assert_eq!(at_max, max_fee, "{destination:?}");
             assert_eq!(max + at_max, COINS_DUFFS, "{destination:?}");
             assert_eq!(
-                estimate_core_payment_fee_duffs(2, destination, max - 100, Some(max)),
+                estimate_core_payment_fee_duffs(destination, max - 100, Some((max, quote)), 2),
                 max_fee + 100,
                 "{destination:?}: just below the Max, what the coins hold beyond the amount"
             );

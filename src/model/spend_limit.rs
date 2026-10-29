@@ -37,6 +37,31 @@ impl CoreDestinationScript {
     }
 }
 
+/// What a Core send's Max was proven against: the fee the pooled build of
+/// that Max charged, and the coins the pooled build could spend at the time
+/// (spendable and not reserved by another build). The fee shown for a Core
+/// send is priced from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreSendQuoteFee {
+    /// Fee, in duffs, the pooled build of the quoted Max charged.
+    pub fee_at_max_duffs: u64,
+    /// How many coins the pooled build could spend.
+    pub spendable_input_count: usize,
+    /// What those coins hold, in duffs; `None` when there were more of them
+    /// than one transaction can spend, so upstream did not total them.
+    pub spendable_total_duffs: Option<u64>,
+}
+
+/// A spending limit the backend quoted: the Max, and for a Core send the
+/// basis of the fee shown beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpendLimitQuote {
+    /// The Max, in credits.
+    pub max_credits: u64,
+    /// For a Core send, what the Max was proven against.
+    pub core_fee: Option<CoreSendQuoteFee>,
+}
+
 /// Which operation a spending limit is quoted for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpendLimitKind {

@@ -1140,6 +1140,20 @@ pub enum BackendTaskSuccessResult {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
     },
+    /// Whether a masternode stores a voting key or voter identity the
+    /// masternode list no longer names. `false` also when that cannot be told.
+    RetiredVotingKeyStatus {
+        identity_id: Identifier,
+        retired: bool,
+    },
+    /// A masternode's old voting key and voter identity were removed.
+    RetiredVotingKeyRemoved {
+        identity_id: Identifier,
+    },
+    /// The removal found the stored voting key current again and kept it.
+    RetiredVotingKeyKept {
+        identity_id: Identifier,
+    },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan
     /// means there is nothing to offer and the recovery affordance stays hidden.

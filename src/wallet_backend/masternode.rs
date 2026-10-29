@@ -85,9 +85,12 @@ pub struct MasternodeWithdrawal {
 impl WalletBackend {
     /// The voting key hash the masternode list records for the node whose
     /// identity is `identity_id`, or `None` while the list is not current
-    /// (see [`current_voting_key_hash`]) or does not list the node. A stale
-    /// list could name a voting key the node has since replaced, and callers
-    /// drop stored voting keys that differ from this hash.
+    /// (see [`current_voting_key_hash`]) or does not list the node.
+    ///
+    /// Even a list that passes the freshness check can lag the chain, so a
+    /// stored voting key that differs from this hash is only flagged to the
+    /// user, never deleted automatically: the user removes it from the node's
+    /// page (`IdentityTask::RemoveRetiredVotingKey`).
     pub async fn masternode_voting_key_hash(&self, identity_id: Identifier) -> Option<[u8; 20]> {
         current_voting_key_hash(self.inner.pwm.spv(), identity_id).await
     }
@@ -214,9 +217,10 @@ impl MasternodeListReads for SpvRuntime {
 /// against `before` AND `after`. A tip that moves on while the list is read
 /// fails the second check, so a list it has outrun is never trusted.
 ///
-/// TODO(upstream): ask `SpvRuntime` for one atomic snapshot of the list
-/// together with its height and the header and peer tips it was checked
-/// against; that would replace both progress reads.
+/// TODO(upstream): ask `SpvRuntime` for one atomic, height-tagged snapshot
+/// of the list together with the header and peer tips it was checked
+/// against. That would replace both progress reads, and only then could a
+/// voting-key mismatch be trusted enough to act on without asking the user.
 async fn current_voting_key_hash(
     reads: &impl MasternodeListReads,
     identity_id: Identifier,

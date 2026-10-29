@@ -1975,6 +1975,15 @@ As a masternode operator who registered my node from a wallet I loaded here, I w
 - Nodes registered from another wallet still load with pasted keys, as before.
 - This applies to loading in the app. Loading through `det-cli` or MCP still needs a typed owner or payout key.
 
+### MN-015: Clean up a node's old voting key after a rotation [Implemented]
+**Persona:** Priya
+
+As a masternode operator who rotated my node's voting key, I want the app to tell me that the saved voting key is no longer current and let me remove it, so that I never vote with a key the network no longer accepts and nothing is deleted behind my back.
+
+- When the synced masternode list names a different voting key than the one saved, the node's detail view says so and offers `Remove old voting key…` and `Keep it`. While the list is still updating, no notice appears.
+- Removing asks for confirmation first. It removes the old voting key, its stored private key and its voter identity, and keeps the node's other keys. If the saved key has become current again by then, it is kept and the app says so.
+- The app never removes a voting key or voter identity by itself, including when a node is reloaded.
+
 ### MN-014: Revive a PoSe-banned node [Gap]
 **Persona:** Priya
 

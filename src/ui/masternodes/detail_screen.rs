@@ -43,6 +43,7 @@ use crate::ui::masternodes::card::{
 };
 use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_status_tokens, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
+use crate::ui::state::retired_voting_key::RetiredVotingKeyState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
@@ -52,6 +53,37 @@ use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
 const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
+
+const RETIRED_VOTING_KEY_NOTICE: &str =
+    "This node's voting key changed. The saved voting key is no longer the node's current one.";
+const REMOVE_RETIRED_VOTING_KEY: &str = "Remove old voting key";
+const REMOVE_RETIRED_VOTING_KEY_CONFIRMATION: &str = "This removes the old voting key and its voter identity from this device. The node's other keys stay. You can then add the node's current voting key.";
+const KEEP_RETIRED_VOTING_KEY_TOOLTIP: &str =
+    "Hide this notice. It appears again the next time you open this node.";
+
+/// The voting state a node stores, to tell whether it changed since the last
+/// retired-key check.
+fn stored_voting_state(
+    identity: &QualifiedIdentity,
+) -> (
+    Option<&dash_sdk::platform::IdentityPublicKey>,
+    Vec<&dash_sdk::platform::IdentityPublicKey>,
+) {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    (
+        identity
+            .associated_voter_identity
+            .as_ref()
+            .map(|(_, key)| key),
+        identity
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .filter(|(target, _)| **target == PrivateKeyTarget::PrivateKeyOnVoterIdentity)
+            .map(|(_, key)| &key.identity_public_key)
+            .collect(),
+    )
+}
 
 fn remove_node_action(identity_id: Identifier) -> AppAction {
     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
@@ -133,6 +165,10 @@ pub struct MasternodeDetailView {
     /// Open contests with this node's choice, reloaded with stored screen data;
     /// `None` when they could not be read.
     node_votes: Option<Vec<NodeVoteRow>>,
+    /// Whether the stored voting key is still the node's current one, and the
+    /// user's removal of an old one.
+    voting_key: RetiredVotingKeyState,
+    retired_key_dialog: Option<ConfirmationDialog>,
 }
 
 #[cfg(test)]
@@ -186,6 +222,47 @@ impl MasternodeDetailView {
         self.recovery.ensure_checked().is_some()
     }
 
+    /// Put the retired-voting-key notice on screen, as a check reporting a
+    /// retired key would.
+    pub(crate) fn mark_voting_key_retired_for_test(&mut self) {
+        self.voting_key.ensure_checked();
+        let context = self
+            .voting_key
+            .check_context_for_test()
+            .expect("the check went out");
+        self.voting_key.absorb_result(
+            &context,
+            &BackendTaskSuccessResult::RetiredVotingKeyStatus {
+                identity_id: self.identity.identity.id(),
+                retired: true,
+            },
+        );
+    }
+
+    pub(crate) fn shows_retired_voting_key_notice_for_test(&self) -> bool {
+        self.voting_key.shows_notice()
+    }
+
+    /// Send the confirmed removal of the old voting key out and return its
+    /// context.
+    pub(crate) fn start_voting_key_removal_for_test(&mut self) -> BackendTaskContext {
+        self.voting_key.remove();
+        self.voting_key
+            .removal_context_for_test()
+            .expect("the removal is out")
+    }
+
+    /// Send the retired-voting-key check out, as the first frame would, and
+    /// return its context.
+    pub(crate) fn start_voting_key_check_for_test(&mut self) -> BackendTaskContext {
+        self.voting_key
+            .ensure_checked()
+            .expect("the check goes out once");
+        self.voting_key
+            .check_context_for_test()
+            .expect("the check is out")
+    }
+
     pub(crate) fn recovery_context_for_test(&self) -> BackendTaskContext {
         self.recovery.pending_context_for_test()
     }
@@ -228,6 +305,8 @@ impl MasternodeDetailView {
             voter_key_prompt: None,
             pending_voter_key_load: None,
             recovery,
+            voting_key: RetiredVotingKeyState::new(identity_id),
+            retired_key_dialog: None,
             node_votes: app_context
                 .dpns_node_votes(identity_id)
                 .inspect_err(|error| {
@@ -288,9 +367,26 @@ impl MasternodeDetailView {
                 .into_iter()
                 .find(|qi| qi.identity.id() == node_id)
         {
+            if stored_voting_state(&identity) != stored_voting_state(&self.identity) {
+                self.voting_key.recheck();
+            }
             self.key_presence = identity.masternode_key_presence();
             self.identity = identity;
         }
+    }
+
+    /// Take in this page's own retired-voting-key check or removal result.
+    pub(crate) fn absorb_voting_key_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        self.voting_key.absorb_result(context, result);
+    }
+
+    /// Settle this page's own retired-voting-key check or removal on failure.
+    pub(crate) fn absorb_voting_key_error(&mut self, context: &BackendTaskContext) {
+        self.voting_key.absorb_error(context);
     }
 
     /// Re-check recovery on arrival because a pushed Key Info screen may have restored keys.
@@ -383,6 +479,7 @@ impl MasternodeDetailView {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
+                    self.voting_key.recheck();
                     outcome = DetailOutcome::Forward(Box::new(self.refresh_from_network()));
                 }
             });
@@ -419,6 +516,11 @@ impl MasternodeDetailView {
                 task,
                 context,
             }));
+        }
+        if matches!(outcome, DetailOutcome::None)
+            && let Some(action) = self.voting_key.ensure_checked()
+        {
+            outcome = DetailOutcome::Forward(Box::new(action));
         }
 
         outcome
@@ -612,6 +714,10 @@ impl MasternodeDetailView {
             });
         }
 
+        if let Some(retired_action) = self.render_retired_voting_key(ui, dark_mode) {
+            action = Some(retired_action);
+        }
+
         // Protection tier + conditional Add-protection (FR-8 / NFR-4).
         let tier = self.protection_tier();
         match &tier {
@@ -676,6 +782,62 @@ impl MasternodeDetailView {
             action = Some(AppAction::BackendTaskWithContext { task, context });
         }
         action
+    }
+
+    /// The notice for a stored voting key the masternode list no longer
+    /// names, with the removal (confirmed first) and a way to keep the key.
+    fn render_retired_voting_key(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        if !self.voting_key.shows_notice() {
+            return None;
+        }
+        ui.label(
+            RichText::new(RETIRED_VOTING_KEY_NOTICE).color(DashColors::warning_color(dark_mode)),
+        );
+        if self.voting_key.is_removing() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.add_enabled(false, egui::Button::new("Removing old voting key…"));
+            });
+            return None;
+        }
+        let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !migration_in_progress,
+                    egui::Button::new(format!("{REMOVE_RETIRED_VOTING_KEY}…")),
+                )
+                .on_disabled_hover_text(
+                    "Wait for the storage update to finish before removing the old voting key.",
+                )
+                .clicked()
+            {
+                self.retired_key_dialog = Some(
+                    ConfirmationDialog::new(
+                        REMOVE_RETIRED_VOTING_KEY,
+                        REMOVE_RETIRED_VOTING_KEY_CONFIRMATION,
+                    )
+                    .danger_mode(true)
+                    .confirm_text(Some(REMOVE_RETIRED_VOTING_KEY)),
+                );
+            }
+            if ui
+                .button("Keep it")
+                .on_hover_text(KEEP_RETIRED_VOTING_KEY_TOOLTIP)
+                .clicked()
+            {
+                self.voting_key.dismiss();
+                self.retired_key_dialog = None;
+            }
+        });
+
+        if !self.voting_key.shows_notice() {
+            return None;
+        }
+        let dialog = self.retired_key_dialog.as_mut()?;
+        let status = dialog.show(ui).inner.dialog_response?;
+        self.retired_key_dialog = None;
+        (status == ConfirmationStatus::Confirmed).then(|| self.voting_key.remove())
     }
 
     fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
@@ -1147,6 +1309,107 @@ mod tests {
             harness.query_by_label("Add voting key").is_some(),
             "a released gate must let the user try again"
         );
+    }
+
+    /// Render only the retired-voting-key notice of `detail`, counting the
+    /// removals it dispatches.
+    fn retired_key_harness(
+        mut detail: MasternodeDetailView,
+    ) -> (
+        egui_kittest::Harness<'static>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let removals = Arc::new(AtomicUsize::new(0));
+        let observed = removals.clone();
+        let harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+            if let Some(AppAction::BackendTaskWithContext {
+                task:
+                    BackendTask::IdentityTask(IdentityTask::RemoveRetiredVotingKey { identity_id }),
+                ..
+            }) = detail.render_retired_voting_key(ui, false)
+            {
+                assert_eq!(identity_id, detail.node_id());
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        (harness, removals)
+    }
+
+    /// A node whose saved voting key is no longer current shows the notice;
+    /// the removal goes out only after the user confirms it.
+    #[test]
+    fn a_retired_voting_key_is_removed_only_after_confirmation() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x4A));
+        detail.mark_voting_key_retired_for_test();
+        let (mut harness, removals) = retired_key_harness(detail);
+        harness.run();
+
+        assert!(harness.query_by_label(RETIRED_VOTING_KEY_NOTICE).is_some());
+        harness
+            .get_by_label(&format!("{REMOVE_RETIRED_VOTING_KEY}…"))
+            .click();
+        harness.run();
+        assert_eq!(
+            removals.load(Ordering::Relaxed),
+            0,
+            "opening the confirmation removes nothing"
+        );
+        assert!(
+            harness
+                .query_by_label(REMOVE_RETIRED_VOTING_KEY_CONFIRMATION)
+                .is_some()
+        );
+
+        harness
+            .get_by_role_and_label(Role::Button, REMOVE_RETIRED_VOTING_KEY)
+            .click();
+        // Stepped: the removal's spinner repaints forever.
+        harness.step();
+        harness.step();
+
+        assert_eq!(removals.load(Ordering::Relaxed), 1);
+        assert!(
+            harness.query_by_label("Removing old voting key…").is_some(),
+            "the running removal must be visible"
+        );
+    }
+
+    /// "Keep it" leaves the key and hides the notice; no removal goes out.
+    #[test]
+    fn keep_it_hides_the_notice_without_removing() {
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x4B));
+        detail.mark_voting_key_retired_for_test();
+        let (mut harness, removals) = retired_key_harness(detail);
+        harness.run();
+
+        harness.get_by_label("Keep it").click();
+        harness.run();
+
+        assert!(harness.query_by_label(RETIRED_VOTING_KEY_NOTICE).is_none());
+        assert_eq!(removals.load(Ordering::Relaxed), 0);
+    }
+
+    /// Until a check reports a retired key, nothing is shown.
+    #[test]
+    fn no_notice_without_a_retired_answer() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x4C));
+        let (mut harness, _) = retired_key_harness(detail);
+        harness.run();
+
+        assert!(harness.query_by_label(RETIRED_VOTING_KEY_NOTICE).is_none());
     }
 
     #[test]

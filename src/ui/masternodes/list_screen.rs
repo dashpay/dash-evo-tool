@@ -48,6 +48,9 @@ const VOTES_ARRIVAL_REFRESH_MIN_GAP: std::time::Duration = std::time::Duration::
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
 const GRID_GAP: f32 = 16.0;
+const RETIRED_VOTING_KEY_REMOVED: &str =
+    "The old voting key was removed. Add the node's current voting key to vote again.";
+const RETIRED_VOTING_KEY_KEPT: &str = "The saved voting key is the node's current voting key again, so it was kept. No action is needed.";
 
 /// Pre-resolved display data for one masternode/evonode card. Computed at
 /// reload time so the per-frame render never touches the database.
@@ -765,6 +768,9 @@ impl ScreenLike for MasternodesScreen {
     ) {
         self.votes
             .display_backend_task_result(context, result.clone());
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.absorb_voting_key_result(context, &result);
+        }
         self.apply_node_result(result);
     }
 
@@ -816,6 +822,7 @@ impl ScreenLike for MasternodesScreen {
         self.votes.display_backend_task_error(context, error);
         if let MasternodesView::Detail(detail) = &mut self.view {
             detail.absorb_recovery_error(context);
+            detail.absorb_voting_key_error(context);
         }
     }
 
@@ -914,6 +921,24 @@ impl MasternodesScreen {
                         MessageType::Success,
                     );
                 }
+            }
+            // A check changes nothing stored; the open detail view took it in.
+            // Reloading would re-read the view and could re-arm its check.
+            BackendTaskSuccessResult::RetiredVotingKeyStatus { .. } => return,
+            BackendTaskSuccessResult::RetiredVotingKeyKept { .. } => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    RETIRED_VOTING_KEY_KEPT,
+                    MessageType::Info,
+                );
+                return;
+            }
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. } => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    RETIRED_VOTING_KEY_REMOVED,
+                    MessageType::Success,
+                );
             }
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
@@ -1617,6 +1642,82 @@ mod tests {
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    fn open_detail_view(screen: &mut MasternodesScreen) -> &mut MasternodeDetailView {
+        match &mut screen.view {
+            MasternodesView::Detail(detail) => detail,
+            _ => panic!("the detail view must be open"),
+        }
+    }
+
+    /// The open node's own check answer puts the notice up; an answer for a
+    /// check the view no longer waits on does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retired_voting_key_answer_reaches_only_its_own_check() {
+        use crate::backend_task::BackendTaskContext;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = seed_masternode_with_voter(&ctx, 0x5A, "mn-rotated");
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        let context = open_detail_view(&mut screen).start_voting_key_check_for_test();
+        let answer = BackendTaskSuccessResult::RetiredVotingKeyStatus {
+            identity_id: node,
+            retired: true,
+        };
+
+        let stranger = BackendTaskContext::for_dispatch(&BackendTask::IdentityTask(
+            IdentityTask::CheckRetiredVotingKey { identity_id: node },
+        ));
+        screen.display_backend_task_result(&stranger, answer.clone());
+        assert!(!open_detail_view(&mut screen).shows_retired_voting_key_notice_for_test());
+
+        screen.display_backend_task_result(&context, answer);
+        assert!(open_detail_view(&mut screen).shows_retired_voting_key_notice_for_test());
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A finished removal says so, and one that found the key current again
+    /// says it was kept; neither leaves the notice up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_removal_reports_its_outcome() {
+        use crate::ui::components::message_banner::global_banner_texts;
+
+        for (outcome, message) in [
+            (
+                BackendTaskSuccessResult::RetiredVotingKeyRemoved {
+                    identity_id: Identifier::from([0x5B; 32]),
+                },
+                RETIRED_VOTING_KEY_REMOVED,
+            ),
+            (
+                BackendTaskSuccessResult::RetiredVotingKeyKept {
+                    identity_id: Identifier::from([0x5B; 32]),
+                },
+                RETIRED_VOTING_KEY_KEPT,
+            ),
+        ] {
+            let (ctx, _tmp) = offline_ctx().await;
+            let node = seed_masternode_with_voter(&ctx, 0x5B, "mn-rotated");
+            let mut screen = MasternodesScreen::new(&ctx);
+            screen.open_detail(node);
+            let detail = open_detail_view(&mut screen);
+            detail.mark_voting_key_retired_for_test();
+            let removal = detail.start_voting_key_removal_for_test();
+
+            screen.display_backend_task_result(&removal, outcome);
+
+            assert!(
+                global_banner_texts(ctx.egui_ctx())
+                    .iter()
+                    .any(|text| text == message),
+                "{message}"
+            );
+            assert!(!open_detail_view(&mut screen).shows_retired_voting_key_notice_for_test());
+            ctx.wallet_backend().expect("backend").shutdown().await;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

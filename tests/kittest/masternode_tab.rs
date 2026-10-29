@@ -924,6 +924,47 @@ fn detail_view_opens_from_card_with_sections_and_back() {
     });
 }
 
+/// Opening a node with a saved voting key checks it against the masternode
+/// list. Offline the list is never current, so no "voting key changed" notice
+/// appears and the saved voter stays: a lagging list never raises a false
+/// alarm, and nothing is removed without the user.
+#[test]
+fn offline_node_detail_shows_no_retired_voting_key_notice() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_voter(&app_context, 0x9C, "mn-voting-key");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-voting-key").click();
+        // Give the dispatched check time to come back.
+        for _ in 0..30 {
+            harness.step();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            harness
+                .query_by_label_contains("This node's voting key changed.")
+                .is_none(),
+            "no notice without a current masternode list"
+        );
+        let node = app_context
+            .load_local_masternode_identities()
+            .expect("load")
+            .into_iter()
+            .find(|qi| qi.identity.id() == Identifier::from([0x9C; 32]))
+            .expect("node stored");
+        assert!(
+            node.associated_voter_identity.is_some(),
+            "the saved voter is kept"
+        );
+    });
+}
+
 /// VOTE-TC-091: the node detail lists the node's votes and its list status;
 /// `Vote with this node` opens Votes ▸ To decide with that node alone and no
 /// staged decision. Without a voting key the action is disabled.

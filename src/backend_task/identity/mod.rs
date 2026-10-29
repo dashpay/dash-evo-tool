@@ -12,6 +12,7 @@ mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
 mod remove_identity;
+mod retired_voting_key;
 mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
@@ -547,6 +548,22 @@ pub enum IdentityTask {
         /// The items the user chose, as listed by [`Self::CheckLegacyRecovery`].
         approved: Vec<crate::model::legacy_recovery::RecoveryItem>,
     },
+    /// Check whether this masternode stores a voting key or voter identity
+    /// the masternode list no longer names. Read-only, so a screen can
+    /// dispatch it on arrival; answers "not retired" whenever the list is not
+    /// current.
+    CheckRetiredVotingKey {
+        /// The masternode or evonode identity to check.
+        identity_id: Identifier,
+    },
+    /// Remove the voting keys (with their vault secrets) and the voter
+    /// identity this masternode stores that the masternode list no longer
+    /// names. Rechecks the list when it runs and keeps a key that is current
+    /// again; never removes anything without a current list.
+    RemoveRetiredVotingKey {
+        /// The masternode or evonode identity to clean up.
+        identity_id: Identifier,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -986,6 +1003,12 @@ impl AppContext {
             } => self.unprotect_identity_keys(identity_id, password),
             IdentityTask::CheckLegacyRecovery { identity_id } => {
                 self.check_legacy_recovery(identity_id)
+            }
+            IdentityTask::CheckRetiredVotingKey { identity_id } => {
+                self.check_retired_voting_key(identity_id).await
+            }
+            IdentityTask::RemoveRetiredVotingKey { identity_id } => {
+                self.remove_retired_voting_key(identity_id).await
             }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,

@@ -7,10 +7,12 @@
 //! public key (`ECDSA_HASH160`). Those hashes are what a wallet compares its
 //! provider keys against to tell whether it holds them. Pure data — no IO.
 
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose};
+use dash_sdk::dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose};
 
 /// The hash160 of each masternode key a wallet can be checked against.
 /// `None` for a key the node does not expose in a wallet-matchable form.
@@ -82,6 +84,58 @@ pub struct WalletMasternodeWithdrawal {
     /// first, so an owner key above its default scan window still resolves
     /// after a restore. `None` for a payout-key withdrawal.
     pub owner_key_index_hint: Option<u32>,
+}
+
+/// The voting state a node stores that the masternode list no longer names:
+/// what removing an old voting key takes away.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RetiredVotingKeys {
+    /// The stored voter identity votes with a key other than the current one.
+    pub voter_identity: bool,
+    /// Stored voting keys whose hash is not the current voting key's.
+    pub placements: Vec<(PrivateKeyTarget, KeyID)>,
+}
+
+impl RetiredVotingKeys {
+    /// Whether the node stores nothing but its current voting key.
+    pub fn is_empty(&self) -> bool {
+        !self.voter_identity && self.placements.is_empty()
+    }
+}
+
+/// Whether `node` stores any voting state — a voter identity or a key on it —
+/// that the masternode list could have retired.
+pub fn stores_voting_key(node: &QualifiedIdentity) -> bool {
+    node.associated_voter_identity.is_some()
+        || node
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .any(|(target, _)| *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity)
+}
+
+/// The stored voting state of `node` that differs from `current`, the voting
+/// key hash the masternode list names for it. Covers the voter identity's key
+/// and every key stored on the voter identity; main-identity keys are never
+/// voting keys of a node and are left out.
+pub fn retired_voting_keys(node: &QualifiedIdentity, current: [u8; 20]) -> RetiredVotingKeys {
+    let retired = |key: &IdentityPublicKey| key.public_key_hash().ok() != Some(current);
+    RetiredVotingKeys {
+        voter_identity: node
+            .associated_voter_identity
+            .as_ref()
+            .is_some_and(|(_, key)| retired(key)),
+        placements: node
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .filter(|(target, key)| {
+                **target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
+                    && retired(&key.identity_public_key)
+            })
+            .map(|(target, key)| (target.clone(), key.identity_public_key.id()))
+            .collect(),
+    }
 }
 
 /// hash160 data of the first active `ECDSA_HASH160` key with `purpose`.
@@ -215,5 +269,108 @@ mod tests {
             Some(MasternodeWithdrawalRole::Payout)
         );
         assert_eq!(MasternodeWithdrawalRole::for_key(&auth), None);
+    }
+
+    /// A node with `voting` stored on its voter identity and that identity
+    /// loaded, plus an owner key on the main identity.
+    fn node_with_voter(voting: &IdentityPublicKey) -> QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        let owner = key(
+            0,
+            Purpose::OWNER,
+            KeyType::ECDSA_HASH160,
+            vec![0x05; 20],
+            false,
+        );
+        let mut private_keys = KeyStorage::default();
+        for (target, public) in [
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner),
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting.clone()),
+        ] {
+            private_keys.insert_at(
+                (target, public.id()),
+                (
+                    QualifiedIdentityPublicKey::from(public),
+                    PrivateKeyData::Clear([0x11; 32]),
+                ),
+            );
+        }
+        QualifiedIdentity {
+            identity: identity(vec![]),
+            associated_voter_identity: Some((identity(vec![voting.clone()]), voting.clone())),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    fn voting_key(id: u32, hash: u8) -> IdentityPublicKey {
+        key(
+            id,
+            Purpose::VOTING,
+            KeyType::ECDSA_HASH160,
+            vec![hash; 20],
+            false,
+        )
+    }
+
+    /// The list names another voting key: the voter identity and the stored
+    /// voting key are retired, the owner key on the main identity is not.
+    #[test]
+    fn a_voting_key_the_list_no_longer_names_is_retired() {
+        let node = node_with_voter(&voting_key(1, 0x21));
+
+        let retired = retired_voting_keys(&node, [0x22; 20]);
+
+        assert!(retired.voter_identity);
+        assert_eq!(
+            retired.placements,
+            vec![(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1)]
+        );
+        assert!(!retired.is_empty());
+    }
+
+    /// The list still names the stored voting key: nothing is retired.
+    #[test]
+    fn the_current_voting_key_is_not_retired() {
+        let node = node_with_voter(&voting_key(1, 0x21));
+
+        assert!(retired_voting_keys(&node, [0x21; 20]).is_empty());
+    }
+
+    /// Only the stored voting keys that differ are retired: a second, current
+    /// one stays, and so does a voter identity voting with it.
+    #[test]
+    fn only_the_differing_voting_keys_are_retired() {
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        let current = voting_key(2, 0x22);
+        let mut node = node_with_voter(&current);
+        node.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1),
+            (
+                QualifiedIdentityPublicKey::from(voting_key(1, 0x21)),
+                PrivateKeyData::Clear([0x12; 32]),
+            ),
+        );
+
+        let retired = retired_voting_keys(&node, [0x22; 20]);
+
+        assert!(!retired.voter_identity);
+        assert_eq!(
+            retired.placements,
+            vec![(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1)]
+        );
     }
 }

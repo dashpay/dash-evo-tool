@@ -1825,6 +1825,14 @@ pub enum TaskError {
     )]
     IdentityNotFoundLocally,
 
+    /// Removing a masternode's old voting key was refused because the
+    /// masternode list is not current enough to tell which voting key is the
+    /// node's current one. Nothing was removed.
+    #[error(
+        "The voting key cannot be checked while the masternode list is still updating. Wait for sync to finish, then try again."
+    )]
+    VotingKeyCheckUnavailable,
+
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(

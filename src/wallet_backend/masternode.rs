@@ -422,7 +422,8 @@ fn masternode_list_is_current_at(list_height: u32, progress: &SyncProgress) -> b
 /// already have been delivered, so such a failure arrives here as a plain
 /// error rather than `MasternodeWithdrawalUnconfirmed`. DET does not
 /// reclassify it; `MasternodeWithdrawalFailed` is worded so it never claims
-/// nothing was withdrawn. Map it here once upstream reports it as unconfirmed.
+/// nothing was withdrawn. Map it here once upstream reports it as unconfirmed:
+/// https://github.com/dashpay/platform/issues/5665
 fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
     match error {
         PlatformWalletError::Sdk(sdk) => TaskError::from(sdk),

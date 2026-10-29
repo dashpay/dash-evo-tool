@@ -1056,11 +1056,10 @@ impl AppContext {
         }
     }
 
-    /// Get a fee estimator configured with the cached fee multiplier.
-    /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
-    /// that reflect the current network fee multiplier.
+    /// A fee estimator for the protocol version the SDK speaks, at the cached
+    /// epoch fee multiplier. Use it for every fee estimate.
     pub fn fee_estimator(&self) -> PlatformFeeEstimator {
-        PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
+        PlatformFeeEstimator::new(self.platform_version(), self.fee_multiplier_permille())
     }
 
     /// A handle on the shared app-global role, for wiring a newly-created

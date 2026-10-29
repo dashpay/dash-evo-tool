@@ -1183,7 +1183,7 @@ mod tests {
     #[test]
     fn contact_info_fee_estimate_covers_preserved_accounts() {
         use crate::model::fee_estimation::PlatformFeeEstimator;
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         for len in [0, 252, 253, 255] {
             for accounts in [0, 1, 16, 252, 253, 400, 500] {
                 let text = (len > 0).then(|| "x".repeat(len));

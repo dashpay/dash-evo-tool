@@ -10,11 +10,11 @@ use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipi
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, estimate_address_funding_fee_from_transition,
-    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
-    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
-    identity_topup_min_funding_duffs, max_spendable_credits, shield_from_balance_fee_headroom,
+    PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
+    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
+    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
+    max_spendable_credits, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -550,7 +550,9 @@ impl WalletSendScreen {
             .collect();
         sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
-        let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+        let usable_count = sorted_addresses
+            .len()
+            .min(fee_estimator.max_platform_inputs());
         if usable_count == 0 {
             return estimate_platform_fee(fee_estimator, 1, 1);
         }
@@ -723,7 +725,7 @@ impl WalletSendScreen {
             AddressKind::Platform => Some(
                 self.app_context
                     .fee_estimator()
-                    .address_funding_min_amount_duffs(true, platform_version),
+                    .address_funding_min_amount_duffs(true),
             ),
             _ => None,
         }
@@ -1483,12 +1485,13 @@ impl WalletSendScreen {
         }
 
         if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+            // Calculate the max we can send with the protocol's input limit (minus fees)
+            let max_inputs = fee_estimator.max_platform_inputs();
+            let addresses_available = allocation.sorted_addresses.len().min(max_inputs);
             let max_balance: u64 = allocation
                 .sorted_addresses
                 .iter()
-                .take(MAX_PLATFORM_INPUTS)
+                .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
             let max_fee = self.estimate_max_fee_for_platform_send(
@@ -1510,7 +1513,7 @@ impl WalletSendScreen {
                 format_credits_as_dash(max_sendable),
                 addresses_available,
                 format_credits_as_dash(max_balance),
-                MAX_PLATFORM_INPUTS,
+                max_inputs,
                 format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
                 format_credits_as_dash(allocation.shortfall)
@@ -1584,20 +1587,26 @@ impl WalletSendScreen {
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
         let platform_version = self.app_context.platform_version();
+        let max_inputs = max_platform_inputs(platform_version);
 
         // Allocate addresses using state-transition-based fee estimation (no destination filter)
-        let allocation =
-            allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
+        let allocation = allocate_platform_addresses_with_fee(
+            &addresses,
+            amount_credits,
+            None,
+            max_inputs,
+            |inputs| {
                 estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            });
+            },
+        );
 
         if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+            // Calculate the max we can send with the protocol's input limit (minus fees)
+            let addresses_available = allocation.sorted_addresses.len().min(max_inputs);
             let max_balance: u64 = allocation
                 .sorted_addresses
                 .iter()
-                .take(MAX_PLATFORM_INPUTS)
+                .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
             let max_fee_inputs: BTreeMap<PlatformAddress, u64> = allocation
@@ -1625,7 +1634,7 @@ impl WalletSendScreen {
                 format_credits_as_dash(max_sendable),
                 addresses_available,
                 format_credits_as_dash(max_balance),
-                MAX_PLATFORM_INPUTS,
+                max_inputs,
                 format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
                 format_credits_as_dash(allocation.shortfall)
@@ -3067,10 +3076,7 @@ impl WalletSendScreen {
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
                             let fee = format_credits_as_dash(estimated_fee);
                             let minimum = format_duffs_as_dash(
-                                fee_estimator.address_funding_min_amount_duffs(
-                                    true,
-                                    self.app_context.sdk_platform_version(),
-                                ),
+                                fee_estimator.address_funding_min_amount_duffs(true),
                             );
                             Some(format!(
                                 "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
@@ -3195,10 +3201,12 @@ impl WalletSendScreen {
                     .collect();
                 sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
-                // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
+                // Sum balances from top addresses, limited by the protocol's
+                // input limit.
+                let max_inputs = fee_estimator.max_platform_inputs();
                 let total: u64 = sorted_addresses
                     .iter()
-                    .take(MAX_PLATFORM_INPUTS)
+                    .take(max_inputs)
                     .map(|(_, _, balance)| *balance)
                     .sum();
                 let max_fee = self.estimate_max_fee_for_platform_send(
@@ -3209,9 +3217,9 @@ impl WalletSendScreen {
 
                 // Build hint explaining the limit
                 let fee = format_credits_as_dash(max_fee);
-                let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
+                let hint = if sorted_addresses.len() > max_inputs {
                     format!(
-                        "This transaction is limited to {MAX_PLATFORM_INPUTS} input addresses, and fees of approximately {fee} are reserved from your balance."
+                        "This transaction is limited to {max_inputs} input addresses, and fees of approximately {fee} are reserved from your balance."
                     )
                 } else {
                     format!("Fees of approximately {fee} are reserved from your balance.")
@@ -3375,13 +3383,13 @@ impl WalletSendScreen {
 
                 if hit_limit {
                     // Determine if the shortfall is due to address limit or insufficient balance
-                    let exceeds_address_limit =
-                        allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS;
+                    let max_inputs = max_platform_inputs(self.app_context.platform_version());
+                    let exceeds_address_limit = allocation.sorted_addresses.len() > max_inputs;
                     let warning_msg = if exceeds_address_limit {
                         format!(
                             "Warning: Amount requires more than {} addresses. \
                              Reduce amount or use multiple transactions.",
-                            MAX_PLATFORM_INPUTS
+                            max_inputs
                         )
                     } else {
                         "Warning: Amount exceeds available balance (including fees).".to_string()
@@ -3478,6 +3486,7 @@ impl WalletSendScreen {
                     addresses,
                     amount_credits,
                     None,
+                    max_platform_inputs(platform_version),
                     |inputs| {
                         estimate_withdrawal_fee_from_transition(
                             platform_version,
@@ -4756,10 +4765,7 @@ impl WalletSendScreen {
         let minimum_duffs = self
             .app_context
             .fee_estimator()
-            .address_funding_min_amount_duffs(
-                fee_deduct_from_output,
-                self.app_context.sdk_platform_version(),
-            );
+            .address_funding_min_amount_duffs(fee_deduct_from_output);
         ensure_funding_covers_network_fee(amount_duffs, Ok(minimum_duffs))
             .map_err(|error| error.to_string())?;
 
@@ -8370,23 +8376,24 @@ mod tests {
         (screen, seed_hash, temp_dir)
     }
 
-    /// With the fee paid on top, the funding is the amount plus 18 750 duffs,
-    /// and the network requires 62 000 for the recipient and the change.
+    /// With the fee paid on top, the funding is the amount plus the 62 000
+    /// duffs the network requires for the recipient and the change, so the
+    /// amount only has to meet the smallest a named recipient may receive.
     #[test]
     fn advanced_core_to_platform_refuses_an_amount_the_fee_on_top_cannot_carry() {
         let (mut screen, seed_hash, _temp_dir) =
-            advanced_core_to_platform("0.00043249", PlatformFeeStrategy::DeductFromFirstInput);
+            advanced_core_to_platform("0.00000499", PlatformFeeStrategy::DeductFromFirstInput);
         let error = screen
             .send_advanced_core_to_platform(seed_hash)
-            .expect_err("the funding would be below what the network requires");
+            .expect_err("the amount is below the smallest a recipient may receive");
         assert_eq!(
             error,
             "This amount is too small to cover the network fee. \
-             Enter at least 0.0004325 DASH and try again."
+             Enter at least 0.000005 DASH and try again."
         );
 
         let (mut screen, seed_hash, _temp_dir) =
-            advanced_core_to_platform("0.0004325", PlatformFeeStrategy::DeductFromFirstInput);
+            advanced_core_to_platform("0.000005", PlatformFeeStrategy::DeductFromFirstInput);
         assert!(screen.send_advanced_core_to_platform(seed_hash).is_ok());
     }
 

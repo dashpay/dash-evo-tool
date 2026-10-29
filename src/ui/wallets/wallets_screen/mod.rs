@@ -3544,9 +3544,7 @@ mod tests {
             let ctx = test_app_context(tmp.path());
             let (seed_hash, wallet) = seed_hd(&ctx, 9);
             let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(wallet), None);
-            let minimum = ctx
-                .fee_estimator()
-                .address_funding_min_amount_duffs(true, ctx.sdk_platform_version());
+            let minimum = ctx.fee_estimator().address_funding_min_amount_duffs(true);
 
             screen
                 .asset_lock_cache

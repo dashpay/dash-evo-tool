@@ -29,12 +29,24 @@ use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition:
     AddressFundingFromAssetLockTransition,
     calculate_address_funding_from_asset_lock_min_required_fee,
 };
+use dash_sdk::dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::IdentityCreateFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::v0::IdentityCreateFromAddressesTransitionV0;
 use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
 use dash_sdk::dpp::state_transition::identity_create_transition::v0::IdentityCreateTransitionV0;
+use dash_sdk::dpp::state_transition::identity_credit_transfer_to_addresses_transition::IdentityCreditTransferToAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_credit_transfer_to_addresses_transition::v0::IdentityCreditTransferToAddressesTransitionV0;
+use dash_sdk::dpp::state_transition::identity_credit_transfer_transition::IdentityCreditTransferTransition;
+use dash_sdk::dpp::state_transition::identity_credit_withdrawal_transition::IdentityCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::v0::IdentityTopUpFromAddressesTransitionV0;
 use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dash_sdk::dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
+use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 use dash_sdk::dpp::version::fee::data_contract_registration::FeeDataContractRegistrationVersion;
+use dash_sdk::dpp::version::fee::state_transition_min_fees::StateTransitionMinFees;
+use dash_sdk::dpp::version::fee::storage::FeeStorageVersion;
 
 /// DET's correction to an upstream estimate: the single place where a fee is
 /// raised or a Max lowered beyond what upstream computes.
@@ -93,6 +105,32 @@ pub mod tolerance {
     /// The Core fee of an asset lock. No upstream function sizes its payload,
     /// so the plain-transaction size gets this reserve on top.
     pub const ASSET_LOCK_CORE_FEE: EstimateTolerance = EstimateTolerance::percent(15);
+    /// The Core fee of shielding from the Core wallet. No upstream function
+    /// sizes that transaction, so a flat floor covering Core's minimum relay
+    /// fee stands in for it.
+    pub const SHIELD_FROM_CORE_L1_FEE: EstimateTolerance =
+        EstimateTolerance::NONE.with_floor(3_000);
+
+    /// Upstream's minimum fee for a Platform transition, which is what the
+    /// network checks the balance against.
+    pub const PLATFORM_MIN_FEE: EstimateTolerance = EstimateTolerance::NONE;
+    /// DET's storage estimate for a document, token or contract write. No
+    /// headroom yet; it is floored at upstream's minimum fee.
+    pub const PLATFORM_STORAGE: EstimateTolerance = EstimateTolerance::NONE;
+    /// Transitions spending Platform address inputs, priced by DET's storage
+    /// estimate over upstream's minimum.
+    pub const ADDRESS_INPUTS_FEE: EstimateTolerance = EstimateTolerance::percent(20);
+    /// The balance a transfer out of an identity must keep. The fitted figures
+    /// are for an ECDSA key; a BLS key adds 285,000 credits.
+    pub const IDENTITY_TRANSFER: EstimateTolerance = EstimateTolerance::percent(10);
+    /// A username registration. The fitted figures were read from Platform's
+    /// engine on an empty network; a live network charges somewhat more
+    /// processing.
+    pub const USERNAME_REGISTRATION: EstimateTolerance = EstimateTolerance::percent(10);
+    /// The Platform fee, in duffs, of funding Platform addresses from an asset
+    /// lock: half again DET's estimate, and at least 10,000 duffs as observed.
+    pub const ADDRESS_FUNDING_FROM_ASSET_LOCK: EstimateTolerance =
+        EstimateTolerance::percent(50).with_floor(10_000);
 }
 
 /// Keep contested document creation within its contest's base fund — the
@@ -125,8 +163,11 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use std::collections::BTreeMap;
 
-/// Maximum number of platform address inputs allowed per state transition.
-pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
+/// Most Platform address inputs one state transition may spend under
+/// `platform_version`.
+pub(crate) fn max_platform_inputs(platform_version: &PlatformVersion) -> usize {
+    usize::from(platform_version.dpp.state_transitions.max_address_inputs)
+}
 
 /// Estimated serialized bytes per input (address + signature/witness data).
 const ESTIMATED_BYTES_PER_INPUT: usize = 225;
@@ -152,9 +193,6 @@ const USERNAME_VOTED_NAME_RESERVED_BYTES: usize = 4_517;
 /// Bytes each label character adds to the name document and its index entries.
 const USERNAME_NAME_BYTES_PER_CHAR: usize = 4;
 const USERNAME_VOTED_NAME_BYTES_PER_CHAR: usize = 5;
-/// Headroom over the figures above, which were read from Platform's engine on
-/// an empty network; a live network charges somewhat more processing.
-const USERNAME_REGISTRATION_MARGIN_PERCENT: u64 = 10;
 
 // TODO(dashpay/platform#5265): the `*_TRANSFER_RESERVE_*` figures are fitted to
 // the balance Drive wants before it accepts a transfer out of an identity;
@@ -168,197 +206,87 @@ const CREDIT_TRANSFER_RESERVE_CREDITS: u64 = 8_755_720;
 /// a part for each address that receives.
 const ADDRESS_TRANSFER_RESERVE_CREDITS: u64 = 11_261_680;
 const ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS: u64 = 6_176_980;
-/// Headroom over the figures above. They are for a transfer signed with an
-/// ECDSA key; a BLS key adds 285,000 credits.
-const IDENTITY_TRANSFER_MARGIN_PERCENT: u64 = 10;
 
-/// `reserve` with the headroom for a transfer out of an identity added.
-const fn with_identity_transfer_margin(reserve: u64) -> u64 {
-    reserve.saturating_mul(100 + IDENTITY_TRANSFER_MARGIN_PERCENT) / 100
+/// An upstream minimum fee, or the largest fee there is when the protocol
+/// version has no formula for it — an estimate that blocks the operation
+/// rather than one that offers more than the network accepts.
+fn upstream_min_fee(fee: Result<Credits, ProtocolError>) -> Credits {
+    fee.unwrap_or(Credits::MAX)
 }
 
-/// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
-/// These determine the cost of storing and processing data on Platform.
+/// `count` distinct Platform addresses standing in for a transition's inputs;
+/// the minimum fee counts inputs, not who they are.
+fn placeholder_address_inputs(count: usize) -> BTreeMap<PlatformAddress, (AddressNonce, Credits)> {
+    (0..count as u64)
+        .map(|index| {
+            let mut hash = [0u8; 20];
+            hash[..8].copy_from_slice(&index.to_le_bytes());
+            (PlatformAddress::P2pkh(hash), (0, 0))
+        })
+        .collect()
+}
+
+/// A Platform address output distinct from every placeholder input.
+fn placeholder_address_output() -> (PlatformAddress, Credits) {
+    (PlatformAddress::P2sh([0xff; 20]), 0)
+}
+
+/// Fee estimator for Platform state transitions.
+///
+/// Every number comes from upstream at the network's protocol version — the
+/// fee tables of `platform_version.fee_version` and the minimum-fee functions
+/// of each transition — scaled by the epoch fee multiplier and corrected only
+/// through [`tolerance`]. Where Platform charges more than its minimum (storage
+/// a transition writes) and no upstream function says how much, DET's own
+/// estimate is kept, with upstream's minimum as its floor.
 #[derive(Debug, Clone, Copy)]
-pub struct StorageFeeConstants {
-    /// Credits charged per byte of permanent storage (27,000 credits/byte = 0.00027 DASH/byte)
-    pub storage_disk_usage_credit_per_byte: u64,
-    /// Credits charged per byte for write processing
-    pub storage_processing_credit_per_byte: u64,
-    /// Credits charged per byte for read processing
-    pub storage_load_credit_per_byte: u64,
-    /// Credits charged per seek/tree operation
-    pub storage_seek_cost: u64,
-}
-
-impl Default for StorageFeeConstants {
-    fn default() -> Self {
-        // Values from FEE_STORAGE_VERSION1 in rs-platform-version
-        Self {
-            storage_disk_usage_credit_per_byte: 27_000,
-            storage_processing_credit_per_byte: 400,
-            storage_load_credit_per_byte: 20,
-            storage_seek_cost: 2_000,
-        }
-    }
-}
-
-/// Data contract registration fees from FEE_DATA_CONTRACT_REGISTRATION_VERSION2.
-/// These are fixed fees charged for registering contracts and their components.
-#[derive(Debug, Clone, Copy)]
-pub struct DataContractRegistrationFees {
-    /// Base fee for registering any contract (0.1 DASH)
-    pub base_contract_registration_fee: u64,
-    /// Fee per document type in the contract (0.02 DASH)
-    pub document_type_registration_fee: u64,
-    /// Fee per non-unique index (0.01 DASH)
-    pub document_type_base_non_unique_index_registration_fee: u64,
-    /// Fee per unique index (0.01 DASH)
-    pub document_type_base_unique_index_registration_fee: u64,
-    /// Fee per contested index (1 DASH)
-    pub document_type_base_contested_index_registration_fee: u64,
-    /// Fee for token registration (0.1 DASH)
-    pub token_registration_fee: u64,
-    /// Fee for perpetual distribution feature (0.1 DASH)
-    pub token_uses_perpetual_distribution_fee: u64,
-    /// Fee for pre-programmed distribution feature (0.1 DASH)
-    pub token_uses_pre_programmed_distribution_fee: u64,
-    /// Fee per search keyword (0.1 DASH)
-    pub search_keyword_fee: u64,
-}
-
-impl Default for DataContractRegistrationFees {
-    fn default() -> Self {
-        // Values from FEE_DATA_CONTRACT_REGISTRATION_VERSION2
-        Self {
-            base_contract_registration_fee: 10_000_000_000, // 0.1 DASH
-            document_type_registration_fee: 2_000_000_000,  // 0.02 DASH
-            document_type_base_non_unique_index_registration_fee: 1_000_000_000, // 0.01 DASH
-            document_type_base_unique_index_registration_fee: 1_000_000_000, // 0.01 DASH
-            document_type_base_contested_index_registration_fee: 100_000_000_000, // 1 DASH
-            token_registration_fee: 10_000_000_000,         // 0.1 DASH
-            token_uses_perpetual_distribution_fee: 10_000_000_000, // 0.1 DASH
-            token_uses_pre_programmed_distribution_fee: 10_000_000_000, // 0.1 DASH
-            search_keyword_fee: 10_000_000_000,             // 0.1 DASH
-        }
-    }
-}
-
-/// Component counts describing a data contract, used for detailed fee estimation.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ContractComponents {
-    /// Serialized size of the contract in bytes.
-    pub contract_bytes: usize,
-    /// Number of document types defined in the contract.
-    pub document_type_count: usize,
-    /// Number of non-unique indexes across all document types.
-    pub non_unique_index_count: usize,
-    /// Number of unique indexes across all document types.
-    pub unique_index_count: usize,
-    /// Number of contested indexes across all document types.
-    pub contested_index_count: usize,
-    /// Whether the contract defines a token.
-    pub has_token: bool,
-    /// Whether the token uses perpetual distribution.
-    pub has_perpetual_distribution: bool,
-    /// Whether the token uses pre-programmed distribution.
-    pub has_pre_programmed_distribution: bool,
-    /// Number of search keywords registered for the contract.
-    pub search_keyword_count: usize,
-}
-
-/// Minimum fees for state transitions (in credits).
-/// Based on STATE_TRANSITION_MIN_FEES_VERSION1 from rs-platform-version.
-#[derive(Debug, Clone, Copy)]
-pub struct StateTransitionMinFees {
-    pub credit_transfer: u64,
-    pub credit_transfer_to_addresses: u64,
-    pub credit_withdrawal: u64,
-    pub identity_update: u64,
-    pub document_batch_sub_transition: u64,
-    pub contract_create: u64,
-    pub contract_update: u64,
-    pub masternode_vote: u64,
-    pub address_credit_withdrawal: u64,
-    pub address_funds_transfer_input_cost: u64,
-    pub address_funds_transfer_output_cost: u64,
-    pub identity_create_base_cost: u64,
-    pub identity_topup_base_cost: u64,
-    pub identity_key_in_creation_cost: u64,
-    /// Asset lock cost for identity creation (200,000 duffs × 1000 credits/duff)
-    pub identity_create_asset_lock_cost: u64,
-    /// Asset lock cost for identity top-up (50,000 duffs × 1000 credits/duff)
-    pub identity_topup_asset_lock_cost: u64,
-    /// Asset lock cost for address funding (50,000 duffs × 1000 credits/duff)
-    pub address_funding_asset_lock_cost: u64,
-}
-
-impl Default for StateTransitionMinFees {
-    fn default() -> Self {
-        // Values from STATE_TRANSITION_MIN_FEES_VERSION1
-        // Asset lock costs from IdentityTransitionAssetLockVersions (duffs × CREDITS_PER_DUFF)
-        // CREDITS_PER_DUFF = 1000
-        Self {
-            credit_transfer: 100_000,
-            credit_transfer_to_addresses: 500_000,
-            credit_withdrawal: 400_000_000,
-            identity_update: 100_000,
-            document_batch_sub_transition: 100_000,
-            contract_create: 100_000,
-            contract_update: 100_000,
-            masternode_vote: 100_000,
-            address_credit_withdrawal: 400_000_000,
-            address_funds_transfer_input_cost: 500_000,
-            address_funds_transfer_output_cost: 6_000_000,
-            identity_create_base_cost: 2_000_000,
-            identity_topup_base_cost: 500_000,
-            identity_key_in_creation_cost: 6_500_000,
-            // Asset lock costs (duffs × 1000)
-            identity_create_asset_lock_cost: 200_000_000, // 200,000 duffs × 1000 = 0.002 DASH
-            identity_topup_asset_lock_cost: 50_000_000,   // 50,000 duffs × 1000 = 0.0005 DASH
-            address_funding_asset_lock_cost: 50_000_000,  // 50,000 duffs × 1000 = 0.0005 DASH
-        }
-    }
-}
-
-/// Fee estimator for platform state transitions.
-#[derive(Debug, Clone)]
 pub struct PlatformFeeEstimator {
-    min_fees: StateTransitionMinFees,
-    storage_fees: StorageFeeConstants,
-    registration_fees: DataContractRegistrationFees,
+    platform_version: &'static PlatformVersion,
     /// Fee multiplier in permille (1000 = 1x, 2000 = 2x, etc.)
     /// This comes from the current epoch's fee_multiplier_permille()
     fee_multiplier_permille: u64,
-}
-
-impl Default for PlatformFeeEstimator {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PlatformFeeEstimator {
     /// Default fee multiplier (1x = 1000 permille)
     pub const DEFAULT_FEE_MULTIPLIER_PERMILLE: u64 = 1000;
 
-    pub fn new() -> Self {
+    /// An estimator for `platform_version` at the epoch's fee multiplier.
+    pub fn new(platform_version: &'static PlatformVersion, fee_multiplier_permille: u64) -> Self {
         Self {
-            min_fees: StateTransitionMinFees::default(),
-            storage_fees: StorageFeeConstants::default(),
-            registration_fees: DataContractRegistrationFees::default(),
-            fee_multiplier_permille: Self::DEFAULT_FEE_MULTIPLIER_PERMILLE,
+            platform_version,
+            fee_multiplier_permille,
         }
     }
 
-    /// Create an estimator with a specific fee multiplier (from epoch info)
-    pub fn with_fee_multiplier(fee_multiplier_permille: u64) -> Self {
-        Self {
-            min_fees: StateTransitionMinFees::default(),
-            storage_fees: StorageFeeConstants::default(),
-            registration_fees: DataContractRegistrationFees::default(),
-            fee_multiplier_permille,
-        }
+    /// An estimator for the latest protocol version at the default multiplier.
+    #[cfg(test)]
+    pub(crate) fn latest() -> Self {
+        Self::latest_with_fee_multiplier(Self::DEFAULT_FEE_MULTIPLIER_PERMILLE)
+    }
+
+    /// An estimator for the latest protocol version at `fee_multiplier_permille`.
+    #[cfg(test)]
+    pub(crate) fn latest_with_fee_multiplier(fee_multiplier_permille: u64) -> Self {
+        Self::new(PlatformVersion::latest(), fee_multiplier_permille)
+    }
+
+    /// The protocol version the estimates follow.
+    pub fn platform_version(&self) -> &'static PlatformVersion {
+        self.platform_version
+    }
+
+    /// Most Platform address inputs one state transition may spend.
+    pub(crate) fn max_platform_inputs(&self) -> usize {
+        max_platform_inputs(self.platform_version)
+    }
+
+    fn min_fees(&self) -> &'static StateTransitionMinFees {
+        &self.platform_version.fee_version.state_transition_min_fees
+    }
+
+    fn storage(&self) -> &'static FeeStorageVersion {
+        &self.platform_version.fee_version.storage
     }
 
     /// Apply the fee multiplier to a base fee amount.
@@ -374,37 +302,49 @@ impl PlatformFeeEstimator {
         self.fee_multiplier_permille
     }
 
-    /// Calculate storage fee for a given number of bytes.
-    /// This is the main cost component for storing data on Platform.
-    pub fn calculate_storage_fee(&self, bytes: usize) -> u64 {
-        (bytes as u64).saturating_mul(self.storage_fees.storage_disk_usage_credit_per_byte)
+    /// Upstream's minimum fee for a transition, scaled by the multiplier and
+    /// corrected by [`tolerance::PLATFORM_MIN_FEE`].
+    fn min_fee(&self, upstream_min: Credits) -> u64 {
+        tolerance::PLATFORM_MIN_FEE.apply_fee(self.apply_multiplier(upstream_min))
     }
 
-    /// Calculate processing fee for writing data.
-    pub fn calculate_processing_fee(&self, bytes: usize) -> u64 {
-        (bytes as u64).saturating_mul(self.storage_fees.storage_processing_credit_per_byte)
+    /// DET's `estimate` of a charge no upstream function computes, with its
+    /// `tolerance`, never below `upstream_min`, scaled by the multiplier.
+    fn reserve(&self, tolerance: EstimateTolerance, estimate: u64, upstream_min: Credits) -> u64 {
+        self.apply_multiplier(tolerance.apply_fee(estimate).max(upstream_min))
     }
 
-    /// Calculate fee for tree seek operations.
-    /// Contracts and documents require multiple seeks for tree traversal.
-    pub fn calculate_seek_fee(&self, seek_count: usize) -> u64 {
-        (seek_count as u64).saturating_mul(self.storage_fees.storage_seek_cost)
+    /// Storage fee for `bytes` of permanent storage.
+    fn storage_fee(&self, bytes: usize) -> u64 {
+        (bytes as u64).saturating_mul(self.storage().storage_disk_usage_credit_per_byte)
     }
 
-    /// Calculate total storage-based fee for storing data (without fee multiplier).
-    /// Includes storage, processing, and estimated seek costs.
-    /// This is a building block used by other estimation functions.
-    fn calculate_storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
-        self.calculate_storage_fee(bytes)
-            .saturating_add(self.calculate_processing_fee(bytes))
-            .saturating_add(self.calculate_seek_fee(estimated_seeks))
+    /// Processing fee for writing `bytes`.
+    fn processing_fee(&self, bytes: usize) -> u64 {
+        (bytes as u64).saturating_mul(self.storage().storage_processing_credit_per_byte)
+    }
+
+    /// Fee for `seek_count` tree seek operations.
+    fn seek_fee(&self, seek_count: usize) -> u64 {
+        (seek_count as u64).saturating_mul(self.storage().storage_seek_cost)
+    }
+
+    /// Storage, processing and seek fees for storing `bytes`, unscaled.
+    fn storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
+        self.storage_fee(bytes)
+            .saturating_add(self.processing_fee(bytes))
+            .saturating_add(self.seek_fee(estimated_seeks))
     }
 
     /// Estimate total storage-based fee for storing data.
     /// Includes storage, processing, and estimated seek costs.
     /// Applies the current fee multiplier.
     pub fn estimate_storage_based_fee(&self, bytes: usize, estimated_seeks: usize) -> u64 {
-        self.apply_multiplier(self.calculate_storage_based_fee(bytes, estimated_seeks))
+        self.reserve(
+            tolerance::PLATFORM_STORAGE,
+            self.storage_based_fee(bytes, estimated_seeks),
+            0,
+        )
     }
 
     /// Balance an identity must keep, above the amount, to transfer credits to
@@ -413,17 +353,13 @@ impl PlatformFeeEstimator {
     /// Platform accepts the transfer only while the balance holds a reserve
     /// above the fee it then charges, so the fee actually charged is lower.
     pub fn estimate_credit_transfer(&self) -> u64 {
-        let reserve = with_identity_transfer_margin(CREDIT_TRANSFER_RESERVE_CREDITS);
-        self.apply_multiplier(reserve.max(self.min_fees.credit_transfer))
-    }
-
-    /// Smallest fee Platform takes for a transfer to `output_count` Platform
-    /// addresses, before the fee multiplier.
-    fn credit_transfer_to_addresses_min_fee(&self, output_count: usize) -> u64 {
-        self.min_fees.credit_transfer_to_addresses.saturating_add(
-            self.min_fees
-                .address_funds_transfer_output_cost
-                .saturating_mul(output_count as u64),
+        self.reserve(
+            tolerance::IDENTITY_TRANSFER,
+            CREDIT_TRANSFER_RESERVE_CREDITS,
+            upstream_min_fee(
+                IdentityCreditTransferTransition::V0(Default::default())
+                    .calculate_min_required_fee(self.platform_version),
+            ),
         )
     }
 
@@ -431,36 +367,63 @@ impl PlatformFeeEstimator {
     /// `output_count` Platform addresses. As with
     /// [`Self::estimate_credit_transfer`], the fee actually charged is lower.
     pub fn estimate_credit_transfer_to_addresses(&self, output_count: usize) -> u64 {
-        let reserve =
-            with_identity_transfer_margin(ADDRESS_TRANSFER_RESERVE_CREDITS.saturating_add(
+        let recipients = placeholder_address_inputs(output_count)
+            .into_keys()
+            .map(|address| (address, 0))
+            .collect();
+        let upstream = IdentityCreditTransferToAddressesTransition::V0(
+            IdentityCreditTransferToAddressesTransitionV0 {
+                recipient_addresses: recipients,
+                ..Default::default()
+            },
+        )
+        .calculate_min_required_fee(self.platform_version);
+        self.reserve(
+            tolerance::IDENTITY_TRANSFER,
+            ADDRESS_TRANSFER_RESERVE_CREDITS.saturating_add(
                 ADDRESS_TRANSFER_RESERVE_PER_ADDRESS_CREDITS.saturating_mul(output_count as u64),
-            ));
-        self.apply_multiplier(reserve.max(self.credit_transfer_to_addresses_min_fee(output_count)))
+            ),
+            upstream_min_fee(upstream),
+        )
     }
 
     /// Estimate fee for credit withdrawal to core chain
     pub fn estimate_credit_withdrawal(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.credit_withdrawal)
+        self.min_fee(upstream_min_fee(
+            IdentityCreditWithdrawalTransition::V1(Default::default())
+                .calculate_min_required_fee(self.platform_version),
+        ))
     }
 
-    /// Estimate fee for address-based credit withdrawal
+    /// Estimate fee for a withdrawal from one Platform address.
     pub fn estimate_address_credit_withdrawal(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.address_credit_withdrawal)
+        self.min_fee(AddressCreditWithdrawalTransition::estimate_min_fee(
+            1,
+            false,
+            self.platform_version,
+        ))
     }
 
-    /// Estimate fee for funding a platform address from an asset lock.
-    /// This includes the asset lock processing cost and transfer costs.
-    /// Returns fee in duffs (not credits).
+    /// Fee, in duffs, to allow for when funding `output_count` Platform
+    /// addresses from an asset lock, never below the funding the network
+    /// requires before it processes one.
     pub fn estimate_address_funding_from_asset_lock_duffs(&self, output_count: usize) -> u64 {
-        // The fee includes:
-        // - Base transfer cost to addresses
-        // - Per-output costs
-        // We add a 50% buffer to account for any additional costs
-        let base_fee_credits =
-            self.apply_multiplier(self.credit_transfer_to_addresses_min_fee(output_count));
-        let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
-        // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
-        fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
+        let estimate_duffs = self.apply_multiplier(
+            self.min_fees().credit_transfer_to_addresses.saturating_add(
+                self.min_fees()
+                    .address_funds_transfer_output_cost
+                    .saturating_mul(output_count as u64),
+            ),
+        ) / CREDITS_PER_DUFF;
+        let required_duffs = calculate_address_funding_from_asset_lock_min_required_fee(
+            0,
+            output_count,
+            self.platform_version,
+        )
+        .div_ceil(CREDITS_PER_DUFF);
+        tolerance::ADDRESS_FUNDING_FROM_ASSET_LOCK
+            .apply_fee(estimate_duffs)
+            .max(required_duffs)
     }
 
     /// Smallest amount, in duffs, a user can enter when funding a Platform
@@ -473,11 +436,8 @@ impl PlatformFeeEstimator {
     /// and is shared with a change recipient, so the amount must make up what
     /// that estimate leaves short, and still meet the smallest amount the
     /// network accepts for a named recipient.
-    pub fn address_funding_min_amount_duffs(
-        &self,
-        fee_deduct_from_output: bool,
-        platform_version: &PlatformVersion,
-    ) -> u64 {
+    pub fn address_funding_min_amount_duffs(&self, fee_deduct_from_output: bool) -> u64 {
+        let platform_version = self.platform_version;
         let required_duffs = |recipients| {
             calculate_address_funding_from_asset_lock_min_required_fee(
                 0,
@@ -506,18 +466,22 @@ impl PlatformFeeEstimator {
     /// - Platform fee: what the network takes from the funding before the rest
     ///   reaches the shielded pool, rounded up to whole duffs
     /// - L1 tx fee: flat estimate covering Core minimum relay fee (~3000 duffs)
+    ///
+    /// `platform_version` is the version the shield is sized at, which may
+    /// differ from the estimator's.
     pub fn estimate_shield_from_core_fees_duffs(
         &self,
         platform_version: &PlatformVersion,
     ) -> Result<(u64, u64), Box<ProtocolError>> {
         let platform_fee_duffs =
             shield_from_core_pool_fee_credits(platform_version)?.div_ceil(CREDITS_PER_DUFF);
-        let l1_tx_fee_duffs = 3_000_u64;
+        let l1_tx_fee_duffs = tolerance::SHIELD_FROM_CORE_L1_FEE.apply_fee(0);
         Ok((platform_fee_duffs, l1_tx_fee_duffs))
     }
 
     /// What shielding `amount_duffs` from the Core wallet locks, and what
-    /// reaches the shielded pool once the network has taken its fee.
+    /// reaches the shielded pool once the network has taken its fee, at the
+    /// `platform_version` the shield is sized at.
     pub(crate) fn shield_from_core_funding(
         &self,
         amount_duffs: u64,
@@ -535,27 +499,23 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for identity update (adding/disabling keys)
     pub fn estimate_identity_update(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.identity_update)
+        self.min_fee(upstream_min_fee(
+            IdentityUpdateTransition::V0(Default::default())
+                .calculate_min_required_fee(self.platform_version),
+        ))
     }
 
-    /// Estimate fee for identity creation.
-    /// This includes base cost, asset lock cost, and per-key costs.
+    /// Estimate fee for creating an identity with `key_count` keys from an
+    /// asset lock: upstream's minimum, which covers the asset-lock processing.
     pub fn estimate_identity_create(&self, key_count: usize) -> u64 {
-        let base_fee = self
-            .min_fees
-            .identity_create_base_cost
-            .saturating_add(self.min_fees.identity_create_asset_lock_cost)
-            .saturating_add(
-                self.min_fees
-                    .identity_key_in_creation_cost
-                    .saturating_mul(key_count as u64),
-            );
-        self.apply_multiplier(base_fee)
+        self.min_fee(upstream_min_fee(
+            identity_create_transition(key_count).calculate_min_required_fee(self.platform_version),
+        ))
     }
 
     /// Estimate fee for identity creation from addresses (asset lock).
     /// This includes base cost, asset lock cost, input/output costs, per-key costs,
-    /// storage-based fees, and a 20% safety buffer to account for fee variability.
+    /// storage-based fees, and the [`tolerance::ADDRESS_INPUTS_FEE`] reserve.
     pub fn estimate_identity_create_from_addresses(
         &self,
         input_count: usize,
@@ -568,59 +528,54 @@ impl PlatformFeeEstimator {
         // Estimated seek operations for tree traversal
         const ESTIMATED_SEEKS_BASE: usize = 10;
 
-        let output_count = if has_output { 1 } else { 0 };
         let inputs = input_count.max(1);
-
-        // Base fee from min fee structure
-        // Note: identity creation requires the full identity_create_asset_lock_cost,
-        // not the smaller address_funding_asset_lock_cost used for simple transfers
-        let base_fee = self
-            .min_fees
-            .identity_create_base_cost
-            .saturating_add(self.min_fees.identity_create_asset_lock_cost)
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_input_cost
-                    .saturating_mul(inputs as u64),
-            )
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_output_cost
-                    .saturating_mul(output_count),
-            )
-            .saturating_add(
-                self.min_fees
-                    .identity_key_in_creation_cost
-                    .saturating_mul(key_count as u64),
-            );
+        let upstream =
+            IdentityCreateFromAddressesTransition::V0(IdentityCreateFromAddressesTransitionV0 {
+                public_keys: vec![IdentityPublicKeyInCreation::V0(Default::default()); key_count],
+                inputs: placeholder_address_inputs(inputs),
+                output: has_output.then(placeholder_address_output),
+                ..Default::default()
+            })
+            .calculate_min_required_fee(self.platform_version);
+        let upstream = upstream_min_fee(upstream);
+        // Identity creation also pays the identity-creation asset-lock
+        // processing, which the from-addresses minimum leaves out.
+        let asset_lock_cost = self
+            .platform_version
+            .dpp
+            .state_transitions
+            .identities
+            .asset_locks
+            .required_asset_lock_duff_balance_for_processing_start_for_identity_create
+            .saturating_mul(CREDITS_PER_DUFF);
 
         // Add storage-based fees for serialized transaction data
         let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT
             + ESTIMATED_IDENTITY_BASE_BYTES
             + key_count * ESTIMATED_BYTES_PER_KEY;
         let estimated_seeks = ESTIMATED_SEEKS_BASE + inputs;
-        let storage_fee = self.calculate_storage_based_fee(estimated_bytes, estimated_seeks);
-
-        // Total with fee multiplier
-        let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
-
-        // Add 20% safety buffer to account for fee variability
-        total.saturating_add(total / 5)
+        let estimate = upstream
+            .saturating_add(asset_lock_cost)
+            .saturating_add(self.storage_based_fee(estimated_bytes, estimated_seeks));
+        tolerance::ADDRESS_INPUTS_FEE.apply_fee(self.reserve(
+            EstimateTolerance::NONE,
+            estimate,
+            upstream,
+        ))
     }
 
-    /// Estimate fee for identity top-up.
-    /// This includes base cost and asset lock cost.
+    /// Estimate fee for topping up an identity from an asset lock:
+    /// upstream's minimum, which covers the asset-lock processing.
     pub fn estimate_identity_topup(&self) -> u64 {
-        let base_fee = self
-            .min_fees
-            .identity_topup_base_cost
-            .saturating_add(self.min_fees.identity_topup_asset_lock_cost);
-        self.apply_multiplier(base_fee)
+        self.min_fee(upstream_min_fee(
+            IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
+                .calculate_min_required_fee(self.platform_version),
+        ))
     }
 
     /// Estimate fee for identity top-up from platform addresses.
-    /// This includes base cost, asset lock cost, input costs, storage-based fees,
-    /// and a 20% safety buffer to account for fee variability.
+    /// This includes base cost, asset lock cost, input costs, storage-based
+    /// fees, and the [`tolerance::ADDRESS_INPUTS_FEE`] reserve.
     pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
         // Estimated bytes for top-up transaction structure
         const ESTIMATED_TOPUP_BASE_BYTES: usize = 100;
@@ -628,28 +583,35 @@ impl PlatformFeeEstimator {
         const ESTIMATED_SEEKS_BASE: usize = 8;
 
         let inputs = input_count.max(1);
-
-        // Base fee from min fee structure
-        let base_fee = self
-            .min_fees
-            .identity_topup_base_cost
-            .saturating_add(self.min_fees.address_funding_asset_lock_cost)
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_input_cost
-                    .saturating_mul(inputs as u64),
-            );
+        let upstream = upstream_min_fee(
+            IdentityTopUpFromAddressesTransition::V0(IdentityTopUpFromAddressesTransitionV0 {
+                inputs: placeholder_address_inputs(inputs),
+                ..Default::default()
+            })
+            .calculate_min_required_fee(self.platform_version),
+        );
+        // A top-up also pays the address-funding asset-lock processing, which
+        // the from-addresses minimum leaves out.
+        let asset_lock_cost = self
+            .platform_version
+            .dpp
+            .state_transitions
+            .identities
+            .asset_locks
+            .required_asset_lock_duff_balance_for_processing_start_for_address_funding
+            .saturating_mul(CREDITS_PER_DUFF);
 
         // Add storage-based fees for serialized transaction data
         let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT + ESTIMATED_TOPUP_BASE_BYTES;
         let estimated_seeks = ESTIMATED_SEEKS_BASE + inputs;
-        let storage_fee = self.calculate_storage_based_fee(estimated_bytes, estimated_seeks);
-
-        // Total with fee multiplier
-        let total = self.apply_multiplier(base_fee.saturating_add(storage_fee));
-
-        // Add 20% safety buffer to account for fee variability
-        total.saturating_add(total / 5)
+        let estimate = upstream
+            .saturating_add(asset_lock_cost)
+            .saturating_add(self.storage_based_fee(estimated_bytes, estimated_seeks));
+        tolerance::ADDRESS_INPUTS_FEE.apply_fee(self.reserve(
+            EstimateTolerance::NONE,
+            estimate,
+            upstream,
+        ))
     }
 
     /// Resolve the actual fee paid by a wallet-funded identity top-up.
@@ -710,15 +672,30 @@ impl PlatformFeeEstimator {
         }
     }
 
+    /// Smallest fee Platform takes for a batch of `transition_count` document
+    /// or token transitions, from upstream's minimum.
+    fn document_batch_min_fee(&self, transition_count: usize) -> Credits {
+        self.min_fees()
+            .document_batch_sub_transition
+            .saturating_mul(transition_count.max(1) as u64)
+    }
+
+    /// A document or token transition writing `bytes` with `seeks` tree seeks:
+    /// upstream's minimum plus DET's storage estimate.
+    fn document_write_fee(&self, bytes: usize, seeks: usize) -> u64 {
+        let min = self.document_batch_min_fee(1);
+        self.reserve(
+            tolerance::PLATFORM_STORAGE,
+            min.saturating_add(self.storage_based_fee(bytes, seeks)),
+            min,
+        )
+    }
+
     /// Estimate fee for document batch transition
     // TODO(dashpay/platform#5383): mirrors Platform's minimum-fee floor; it is
     // not an estimate of the charge.
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_mul(transition_count.max(1) as u64);
-        self.apply_multiplier(base_fee)
+        self.min_fee(self.document_batch_min_fee(transition_count))
     }
 
     /// Balance an identity needs to register a username of `label_chars`
@@ -739,11 +716,12 @@ impl PlatformFeeEstimator {
         let bytes = USERNAME_FIRST_DOCUMENT_BYTES
             .saturating_add(name_bytes)
             .saturating_add(bytes_per_char.saturating_mul(label_chars));
-        let base_fee = self
-            .calculate_storage_fee(bytes)
-            .saturating_add(USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS);
-        self.apply_multiplier(
-            base_fee.saturating_mul(100 + USERNAME_REGISTRATION_MARGIN_PERCENT) / 100,
+        self.reserve(
+            tolerance::USERNAME_REGISTRATION,
+            self.storage_fee(bytes)
+                .saturating_add(USERNAME_FIRST_DOCUMENT_PROCESSING_CREDITS),
+            // The preorder and the name document, each a batch of one.
+            self.document_batch_min_fee(1).saturating_mul(2),
         )
     }
 
@@ -766,11 +744,7 @@ impl PlatformFeeEstimator {
     /// Estimated seeks: ~10 for tree traversal and insertion.
     pub fn estimate_document_create_with_size(&self, document_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.calculate_storage_based_fee(document_bytes, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(document_bytes, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for document creation (uses default estimate of ~200 bytes).
@@ -783,21 +757,13 @@ impl PlatformFeeEstimator {
     pub fn estimate_document_delete(&self) -> u64 {
         // Deletion involves seeks but no storage addition
         const ESTIMATED_SEEKS: usize = 8;
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.calculate_seek_fee(ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(0, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for document replacement with known size.
     pub fn estimate_document_replace_with_size(&self, document_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.calculate_storage_based_fee(document_bytes, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(document_bytes, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for document replacement (uses default estimate of ~200 bytes).
@@ -820,31 +786,21 @@ impl PlatformFeeEstimator {
     pub fn estimate_document_transfer(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const OWNERSHIP_UPDATE_BYTES: usize = 64;
-        let base_fee = self.min_fees.document_batch_sub_transition.saturating_add(
-            self.calculate_storage_based_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS),
-        );
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(OWNERSHIP_UPDATE_BYTES, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for document purchase.
     pub fn estimate_document_purchase(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
         const PURCHASE_UPDATE_BYTES: usize = 100;
-        let base_fee = self.min_fees.document_batch_sub_transition.saturating_add(
-            self.calculate_storage_based_fee(PURCHASE_UPDATE_BYTES, ESTIMATED_SEEKS),
-        );
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(PURCHASE_UPDATE_BYTES, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for document set price.
     pub fn estimate_document_set_price(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const PRICE_UPDATE_BYTES: usize = 32;
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.calculate_storage_based_fee(PRICE_UPDATE_BYTES, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(PRICE_UPDATE_BYTES, ESTIMATED_SEEKS)
     }
 
     /// Estimate fee for token transition (mint, burn, transfer, freeze, etc.).
@@ -852,102 +808,27 @@ impl PlatformFeeEstimator {
     pub fn estimate_token_transition(&self) -> u64 {
         const ESTIMATED_SEEKS: usize = 8;
         const TOKEN_OP_BYTES: usize = 100;
-        let base_fee = self
-            .min_fees
-            .document_batch_sub_transition
-            .saturating_add(self.calculate_storage_based_fee(TOKEN_OP_BYTES, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        self.document_write_fee(TOKEN_OP_BYTES, ESTIMATED_SEEKS)
     }
 
-    /// Estimate fee for data contract creation with known size.
-    /// Includes base registration fee (0.1 DASH) plus storage costs.
-    /// For contracts with tokens, document types, or indexes, use the detailed method.
+    /// Estimate fee for data contract creation with known size: the base
+    /// registration fee and Platform's minimum, plus DET's storage estimate.
     pub fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
-        let base_fee = self
-            .registration_fees
+        let min = self
+            .platform_version
+            .fee_version
+            .data_contract_registration
             .base_contract_registration_fee
-            .saturating_add(self.min_fees.contract_create)
-            .saturating_add(self.calculate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
-    }
-
-    /// Estimate fee for data contract creation with detailed component counts.
-    /// This provides the most accurate estimate by accounting for all registration fees.
-    pub fn estimate_contract_create_detailed(&self, components: ContractComponents) -> u64 {
-        const ESTIMATED_SEEKS: usize = 20;
-
-        let ContractComponents {
-            contract_bytes,
-            document_type_count,
-            non_unique_index_count,
-            unique_index_count,
-            contested_index_count,
-            has_token,
-            has_perpetual_distribution,
-            has_pre_programmed_distribution,
-            search_keyword_count,
-        } = components;
-
-        let mut base_fee = self.registration_fees.base_contract_registration_fee;
-
-        // Document type fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_registration_fee
-                .saturating_mul(document_type_count as u64),
-        );
-
-        // Index fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_non_unique_index_registration_fee
-                .saturating_mul(non_unique_index_count as u64),
-        );
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_unique_index_registration_fee
-                .saturating_mul(unique_index_count as u64),
-        );
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_contested_index_registration_fee
-                .saturating_mul(contested_index_count as u64),
-        );
-
-        // Token fees
-        if has_token {
-            base_fee = base_fee.saturating_add(self.registration_fees.token_registration_fee);
-        }
-        if has_perpetual_distribution {
-            base_fee = base_fee
-                .saturating_add(self.registration_fees.token_uses_perpetual_distribution_fee);
-        }
-        if has_pre_programmed_distribution {
-            base_fee = base_fee.saturating_add(
-                self.registration_fees
-                    .token_uses_pre_programmed_distribution_fee,
-            );
-        }
-
-        // Search keyword fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .search_keyword_fee
-                .saturating_mul(search_keyword_count as u64),
-        );
-
-        // Add state transition minimum and storage fees
-        base_fee = base_fee.saturating_add(self.min_fees.contract_create);
-        base_fee = base_fee
-            .saturating_add(self.calculate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
-
-        self.apply_multiplier(base_fee)
+            .saturating_add(self.min_fees().contract_create);
+        self.reserve(
+            tolerance::PLATFORM_STORAGE,
+            min.saturating_add(self.storage_based_fee(contract_bytes, ESTIMATED_SEEKS)),
+            min,
+        )
     }
 
     /// Estimate fee for data contract creation (uses base registration fee only).
-    /// For more accurate estimates, use estimate_contract_create_with_size or
-    /// estimate_contract_create_detailed.
     pub fn estimate_contract_create_base(&self) -> u64 {
         // Base registration fee (0.1 DASH) + minimal storage estimate
         self.estimate_contract_create_with_size(500)
@@ -956,11 +837,12 @@ impl PlatformFeeEstimator {
     /// Estimate fee for data contract update with known size of changes.
     pub fn estimate_contract_update_with_size(&self, update_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 15;
-        let base_fee = self
-            .min_fees
-            .contract_update
-            .saturating_add(self.calculate_storage_based_fee(update_bytes, ESTIMATED_SEEKS));
-        self.apply_multiplier(base_fee)
+        let min = self.min_fees().contract_update;
+        self.reserve(
+            tolerance::PLATFORM_STORAGE,
+            min.saturating_add(self.storage_based_fee(update_bytes, ESTIMATED_SEEKS)),
+            min,
+        )
     }
 
     /// Estimate fee for data contract update (uses default estimate).
@@ -968,40 +850,28 @@ impl PlatformFeeEstimator {
         self.estimate_contract_update_with_size(300)
     }
 
-    /// Get the registration fees structure
-    pub fn registration_fees(&self) -> &DataContractRegistrationFees {
-        &self.registration_fees
-    }
-
     /// Estimate fee for masternode vote
     pub fn estimate_masternode_vote(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.masternode_vote)
+        self.min_fee(self.min_fees().masternode_vote)
     }
 
-    /// Estimate fee for address funds transfer.
-    /// Applies the current fee multiplier.
+    /// Smallest fee Platform takes for a transfer between Platform addresses,
+    /// scaled by the multiplier.
     pub fn estimate_address_funds_transfer(&self, input_count: usize, output_count: usize) -> u64 {
-        let base_fee = self
-            .min_fees
-            .address_funds_transfer_input_cost
-            .saturating_mul(input_count as u64)
-            .saturating_add(
-                self.min_fees
-                    .address_funds_transfer_output_cost
-                    .saturating_mul(output_count.max(1) as u64),
-            );
-        self.apply_multiplier(base_fee)
+        self.min_fee(AddressFundsTransferTransition::estimate_min_fee(
+            input_count,
+            output_count,
+            self.platform_version,
+        ))
     }
+}
 
-    /// Get the raw minimum fees structure
-    pub fn min_fees(&self) -> &StateTransitionMinFees {
-        &self.min_fees
-    }
-
-    /// Get the storage fee constants
-    pub fn storage_fees(&self) -> &StorageFeeConstants {
-        &self.storage_fees
-    }
+/// An identity-creation transition with `key_count` keys, for its minimum fee.
+fn identity_create_transition(key_count: usize) -> IdentityCreateTransition {
+    IdentityCreateTransition::V0(IdentityCreateTransitionV0 {
+        public_keys: vec![IdentityPublicKeyInCreation::V0(Default::default()); key_count],
+        ..Default::default()
+    })
 }
 
 /// Community vote fee for registering a contested username, in credits.
@@ -1137,9 +1007,9 @@ pub fn format_credits(credits: u64) -> String {
     }
 }
 
-/// Calculate the estimated fee for a platform address funds transfer.
-///
-/// Uses [`PlatformFeeEstimator`] for base costs (input/output fees) plus storage fees.
+/// Calculate the estimated fee for a platform address funds transfer:
+/// upstream's minimum plus DET's storage estimate for the inputs, with the
+/// [`tolerance::ADDRESS_INPUTS_FEE`] reserve.
 pub(crate) fn estimate_platform_fee(
     estimator: &PlatformFeeEstimator,
     input_count: usize,
@@ -1147,20 +1017,12 @@ pub(crate) fn estimate_platform_fee(
 ) -> u64 {
     let inputs = input_count.max(1);
     let outputs = output_count.max(1);
-
-    // Base fee from Platform's min fee structure
-    // - 500,000 credits per input (address_funds_transfer_input_cost)
-    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
     let base_fee = estimator.estimate_address_funds_transfer(inputs, outputs);
-
-    // Add storage fees for serialized input bytes only
-    // (outputs don't add significant serialization overhead)
-    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
-
-    // Total with 20% safety buffer
-    let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
+    // Storage fees for serialized input bytes only (outputs don't add
+    // significant serialization overhead).
+    let storage_fee =
+        estimator.estimate_storage_based_fee(inputs * ESTIMATED_BYTES_PER_INPUT, inputs);
+    tolerance::ADDRESS_INPUTS_FEE.apply_fee(base_fee.saturating_add(storage_fee))
 }
 
 /// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
@@ -1238,13 +1100,10 @@ pub(crate) fn identity_create_min_funding_duffs(
     key_count: usize,
     platform_version: &PlatformVersion,
 ) -> Result<u64, Box<ProtocolError>> {
-    IdentityCreateTransition::V0(IdentityCreateTransitionV0 {
-        public_keys: vec![IdentityPublicKeyInCreation::V0(Default::default()); key_count],
-        ..Default::default()
-    })
-    .calculate_min_required_fee(platform_version)
-    .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
-    .map_err(Box::new)
+    identity_create_transition(key_count)
+        .calculate_min_required_fee(platform_version)
+        .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+        .map_err(Box::new)
 }
 
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
@@ -1286,10 +1145,14 @@ pub(crate) struct AddressAllocationResult {
 }
 
 /// Allocates platform addresses for a transfer, using a custom fee calculator.
+///
+/// At most `max_inputs` addresses are spent; pass
+/// [`max_platform_inputs`] of the network's protocol version.
 pub(crate) fn allocate_platform_addresses_with_fee<F>(
     addresses: &[(PlatformAddress, Address, u64)],
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
+    max_inputs: usize,
     fee_for_inputs: F,
 ) -> AddressAllocationResult
 where
@@ -1324,12 +1187,12 @@ where
     let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
 
     // Iterate until fee estimate stabilizes (input count affects fee)
-    for _ in 0..=MAX_PLATFORM_INPUTS {
+    for _ in 0..=max_inputs {
         inputs.clear();
         let mut remaining = amount_credits;
 
         for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
+            if remaining == 0 || inputs.len() >= max_inputs {
                 break;
             }
             let is_fee_payer = idx == 0;
@@ -1405,13 +1268,14 @@ pub(crate) fn allocate_platform_addresses(
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
 ) -> AddressAllocationResult {
+    let input_cap = estimator.max_platform_inputs();
     let max_inputs = addresses
         .iter()
         .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
         .count()
-        .min(MAX_PLATFORM_INPUTS);
+        .min(input_cap);
 
-    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
+    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, input_cap, |_| {
         // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
         estimate_platform_fee(estimator, max_inputs.max(1), 1)
     })
@@ -1594,13 +1458,13 @@ mod tests {
 
     #[test]
     fn contact_info_write_fee_covers_the_contract_limit_and_fee_multiplier() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         assert_eq!(
             estimator.estimate_contact_info_write(),
             estimator.estimate_document_create_with_size(112 + 2048),
         );
         assert_eq!(
-            PlatformFeeEstimator::with_fee_multiplier(2000).estimate_contact_info_write(),
+            PlatformFeeEstimator::latest_with_fee_multiplier(2000).estimate_contact_info_write(),
             estimator.estimate_contact_info_write().saturating_mul(2),
         );
     }
@@ -1689,7 +1553,7 @@ mod tests {
             8_755_720,     // testnet
             9_038_740,     // signed with a BLS key
         ];
-        let estimate = PlatformFeeEstimator::new().estimate_credit_transfer();
+        let estimate = PlatformFeeEstimator::latest().estimate_credit_transfer();
         for required in required_above_amount {
             assert!(estimate >= required, "{estimate} is below {required}");
             assert!(
@@ -1717,7 +1581,7 @@ mod tests {
             (3, 29_792_620),
             (3, 30_077_620),
         ];
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         for (addresses, required) in required_above_amount {
             let estimate = estimator.estimate_credit_transfer_to_addresses(addresses);
             assert!(
@@ -1733,8 +1597,8 @@ mod tests {
 
     #[test]
     fn credit_transfer_estimates_follow_the_fee_multiplier() {
-        let base = PlatformFeeEstimator::new();
-        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000);
+        let base = PlatformFeeEstimator::latest();
+        let doubled = PlatformFeeEstimator::latest_with_fee_multiplier(2000);
         assert_eq!(
             doubled.estimate_credit_transfer(),
             base.estimate_credit_transfer() * 2
@@ -1749,35 +1613,45 @@ mod tests {
     /// fee, so an estimate never falls below that minimum, whatever it becomes.
     #[test]
     fn credit_transfer_estimates_never_fall_below_the_minimum_fee_of_the_network() {
-        let raised = StateTransitionMinFees {
-            credit_transfer: 50_000_000,
-            credit_transfer_to_addresses: 60_000_000,
-            ..StateTransitionMinFees::default()
-        };
-        let per_address = raised.address_funds_transfer_output_cost;
-        let estimator = PlatformFeeEstimator {
-            min_fees: raised,
-            ..PlatformFeeEstimator::new()
-        };
-        assert_eq!(estimator.estimate_credit_transfer(), 50_000_000);
+        // A DET estimate below upstream's minimum is lifted to the minimum.
+        let estimator = PlatformFeeEstimator::latest();
         assert_eq!(
-            estimator.estimate_credit_transfer_to_addresses(1),
-            60_000_000 + per_address
+            estimator.reserve(EstimateTolerance::NONE, 5, 50_000_000),
+            50_000_000
         );
+        assert_eq!(
+            estimator.reserve(EstimateTolerance::percent(10), 100, 50),
+            110,
+            "an estimate above the minimum keeps its tolerance"
+        );
+        for version in 1..=PlatformVersion::latest().protocol_version {
+            let pv = PlatformVersion::get(version).expect("known protocol version");
+            let estimator = PlatformFeeEstimator::new(pv, 1000);
+            let min_fees = &pv.fee_version.state_transition_min_fees;
+            assert!(estimator.estimate_credit_transfer() >= min_fees.credit_transfer);
+            assert!(
+                estimator.estimate_credit_transfer_to_addresses(3)
+                    >= min_fees.credit_transfer_to_addresses
+                        + 3 * min_fees.address_funds_transfer_output_cost,
+                "protocol {version}"
+            );
+        }
     }
 
-    /// Funding an address from the wallet is priced from the minimum fee of
-    /// the network, not from what a transfer out of an identity reserves.
+    /// Funding an address from the wallet allows for at least the funding the
+    /// network requires before it processes one: 0.0005 DASH plus 0.00006
+    /// DASH per recipient. DET's own estimate (10,000 and 18,750 duffs) is
+    /// below that, so the requirement binds.
     #[test]
-    fn address_funding_from_the_wallet_keeps_its_own_estimate() {
-        let estimator = PlatformFeeEstimator::new();
+    fn address_funding_from_the_wallet_allows_for_what_the_network_requires() {
+        let estimator = PlatformFeeEstimator::latest();
         assert_eq!(
             estimator.estimate_address_funding_from_asset_lock_duffs(1),
-            10_000
+            56_000
         );
         assert_eq!(
             estimator.estimate_address_funding_from_asset_lock_duffs(2),
-            18_750
+            62_000
         );
     }
 
@@ -1817,19 +1691,26 @@ mod tests {
     fn address_funding_minimum_is_the_whole_fee_when_taken_from_the_amount() {
         let pv13 = PlatformVersion::get(13).expect("PV13");
         assert_eq!(
-            PlatformFeeEstimator::new().address_funding_min_amount_duffs(true, pv13),
+            PlatformFeeEstimator::new(pv13, 1000).address_funding_min_amount_duffs(true),
             56_000
         );
     }
 
-    /// With the fee paid on top, the funding is the amount plus the estimate
-    /// (18 750 duffs), and the network requires 62 000 for two recipients.
+    /// With the fee paid on top, the funding is the amount plus the estimate,
+    /// which already covers the 62 000 duffs the network requires for two
+    /// recipients, so only the smallest named amount binds.
     #[test]
     fn address_funding_minimum_with_change_makes_up_what_the_estimate_leaves_short() {
         let pv13 = PlatformVersion::get(13).expect("PV13");
+        let smallest_named = pv13
+            .dpp
+            .state_transitions
+            .address_funds
+            .min_output_amount
+            .div_ceil(CREDITS_PER_DUFF);
         assert_eq!(
-            PlatformFeeEstimator::new().address_funding_min_amount_duffs(false, pv13),
-            43_250
+            PlatformFeeEstimator::new(pv13, 1000).address_funding_min_amount_duffs(false),
+            smallest_named
         );
     }
 
@@ -1848,8 +1729,8 @@ mod tests {
             .min_output_amount
             .div_ceil(CREDITS_PER_DUFF);
         for multiplier in [1000, 1500, 2000, 3000, 4000, 10_000] {
-            let estimator = PlatformFeeEstimator::with_fee_multiplier(multiplier);
-            let minimum = estimator.address_funding_min_amount_duffs(false, pv13);
+            let estimator = PlatformFeeEstimator::new(pv13, multiplier);
+            let minimum = estimator.address_funding_min_amount_duffs(false);
             let funding = |amount: u64| {
                 (amount + estimator.estimate_address_funding_from_asset_lock_duffs(2))
                     * CREDITS_PER_DUFF
@@ -1871,7 +1752,7 @@ mod tests {
 
     #[test]
     fn test_identity_create_estimate() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // Base cost + asset lock cost + 2 keys
         let fee = estimator.estimate_identity_create(2);
         assert_eq!(fee, 2_000_000 + 200_000_000 + 2 * 6_500_000);
@@ -1879,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_identity_topup_actual_fee_uses_balance_delta_when_consistent() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // 500_000 duffs → 500_000_000 credits minted; a real top-up loses some
         // to the processing fee, so the balance gains slightly less.
         let amount_duffs = 500_000u64;
@@ -1899,7 +1780,7 @@ mod tests {
 
     #[test]
     fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_balance() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // Stale (too-low) `balance_before` — e.g. after a backend reload — makes
         // the apparent increase exceed the minted credits, so the naive delta
         // collapses to zero. The helper must fall back to the estimate instead.
@@ -1928,7 +1809,7 @@ mod tests {
     /// The helper must detect this invariant violation and return the estimate.
     #[test]
     fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_high_balance() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
         let expected_credits = amount_duffs * CREDITS_PER_DUFF;
         // balance_before is stale-HIGH: the cached balance is higher than
@@ -1962,7 +1843,7 @@ mod tests {
     /// the deterministic estimate must catch it and fall back to the estimate.
     #[test]
     fn test_identity_topup_actual_fee_rejects_partial_stale_inflated_delta() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
         let expected_credits = amount_duffs * CREDITS_PER_DUFF;
 
@@ -1997,7 +1878,7 @@ mod tests {
 
     #[test]
     fn test_document_batch_estimate() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // 3 documents - base fee only
         let fee = estimator.estimate_document_batch(3);
         assert_eq!(fee, 3 * 100_000);
@@ -2009,7 +1890,7 @@ mod tests {
     #[test]
     fn username_registration_estimate_covers_the_charge_measured_on_testnet() {
         const CHARGED_ON_TESTNET: u64 = 75_646_740;
-        let estimate = PlatformFeeEstimator::new().estimate_username_registration(29, false);
+        let estimate = PlatformFeeEstimator::latest().estimate_username_registration(29, false);
         assert!(estimate >= CHARGED_ON_TESTNET, "{estimate}");
         assert!(estimate <= 2 * CHARGED_ON_TESTNET, "{estimate}");
     }
@@ -2029,7 +1910,7 @@ mod tests {
             (5, true, 156_750_678),
             (19, true, 158_495_902),
         ];
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         for (label_chars, needs_vote, required) in smallest_accepted_balance {
             let estimate = estimator.estimate_username_registration(label_chars, needs_vote);
             assert!(
@@ -2046,7 +1927,7 @@ mod tests {
     /// The community vote fund is charged on top of the registration, as is.
     #[test]
     fn username_registration_charge_adds_the_contest_fund_as_is() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         let registration = estimator.estimate_username_registration(5, true);
         assert_eq!(
             estimator.estimate_username_registration_charge(5, true, 1_234),
@@ -2063,7 +1944,7 @@ mod tests {
     /// 20 characters and 32,400,260 + 88,397,980 for 63.
     #[test]
     fn username_registration_estimate_covers_the_balance_testnet_required() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         for (label_chars, required) in [(20, 115_717_580_u64), (63, 120_798_240)] {
             let estimate = estimator.estimate_username_registration(label_chars, false);
             assert!(estimate >= required, "{label_chars}: {estimate}");
@@ -2101,17 +1982,17 @@ mod tests {
 
     #[test]
     fn username_registration_estimate_follows_the_fee_multiplier() {
-        let base = PlatformFeeEstimator::new().estimate_username_registration(29, false);
-        let doubled = PlatformFeeEstimator::with_fee_multiplier(2000)
+        let base = PlatformFeeEstimator::latest().estimate_username_registration(29, false);
+        let doubled = PlatformFeeEstimator::latest_with_fee_multiplier(2000)
             .estimate_username_registration(29, false);
         assert_eq!(doubled, 2 * base);
     }
 
     #[test]
     fn test_storage_fee_calculation() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // 500 bytes at 27,000 credits/byte = 13,500,000 credits
-        let fee = estimator.calculate_storage_fee(500);
+        let fee = estimator.storage_fee(500);
         assert_eq!(fee, 500 * 27_000);
         // 13,500,000 credits = 0.000135 DASH (at 100 billion credits per DASH)
         assert_eq!(format_credits_as_dash(fee), "0.000135 DASH");
@@ -2119,7 +2000,7 @@ mod tests {
 
     #[test]
     fn test_contract_create_with_size() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         // 500 byte contract
         let fee = estimator.estimate_contract_create_with_size(500);
         // Should be: base_registration_fee + min_fee + storage + processing + seeks
@@ -2134,27 +2015,6 @@ mod tests {
         let expected = base_registration + min_fee + storage + processing + seeks;
         assert_eq!(fee, expected);
         // ~0.1 DASH for a simple contract (base registration fee dominates)
-    }
-
-    #[test]
-    fn test_contract_create_detailed_with_token() {
-        let estimator = PlatformFeeEstimator::new();
-        // Contract with a token
-        let fee = estimator.estimate_contract_create_detailed(ContractComponents {
-            contract_bytes: 500,
-            document_type_count: 1,
-            non_unique_index_count: 1,
-            unique_index_count: 0,
-            contested_index_count: 0,
-            has_token: true,
-            has_perpetual_distribution: false,
-            has_pre_programmed_distribution: false,
-            search_keyword_count: 0,
-        });
-        // Base: 0.1 DASH + Document type: 0.02 DASH + Index: 0.01 DASH + Token: 0.1 DASH
-        // = 0.23 DASH + storage fees
-        let expected_registration = 10_000_000_000 + 2_000_000_000 + 1_000_000_000 + 10_000_000_000;
-        assert!(fee >= expected_registration);
     }
 
     #[test]
@@ -2205,6 +2065,53 @@ mod tests {
         assert_eq!(estimate_asset_lock_core_fee_duffs(1), 259);
         // 10 + 296 + 68 = 374 bytes, plus 15 %.
         assert_eq!(estimate_asset_lock_core_fee_duffs(2), 430);
+    }
+
+    /// The fees that are upstream's minimum come from upstream's functions at
+    /// the estimator's protocol version, scaled by the multiplier.
+    #[test]
+    fn minimum_fee_estimates_are_upstreams_at_the_estimators_version() {
+        for version in [12, 13, PlatformVersion::latest().protocol_version] {
+            let pv = PlatformVersion::get(version).expect("known protocol version");
+            let estimator = PlatformFeeEstimator::new(pv, 2000);
+            let min_fees = &pv.fee_version.state_transition_min_fees;
+            let topup = IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
+                .calculate_min_required_fee(pv)
+                .expect("top-up fee");
+            assert_eq!(
+                estimator.estimate_identity_topup(),
+                topup * 2,
+                "protocol {version}"
+            );
+            let create = identity_create_transition(3)
+                .calculate_min_required_fee(pv)
+                .expect("creation fee");
+            assert_eq!(estimator.estimate_identity_create(3), create * 2);
+            assert_eq!(
+                estimator.estimate_identity_update(),
+                min_fees.identity_update * 2
+            );
+            assert_eq!(
+                estimator.estimate_credit_withdrawal(),
+                min_fees.credit_withdrawal * 2
+            );
+            assert_eq!(
+                estimator.estimate_address_credit_withdrawal(),
+                AddressCreditWithdrawalTransition::estimate_min_fee(1, false, pv) * 2
+            );
+            assert_eq!(
+                estimator.estimate_document_batch(3),
+                min_fees.document_batch_sub_transition * 3 * 2
+            );
+            assert_eq!(
+                estimator.estimate_address_funds_transfer(2, 1),
+                AddressFundsTransferTransition::estimate_min_fee(2, 1, pv) * 2
+            );
+            assert_eq!(
+                estimator.max_platform_inputs(),
+                usize::from(pv.dpp.state_transitions.max_address_inputs)
+            );
+        }
     }
 
     /// A tolerance only ever raises a fee and lowers a Max, and lowers the Max
@@ -2278,7 +2185,7 @@ mod tests {
             let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
             assert_eq!(network_fee_credits, fee_credits, "protocol {protocol}");
             for multiplier in [1000, 3000] {
-                let (fee_duffs, _) = PlatformFeeEstimator::with_fee_multiplier(multiplier)
+                let (fee_duffs, _) = PlatformFeeEstimator::latest_with_fee_multiplier(multiplier)
                     .estimate_shield_from_core_fees_duffs(platform_version)
                     .expect("known version");
                 assert_eq!(
@@ -2300,7 +2207,7 @@ mod tests {
             let platform_version = PlatformVersion::get(protocol).expect("known protocol");
             let network_fee_credits = network_shield_from_core_fee_credits(platform_version);
             for amount_duffs in [1, 100_000, 100_000_000] {
-                let funding = PlatformFeeEstimator::new()
+                let funding = PlatformFeeEstimator::latest()
                     .shield_from_core_funding(amount_duffs, platform_version)
                     .expect("known version");
                 let delivered_credits = (funding.lock_duffs * CREDITS_PER_DUFF)
@@ -2338,7 +2245,7 @@ mod tests {
         for (protocol, remainder_credits) in [(12, 800), (13, 800), (14, 0)] {
             let platform_version = PlatformVersion::get(protocol).expect("known protocol");
             for amount_duffs in [1, 100_000, 100_000_000] {
-                let funding = PlatformFeeEstimator::new()
+                let funding = PlatformFeeEstimator::latest()
                     .shield_from_core_funding(amount_duffs, platform_version)
                     .expect("known version");
                 assert_eq!(
@@ -2355,7 +2262,7 @@ mod tests {
     fn shield_from_core_fee_is_unavailable_for_an_unknown_fee_version() {
         let mut platform_version = PlatformVersion::latest().clone();
         platform_version.dpp.methods.compute_minimum_shielded_fee = 99;
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         assert!(
             estimator
                 .estimate_shield_from_core_fees_duffs(&platform_version)
@@ -2399,7 +2306,7 @@ mod tests {
             platform_wallet::shield_fee_reserve_credits(platform_version).expect("known version")
         );
         assert_eq!(headroom, base_fee * 2);
-        assert!(headroom > PlatformFeeEstimator::new().estimate_credit_transfer());
+        assert!(headroom > PlatformFeeEstimator::latest().estimate_credit_transfer());
     }
 
     #[test]
@@ -2466,7 +2373,13 @@ mod tests {
     #[test]
     fn allocate_covers_amount_from_single_address() {
         let addresses = addrs(&[(1, 1000)]);
-        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 100);
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            500,
+            None,
+            max_platform_inputs(PlatformVersion::latest()),
+            |_| 100,
+        );
 
         assert_eq!(
             result.shortfall, 0,
@@ -2482,9 +2395,13 @@ mod tests {
         // Fee grows with input count, so the allocation loop must iterate until
         // the fee estimate stabilizes rather than under-funding on the first pass.
         let addresses = addrs(&[(1, 300), (2, 300)]);
-        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |inputs| {
-            inputs.len() as u64 * 10
-        });
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            500,
+            None,
+            max_platform_inputs(PlatformVersion::latest()),
+            |inputs| inputs.len() as u64 * 10,
+        );
 
         assert_eq!(result.estimated_fee, 20, "fee converged for two inputs");
         assert_eq!(result.inputs.len(), 2);
@@ -2495,7 +2412,13 @@ mod tests {
     #[test]
     fn allocate_reports_shortfall_when_underfunded() {
         let addresses = addrs(&[(1, 100)]);
-        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 50);
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            500,
+            None,
+            max_platform_inputs(PlatformVersion::latest()),
+            |_| 50,
+        );
 
         // 100 balance, 50 reserved for fee → only 50 allocatable against a 500 ask.
         assert_eq!(result.estimated_fee, 50);
@@ -2507,8 +2430,13 @@ mod tests {
     fn allocate_picks_highest_balance_as_fee_payer_and_excludes_destination() {
         let addresses = addrs(&[(1, 100), (2, 1000), (9, 5000)]);
         let destination = pa(9);
-        let result =
-            allocate_platform_addresses_with_fee(&addresses, 200, Some(&destination), |_| 30);
+        let result = allocate_platform_addresses_with_fee(
+            &addresses,
+            200,
+            Some(&destination),
+            max_platform_inputs(PlatformVersion::latest()),
+            |_| 30,
+        );
 
         assert!(
             !result.inputs.contains_key(&destination),
@@ -2535,7 +2463,13 @@ mod tests {
 
     #[test]
     fn allocate_with_no_addresses_reports_full_shortfall() {
-        let result = allocate_platform_addresses_with_fee(&[], 500, None, |_| 10);
+        let result = allocate_platform_addresses_with_fee(
+            &[],
+            500,
+            None,
+            max_platform_inputs(PlatformVersion::latest()),
+            |_| 10,
+        );
 
         assert!(result.inputs.is_empty());
         assert!(result.sorted_addresses.is_empty());
@@ -2545,7 +2479,7 @@ mod tests {
 
     #[test]
     fn allocate_with_estimator_uses_worst_case_platform_fee() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         let addresses = addrs(&[(1, 10_000_000_000)]);
         let result = allocate_platform_addresses(&estimator, &addresses, 1_000_000, None);
 
@@ -2560,7 +2494,7 @@ mod tests {
 
     #[test]
     fn platform_fee_accounts_for_every_output() {
-        let estimator = PlatformFeeEstimator::new();
+        let estimator = PlatformFeeEstimator::latest();
         let one_output = estimate_platform_fee(&estimator, 1, 1);
         let two_outputs = estimate_platform_fee(&estimator, 1, 2);
 

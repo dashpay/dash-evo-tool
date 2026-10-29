@@ -81,7 +81,8 @@ pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
 pub(crate) use dashpay::{
-    ContactRequestActionKind, derive_contact_info_encryption_keys, derive_contact_xpub_material,
+    ContactRequestActionKind, HeldPeerLock, derive_contact_info_encryption_keys,
+    derive_contact_xpub_material,
 };
 
 pub(crate) use contact_info::PublishedContactInfos;

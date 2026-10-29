@@ -389,6 +389,23 @@ impl ContactRequestActionLocks {
     }
 }
 
+/// `owner`'s request-action lock for `peer`, held while this lives. The lock
+/// is not reentrant, so code running under it is handed this instead of
+/// locking again. Only [`WalletBackend::dashpay_lock_contact_peer`] mints it,
+/// so the pair it names is the pair it locks.
+pub(crate) struct HeldPeerLock {
+    owner: Identifier,
+    peer: Identifier,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl HeldPeerLock {
+    /// Whether this is `owner`'s lock for `peer`.
+    pub(crate) fn covers(&self, owner: &Identifier, peer: &Identifier) -> bool {
+        self.owner == *owner && self.peer == *peer
+    }
+}
+
 /// Contact-request expiry threshold. A pending outgoing request older
 /// than this is surfaced as `"expired"` rather than `"pending"`. DET
 /// has no protocol-level expiry — this is purely a UX gate so the
@@ -1416,6 +1433,21 @@ impl WalletBackend {
             .dashpay_request_action_locks
             .lock(owner, request_id)
             .await
+    }
+
+    /// [`Self::dashpay_lock_contact_request_action`] keyed by the person,
+    /// returned as a [`HeldPeerLock`] that code running under it is handed
+    /// instead of locking again.
+    pub(crate) async fn dashpay_lock_contact_peer(
+        &self,
+        owner: &Identifier,
+        peer: &Identifier,
+    ) -> HeldPeerLock {
+        HeldPeerLock {
+            owner: *owner,
+            peer: *peer,
+            _guard: self.dashpay_lock_contact_request_action(owner, peer).await,
+        }
     }
 
     pub(crate) fn dashpay_clear_contact_request_action(

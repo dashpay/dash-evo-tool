@@ -10,7 +10,7 @@ use crate::context::AppContext;
 use crate::model::dashpay::contact_request_recipient;
 use crate::model::document::new_document_for_creation;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::wallet_backend::ContactRequestActionKind;
+use crate::wallet_backend::{ContactRequestActionKind, HeldPeerLock};
 // Upstream contact-request type: used to record the sent request in the
 // local wallet-manager so dashpay_sync can auto-establish the contact.
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -262,7 +262,7 @@ async fn send_contact_request_inner(
     to_username_or_id: String,
     account_label: Option<String>,
     qr_code: Option<crate::model::dashpay_contact_qr::ContactQrCode>,
-    held: Option<&HeldPeerLock<'_>>,
+    held: Option<&HeldPeerLock>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     if let Some(label) = account_label.as_deref()
         && let Err(error) = crate::model::dashpay::validate_account_label(label)
@@ -634,16 +634,6 @@ async fn send_contact_request_inner(
     ))
 }
 
-/// A caller's borrow of the request-action lock it holds for `owner` and
-/// `peer` (see `WalletBackend::dashpay_lock_contact_request_action`). The lock
-/// is not reentrant, so code running under it is handed this instead of
-/// locking again.
-struct HeldPeerLock<'a> {
-    owner: Identifier,
-    peer: Identifier,
-    _guard: &'a tokio::sync::OwnedMutexGuard<()>,
-}
-
 /// Record a just-published request locally and re-engage its recipient.
 async fn finish_send(
     backend: &crate::wallet_backend::WalletBackend,
@@ -651,13 +641,13 @@ async fn finish_send(
     owner_id: Identifier,
     to_identity_id: Identifier,
     contact_record: UpstreamContactRequest,
-    held: Option<&HeldPeerLock<'_>>,
+    held: Option<&HeldPeerLock>,
 ) -> Result<(), TaskError> {
     // A cancel ignores the person and then records the withdrawal; a
     // re-engagement landing in between would leave this fresh request
     // withdrawn, so it waits for the person's lock.
     let _peer_guard = match held {
-        Some(held) if held.owner == owner_id && held.peer == to_identity_id => None,
+        Some(held) if held.covers(&owner_id, &to_identity_id) => None,
         _ => Some(
             backend
                 .dashpay_lock_contact_request_action(&owner_id, &to_identity_id)
@@ -733,9 +723,9 @@ pub async fn accept_contact_request(
     // Accept, decline and cancel lock on the person too: a cancel of the
     // owner's request to them must not record a withdrawal while this accept
     // establishes the contact.
-    let peer_guard = app_context
+    let peer_lock = app_context
         .wallet_backend()?
-        .dashpay_lock_contact_request_action(&owner_id, &from_identity_id)
+        .dashpay_lock_contact_peer(&owner_id, &from_identity_id)
         .await;
 
     // Check if we already sent a contact request to this identity
@@ -856,11 +846,7 @@ pub async fn accept_contact_request(
         from_identity_id.to_string(Encoding::Base58),
         Some("Accepted contact".to_string()),
         None,
-        Some(&HeldPeerLock {
-            owner: owner_id,
-            peer: from_identity_id,
-            _guard: &peer_guard,
-        }),
+        Some(&peer_lock),
     )
     .await;
 
@@ -1612,9 +1598,7 @@ mod tests {
         backend
             .dashpay_mark_withdrawn(&owner, &peer)
             .expect("withdraw");
-        let guard = backend
-            .dashpay_lock_contact_request_action(&owner, &peer)
-            .await;
+        let peer_lock = backend.dashpay_lock_contact_peer(&owner, &peer).await;
 
         let finished = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -1624,11 +1608,7 @@ mod tests {
                 owner,
                 peer,
                 sent_record(owner, peer),
-                Some(&HeldPeerLock {
-                    owner,
-                    peer,
-                    _guard: &guard,
-                }),
+                Some(&peer_lock),
             ),
         )
         .await

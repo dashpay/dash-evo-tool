@@ -214,9 +214,12 @@ where
             tokio::time::timeout_at(deadline, sync_now())
                 .await
                 .map_err(TokenBalanceSyncError::TimedOut)?;
+            // Slot free after the wait: either our pass ran, or a pass that
+            // took the slot first started after the watch lists were
+            // registered, so it is fresh too. Busy again: wait and retry.
             // TODO(upstream): `IdentitySyncManager::sync_now()` should report
-            // whether it ran or skipped; sampling `is_syncing()` cannot tell a
-            // skipped call whose blocking pass ended in between from our own pass.
+            // whether it ran; a call skipped by a shutdown quiesce looks like
+            // a finished pass here (the `cancel` token covers that case).
             if !is_syncing() {
                 return Ok(());
             }

@@ -131,7 +131,7 @@ fn next_page_start(
     page_last_end_time: Option<TimestampMillis>,
     range_end: TimestampMillis,
 ) -> Option<PageStart> {
-    // TODO(upstream): <link to the dashpay/platform issue>. An empty page does not prove
+    // TODO(upstream): an empty page does not prove
     // the rest of the range empty: the limit also counts empty end-time trees, which a
     // proved page never returns, so a page of `limit` legacy empty trees comes back
     // empty and ends the walk before the polls behind them. Proved queries refuse an

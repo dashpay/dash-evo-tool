@@ -167,6 +167,10 @@ pub struct DocumentActionScreen {
 
     // The document fetch whose result the form waits for
     pending_fetch: PendingRequest,
+
+    // The document action broadcast whose result or error alone ends
+    // `BroadcastStatus::Broadcasting`
+    pending_broadcast: PendingRequest,
 }
 
 impl DocumentActionScreen {
@@ -224,6 +228,7 @@ impl DocumentActionScreen {
             completed_fee_result: None,
             refresh_banner: None,
             pending_fetch: PendingRequest::default(),
+            pending_broadcast: PendingRequest::default(),
         }
     }
 
@@ -251,6 +256,15 @@ impl DocumentActionScreen {
         self.broadcast_status = BroadcastStatus::Fetching;
         let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(query)));
         self.pending_fetch.dispatch_with(task, ())
+    }
+
+    /// Send the document action and wait on that broadcast alone: only its
+    /// own result or error ends it, so no other task can reopen the form for
+    /// a second, paid send while it runs.
+    fn start_broadcast(&mut self, ctx: &egui::Context, task: BackendTask) -> AppAction {
+        self.broadcast_status = BroadcastStatus::Broadcasting;
+        self.set_fetching_banner(ctx, "Broadcasting...");
+        self.pending_broadcast.dispatch(task)
     }
 
     /// Stop waiting on an outstanding document fetch, so its result or error
@@ -338,6 +352,7 @@ impl DocumentActionScreen {
         self.recipient_id_input.clear();
         self.fetched_documents.clear();
         self.pending_fetch.clear();
+        self.pending_broadcast.clear();
     }
 
     fn render_contract_and_type_selection(&mut self, ui: &mut Ui) {
@@ -1044,9 +1059,7 @@ impl DocumentActionScreen {
         {
             let task = self.create_document_action();
             if task != BackendTask::None {
-                self.broadcast_status = BroadcastStatus::Broadcasting;
-                self.set_fetching_banner(ui.ctx(), "Broadcasting...");
-                action = AppAction::BackendTask(task);
+                action = self.start_broadcast(ui.ctx(), task);
             }
         }
 
@@ -1828,39 +1841,38 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn refresh(&mut self) {
-        // Backend messages are handled via display_message
+        // Task outcomes arrive in display_backend_task_result/_error.
     }
 
-    fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
-        if matches!(
-            message_type,
-            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
-        ) {
-            self.refresh_banner.take_and_clear();
-        }
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        self.broadcast_status = BroadcastStatus::NotBroadcasted;
-    }
+    // No `display_message` override: a message may come from any task, such
+    // as a background scheduled-vote sweep, so it must not end a fetch or a
+    // broadcast. Their own errors arrive in `display_backend_task_error`.
 
     fn display_backend_task_result(
         &mut self,
         context: &BackendTaskContext,
         result: BackendTaskSuccessResult,
     ) {
-        // Fetched documents belong to the selection that requested them; a
-        // fetch the screen no longer waits on must not fill in the form.
-        if matches!(result, BackendTaskSuccessResult::Documents(_))
-            && self.pending_fetch.settle(context).is_none()
-        {
-            return;
+        // Only the fetch and the broadcast this screen waits on change the
+        // form: fetched documents belong to the selection that requested
+        // them, and another task's result must not end a running broadcast.
+        let own = if matches!(result, BackendTaskSuccessResult::Documents(_)) {
+            self.pending_fetch.settle(context).is_some()
+        } else {
+            self.pending_broadcast.settle(context).is_some()
+        };
+        if own {
+            self.display_task_result(result);
         }
-        self.display_task_result(result);
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if self.pending_fetch.settle(context).is_some()
-            && self.broadcast_status == BroadcastStatus::Fetching
-        {
+        let own_fetch = self.pending_fetch.settle(context).is_some()
+            && self.broadcast_status == BroadcastStatus::Fetching;
+        let own_broadcast = self.pending_broadcast.settle(context).is_some()
+            && self.broadcast_status == BroadcastStatus::Broadcasting;
+        if own_fetch || own_broadcast {
+            self.refresh_banner.take_and_clear();
             self.broadcast_status = BroadcastStatus::NotBroadcasted;
         }
     }
@@ -2382,6 +2394,76 @@ mod tests {
                 "{action_type:?} waits for the running broadcast"
             );
         }
+    }
+
+    fn deleted() -> BackendTaskSuccessResult {
+        BackendTaskSuccessResult::DeletedDocument(
+            Identifier::new([9; 32]),
+            FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        )
+    }
+
+    /// A Delete form ready to send, with its broadcast running; returns the
+    /// screen and the broadcast's own dispatch context.
+    fn screen_broadcasting(dir: &std::path::Path) -> (DocumentActionScreen, BackendTaskContext) {
+        let context = crate::context::test_support::test_app_context(dir);
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+        assert!(screen.can_broadcast());
+        let own = dispatched_context(screen.start_broadcast(&ctx, BackendTask::None));
+        assert!(!screen.can_broadcast());
+        (screen, own)
+    }
+
+    /// Another task's error or message, such as a background scheduled-vote
+    /// failure, leaves a running broadcast in place, so the paid action cannot
+    /// be sent again; only the broadcast's own error ends it.
+    #[test]
+    fn only_its_own_error_ends_a_running_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, own) = screen_broadcasting(dir.path());
+        let foreign = BackendTaskContext::for_dispatch(&BackendTask::None);
+        let error = TaskError::WalletStorageNotReady;
+
+        screen.display_backend_task_error(&foreign, &error);
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        screen.display_message("A scheduled vote failed.", crate::ui::MessageType::Error);
+        screen.display_message("Theme updated.", crate::ui::MessageType::Success);
+        screen.display_backend_task_result(&foreign, deleted());
+        screen.display_backend_task_result(&BackendTaskContext::Unknown, deleted());
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+        assert!(screen.refresh_banner.is_some(), "progress stays shown");
+        assert!(screen.completed_fee_result.is_none());
+        assert!(!screen.can_broadcast(), "the running broadcast blocks");
+
+        screen.display_backend_task_error(&own, &error);
+
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.can_broadcast(), "a failed broadcast can be retried");
+    }
+
+    /// The broadcast's own result ends it as sent; a later error of the same
+    /// dispatch, or another task's message, does not reopen the form.
+    #[test]
+    fn its_own_result_ends_a_running_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, own) = screen_broadcasting(dir.path());
+
+        screen.display_backend_task_result(&own, deleted());
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.completed_fee_result.is_some());
+
+        screen.display_backend_task_error(&own, &TaskError::WalletStorageNotReady);
+        screen.display_message("A scheduled vote failed.", crate::ui::MessageType::Error);
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasted);
     }
 
     /// A new fetch drops the document fetched before it. When the new fetch

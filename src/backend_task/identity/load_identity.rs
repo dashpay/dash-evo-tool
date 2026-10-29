@@ -80,6 +80,43 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
     }
 }
 
+/// Drop `existing`'s voter identity and voting keys when the masternode list
+/// names a different voting key (`current_voting_hash`), so a merge cannot
+/// carry a retired voting key over a load that found no replacement. With no
+/// list to check against (`None`), everything is kept.
+fn drop_retired_voting_key(
+    existing: &mut QualifiedIdentity,
+    current_voting_hash: Option<[u8; 20]>,
+) {
+    use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+    let Some(current) = current_voting_hash else {
+        return;
+    };
+    let retired =
+        |key: &dash_sdk::platform::IdentityPublicKey| key.public_key_hash().ok() != Some(current);
+    if existing
+        .associated_voter_identity
+        .as_ref()
+        .is_some_and(|(_, key)| retired(key))
+    {
+        existing.associated_voter_identity = None;
+    }
+    let retired_keys: Vec<_> = existing
+        .private_keys
+        .identity_public_keys()
+        .into_iter()
+        .filter(|(target, key)| {
+            **target == PrivateKeyOnVoterIdentity && retired(&key.identity_public_key)
+        })
+        .map(|(target, key)| (target.clone(), key.identity_public_key.id()))
+        .collect();
+    for placement in retired_keys {
+        // TODO: a retired voting key's vault secret, if it had one, stays in
+        // the vault, as an `Overwrite` load leaves a replaced key's today.
+        existing.private_keys.remove_at(&placement);
+    }
+}
+
 /// How a load writes the identity record once its keys are settled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IdentityRecordWrite {
@@ -232,20 +269,22 @@ impl AppContext {
             encrypted_private_keys.extend(wallet_private_keys);
         }
 
+        // The voting key is not on the node's identity: the masternode list
+        // says which one is current.
+        let current_voting_hash = match self.wallet_backend() {
+            Ok(backend)
+                if identity_type != IdentityType::User && voting_private_key_bytes.is_none() =>
+            {
+                backend.masternode_voting_key_hash(identity.id()).await
+            }
+            _ => None,
+        };
         // A node key left blank may be held by one of this device's wallets:
         // reference it at its derivation path instead of asking for it. A
         // merge never swaps a key the node already stores for a reference, but
         // a stored node key the network has since disabled or replaced does not
         // count: after a rotation the new key is looked up.
         let (node_key_hashes, wallet_keys) = if identity_type != IdentityType::User {
-            // The voting key is not on the node's identity: the masternode list
-            // says which one is current.
-            let current_voting_hash = match self.wallet_backend() {
-                Ok(backend) if voting_private_key_bytes.is_none() => {
-                    backend.masternode_voting_key_hash(identity.id()).await
-                }
-                _ => None,
-            };
             let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
                 load_mode == IdentityLoadMode::MergeIntoExisting
                     && existing_stored.as_ref().is_some_and(|existing| {
@@ -535,6 +574,7 @@ impl AppContext {
             merge_seal_password.as_ref(),
             &load_guard,
             encryption_password.as_ref(),
+            current_voting_hash,
         )?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
@@ -557,6 +597,9 @@ impl AppContext {
     /// Store a fetched identity under its record lock, after confirming that
     /// this load is still current: removal, a fresh import and protection
     /// changes may have happened while the network requests were in flight.
+    ///
+    /// `current_voting_hash` is the voting key the masternode list names for
+    /// a node, if read: a merge drops a stored voting key that differs.
     fn finish_identity_load_storage(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -564,6 +607,7 @@ impl AppContext {
         merge_password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
         load_guard: &crate::context::identity_load_registry::IdentityLoadGuard,
         encryption_password: Option<&crate::model::secret::Secret>,
+        current_voting_hash: Option<[u8; 20]>,
     ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
         if let Some(password) = encryption_password {
             validate_protection_password(password)?;
@@ -589,7 +633,7 @@ impl AppContext {
         if !self.is_identity_listed(&identity_id)? {
             return Err(TaskError::IdentityNotFoundLocally);
         }
-        let existing = self
+        let mut existing = self
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         if encryption_password.is_none() {
@@ -615,6 +659,7 @@ impl AppContext {
         qualified_identity.wallet_index = existing.wallet_index;
         qualified_identity.top_ups = existing.top_ups.clone();
         qualified_identity.status = existing.status;
+        drop_retired_voting_key(&mut existing, current_voting_hash);
         match encryption_password {
             None => self.persist_merged_identity_locked(
                 qualified_identity,
@@ -1388,6 +1433,7 @@ mod tests {
             None,
             &claim,
             None,
+            None,
         );
         assert!(result.is_err(), "a scoped merge must not undo a removal");
         assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
@@ -1427,6 +1473,7 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
+                None,
                 None
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
@@ -1473,6 +1520,7 @@ mod tests {
                         mode,
                         None,
                         &old_claim,
+                        None,
                         None
                     ),
                     Err(TaskError::IdentityLoadSuperseded { .. })
@@ -1489,6 +1537,7 @@ mod tests {
                 IdentityLoadMode::Overwrite,
                 None,
                 &fresh_claim,
+                None,
                 None,
             )
             .unwrap();
@@ -1530,6 +1579,7 @@ mod tests {
                 None,
                 &claim,
                 None,
+                None,
             )
             .unwrap();
         let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
@@ -1563,6 +1613,7 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
+                None,
                 None
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
@@ -2658,6 +2709,67 @@ mod tests {
         (existing, fetched, old.id(), replacement.id())
     }
 
+    /// A stored node whose voting key is `voting_key`, with its voter identity
+    /// loaded, and a fresh load of it that found no voting key.
+    fn node_with_stored_voter() -> (QualifiedIdentity, QualifiedIdentity, IdentityPublicKey) {
+        let (mut existing, _) = masternode_shaped_qi();
+        existing.private_keys = KeyStorage::default();
+        let mut fetched = existing.clone();
+        let voting_key = node_key(0, Purpose::VOTING, false);
+        let voter =
+            Identity::create_basic_identity(Identifier::random(), PlatformVersion::latest())
+                .unwrap();
+        existing.private_keys.insert_at(
+            (V, voting_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voting_key.clone()),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+        existing.associated_voter_identity = Some((voter, voting_key.clone()));
+        fetched.associated_voter_identity = None;
+        (existing, fetched, voting_key)
+    }
+
+    fn voting_hash(key: &IdentityPublicKey) -> [u8; 20] {
+        use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+        key.public_key_hash().unwrap()
+    }
+
+    /// After the masternode list reports a new voting key, a merge that found
+    /// no replacement must not bring the retired voter back: the node would
+    /// still look ready to vote with a key the network no longer accepts.
+    #[test]
+    fn a_retired_voting_key_is_not_carried_into_the_merge() {
+        let (mut existing, mut fetched, voting_key) = node_with_stored_voter();
+
+        drop_retired_voting_key(&mut existing, Some(rand::random()));
+        merge_existing_keys_into(&mut fetched, existing);
+
+        assert!(fetched.associated_voter_identity.is_none());
+        assert!(!fetched.private_keys.has(&(V, voting_key.id())));
+        assert!(!fetched.can_cast_masternode_vote());
+    }
+
+    /// A voting key the masternode list still names, or one that cannot be
+    /// checked because the list is unavailable, is kept.
+    #[test]
+    fn a_current_or_unchecked_voting_key_is_kept() {
+        for current in [None, Some(())] {
+            let (mut existing, mut fetched, voting_key) = node_with_stored_voter();
+            let current = current.map(|()| voting_hash(&voting_key));
+
+            drop_retired_voting_key(&mut existing, current);
+            merge_existing_keys_into(&mut fetched, existing);
+
+            assert!(fetched.associated_voter_identity.is_some(), "{current:?}");
+            assert!(
+                fetched.private_keys.has(&(V, voting_key.id())),
+                "{current:?}"
+            );
+        }
+    }
+
     /// After a key rotation, a merge keeps the replaced key's private half
     /// but takes its disabled state from the fetched identity, so the
     /// withdrawal screen offers only the replacement.
@@ -2944,6 +3056,7 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 Some(&password),
                 &claim,
+                None,
                 None
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
@@ -2960,6 +3073,7 @@ mod tests {
             IdentityLoadMode::MergeIntoExisting,
             Some(&password),
             &claim,
+            None,
             None,
         )
         .expect("seal and persist a merged key under the current password");

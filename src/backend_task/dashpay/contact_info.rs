@@ -297,7 +297,10 @@ impl SaveOps for PlatformSaveOps<'_> {
         &self,
         details: ContactDetails,
     ) -> Result<ContactInfoPublishOutcome, TaskError> {
-        // TODO: preserved fields come from `current()`'s read; upstream set_contact_info has no expected-revision check, so a newer edit from another device in between is overwritten.
+        // TODO(upstream): https://github.com/dashpay/platform/issues/5545 —
+        // preserved fields come from `current()`'s read; upstream
+        // set_contact_info has no expected-revision check, so a newer edit from
+        // another device in between is overwritten.
         self.backend
             .dashpay_set_contact_info(self.identity, &self.contact_id, details)
             .await

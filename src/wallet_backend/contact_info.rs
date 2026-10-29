@@ -269,10 +269,10 @@ impl PublishedContactInfos {
 
 /// Open `documents` (oldest first) through `crypto`; the newest document per
 /// contact wins, readable or not.
-// TODO(upstream): dip15-contactinfo-reader — replace with a platform-wallet
-// contactInfo-only, provider-backed read for seedless wallets once one exists;
-// platform-wallet's own drain is crate-private and runs unrelated contact work.
-// Upstream request drafted, not yet filed.
+// TODO(upstream): https://github.com/dashpay/platform/issues/5595 — replace
+// with a platform-wallet contactInfo-only, provider-backed read for seedless
+// wallets once one exists; platform-wallet's own drain is crate-private and
+// runs unrelated contact work.
 async fn open_contact_info_documents(
     crypto: &ContactInfoCrypto<'_>,
     documents: &[Document],

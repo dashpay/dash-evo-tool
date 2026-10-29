@@ -1171,7 +1171,7 @@ As a user, I want to cancel a contact request I sent so that it stops sitting in
 
 - A DashPay contact request is immutable on Platform and cannot be deleted, so cancelling cannot un-send it. The UI states this plainly rather than implying a withdrawal.
 - Cancelling re-checks the request against the network first: it must still exist, must have been sent by the acting identity, and must not have already been answered.
-- Cancelling publishes a hidden contact-info document and records the withdrawal locally, so the request leaves the sent list and stays gone across restarts.
+- Cancelling records the withdrawal on this device only and publishes nothing, so the request leaves the sent list and stays gone across restarts.
 - A request the other person already accepted is reported as an established contact instead of being cancelled.
 
 ---

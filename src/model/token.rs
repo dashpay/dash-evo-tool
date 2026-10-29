@@ -67,8 +67,13 @@ pub fn parse_once_per_identity_amount(
 /// The amount every identity may claim once from `config`, when the token has
 /// a once-per-identity distribution (protocol version 14).
 pub fn once_per_identity_amount(config: &TokenConfiguration) -> Option<TokenAmount> {
-    config
-        .distribution_rules()
+    once_per_identity_amount_in_rules(config.distribution_rules())
+}
+
+/// The amount every identity may claim once under `rules`, when they include
+/// a once-per-identity distribution.
+pub fn once_per_identity_amount_in_rules(rules: &TokenDistributionRules) -> Option<TokenAmount> {
+    rules
         .once_per_identity_distribution()
         .map(|distribution| distribution.amount())
 }

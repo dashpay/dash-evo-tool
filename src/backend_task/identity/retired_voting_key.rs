@@ -306,9 +306,11 @@ mod tests {
             let _attached = removal_probe.attach();
             ctx.remove_retired_voting_key_against(node_id, Some([0xEE; 20]))
         });
-        while probe.count(LockSite::RecordRequest) == 0 {
-            std::thread::yield_now();
-        }
+        let removal = probe.wait_for(
+            LockSite::RecordRequest,
+            removal,
+            std::time::Duration::from_secs(30),
+        );
         staged
             .ctx
             .write_local_qualified_identity_locked(&switched)

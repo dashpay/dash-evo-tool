@@ -416,6 +416,13 @@ fn masternode_list_is_current_at(list_height: u32, progress: &SyncProgress) -> b
 }
 
 /// Map an upstream masternode-withdrawal error to a typed [`TaskError`].
+///
+/// TODO(upstream): platform-wallet classifies a broadcast that failed with
+/// gRPC `Unavailable` as definitely failed, although the transition may
+/// already have been delivered, so such a failure arrives here as a plain
+/// error rather than `MasternodeWithdrawalUnconfirmed`. DET does not
+/// reclassify it; `MasternodeWithdrawalFailed` is worded so it never claims
+/// nothing was withdrawn. Map it here once upstream reports it as unconfirmed.
 fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
     match error {
         PlatformWalletError::Sdk(sdk) => TaskError::from(sdk),

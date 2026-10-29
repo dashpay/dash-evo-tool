@@ -96,9 +96,11 @@ mod tests {
                 .unwrap()
                 .block_on(ctx.refresh_identity(&sdk, snapshot, sender))
         });
-        while probe.count(LockSite::RecordRequest) == 0 {
-            std::thread::yield_now();
-        }
+        let refresh = probe.wait_for(
+            LockSite::RecordRequest,
+            refresh,
+            std::time::Duration::from_secs(30),
+        );
         let mut removed = before.clone();
         removed.associated_voter_identity = None;
         staged

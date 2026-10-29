@@ -1740,10 +1740,12 @@ pub enum TaskError {
     )]
     OwnerKeyWithdrawalNotAllowed,
 
-    /// A masternode credit withdrawal signed with a wallet-held key was
-    /// refused before or by the network. Nothing was withdrawn.
+    /// A masternode credit withdrawal signed with a wallet-held key failed.
+    /// Upstream also reports some ambiguous broadcast failures (for example an
+    /// unreachable node) this way, so the withdrawal may still have gone
+    /// through; the message never claims that nothing was withdrawn.
     #[error(
-        "Your masternode withdrawal did not go through and nothing was withdrawn. Wait a moment and try again. If it keeps failing, check the amount."
+        "Your masternode withdrawal could not be completed. Refresh the node and check its balance and withdrawal history before you try again, so you do not withdraw twice."
     )]
     MasternodeWithdrawalFailed {
         #[source]

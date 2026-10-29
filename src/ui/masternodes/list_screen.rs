@@ -169,7 +169,6 @@ impl MasternodesScreen {
         screen
     }
 
-    /// The visible segment.
     /// Test seam: what the open node's retired-voting-key check answered,
     /// `None` with no node open or no answer yet.
     #[cfg(feature = "testing")]
@@ -181,6 +180,7 @@ impl MasternodesScreen {
         }
     }
 
+    /// The visible segment.
     pub fn segment(&self) -> MasternodesSegment {
         self.segment
     }

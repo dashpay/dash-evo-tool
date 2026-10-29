@@ -877,10 +877,12 @@ impl AppContext {
     /// caller that read the record before a concurrent change (for example a
     /// key removal) writes that change away, including keys whose vault
     /// secrets are already gone. Resolved by moving identity keys and scalar
-    /// fields onto platform-wallet's `IdentityManager`, whose
-    /// `IdentityChangeSet` / `IdentityKeysChangeSet` persist field-scoped
-    /// deltas instead of whole records. Until then, prefer
-    /// [`Self::edit_local_qualified_identity`] for new writers.
+    /// fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,

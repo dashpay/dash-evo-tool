@@ -1587,10 +1587,11 @@ mod tests {
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
     }
 
-    /// An accept sends its reply under the person's lock it already holds;
-    /// finishing that send must not wait on the same lock again.
+    /// An accept sends its reply under the person's lock it already holds and
+    /// hands that lock down; `finish_send` is the only place the send path
+    /// takes the lock, so the reply finishes instead of waiting on itself.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_send_under_the_callers_own_lock_finishes() {
+    async fn an_accepts_reply_under_its_own_peer_lock_finishes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
         let backend = app_context.wallet_backend().expect("backend");
@@ -1616,6 +1617,36 @@ mod tests {
 
         finished.expect("send finished");
         assert!(!backend.dashpay_disengaged_from(&owner, &peer));
+    }
+
+    /// A lock held for someone else does not stand in for the recipient's:
+    /// the send still waits for a cancel holding the recipient's lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lock_held_for_another_person_does_not_skip_the_wait() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = app_context.wallet_backend().expect("backend");
+        let (owner, peer, other) = (id(1), id(2), id(3));
+        let other_lock = backend.dashpay_lock_contact_peer(&owner, &other).await;
+        let cancel_guard = backend
+            .dashpay_lock_contact_request_action(&owner, &peer)
+            .await;
+
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            finish_send(
+                &backend,
+                &bip39::rand::random::<[u8; 32]>(),
+                owner,
+                peer,
+                sent_record(owner, peer),
+                Some(&other_lock),
+            ),
+        )
+        .await;
+
+        assert!(waited.is_err(), "the send must wait for the cancel");
+        drop(cancel_guard);
     }
 
     /// Every send re-engages, a first one included: a declined or withdrawn

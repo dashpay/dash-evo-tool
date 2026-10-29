@@ -129,6 +129,9 @@ pub mod tolerance {
     /// Upstream's minimum fee for a Platform transition, which is what the
     /// network checks the balance against.
     pub const PLATFORM_MIN_FEE: EstimateTolerance = EstimateTolerance::NONE;
+    /// Upstream's shielded fee and the shield planner's fee reserve, which
+    /// are what the network and the planner charge and keep back.
+    pub const SHIELDED_FEE: EstimateTolerance = EstimateTolerance::NONE;
     /// DET's storage estimate for a document, token or contract write. No
     /// headroom yet; it is floored at upstream's minimum fee.
     pub const PLATFORM_STORAGE: EstimateTolerance = EstimateTolerance::NONE;
@@ -1043,9 +1046,11 @@ pub(crate) fn estimate_withdrawal_fee_from_transition(
         input_witnesses: Vec::new(),
     });
 
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
+    tolerance::PLATFORM_MIN_FEE.apply_fee(
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0),
+    )
 }
 
 /// Fee, in credits, the network takes from a Core wallet funding before the
@@ -1062,7 +1067,9 @@ fn shield_from_core_pool_fee_credits(
         .asset_locks
         .required_asset_lock_duff_balance_for_processing_start_for_address_funding
         .saturating_mul(CREDITS_PER_DUFF);
-    Ok(shielded_fee_for_actions(2, platform_version)?.saturating_add(funding_cost_credits))
+    Ok(tolerance::SHIELDED_FEE.apply_fee(
+        shielded_fee_for_actions(2, platform_version)?.saturating_add(funding_cost_credits),
+    ))
 }
 
 /// A shield from the Core wallet: the funding to lock, and the credits that
@@ -1083,7 +1090,11 @@ pub(crate) fn identity_topup_min_funding_duffs(
 ) -> Result<u64, Box<ProtocolError>> {
     IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
         .calculate_min_required_fee(platform_version)
-        .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+        .map(|credits| {
+            tolerance::PLATFORM_MIN_FEE
+                .apply_fee(credits)
+                .div_ceil(CREDITS_PER_DUFF)
+        })
         .map_err(Box::new)
 }
 
@@ -1098,7 +1109,11 @@ pub(crate) fn identity_create_min_funding_duffs(
 ) -> Result<u64, Box<ProtocolError>> {
     identity_create_transition(key_count)
         .calculate_min_required_fee(platform_version)
-        .map(|credits| credits.div_ceil(CREDITS_PER_DUFF))
+        .map(|credits| {
+            tolerance::PLATFORM_MIN_FEE
+                .apply_fee(credits)
+                .div_ceil(CREDITS_PER_DUFF)
+        })
         .map_err(Box::new)
 }
 
@@ -1120,9 +1135,11 @@ pub(crate) fn estimate_address_funding_fee_from_transition(
             ..Default::default()
         });
 
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
+    tolerance::PLATFORM_MIN_FEE.apply_fee(
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0),
+    )
 }
 
 /// Result of allocating platform addresses for a transfer.
@@ -1441,7 +1458,7 @@ pub fn shielded_fee_for_actions(
 /// the Platform address. `0` when the protocol version has no shielded-fee
 /// formula (the backend re-validates before dispatch).
 pub fn shield_from_balance_fee_estimate(platform_version: &PlatformVersion) -> u64 {
-    shielded_fee_for_actions(2, platform_version).unwrap_or(0)
+    tolerance::SHIELDED_FEE.apply_fee(shielded_fee_for_actions(2, platform_version).unwrap_or(0))
 }
 
 /// Fee (duffs) a Core payment saves when its output script is `script_len`
@@ -1459,12 +1476,62 @@ pub fn core_output_script_fee_saved_duffs(priced_script_len: usize, script_len: 
 /// the protocol version has no shielded-fee formula (the backend re-validates
 /// before dispatch).
 pub fn shield_from_balance_fee_headroom(platform_version: &PlatformVersion) -> u64 {
+    tolerance::SHIELDED_FEE.apply_fee(shield_fee_reserve(platform_version))
+}
+
+/// The shield-from-Platform Max offered for `upstream_max_credits`, the
+/// largest amount the upstream shield planner accepts. It is lowered by
+/// exactly what [`shield_from_balance_fee_headroom`] adds to the planner's
+/// reserve, so the two never add up to more than the addresses hold.
+pub fn shield_from_balance_max_credits(
+    upstream_max_credits: u64,
+    platform_version: &PlatformVersion,
+) -> u64 {
+    tolerance::SHIELDED_FEE.apply_max(upstream_max_credits, shield_fee_reserve(platform_version))
+}
+
+/// The upstream shield planner's fee reserve, or `0` when the protocol
+/// version has no shielded-fee formula.
+fn shield_fee_reserve(platform_version: &PlatformVersion) -> u64 {
     platform_wallet::shield_fee_reserve_credits(platform_version).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The upstream-derived Platform and shielded fee helpers go through the
+    /// tolerance hook, and a shield Max is lowered by exactly what the hook
+    /// adds to the fee it keeps back. Both tolerances are zero today, so the
+    /// values are upstream's own.
+    #[test]
+    fn platform_and_shielded_helpers_go_through_the_tolerance_hook() {
+        let version = PlatformVersion::latest();
+        let reserve = platform_wallet::shield_fee_reserve_credits(version).expect("reserve");
+        assert_eq!(
+            shield_from_balance_fee_headroom(version),
+            tolerance::SHIELDED_FEE.apply_fee(reserve)
+        );
+        assert_eq!(
+            shield_from_balance_max_credits(1_000_000_000, version),
+            tolerance::SHIELDED_FEE.apply_max(1_000_000_000, reserve)
+        );
+        assert_eq!(shield_from_balance_max_credits(0, version), 0);
+        let shielded = shielded_fee_for_actions(2, version).expect("shielded fee");
+        assert_eq!(
+            shield_from_balance_fee_estimate(version),
+            tolerance::SHIELDED_FEE.apply_fee(shielded)
+        );
+        let top_up = IdentityTopUpTransition::V0(IdentityTopUpTransitionV0::default())
+            .calculate_min_required_fee(version)
+            .expect("top-up fee");
+        assert_eq!(
+            identity_topup_min_funding_duffs(version).expect("minimum"),
+            tolerance::PLATFORM_MIN_FEE
+                .apply_fee(top_up)
+                .div_ceil(CREDITS_PER_DUFF)
+        );
+    }
 
     /// Every optional token feature adds exactly its own fee from the given
     /// table, on top of the base, token, keyword and headroom terms.

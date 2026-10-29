@@ -784,7 +784,10 @@ impl WalletBackend {
                     .await
                     .map(|preflight| {
                         if preflight.can_shield {
-                            preflight.max_shieldable_credits
+                            crate::model::fee_estimation::shield_from_balance_max_credits(
+                                preflight.max_shieldable_credits,
+                                self.sdk().version(),
+                            )
                         } else {
                             0
                         }

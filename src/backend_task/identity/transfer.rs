@@ -80,11 +80,13 @@ impl AppContext {
             .find(|qi| qi.identity.id() == to_identifier)
         {
             receiver.identity.set_balance(receiver_balance);
+            // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
             self.update_local_qualified_identity(receiver)?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
     }

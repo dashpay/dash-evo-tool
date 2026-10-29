@@ -1100,6 +1100,7 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
@@ -1176,6 +1177,7 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);

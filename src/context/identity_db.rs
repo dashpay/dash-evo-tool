@@ -872,6 +872,15 @@ impl AppContext {
     /// writer's read-modify-write. A caller that must keep its own read and
     /// this write atomic holds that guard itself and calls
     /// [`Self::write_local_qualified_identity_locked`] instead.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removal) writes that change away, including keys whose vault
+    /// secrets are already gone. Resolved by moving identity keys and scalar
+    /// fields onto platform-wallet's `IdentityManager`, whose
+    /// `IdentityChangeSet` / `IdentityKeysChangeSet` persist field-scoped
+    /// deltas instead of whole records. Until then, prefer
+    /// [`Self::edit_local_qualified_identity`] for new writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,

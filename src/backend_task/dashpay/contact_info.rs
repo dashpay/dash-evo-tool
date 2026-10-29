@@ -231,6 +231,9 @@ async fn save_contact_details<O: SaveOps>(
         alias_name: details.nickname.clone(),
         note: details.note.clone(),
         display_hidden: details.hidden,
+        // TODO(upstream): https://github.com/dashpay/platform/issues/5657 —
+        // platform-wallet's save writes an empty list too, erasing the accepted
+        // accounts already stored for the contact.
         accepted_accounts: Vec::new(),
     })
     .map_err(|source| TaskError::DashPayContactInfoEncoding {

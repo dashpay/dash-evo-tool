@@ -6,6 +6,9 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
@@ -120,20 +123,23 @@ impl AppContext {
 
                         // Group action with balance - only update if action is closed
                         MintResult::GroupActionWithBalance(_, status, Some(amount)) => {
-                            if matches!(status, GroupActionStatus::ActionClosed) {
-                                // Get the recipient identity (either optional_recipient or sending_identity)
-                                let recipient_id = optional_recipient
-                                    .unwrap_or_else(|| sending_identity.identity.id());
-                                if let Err(e) = self.insert_token_identity_balance(
+                            if matches!(status, GroupActionStatus::ActionClosed)
+                                && let Some(recipient_id) = group_mint_recipient(
+                                    optional_recipient,
+                                    data_contract
+                                        .expected_token_configuration(token_position)
+                                        .ok(),
+                                )
+                                && let Err(e) = self.insert_token_identity_balance(
                                     &token_id,
                                     &recipient_id,
                                     amount,
-                                ) {
-                                    tracing::error!(
-                                        "Failed to update token balance from group action: {}",
-                                        e
-                                    );
-                                }
+                                )
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from group action: {}",
+                                    e
+                                );
                             }
                         }
 
@@ -145,5 +151,61 @@ impl AppContext {
             BackendTaskSuccessResult::MintedTokens,
         )
         .await
+    }
+}
+
+/// The identity a closed group mint credited: the recipient the mint named,
+/// or else the token's configured destination, which Platform mints to when
+/// none is named. `None` when neither is known, so no balance is cached.
+fn group_mint_recipient(
+    optional_recipient: Option<Identifier>,
+    token_config: Option<&TokenConfiguration>,
+) -> Option<Identifier> {
+    optional_recipient.or_else(|| {
+        token_config?
+            .distribution_rules()
+            .new_tokens_destination_identity()
+            .copied()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+
+    fn config_with_destination(destination: Option<Identifier>) -> TokenConfiguration {
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config
+            .distribution_rules
+            .set_new_tokens_destination_identity(destination);
+        config.into()
+    }
+
+    #[test]
+    fn a_named_recipient_is_credited() {
+        let named = Identifier::random();
+        let config = config_with_destination(Some(Identifier::random()));
+        assert_eq!(
+            group_mint_recipient(Some(named), Some(&config)),
+            Some(named)
+        );
+    }
+
+    /// A mint that names no recipient goes to the token's configured
+    /// destination, never to the proposer that signed it.
+    #[test]
+    fn an_unnamed_recipient_is_the_configured_destination() {
+        let destination = Identifier::random();
+        let config = config_with_destination(Some(destination));
+        assert_eq!(group_mint_recipient(None, Some(&config)), Some(destination));
+    }
+
+    #[test]
+    fn no_recipient_and_no_destination_caches_nothing() {
+        let config = config_with_destination(None);
+        assert_eq!(group_mint_recipient(None, Some(&config)), None);
+        assert_eq!(group_mint_recipient(None, None), None);
     }
 }

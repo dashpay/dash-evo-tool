@@ -12,8 +12,8 @@ use crate::model::dpns::{
     validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
-    registration_key_status,
+    UsernameAvailability, dpns_security_levels, dpns_signing_requirement,
+    missing_registration_wallets, registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::identity_key_usability::SigningScope;
@@ -31,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{
     MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
 };
-use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_security_levels};
 use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
 };
@@ -591,25 +591,24 @@ impl RegisterDpnsNameScreen {
             egui::CollapsingHeader::new("Advanced")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let document_type = self
-                        .app_context
-                        .dpns_contract()
-                        .document_type_cloned_for_name("domain")
-                        .ok();
+                    let dpns_contract = self.app_context.dpns_contract();
+                    // The levels both registration documents accept, as the
+                    // automatic choice and the backend's check of a chosen
+                    // key use them.
+                    let levels = dpns_security_levels(dpns_signing_requirement(&dpns_contract));
                     if self.selected_key.is_none() {
-                        self.selected_key = identity
-                            .username_registration_key(&self.app_context.dpns_contract())
-                            .cloned();
+                        self.selected_key =
+                            identity.username_registration_key(&dpns_contract).cloned();
                     }
-                    action |= add_key_chooser_with_doc_type(
+                    action |= add_key_chooser_with_security_levels(
                         ui,
                         &self.app_context,
                         &identity,
                         &mut self.selected_key,
                         TransactionType::UsernameRegistration,
-                        document_type.as_ref(),
+                        &levels,
                         SigningScope::ContractWide {
-                            contract_id: self.app_context.dpns_contract().id(),
+                            contract_id: dpns_contract.id(),
                         },
                     );
                 });

@@ -155,15 +155,14 @@ pub fn chosen_key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> bool {
+    use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     key.purpose() == Purpose::AUTHENTICATION
         && DPNS_SIGNING_KEY_TYPES.contains(&key.key_type())
         && !key.is_disabled()
         && super::identity_key_usability::bounds_permit(key.contract_bounds(), dpns_signing_scope())
             != Some(false)
-        && key.security_level() != SecurityLevel::MASTER
-        && key.security_level() <= required
+        && dpns_security_levels(required).contains(&key.security_level())
 }
 
 /// The key types a username registration is signed with: ECDSA keys, as
@@ -205,6 +204,28 @@ pub fn dpns_signing_requirement(
         .map(|document_type| document_type.security_level_requirement())
         .min()
         .unwrap_or(dash_sdk::dpp::identity::SecurityLevel::HIGH)
+}
+
+/// The key security levels that may sign documents requiring `required`
+/// security in a username registration: CRITICAL up to and including
+/// `required`, since a stronger key meets a weaker requirement, and never
+/// MASTER. Empty when `required` is MASTER. The one source of the levels for
+/// the automatic choice ([`QualifiedIdentity::username_registration_key`]),
+/// the Advanced key chooser, and the check of a key the user chose
+/// ([`chosen_key_can_sign_documents`]); pass [`dpns_signing_requirement`] so
+/// both registration documents decide.
+pub fn dpns_security_levels(
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> Vec<dash_sdk::dpp::identity::SecurityLevel> {
+    use dash_sdk::dpp::identity::SecurityLevel;
+    [
+        SecurityLevel::CRITICAL,
+        SecurityLevel::HIGH,
+        SecurityLevel::MEDIUM,
+    ]
+    .into_iter()
+    .filter(|level| *level <= required)
+    .collect()
 }
 
 /// Whether this device holds a private key that can sign username registrations

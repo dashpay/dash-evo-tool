@@ -353,6 +353,50 @@ pub(crate) fn dashpay_contract() -> dash_sdk::platform::DataContract {
     .expect("the DashPay contract")
 }
 
+/// The DPNS system contract with its `preorder` and `domain` document types
+/// replaced by minimal types requiring `preorder` and `domain` security, for
+/// tests where the two registration documents disagree.
+pub(crate) fn dpns_contract_requiring(
+    preorder: dash_sdk::dpp::identity::SecurityLevel,
+    domain: dash_sdk::dpp::identity::SecurityLevel,
+) -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::document_type::DocumentType;
+    use dash_sdk::dpp::platform_value::platform_value;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    let version = dash_sdk::dpp::version::PlatformVersion::latest();
+    let mut contract =
+        load_system_data_contract(SystemDataContract::DPNS, version).expect("the DPNS contract");
+    let config = DataContractConfig::default_for_version(version).expect("config");
+    for (name, level) in [("preorder", preorder), ("domain", domain)] {
+        let document_type = DocumentType::try_from_schema(
+            contract.id(),
+            1,
+            config.version(),
+            name,
+            platform_value!({
+                "type": "object",
+                "signatureSecurityLevelRequirement": level as u8 as u32,
+                "properties": {"value": {"type": "string", "maxLength": 20_u32, "position": 0_u32}},
+                "additionalProperties": false,
+            }),
+            None,
+            &std::collections::BTreeMap::new(),
+            &config,
+            false,
+            &mut Vec::new(),
+            version,
+        )
+        .expect("a document type");
+        contract
+            .document_types_mut()
+            .insert(name.to_string(), document_type);
+    }
+    contract
+}
+
 /// A user identity whose only key, key 1 (an ECDSA HIGH AUTHENTICATION key
 /// bound to `bounds`), is held as a reference into an open test wallet, and
 /// that wallet.

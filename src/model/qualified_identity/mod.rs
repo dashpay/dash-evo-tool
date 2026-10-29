@@ -8,7 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
-use crate::model::dpns_usernames::DPNS_SIGNING_KEY_TYPES;
+use crate::model::dpns_usernames::{
+    DPNS_SIGNING_KEY_TYPES, dpns_security_levels, dpns_signing_requirement,
+};
 use crate::model::identity_key_usability::{
     KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, document_security_levels, now_ms,
     select_identity_signing_key,
@@ -1206,22 +1208,27 @@ impl QualifiedIdentity {
         )
     }
 
-    /// The key to register a username with: a [`Self::document_signing_key`]
-    /// for DPNS `preorder` documents, across the DPNS contract (a registration
-    /// writes preorder and domain documents), of one of
-    /// [`DPNS_SIGNING_KEY_TYPES`]. `None` when `dpns_contract` has no
-    /// `preorder` type or no key qualifies.
+    /// The key to register a username with: a live AUTHENTICATION key of one
+    /// of [`DPNS_SIGNING_KEY_TYPES`], at a level both registration documents
+    /// (preorder and domain) accept ([`dpns_security_levels`] of
+    /// [`dpns_signing_requirement`], the levels the Advanced chooser offers
+    /// and the backend checks a chosen key against), whose bounds permit the
+    /// DPNS contract as a whole, picked as [`Self::signing_key_now`] picks.
+    /// `None` when no key qualifies.
     pub fn username_registration_key(
         &self,
         dpns_contract: &DataContract,
     ) -> Option<&IdentityPublicKey> {
-        let preorder = dpns_contract.document_type_for_name("preorder").ok()?;
-        self.document_signing_key(
-            SigningScope::ContractWide {
-                contract_id: dpns_contract.id(),
-            },
-            &preorder,
-            DPNS_SIGNING_KEY_TYPES,
+        let levels = dpns_security_levels(dpns_signing_requirement(dpns_contract));
+        self.signing_key_now(
+            KeyRequirements::new(
+                Purpose::AUTHENTICATION,
+                &levels,
+                SigningScope::ContractWide {
+                    contract_id: dpns_contract.id(),
+                },
+            )
+            .with_key_types(DPNS_SIGNING_KEY_TYPES),
         )
     }
 
@@ -1440,95 +1447,115 @@ impl QualifiedIdentity {
         keys
     }
 
-    /// Whether the active role can attempt a withdrawal with this identity.
+    /// Whether the active role can attempt a withdrawal with this identity:
+    /// exactly when [`Self::withdrawal_signing_key`] picks a key, the key the
+    /// withdrawal form pre-selects and the backend signs with when none is
+    /// chosen, so an open form can always sign.
     ///
-    /// Uniform across every role: a withdrawal is only ever executable with a
-    /// locally-held TRANSFER or OWNER key (see
-    /// [`resolve_withdrawal_signing_key`](Self::resolve_withdrawal_signing_key),
-    /// the backend's unconditional enforcement layer — no role currently
-    /// relaxes it). A Developer-only "any on-chain key" carve-out previously
-    /// existed here and in [`default_withdrawal_key`](Self::default_withdrawal_key)'s
-    /// caller, but nothing downstream ever accepted an on-chain-only key for
-    /// signing, so that carve-out only produced an enabled button that led to
-    /// a blank or failing withdrawal screen. Gate on the same invariant the
-    /// backend enforces, so this predicate never lies about what the screen
-    /// can actually do.
+    /// Uniform across every role. A Developer-only "any on-chain key"
+    /// carve-out previously existed here, but nothing downstream ever accepted
+    /// an on-chain-only key for signing, so it only produced an enabled button
+    /// that led to a blank or failing withdrawal screen.
     pub fn can_attempt_withdrawal(&self, _role: UserRole) -> bool {
-        !self.available_withdrawal_keys().is_empty()
+        self.withdrawal_key_status() == SigningKeyStatus::Usable
     }
 
-    /// Returns the key to pre-select for signing a withdrawal.
-    ///
-    /// Only keys whose private material is held locally are considered (via
-    /// [`available_withdrawal_keys`](Self::available_withdrawal_keys)). A
-    /// `TRANSFER` key is preferred, falling back to an `OWNER` key — mirroring
-    /// Platform's `TransferPreferred` signing-key selection. Returns `None` when
-    /// no locally-signable withdrawal key exists, so callers never pre-select an
-    /// on-chain key the signer cannot actually use.
-    pub fn default_withdrawal_key(&self) -> Option<&QualifiedIdentityPublicKey> {
-        let keys = self.available_withdrawal_keys();
-        keys.iter()
-            .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
-            .or_else(|| {
-                keys.iter()
-                    .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
+    /// The purposes a withdrawal from this identity may be signed with, in
+    /// preference order: `TRANSFER`, then `OWNER` for a masternode or evonode,
+    /// mirroring Platform's `TransferPreferred` selection.
+    fn withdrawal_purposes(&self) -> &'static [Purpose] {
+        match self.identity_type {
+            IdentityType::User => &[Purpose::TRANSFER],
+            IdentityType::Masternode | IdentityType::Evonode => {
+                &[Purpose::TRANSFER, Purpose::OWNER]
+            }
+        }
+    }
+
+    /// The key to sign a withdrawal with when none is chosen: a live key of
+    /// one of [`Self::withdrawal_purposes`] (the first purpose with a usable
+    /// key wins), of a type Platform verifies, not bound to a contract (a
+    /// withdrawal is not a batch), picked as [`Self::signing_key_now`] picks,
+    /// so a key Platform refuses is passed over for the next usable one.
+    pub fn withdrawal_signing_key(&self) -> Option<&IdentityPublicKey> {
+        let levels = SecurityLevel::full_range();
+        self.withdrawal_purposes().iter().find_map(|purpose| {
+            self.signing_key_now(KeyRequirements::new(
+                *purpose,
+                &levels,
+                SigningScope::NonBatch,
+            ))
+        })
+    }
+
+    /// Whether this device can sign a withdrawal from this identity: usable
+    /// exactly when [`Self::withdrawal_signing_key`] picks a key; when not, it
+    /// tells a filed key that cannot sign apart from no filed key at all.
+    pub fn withdrawal_key_status(&self) -> SigningKeyStatus {
+        if self.withdrawal_signing_key().is_some() {
+            SigningKeyStatus::Usable
+        } else if self.holds_main_identity_key_of(self.withdrawal_purposes()) {
+            SigningKeyStatus::HeldButUnusable
+        } else {
+            SigningKeyStatus::NoneHeld
+        }
+    }
+
+    /// Whether a private key of one of `purposes` is filed for the main
+    /// identity, whether or not it can sign now.
+    fn holds_main_identity_key_of(&self, purposes: &[Purpose]) -> bool {
+        self.private_keys
+            .identity_public_keys()
+            .iter()
+            .any(|(target, key)| {
+                **target == PrivateKeyTarget::PrivateKeyOnMainIdentity
+                    && purposes.contains(&key.identity_public_key.purpose())
             })
-            .copied()
     }
 
     /// Resolves the effective key to sign an identity credit withdrawal,
     /// returning its [`KeyID`].
     ///
-    /// `requested` is the caller's explicit key choice, or `None` to auto-select.
-    /// Resolution runs against `self.identity`, which the caller must have
-    /// refreshed from Platform first: a key disabled on-chain since the identity
-    /// was last loaded is rejected here rather than reaching signing. Only keys
-    /// whose private material this app holds and whose purpose is `TRANSFER`
-    /// (preferred) or `OWNER` are eligible, mirroring Platform's
-    /// `TransferPreferred` selection.
+    /// `requested` is the caller's explicit key choice, or `None` to take
+    /// [`Self::withdrawal_signing_key`]'s choice. Resolution runs against
+    /// `self.identity`, which the caller must have refreshed from Platform
+    /// first: a key disabled on-chain since the identity was last loaded is
+    /// rejected here rather than reaching signing.
     ///
-    /// An explicit `requested` id that is unknown, disabled, or not locally
-    /// signable is rejected — never silently replaced with a different key.
-    /// Returns [`NoUsableWithdrawalKey`] when nothing eligible remains, so the
-    /// caller can surface a clear error instead of letting the SDK pick a key
-    /// (which would allow a disabled key or an unintended `OWNER` fallback).
+    /// An explicit `requested` id must be a locally held `TRANSFER` or `OWNER`
+    /// key ([`Self::available_withdrawal_keys`]) that is active and whose
+    /// private half this device can obtain; otherwise it is rejected — never
+    /// silently replaced with a different key. Its expiry is not checked: the
+    /// key chooser offers an expired key with a warning, and Platform decides
+    /// by network time. Returns [`NoUsableWithdrawalKey`] when nothing
+    /// eligible remains, so the caller can surface a clear error instead of
+    /// letting the SDK pick a key (which would allow a disabled key or an
+    /// unintended `OWNER` fallback).
     pub fn resolve_withdrawal_signing_key(
         &self,
         requested: Option<KeyID>,
     ) -> Result<KeyID, NoUsableWithdrawalKey> {
-        // Locally-held TRANSFER/OWNER keys that are also active in the current
-        // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
-        // the stored copy's disabled flag; the extra checks catch a key that was
-        // disabled on-chain after this identity was loaded, and one whose
-        // private half this device cannot obtain.
-        let usable: Vec<&QualifiedIdentityPublicKey> = self
-            .available_withdrawal_keys()
-            .into_iter()
-            .filter(|qk| {
-                matches!(
-                    self.identity.get_public_key_by_id(qk.identity_public_key.id()),
-                    Some(current) if !current.is_disabled()
-                ) && self.holds_obtainable_key(&qk.identity_public_key)
-            })
-            .collect();
-
-        if let Some(requested_id) = requested {
-            return usable
-                .iter()
-                .any(|qk| qk.identity_public_key.id() == requested_id)
-                .then_some(requested_id)
+        let Some(requested_id) = requested else {
+            return self
+                .withdrawal_signing_key()
+                .map(|key| key.id())
                 .ok_or(NoUsableWithdrawalKey);
-        }
-
-        usable
-            .iter()
-            .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
-            .or_else(|| {
-                usable
-                    .iter()
-                    .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
+        };
+        // `available_withdrawal_keys` filters on the stored copy's disabled
+        // flag; the extra checks catch a key that was disabled on-chain after
+        // this identity was loaded, and one whose private half this device
+        // cannot obtain.
+        self.available_withdrawal_keys()
+            .into_iter()
+            .any(|qk| {
+                qk.identity_public_key.id() == requested_id
+                    && matches!(
+                        self.identity.get_public_key_by_id(requested_id),
+                        Some(current) if !current.is_disabled()
+                    )
+                    && self.holds_obtainable_key(&qk.identity_public_key)
             })
-            .map(|qk| qk.identity_public_key.id())
+            .then_some(requested_id)
             .ok_or(NoUsableWithdrawalKey)
     }
 
@@ -1579,34 +1606,61 @@ impl QualifiedIdentity {
         }
     }
 
+    /// The key to sign a credit transfer with when none is chosen: a live
+    /// `TRANSFER` key of a type Platform verifies, not bound to a contract (a
+    /// transfer is not a batch), picked as [`Self::signing_key_now`] picks, so
+    /// a key Platform refuses is passed over for the next usable one.
+    pub fn transfer_signing_key(&self) -> Option<&IdentityPublicKey> {
+        self.signing_key_now(KeyRequirements::new(
+            Purpose::TRANSFER,
+            &SecurityLevel::full_range(),
+            SigningScope::NonBatch,
+        ))
+    }
+
+    /// Whether this device can sign a credit transfer from this identity:
+    /// usable exactly when [`Self::transfer_signing_key`] picks a key; when
+    /// not, it tells a filed `TRANSFER` key that cannot sign apart from no
+    /// filed `TRANSFER` key at all.
+    pub fn transfer_key_status(&self) -> SigningKeyStatus {
+        if self.transfer_signing_key().is_some() {
+            SigningKeyStatus::Usable
+        } else if self.holds_main_identity_key_of(&[Purpose::TRANSFER]) {
+            SigningKeyStatus::HeldButUnusable
+        } else {
+            SigningKeyStatus::NoneHeld
+        }
+    }
+
     /// Resolves the key to sign an identity credit transfer, returning its
     /// [`KeyID`].
     ///
-    /// `requested` is the caller's explicit key choice, or `None` to take the
-    /// usable key with the lowest id. A key is usable when `self.identity`
-    /// lists it as an active `TRANSFER` key and this device can obtain its
-    /// private half ([`holds_obtainable_key`](Self::holds_obtainable_key)).
+    /// `requested` is the caller's explicit key choice, or `None` to take
+    /// [`Self::transfer_signing_key`]'s choice.
     ///
-    /// An explicit `requested` id that is unknown, disabled, or not locally
-    /// signable is rejected — never silently replaced with a different key.
-    /// Returns [`NoUsableTransferKey`] when nothing usable remains, so the
-    /// caller can say so instead of letting the SDK take the identity's first
-    /// `TRANSFER` key, which may be disabled or not held here.
+    /// An explicit `requested` id must be a `TRANSFER` key `self.identity`
+    /// lists as active, whose private half this device can obtain
+    /// ([`holds_obtainable_key`](Self::holds_obtainable_key)); otherwise it is
+    /// rejected — never silently replaced with a different key. Its expiry is
+    /// not checked: the key chooser offers an expired key with a warning, and
+    /// Platform decides by network time. Returns [`NoUsableTransferKey`] when
+    /// nothing usable remains, so the caller can say so instead of letting
+    /// the SDK take the identity's first `TRANSFER` key, which may be disabled
+    /// or not held here.
     pub fn resolve_transfer_signing_key(
         &self,
         requested: Option<KeyID>,
     ) -> Result<KeyID, NoUsableTransferKey> {
-        let usable = |key: &&IdentityPublicKey| {
-            key.purpose() == Purpose::TRANSFER
-                && !key.is_disabled()
-                && self.holds_obtainable_key(key)
-        };
         match requested {
             Some(requested_id) => self
                 .identity
                 .get_public_key_by_id(requested_id)
-                .filter(usable),
-            None => self.identity.public_keys().values().find(usable),
+                .filter(|key| {
+                    key.purpose() == Purpose::TRANSFER
+                        && !key.is_disabled()
+                        && self.holds_obtainable_key(key)
+                }),
+            None => self.transfer_signing_key(),
         }
         .map(|key| key.id())
         .ok_or(NoUsableTransferKey)
@@ -2803,11 +2857,16 @@ pub(crate) mod withdrawal_key_tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
+    /// A CRITICAL `purpose` key of a type Platform verifies (ECDSA secp256k1),
+    /// derived from `id` so two calls with the same id build the same key.
     pub(crate) fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
-        k.set_id(id);
+        let (mut k, _) = IdentityPublicKey::random_ecdsa_critical_level_authentication_key(
+            id,
+            Some(id as u64),
+            PlatformVersion::latest(),
+        )
+        .expect("a random ECDSA key");
         k.set_purpose(purpose);
-        k.set_security_level(SecurityLevel::CRITICAL);
         k
     }
 
@@ -2861,7 +2920,7 @@ pub(crate) mod withdrawal_key_tests {
     fn ghost_transfer_key_is_not_selected() {
         let transfer = key(1, Purpose::TRANSFER);
         let qi = build_identity(IdentityType::User, vec![transfer], vec![]);
-        assert!(qi.default_withdrawal_key().is_none());
+        assert!(qi.withdrawal_signing_key().is_none());
     }
 
     /// Regression: the withdraw screen's "Check Owner Key" / "Check Payout
@@ -2892,18 +2951,18 @@ pub(crate) mod withdrawal_key_tests {
     fn private_backed_transfer_key_is_selected() {
         let transfer = key(1, Purpose::TRANSFER);
         let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
-        let selected = qi.default_withdrawal_key().expect("a key");
-        assert_eq!(selected.identity_public_key.id(), 1);
-        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+        let selected = qi.withdrawal_signing_key().expect("a key");
+        assert_eq!(selected.id(), 1);
+        assert_eq!(selected.purpose(), Purpose::TRANSFER);
     }
 
     #[test]
     fn owner_key_is_used_as_fallback_when_no_transfer() {
         let owner = key(2, Purpose::OWNER);
         let qi = build_identity(IdentityType::Masternode, vec![owner.clone()], vec![owner]);
-        let selected = qi.default_withdrawal_key().expect("a key");
-        assert_eq!(selected.identity_public_key.id(), 2);
-        assert_eq!(selected.identity_public_key.purpose(), Purpose::OWNER);
+        let selected = qi.withdrawal_signing_key().expect("a key");
+        assert_eq!(selected.id(), 2);
+        assert_eq!(selected.purpose(), Purpose::OWNER);
     }
 
     #[test]
@@ -2915,8 +2974,8 @@ pub(crate) mod withdrawal_key_tests {
             vec![owner.clone(), transfer.clone()],
             vec![owner, transfer],
         );
-        let selected = qi.default_withdrawal_key().expect("a key");
-        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+        let selected = qi.withdrawal_signing_key().expect("a key");
+        assert_eq!(selected.purpose(), Purpose::TRANSFER);
     }
 
     pub(crate) fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
@@ -2938,9 +2997,9 @@ pub(crate) mod withdrawal_key_tests {
             vec![disabled.clone(), active.clone()],
             vec![disabled, active],
         );
-        let selected = qi.default_withdrawal_key().expect("a key");
-        assert_eq!(selected.identity_public_key.id(), 1);
-        assert!(!selected.identity_public_key.is_disabled());
+        let selected = qi.withdrawal_signing_key().expect("a key");
+        assert_eq!(selected.id(), 1);
+        assert!(!selected.is_disabled());
     }
 
     #[test]
@@ -2999,7 +3058,7 @@ pub(crate) mod withdrawal_key_tests {
             vec![disabled.clone()],
             vec![disabled],
         );
-        assert!(qi.default_withdrawal_key().is_none());
+        assert!(qi.withdrawal_signing_key().is_none());
         assert!(qi.available_withdrawal_keys().is_empty());
     }
 
@@ -3020,9 +3079,9 @@ pub(crate) mod withdrawal_key_tests {
             ],
             vec![disabled_transfer, owner, active_transfer],
         );
-        let selected = qi.default_withdrawal_key().expect("a key");
-        assert_eq!(selected.identity_public_key.id(), 2);
-        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+        let selected = qi.withdrawal_signing_key().expect("a key");
+        assert_eq!(selected.id(), 2);
+        assert_eq!(selected.purpose(), Purpose::TRANSFER);
     }
 
     /// Auto-select (no explicit id) resolves the active TRANSFER key, matching
@@ -3340,6 +3399,110 @@ pub(crate) mod withdrawal_key_tests {
             qi.resolve_transfer_signing_key(None),
             Err(NoUsableTransferKey)
         );
+    }
+
+    /// Keys Platform refuses for a credit transfer or withdrawal, each with id
+    /// 1: expired, bound to a contract (refused outside a batch), and of a type
+    /// Platform does not verify.
+    fn refused_credit_keys(purpose: Purpose) -> Vec<(&'static str, IdentityPublicKey)> {
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let mut bound = key(1, purpose);
+        if let IdentityPublicKey::V0(v0) = &mut bound {
+            v0.contract_bounds = Some(ContractBounds::SingleContract {
+                id: Identifier::new([0x09; 32]),
+            });
+        }
+        let mut eddsa = key(1, purpose);
+        eddsa.set_key_type(KeyType::EDDSA_25519_HASH160);
+        vec![
+            ("expired", key(1, purpose).with_limits(None, Some(1))),
+            ("contract bound", bound),
+            ("EdDSA", eddsa),
+        ]
+    }
+
+    /// Regression: the automatic transfer and withdrawal choices checked only
+    /// purpose, disabled state and the private half, so a key Platform
+    /// refuses won over a later usable key and the send failed.
+    #[test]
+    fn automatic_credit_keys_skip_a_key_platform_refuses() {
+        for (case, refused) in refused_credit_keys(Purpose::TRANSFER) {
+            let usable = key(2, Purpose::TRANSFER);
+            let qi = build_identity(
+                IdentityType::User,
+                vec![refused.clone(), usable.clone()],
+                vec![refused, usable],
+            );
+            assert_eq!(qi.resolve_transfer_signing_key(None), Ok(2), "{case}");
+            assert_eq!(qi.transfer_signing_key().map(|k| k.id()), Some(2), "{case}");
+            assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(2), "{case}");
+            assert_eq!(
+                qi.withdrawal_signing_key().map(|k| k.id()),
+                Some(2),
+                "{case}"
+            );
+        }
+    }
+
+    /// A masternode whose TRANSFER key Platform refuses withdraws with its
+    /// OWNER key instead.
+    #[test]
+    fn a_masternode_withdrawal_falls_back_to_owner_past_a_refused_transfer_key() {
+        for (case, refused) in refused_credit_keys(Purpose::TRANSFER) {
+            let owner = key(2, Purpose::OWNER);
+            let qi = build_identity(
+                IdentityType::Masternode,
+                vec![refused.clone(), owner.clone()],
+                vec![refused, owner],
+            );
+            assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(2), "{case}");
+        }
+    }
+
+    /// A user identity never withdraws with an OWNER key, as before.
+    #[test]
+    fn a_user_withdrawal_never_takes_an_owner_key() {
+        let owner = key(1, Purpose::OWNER);
+        let qi = build_identity(IdentityType::User, vec![owner.clone()], vec![owner]);
+        assert!(qi.withdrawal_signing_key().is_none());
+        assert_eq!(qi.withdrawal_key_status(), SigningKeyStatus::NoneHeld);
+    }
+
+    /// The transfer and withdrawal gates open exactly when the automatic
+    /// choice picks a key, and tell a held-but-unusable key apart from none.
+    #[test]
+    fn the_credit_key_gates_open_exactly_when_a_key_is_picked() {
+        for (case, refused) in refused_credit_keys(Purpose::TRANSFER) {
+            let qi = build_identity(IdentityType::User, vec![refused.clone()], vec![refused]);
+            assert_eq!(
+                qi.transfer_key_status(),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+            assert_eq!(
+                qi.withdrawal_key_status(),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+            assert!(!qi.can_attempt_withdrawal(UserRole::Developer), "{case}");
+        }
+
+        let public_only =
+            build_identity(IdentityType::User, vec![key(1, Purpose::TRANSFER)], vec![]);
+        assert_eq!(
+            public_only.transfer_key_status(),
+            SigningKeyStatus::NoneHeld
+        );
+        assert_eq!(
+            public_only.withdrawal_key_status(),
+            SigningKeyStatus::NoneHeld
+        );
+
+        let usable = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![usable.clone()], vec![usable]);
+        assert_eq!(qi.transfer_key_status(), SigningKeyStatus::Usable);
+        assert_eq!(qi.withdrawal_key_status(), SigningKeyStatus::Usable);
+        assert!(qi.can_attempt_withdrawal(UserRole::Everyday));
     }
 
     fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {
@@ -4028,6 +4191,58 @@ mod protocol_v14_compat_tests {
 
         let qi = identity_holding(&[typed(1, KeyType::BLS12_381)]);
         assert!(qi.username_registration_key(&dpns).is_none());
+    }
+
+    /// Regression: the automatic username registration key met only the
+    /// `preorder` document's requirement, so when `domain` asked for a
+    /// stronger key the registration signed the second document with a key
+    /// Platform refuses. Both documents' requirement decides, whichever is
+    /// stricter.
+    #[test]
+    fn a_username_registration_key_meets_both_registration_documents() {
+        use crate::context::test_support::{auth_key, dpns_contract_requiring, identity_holding};
+        use crate::model::dpns_usernames::{dpns_security_levels, dpns_signing_requirement};
+
+        let qi = identity_holding(&[
+            auth_key(1, SecurityLevel::HIGH),
+            auth_key(2, SecurityLevel::CRITICAL),
+        ]);
+        for (preorder, domain) in [
+            (SecurityLevel::HIGH, SecurityLevel::CRITICAL),
+            (SecurityLevel::CRITICAL, SecurityLevel::HIGH),
+        ] {
+            let dpns = dpns_contract_requiring(preorder, domain);
+            let case = format!("preorder {preorder:?}, domain {domain:?}");
+            assert_eq!(
+                qi.username_registration_key(&dpns).map(|k| k.id()),
+                Some(2),
+                "{case}"
+            );
+            assert_eq!(
+                dpns_security_levels(dpns_signing_requirement(&dpns)),
+                vec![SecurityLevel::CRITICAL],
+                "{case}: the Advanced chooser offers the same levels"
+            );
+        }
+    }
+
+    /// The DPNS levels are the ones the explicit-key check accepts: CRITICAL
+    /// up to the requirement, never MASTER.
+    #[test]
+    fn dpns_levels_match_the_explicit_key_check() {
+        use crate::context::test_support::auth_key;
+        use crate::model::dpns_usernames::{chosen_key_can_sign_documents, dpns_security_levels};
+
+        for required in SecurityLevel::full_range() {
+            let levels = dpns_security_levels(required);
+            for level in SecurityLevel::full_range() {
+                assert_eq!(
+                    levels.contains(&level),
+                    chosen_key_can_sign_documents(&auth_key(1, level), required),
+                    "required {required:?}, key {level:?}"
+                );
+            }
+        }
     }
 
     /// The document signing key skips a key Platform would refuse (expired,

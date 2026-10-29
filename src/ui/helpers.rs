@@ -740,15 +740,39 @@ pub fn add_key_chooser_with_doc_type(
     document_type: Option<&DocumentType>,
     scope: SigningScope<'_>,
 ) -> AppAction {
+    let allowed_security_levels = compute_allowed_security_levels(transaction_type, document_type);
+    add_key_chooser_with_security_levels(
+        ui,
+        app_context,
+        identity,
+        selected_key,
+        transaction_type,
+        &allowed_security_levels,
+        scope,
+    )
+}
+
+/// Key chooser offering keys at `allowed_security_levels` only, for a
+/// transaction whose accepted levels no single document type decides (a
+/// username registration signs both DPNS preorder and domain documents).
+/// Otherwise as [`add_key_chooser_with_doc_type`].
+pub fn add_key_chooser_with_security_levels(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    selected_key: &mut Option<IdentityPublicKey>,
+    transaction_type: TransactionType,
+    allowed_security_levels: &[SecurityLevel],
+    scope: SigningScope<'_>,
+) -> AppAction {
     let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let mut action = AppAction::None;
 
     let allowed_purposes = transaction_type.allowed_purposes();
-    let allowed_security_levels = compute_allowed_security_levels(transaction_type, document_type);
     let filter = KeyFilter::new(
         transaction_type,
         &allowed_purposes,
-        &allowed_security_levels,
+        allowed_security_levels,
         scope,
     );
 

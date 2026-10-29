@@ -22,6 +22,8 @@ enum Status {
     Current,
     /// The masternode list names another voting key.
     Retired,
+    /// The check failed; nothing is shown.
+    Failed,
 }
 
 /// The retired-voting-key notice of one node's page.
@@ -72,6 +74,16 @@ impl RetiredVotingKeyState {
     /// Whether to show the notice.
     pub fn shows_notice(&self) -> bool {
         self.status == Status::Retired && !self.dismissed
+    }
+
+    /// What the last check answered: whether the stored key is retired.
+    /// `None` until a check has answered, or when it failed.
+    pub fn check_answer(&self) -> Option<bool> {
+        match self.status {
+            Status::Retired => Some(true),
+            Status::Current => Some(false),
+            Status::Unchecked | Status::Checking | Status::Failed => None,
+        }
     }
 
     /// Whether the removal the user confirmed is still running.
@@ -128,7 +140,7 @@ impl RetiredVotingKeyState {
     /// a failed check shows no notice, a failed removal offers it again.
     pub fn absorb_error(&mut self, context: &BackendTaskContext) {
         if self.check.settle(context).is_some() {
-            self.status = Status::Current;
+            self.status = Status::Failed;
         }
         self.removal.settle(context);
     }
@@ -179,9 +191,11 @@ mod tests {
         ));
         assert!(state.ensure_checked().is_none(), "one check at a time");
         let context = state.check_context_for_test().unwrap();
+        assert_eq!(state.check_answer(), None, "not answered yet");
         state.absorb_result(&context, &status(true));
 
         assert!(state.shows_notice());
+        assert_eq!(state.check_answer(), Some(true));
         assert!(state.ensure_checked().is_none(), "answered");
     }
 
@@ -215,6 +229,7 @@ mod tests {
         let context = failed.check_context_for_test().unwrap();
         failed.absorb_error(&context);
         assert!(!failed.shows_notice());
+        assert_eq!(failed.check_answer(), None, "a failure is no answer");
         assert!(failed.ensure_checked().is_none(), "no retry loop");
     }
 

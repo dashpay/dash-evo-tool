@@ -375,6 +375,13 @@ impl MasternodeDetailView {
         }
     }
 
+    /// What this page's retired-voting-key check answered, `None` until it
+    /// has.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn voting_key_check_answer(&self) -> Option<bool> {
+        self.voting_key.check_answer()
+    }
+
     /// Take in this page's own retired-voting-key check or removal result.
     pub(crate) fn absorb_voting_key_result(
         &mut self,

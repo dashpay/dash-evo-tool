@@ -170,6 +170,17 @@ impl MasternodesScreen {
     }
 
     /// The visible segment.
+    /// Test seam: what the open node's retired-voting-key check answered,
+    /// `None` with no node open or no answer yet.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn open_node_voting_key_check_answer_for_test(&self) -> Option<bool> {
+        match &self.view {
+            MasternodesView::Detail(detail) => detail.voting_key_check_answer(),
+            _ => None,
+        }
+    }
+
     pub fn segment(&self) -> MasternodesSegment {
         self.segment
     }

@@ -940,11 +940,30 @@ fn offline_node_detail_shows_no_retired_voting_key_notice() {
         activate_masternodes_tab(&mut harness, &app_context);
 
         harness.get_by_label("Open mn-voting-key").click();
-        // Give the dispatched check time to come back.
-        for _ in 0..30 {
+        let answer =
+            |harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>| {
+                let Screen::MasternodesScreen(screen) = harness
+                    .state_mut()
+                    .main_screens
+                    .get_mut(&RootScreenType::RootScreenMasternodes)
+                    .expect("masternodes screen")
+                else {
+                    panic!("the Masternodes root must contain the Masternodes screen");
+                };
+                screen.open_node_voting_key_check_answer_for_test()
+            };
+        let deadline = Instant::now() + BACKEND_TASK_DEADLINE;
+        while answer(&mut harness).is_none() && Instant::now() < deadline {
             harness.step();
             std::thread::sleep(Duration::from_millis(10));
         }
+        harness.step();
+
+        assert_eq!(
+            answer(&mut harness),
+            Some(false),
+            "the check must go out and answer: not retired without a current list"
+        );
 
         assert!(
             harness

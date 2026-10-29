@@ -1814,17 +1814,45 @@ impl AppContext {
             .unwrap_or(0)
     }
 
-    /// Core fee, in duffs, a pooled send of the wallet's whole balance is
-    /// shown with: the fee the pooled build charges at the Max, over the coins
-    /// the wallet's snapshot holds in the pooled send accounts.
+    /// Fee, in duffs, the pooled Core send of the Max to a `destination`
+    /// script charges, over the coins the wallet's snapshot counts.
     ///
     /// DISPLAY-ONLY: the Max itself comes from the backend quote.
-    pub fn snapshot_core_send_fee_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+    pub fn snapshot_core_send_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        destination: crate::model::spend_limit::CoreDestinationScript,
+    ) -> u64 {
         crate::model::fee_estimation::estimate_core_send_fee_duffs(
-            self.wallet_backend()
-                .map(|wb| wb.core_send_input_count(seed_hash))
-                .unwrap_or(0),
+            self.snapshot_core_send_input_count(seed_hash),
+            destination,
         )
+    }
+
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
+    /// `destination` script, never below what the build charges. `max_duffs`
+    /// is the quoted Max for the same destination, when known.
+    pub fn snapshot_core_payment_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        destination: crate::model::spend_limit::CoreDestinationScript,
+        amount_duffs: u64,
+        max_duffs: Option<u64>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_payment_fee_duffs(
+            self.snapshot_core_send_input_count(seed_hash),
+            destination,
+            amount_duffs,
+            max_duffs,
+        )
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, from
+    /// the wallet's snapshot.
+    fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.wallet_backend()
+            .map(|wb| wb.core_send_input_count(seed_hash))
+            .unwrap_or(0)
     }
 
     /// Whether the wallet's snapshot shows any confirmed or unconfirmed

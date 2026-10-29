@@ -762,7 +762,11 @@ impl WalletBackend {
                     .core_send_max_within_reservations(&wallet, upper_duffs, destination)
                     .await?;
                 let duffs = core_send_search_outcome(proven_duffs, timed_out)?;
-                match crate::model::fee_estimation::core_send_max_duffs(duffs, input_count) {
+                match crate::model::fee_estimation::core_send_max_duffs(
+                    duffs,
+                    input_count,
+                    destination,
+                ) {
                     0 => Err(TaskError::CoreSendMaxUnavailable {
                         reason: CoreSendShortfall::BelowFee,
                     }),
@@ -1443,6 +1447,7 @@ mod tests {
     };
     use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::estimate_core_send_fee_duffs;
+    use crate::model::spend_limit::CoreDestinationScript;
     use crate::wallet_backend::snapshot::DetWalletBalance;
     use dash_sdk::dpp::dashcore::ScriptBuf;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -1483,7 +1488,8 @@ mod tests {
             false,
         );
         // The balance less the pooled send fee the Max is priced with.
-        let max_amount = BALANCE_DUFFS - estimate_core_send_fee_duffs(1);
+        let max_amount =
+            BALANCE_DUFFS - estimate_core_send_fee_duffs(1, CoreDestinationScript::PubkeyHash);
 
         assert_eq!(max_amount, 9_999_808);
         let (transaction, fee, _no_reservation) = TransactionBuilder::new()
@@ -1630,32 +1636,126 @@ mod tests {
             .insert(outpoint, utxo);
 
         let input_count = super::pooled_send_input_count(&wallet, &info);
-        let preview = estimate_core_send_fee_duffs(input_count);
+        let preview = estimate_core_send_fee_duffs(input_count, CoreDestinationScript::PubkeyHash);
         let max = 3 * COIN_DUFFS - preview;
 
-        let recipient = elsewhere;
+        let (inputs, charged) = pooled_build_charge(&wallet, &info, elsewhere, max);
+        assert_eq!(inputs, 3, "BIP44 and BIP32 coins, no dust");
+        assert_eq!(input_count, 3);
+        assert_eq!(preview, charged, "the preview is the fee the build charges");
+    }
+
+    /// Build a payment of `amount` to `recipient` the way the pooled send
+    /// funds it, release its reservation, and return how many coins it spent
+    /// and the fee it charged.
+    fn pooled_build_charge(
+        wallet: &Wallet,
+        info: &ManagedWalletInfo,
+        recipient: Address,
+        amount: u64,
+    ) -> (usize, u64) {
         let mut pooled = super::pooled_funding_accounts(
-            &wallet,
+            wallet,
             &info.accounts,
             &platform_wallet::SEND_FUNDING_SOURCES,
             super::DEFAULT_BIP44_ACCOUNT,
         );
-        let mut builder = super::core_payment_builder(&[(recipient, max)])
-            .set_current_height(asset_lock_builder_height(&info));
+        let mut builder = super::core_payment_builder(&[(recipient, amount)])
+            .set_current_height(asset_lock_builder_height(info));
         for (managed, account) in pooled.iter_mut() {
             builder = builder.add_funding(managed, account);
         }
         let (transaction, charged, reservation) = builder
             .build_unsigned_reserved()
-            .expect("the pooled build accepts the Max");
+            .expect("the pooled build accepts the payment");
         if let Some(token) = reservation {
             for (managed, _) in &pooled {
                 managed.release_reservation_if_owner(&transaction, token);
             }
         }
-        assert_eq!(transaction.input.len(), 3, "BIP44 and BIP32 coins, no dust");
-        assert_eq!(input_count, 3);
-        assert_eq!(preview, charged, "the preview is the fee the build charges");
+        (transaction.input.len(), charged)
+    }
+
+    /// The fee a pooled Core payment shows is never below what the build
+    /// charges: below the Max the build adds change, and at the Max to a
+    /// P2SH script the fee and the Max add up to exactly the coins.
+    #[test]
+    fn core_payment_fee_preview_covers_what_the_pooled_build_charges() {
+        use crate::model::fee_estimation::{
+            estimate_core_payment_fee_duffs, estimate_core_send_fee_duffs,
+        };
+        const COIN_DUFFS: u64 = 700_000;
+        const PAYMENT_DUFFS: u64 = 100_000;
+        const CURRENT_HEIGHT: u32 = 200;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut info = ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        info.update_last_processed_height(CURRENT_HEIGHT);
+        let bip44 = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let address = managed
+            .next_receive_address(Some(&bip44.account_xpub), true)
+            .expect("BIP44 address");
+        let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: COIN_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed.utxos.insert(outpoint, utxo);
+        let input_count = super::pooled_send_input_count(&wallet, &info);
+
+        let p2pkh = Address::p2pkh(
+            &PublicKey::from_slice(&[0x02; 33]).expect("valid compressed public key"),
+            Network::Testnet,
+        );
+        let max = COIN_DUFFS
+            - estimate_core_send_fee_duffs(input_count, CoreDestinationScript::PubkeyHash);
+        let preview = estimate_core_payment_fee_duffs(
+            input_count,
+            CoreDestinationScript::PubkeyHash,
+            PAYMENT_DUFFS,
+            Some(max),
+        );
+        let (_, charged) = pooled_build_charge(&wallet, &info, p2pkh, PAYMENT_DUFFS);
+        assert_eq!(charged, 226, "one coin, one payment and change");
+        assert!(charged <= preview, "charged {charged}, shown {preview}");
+
+        let p2sh = Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::ScriptHash(
+                dash_sdk::dpp::dashcore::ScriptHash::from_byte_array(rand::random()),
+            ),
+        );
+        let max = COIN_DUFFS
+            - estimate_core_send_fee_duffs(input_count, CoreDestinationScript::ScriptHash);
+        let preview = estimate_core_payment_fee_duffs(
+            input_count,
+            CoreDestinationScript::ScriptHash,
+            max,
+            Some(max),
+        );
+        let (_, charged) = pooled_build_charge(&wallet, &info, p2sh, max);
+        assert_eq!(
+            charged, preview,
+            "at the P2SH Max the preview is the fee charged"
+        );
+        assert_eq!(
+            max + preview,
+            COIN_DUFFS,
+            "the P2SH Max and its fee are the coins"
+        );
     }
 
     /// A credit output script as long as the P2PKH one a real asset lock pays

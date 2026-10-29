@@ -934,13 +934,20 @@ impl WalletSendScreen {
     /// Core send Max is quoted for the script the destination pays to; with
     /// none chosen yet, for P2PKH, the larger output and so the safe bound.
     fn core_send_limit_kind(&self) -> SpendLimitKind {
-        let destination = match &self.validated_destination {
+        SpendLimitKind::CoreSend {
+            destination: self.core_send_destination(),
+        }
+    }
+
+    /// The script kind a Core send pays to: the destination's, or P2PKH, the
+    /// conservative bound, before one is chosen.
+    fn core_send_destination(&self) -> crate::model::spend_limit::CoreDestinationScript {
+        match &self.validated_destination {
             Some(ValidatedAddress::Core(address)) => {
                 crate::model::spend_limit::CoreDestinationScript::of(address)
             }
             _ => Default::default(),
-        };
-        SpendLimitKind::CoreSend { destination }
+        }
     }
 
     /// Names the wallet's live Platform balances, not the ones captured in
@@ -3139,10 +3146,12 @@ impl WalletSendScreen {
                             }
                             Some(max_credits) => {
                                 max = Some(max_credits);
+                                let destination = self.core_send_destination();
                                 let fee_duffs = self
                                     .selected_wallet_seed_hash
                                     .map(|seed_hash| {
-                                        self.app_context.snapshot_core_send_fee_duffs(&seed_hash)
+                                        self.app_context
+                                            .snapshot_core_send_fee_duffs(&seed_hash, destination)
                                     })
                                     .unwrap_or_default();
                                 let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
@@ -3430,10 +3439,19 @@ impl WalletSendScreen {
         match (self.selected_source.as_ref()?, dest_kind) {
             // Core → Core: L1 network fee, paid on top (reserved from balance).
             (SourceSelection::CoreWallet, AddressKind::Core) => {
-                // The fee the pooled build charges at the Max, over the same
-                // coins and rate the Max quote prices.
+                // Never below what the pooled build charges for this amount
+                // and destination; at the Max, exactly the Max's fee.
                 let seed_hash = self.selected_wallet_seed_hash?;
-                let fee_duffs = self.app_context.snapshot_core_send_fee_duffs(&seed_hash);
+                let destination = self.core_send_destination();
+                let max_duffs = self
+                    .spend_limit(self.core_send_limit_kind())
+                    .map(|max_credits| max_credits / CREDITS_PER_DUFF);
+                let fee_duffs = self.app_context.snapshot_core_payment_fee_duffs(
+                    &seed_hash,
+                    destination,
+                    amount_credits / CREDITS_PER_DUFF,
+                    max_duffs,
+                );
                 let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }

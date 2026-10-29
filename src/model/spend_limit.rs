@@ -19,6 +19,14 @@ pub enum CoreDestinationScript {
 }
 
 impl CoreDestinationScript {
+    /// Length, in bytes, of an output script of this kind.
+    pub const fn script_len(self) -> usize {
+        match self {
+            Self::PubkeyHash => 25,
+            Self::ScriptHash => 23,
+        }
+    }
+
     /// The script kind `address` pays to.
     pub fn of(address: &dash_sdk::dpp::dashcore::Address) -> Self {
         if address.script_pubkey().is_p2sh() {

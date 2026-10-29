@@ -4,6 +4,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::key_input::decode_hex_secret;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
@@ -33,6 +34,7 @@ use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 #[derive(PartialEq)]
 pub enum AddKeyStatus {
@@ -332,12 +334,12 @@ impl AddKeyScreen {
                 },
             ));
         }
-        // Convert the input string to bytes (hex decoding)
-        match hex::decode(self.private_key_input.text()) {
+        // Convert the input string to bytes (hex decoding). Every copy of the
+        // key is held in `Zeroizing`, so it is wiped when it is dropped.
+        match decode_hex_secret(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let private_key_bytes: [u8; 32] = private_key_bytes_vec
-                    .try_into()
-                    .expect("invariant: length checked to be 32 in the match guard");
+                let mut private_key_bytes = Zeroizing::new([0u8; 32]);
+                private_key_bytes.copy_from_slice(&private_key_bytes_vec);
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,
                     self.app_context.network,
@@ -383,12 +385,12 @@ impl AddKeyScreen {
                             dash_sdk::platform::IdentityPublicKey::from(new_key),
                         );
                         self.submitted_private_key
-                            .set_text(hex::encode(private_key_bytes));
+                            .set_text(hex::encode(private_key_bytes.as_slice()));
                         app_action = self.dispatch_add(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
                                 new_qualified_key,
-                                private_key_bytes,
+                                *private_key_bytes,
                             ),
                         ));
                     } else {

@@ -1219,10 +1219,6 @@ mod tests {
 
     /// A failed epoch fetch still answers, with the report of an unavailable
     /// epoch: the network's version and the last known fee multiplier.
-    // TODO(upstream): also prove a protocol version newer than this build and
-    // assert the update advice closes the report, as it did before
-    // dashpay/platform#5561. The task reads the SDK's own verified version, and
-    // a mock cannot record one yet (https://github.com/dashpay/platform/issues/5622).
     #[tokio::test]
     async fn a_failed_epoch_fetch_degrades_to_the_unavailable_epoch_report() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

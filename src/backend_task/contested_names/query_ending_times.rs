@@ -95,6 +95,8 @@ impl AppContext {
             else {
                 break;
             };
+            // TODO(upstream): proved vote-poll queries reject a non-zero offset, so
+            // polls past the page limit that share one end time cannot be fetched.
             if next_start == (start_time.0, false) && page_contests >= usize::from(PAGE_LIMIT) {
                 tracing::warn!(
                     end_time = start_time.0,

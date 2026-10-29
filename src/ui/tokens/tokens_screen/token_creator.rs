@@ -21,7 +21,8 @@ use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
-    distribution_rules_with_once_per_identity, parse_once_per_identity_amount,
+    distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
+    parse_once_per_identity_amount,
 };
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use crate::ui::components::styled::{StyledCheckbox};
@@ -365,12 +366,6 @@ impl TokensScreen {
                                         }
                                     });
                                     self.render_max_supply_input(ui);
-                                    ui.end_row();
-
-                                    // Holders can send the token: shown here too, so a choice
-                                    // made in Advanced mode is never hidden.
-                                    ui.label("");
-                                    ui.vertical(|ui| self.transferable_row(ui));
                                     ui.end_row();
 
                                     // Preset selector
@@ -1177,16 +1172,17 @@ impl TokensScreen {
         if !self.transferable_input
             && !FeatureGate::NonTransferableTokens.is_available(&self.app_context)
         {
-            return Err(TaskError::NonTransferableTokenNotSupported.to_string());
+            return Err(TRANSFERS_OFF_HINT.to_owned());
         }
         Ok(self.transferable_input)
     }
 
-    /// The "holders can send this token" option, shown in Simple and Advanced
-    /// mode so the choice is never hidden. Turning transfers off needs a network
-    /// that accepts such tokens; a choice already made is kept (never silently
-    /// flipped back), but creating is blocked with the reason until the network
-    /// supports it or transfers are allowed again.
+    /// The "holders can send this token" option, offered only in Advanced
+    /// mode's Advanced section. Turning transfers off needs a network that
+    /// accepts such tokens; a choice already made is kept (never silently
+    /// flipped back), but creating is blocked until the network supports it or
+    /// transfers are allowed again. Both create buttons show that reason, so it
+    /// stays visible while this row is hidden.
     pub(super) fn transferable_row(&mut self, ui: &mut egui::Ui) {
         let available = FeatureGate::NonTransferableTokens.is_available(&self.app_context);
         // Allowing transfers again always works; only turning them off needs support.
@@ -1208,18 +1204,64 @@ impl TokensScreen {
     }
 
     /// Why the token cannot be created as configured, if a setting the
-    /// connected network does not accept was chosen. The backend refuses it too.
+    /// connected network does not accept was chosen. The backend refuses it too
+    /// (`TaskError::NonTransferableTokenNotSupported`).
     pub(super) fn creation_blocked_reason(&self) -> Option<String> {
         self.parse_transferable().err()
     }
 
     /// The confirmation's sentence about whether holders can send the token.
-    pub(super) fn transferability_summary(transferable: bool) -> &'static str {
-        if transferable {
-            "Holders can send this token to other identities."
-        } else {
-            "Holders cannot send this token to other identities. This cannot be changed later."
+    /// The irreversible "cannot send" choice is always stated; the transferable
+    /// default only with Advanced Options, the only place it can be changed.
+    pub(super) fn transferability_summary(
+        transferable: bool,
+        advanced_options: bool,
+    ) -> Option<&'static str> {
+        match (transferable, advanced_options) {
+            (false, _) => Some(
+                "Holders cannot send this token to other identities. This cannot be changed later.",
+            ),
+            (true, true) => Some("Holders can send this token to other identities."),
+            (true, false) => None,
         }
+    }
+
+    /// The registration confirmation text: what gets signed, and its cost.
+    /// `marketplace_locked` adds the warning that the token can never be
+    /// offered on the token marketplace.
+    pub(super) fn registration_confirmation_message(
+        name: &str,
+        base_supply: &str,
+        max_supply: &str,
+        transferability: Option<&str>,
+        once_per_identity_amount: Option<TokenAmount>,
+        cost: f64,
+        marketplace_locked: bool,
+    ) -> String {
+        let mut message = format!(
+            "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}"
+        );
+        if let Some(transferability) = transferability {
+            message.push('\n');
+            message.push_str(transferability);
+        }
+        if let Some(amount) = once_per_identity_amount {
+            message.push('\n');
+            message.push_str(&format!(
+                "Each identity can claim {amount} base tokens of this token, once."
+            ));
+        }
+        message.push_str("\n\n");
+        message.push_str(&format!(
+            "Estimated cost to register this token is {cost} Dash"
+        ));
+        if marketplace_locked {
+            message.push_str("\n\n");
+            message.push_str(
+                "WARNING: This token can never be offered for sale on the token marketplace. This cannot be changed later.",
+            );
+        }
+        message
     }
 
     fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {
@@ -1521,7 +1563,7 @@ impl TokensScreen {
             .map(|amount| amount.to_string_opts(true, false))
             .unwrap_or_else(|| "None".to_string());
 
-        // Tokens are always created NotTradeable; warn if that can never change.
+        // Tokens are created closed to the marketplace; warn if that can never change.
         let is_danger_mode = self.cached_build_args.as_ref().is_some_and(|args| {
             matches!(
                 args.marketplace_rules,
@@ -1539,20 +1581,21 @@ impl TokensScreen {
             self.cached_build_args
                 .as_ref()
                 .map_or(self.transferable_input, |args| args.transferable),
+            self.show_advanced_token_creator,
         );
-        let confirmation_message = if is_danger_mode {
-            format!(
-                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n{transferability}\n\nEstimated cost to register this token is {cost} Dash\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!",
-                base_supply = base_supply_display,
-                max_supply = max_supply_display,
-            )
-        } else {
-            format!(
-                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n{transferability}\n\nEstimated cost to register this token is {cost} Dash",
-                base_supply = base_supply_display,
-                max_supply = max_supply_display,
-            )
+        let once_per_identity_amount = match &self.cached_build_args {
+            Some(args) => once_per_identity_amount_in_rules(&args.distribution_rules),
+            None => self.parse_once_per_identity_amount().ok().flatten(),
         };
+        let confirmation_message = Self::registration_confirmation_message(
+            name,
+            &base_supply_display,
+            &max_supply_display,
+            transferability,
+            once_per_identity_amount,
+            cost,
+            is_danger_mode,
+        );
 
         let confirmation_dialog = self
             .token_creator_confirmation_dialog
@@ -1757,6 +1800,11 @@ impl TokensScreen {
         });
     }
 }
+
+/// Why creating is blocked while transfers are off on a network that does not
+/// accept such tokens. Names where the option is, since it is offered only under
+/// Advanced and may be hidden.
+const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
 
 /// Why Simple mode's "Create Token" is blocked until a preset is chosen.
 const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";

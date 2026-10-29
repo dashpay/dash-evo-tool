@@ -155,12 +155,11 @@ mod tests {
 
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
-    const VOTING_SECRET: [u8; 32] = [0x5A; 32];
 
     /// A stored masternode with vaulted main-identity keys and a voting key,
     /// held in the vault, on a loaded voter identity.
     async fn node_with_vaulted_voting_key() -> (StagedIdentity, IdentityPublicKey) {
-        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
         let voting = IdentityPublicKey::random_key(7, Some(7), PlatformVersion::latest());
         let voter = Identity::create_basic_identity(
             Identifier::from([0x3C; 32]),
@@ -168,7 +167,7 @@ mod tests {
         )
         .unwrap();
         IdentityKeyView::new(&staged.store, staged.id.to_buffer())
-            .store(&V, voting.id(), &VOTING_SECRET)
+            .store(&V, voting.id(), &rand::random::<[u8; 32]>())
             .unwrap();
         staged
             .ctx
@@ -241,7 +240,7 @@ mod tests {
     /// goes with the old voting key, so no stray voter is left listed.
     #[tokio::test]
     async fn removes_the_stored_copy_of_the_old_voter_identity() {
-        let staged = stage_identity_with_voter_twin([0x77; 32], [0x88; 32]).await;
+        let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
         let voter_id = staged.voter_id.unwrap();
 
         let result = staged
@@ -297,7 +296,7 @@ mod tests {
     /// masternode list to say so.
     #[tokio::test]
     async fn a_node_without_a_voting_key_is_not_flagged() {
-        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(rand::random(), rand::random()).await;
 
         let result = staged
             .ctx

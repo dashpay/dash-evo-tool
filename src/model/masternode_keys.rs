@@ -293,7 +293,7 @@ mod tests {
                 (target, public.id()),
                 (
                     QualifiedIdentityPublicKey::from(public),
-                    PrivateKeyData::Clear([0x11; 32]),
+                    PrivateKeyData::Clear(rand::random()),
                 ),
             );
         }
@@ -361,7 +361,7 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1),
             (
                 QualifiedIdentityPublicKey::from(voting_key(1, 0x21)),
-                PrivateKeyData::Clear([0x12; 32]),
+                PrivateKeyData::Clear(rand::random()),
             ),
         );
 

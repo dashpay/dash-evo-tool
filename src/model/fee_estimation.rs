@@ -687,6 +687,20 @@ impl PlatformFeeEstimator {
         )
     }
 
+    /// What a username registration takes from the identity balance: the
+    /// registration estimate plus the community vote fund (`contest_fund`,
+    /// zero for a name that opens no vote). The fund is an exact amount, so
+    /// no multiplier or margin applies to it.
+    pub fn estimate_username_registration_charge(
+        &self,
+        label_chars: usize,
+        needs_vote: bool,
+        contest_fund: u64,
+    ) -> u64 {
+        self.estimate_username_registration(label_chars, needs_vote)
+            .saturating_add(contest_fund)
+    }
+
     /// Estimate fee for document creation with known size.
     /// Documents are stored in the contract's document tree.
     /// Estimated seeks: ~10 for tree traversal and insertion.
@@ -1943,6 +1957,21 @@ mod tests {
                 "{label_chars} characters, vote {needs_vote}: {estimate} is far above {required}"
             );
         }
+    }
+
+    /// The community vote fund is charged on top of the registration, as is.
+    #[test]
+    fn username_registration_charge_adds_the_contest_fund_as_is() {
+        let estimator = PlatformFeeEstimator::new();
+        let registration = estimator.estimate_username_registration(5, true);
+        assert_eq!(
+            estimator.estimate_username_registration_charge(5, true, 1_234),
+            registration + 1_234
+        );
+        assert_eq!(
+            estimator.estimate_username_registration_charge(9, false, 0),
+            estimator.estimate_username_registration(9, false)
+        );
     }
 
     /// On testnet the network refused the name document below these balances,

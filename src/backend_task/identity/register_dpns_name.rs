@@ -214,9 +214,12 @@ impl AppContext {
         }
         .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let estimated_fee = self.fee_estimator().estimate_username_registration(
+        // The contest fund is charged too, so the settled fee (the whole
+        // balance drop) compares against an estimate that includes it.
+        let estimated_fee = self.fee_estimator().estimate_username_registration_charge(
             input.name_input.chars().count(),
             outcome == DpnsRegistrationOutcome::PendingCommunityVote,
+            input.approved_contest_fee,
         );
         let balance_before = qualified_identity.identity.balance();
         // Refused here, not by the network: it would take the first document's
@@ -225,9 +228,7 @@ impl AppContext {
         // without it.
         let admission_reserve =
             username_name_admission_reserve_credits(domain_document_type, sdk.version());
-        let required = estimated_fee
-            .saturating_add(input.approved_contest_fee)
-            .saturating_add(admission_reserve);
+        let required = estimated_fee.saturating_add(admission_reserve);
         if balance_before < required {
             return Err(TaskError::UsernameRegistrationBalanceTooLow {
                 available: balance_before,
@@ -1052,6 +1053,71 @@ mod tests {
                 "nothing may be broadcast"
             );
         }
+    }
+
+    /// A contested registration also pays the contest fund, and the settled
+    /// fee compares against the balance drop: the estimate it reports must
+    /// include that fund, or every contested registration "differs".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contested_registration_estimate_includes_the_contest_fund() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let platform_version = PlatformVersion::latest();
+        let mock_sdk = || {
+            dash_sdk::SdkBuilder::new_mock()
+                .with_version(platform_version)
+                .build()
+                .expect("mock sdk")
+        };
+        ctx.sdk.store(Arc::new(mock_sdk()));
+        let contest_fund = contest_fee_credits(platform_version);
+        let mut identity = identity_with_signing_key(7);
+        identity.identity.set_balance(u64::MAX / 2);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut sdk = mock_sdk();
+        expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+        expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
+        expect_contender_count(&mut sdk, &ctx, "alice", 0).await;
+        let submitted = domain_document(id, "alice");
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice".to_owned(),
+                    approved_contest_fee: contest_fund,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok(RegisterDpnsNameResult {
+                        preorder_document: submitted.clone(),
+                        domain_document: submitted,
+                        full_domain_name: "alice.dash".to_owned(),
+                    })
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = result
+        else {
+            panic!("unexpected result: {result:?}");
+        };
+        assert_eq!(outcome, DpnsRegistrationOutcome::PendingCommunityVote);
+        assert_eq!(
+            fee_result.estimated_fee,
+            ctx.fee_estimator()
+                .estimate_username_registration("alice".len(), true)
+                + contest_fund
+        );
     }
 
     /// A registered-name document as the network returns it for `label`.

@@ -9,7 +9,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::user_role::UserRole;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -192,9 +191,9 @@ impl TokenAction for MintAction {
             );
             ui.add_space(5.0);
             ui.label(self.proposed_recipient_text(ctx));
-        } else if distribution_rules.minting_allow_choosing_destination()
-            || ctx.app_context.user_role().at_least(UserRole::Power)
-        {
+        } else if distribution_rules.minting_allow_choosing_destination() {
+            // A token that forbids choosing mints to its configured
+            // destination for every role, so no one gets a field it ignores.
             let destination_optional = distribution_rules
                 .new_tokens_destination_identity()
                 .is_some();

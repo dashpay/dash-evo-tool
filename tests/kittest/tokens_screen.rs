@@ -895,6 +895,41 @@ fn group_mint_co_signer_cannot_change_the_proposed_recipient() {
     });
 }
 
+/// A token that forbids choosing the recipient always mints to its
+/// configured destination, so no role gets an editable recipient: whatever a
+/// Power user typed there would be ignored.
+#[test]
+fn power_user_gets_no_recipient_field_when_the_token_forbids_choosing() {
+    use dash_evo_tool::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let mut f = token_fixture();
+        f.app_context.set_user_role(UserRole::Power);
+        let screen = MintTokensScreen::new(f.info.clone(), &f.app_context);
+        f.show(Screen::MintTokensScreen(screen));
+        f.harness.get_by_label("Recipient:");
+
+        let rules = f.info.token_config.distribution_rules_mut();
+        rules.set_minting_allow_choosing_destination(false);
+        rules.set_new_tokens_destination_identity(Some(Identifier::from(
+            rand::random::<[u8; 32]>(),
+        )));
+
+        for role in [UserRole::Power, UserRole::Developer] {
+            f.app_context.set_user_role(role);
+            let screen = MintTokensScreen::new(f.info.clone(), &f.app_context);
+            f.show(Screen::MintTokensScreen(screen));
+            assert!(
+                f.harness.query_by_label("Recipient:").is_none(),
+                "{role:?} must not get a recipient selector"
+            );
+        }
+    });
+}
+
 /// A typo in Update Config's Max Supply field must not be sent as "no
 /// limit": the field keeps the text, explains the problem and holds back the
 /// Update Config button until the value parses.

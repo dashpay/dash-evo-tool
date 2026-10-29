@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::qualified_identity::IdentityType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -1749,6 +1750,16 @@ pub enum TaskError {
         "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
     )]
     NoUsableWithdrawalKey,
+
+    /// No active key this app can sign with was available for a masternode or
+    /// evonode withdrawal, which may be signed with the payout (transfer) key
+    /// or, failing that, the owner key — the chosen key may have been disabled,
+    /// or neither is loaded for this identity. See
+    /// [`TaskError::no_usable_withdrawal_key`].
+    #[error(
+        "This withdrawal can't be signed because no active payout or owner key for this identity is available in this app. Load an active payout or owner key for this identity and try again."
+    )]
+    NoUsableNodeWithdrawalKey,
 
     /// No active key this app can sign with was available for the transfer —
     /// the chosen key may have been disabled, or no transfer key is loaded for
@@ -4309,6 +4320,20 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
+    /// The error for a withdrawal from an identity of `identity_type` that no
+    /// usable key can sign. A masternode or evonode may sign with its owner key
+    /// as well as its payout key, so it gets
+    /// [`TaskError::NoUsableNodeWithdrawalKey`], which names both; a user
+    /// identity gets [`TaskError::NoUsableWithdrawalKey`].
+    pub fn no_usable_withdrawal_key(identity_type: IdentityType) -> Self {
+        match identity_type {
+            IdentityType::User => TaskError::NoUsableWithdrawalKey,
+            IdentityType::Masternode | IdentityType::Evonode => {
+                TaskError::NoUsableNodeWithdrawalKey
+            }
+        }
+    }
+
     /// The error for a token operation the wallet runtime reported as failed
     /// (`PlatformWalletError::TokenOperationFailed`).
     ///
@@ -8373,6 +8398,29 @@ mod tests {
             assert!(
                 !msg.contains(jargon),
                 "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
+        }
+    }
+
+    /// A masternode or evonode withdrawal may also be signed with the owner
+    /// key, so its "no usable key" message must name both remedies; a user
+    /// identity, which can only use a transfer key, keeps its own message.
+    #[test]
+    fn no_usable_withdrawal_key_names_the_purposes_the_identity_type_allows() {
+        assert!(matches!(
+            TaskError::no_usable_withdrawal_key(IdentityType::User),
+            TaskError::NoUsableWithdrawalKey
+        ));
+        for node in [IdentityType::Masternode, IdentityType::Evonode] {
+            let error = TaskError::no_usable_withdrawal_key(node);
+            assert!(
+                matches!(error, TaskError::NoUsableNodeWithdrawalKey),
+                "{node:?} must get the node message, got {error:?}"
+            );
+            let msg = error.to_string();
+            assert!(
+                msg.contains("payout") && msg.contains("owner"),
+                "the node message must name both usable keys, got: {msg}"
             );
         }
     }

@@ -778,7 +778,8 @@ impl IdentityTokensState {
     /// Note a failure of this tab's requests. A refresh already running
     /// elsewhere, or a read held back until the network has synced, is not a
     /// failure: the request is owed again once it can go out. Anything else
-    /// is shown inline, never as a global banner.
+    /// is shown inline, never as a global banner — except a "track again"
+    /// whose rows may still be hidden, which only the banner can report.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         let in_progress = matches!(
             error,
@@ -797,7 +798,10 @@ impl IdentityTokensState {
                 self.failed_checks.extend(pairs);
             }
             self.invalidate_rows();
-            self.swallow_next_error = true;
+            // A local storage failure may come before the dismissals were
+            // cleared: those rows stay hidden and cannot show the failure, so
+            // the default banner reports it.
+            self.swallow_next_error = in_progress || !Self::may_leave_rows_dismissed(error);
             return;
         }
         if self.refresh.settle(context).is_some() {
@@ -829,6 +833,17 @@ impl IdentityTokensState {
             // The row left optimistically; put it back with the default banner.
             self.invalidate_rows();
         }
+    }
+
+    /// Whether a failed "track again" may have stopped before clearing its
+    /// dismissals. Only reaching the local token store (the wallet backend,
+    /// then its k/v store) can fail at that point; the read gate and the
+    /// refresh guard before it are in-progress refusals.
+    fn may_leave_rows_dismissed(error: &TaskError) -> bool {
+        matches!(
+            error,
+            TaskError::TokenStorage { .. } | TaskError::WalletBackendNotYetWired
+        )
     }
 
     fn note_full_refresh_failed(&mut self, error: &TaskError) {
@@ -1336,6 +1351,34 @@ mod tests {
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
         assert!(state.failed_checks.is_empty());
+    }
+
+    /// A "track again" that failed reading or writing local storage may have
+    /// left the dismissals in place, so its rows stay hidden and cannot show
+    /// "could not check": the error goes to the banner instead. It still
+    /// marks only its own pairs, never another identity's balances.
+    #[test]
+    fn a_track_again_storage_failure_reaches_the_banner() {
+        let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
+        for error in [
+            TaskError::TokenStorage {
+                source: crate::wallet_backend::KvAdapterError::Truncated,
+            },
+            TaskError::WalletBackendNotYetWired,
+        ] {
+            let mut state = IdentityTokensState::default();
+            let context = dispatched(state.dispatch_track_again(pairs.clone()));
+            state.record_error(&context, &error);
+            assert!(
+                !state.take_swallowed_error(),
+                "{error:?} must reach the banner"
+            );
+            assert!(!state.full_refresh_failed);
+            assert_eq!(state.refresh_failure(), None);
+            assert!(pairs.iter().all(|pair| state.failed_checks.contains(pair)));
+            state.reset_for_identity_change();
+            assert!(state.failed_checks.is_empty());
+        }
     }
 
     /// Owed "track again" pairs belong to the identity that asked; switching

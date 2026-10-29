@@ -1312,12 +1312,13 @@ pub fn core_send_max_duffs(upstream_max_duffs: u64, input_count: usize) -> u64 {
     )
 }
 
-/// Core (L1) fee, in duffs, of a payment spending `num_inputs` coins into
-/// `num_outputs` outputs without change, sized by key-wallet's
-/// `estimate_tx_size` at the rate the send builds with. Both counts are
-/// clamped to at least 1.
+/// Core (L1) fee, in duffs, of a payment spending `num_inputs` chosen coins
+/// into `num_outputs` outputs, sized by key-wallet's `estimate_tx_size` at the
+/// rate the send builds with. A change output is counted: a payment from
+/// chosen coins returns what it does not spend, and leaving it out understates
+/// the fee. Both counts are clamped to at least 1.
 pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) -> u64 {
-    let size = estimate_tx_size(num_inputs.max(1), num_outputs.max(1), false);
+    let size = estimate_tx_size(num_inputs.max(1), num_outputs.max(1), true);
     tolerance::CORE_SEND.apply_fee(core_fee_rate().calculate_fee(size))
 }
 
@@ -2006,13 +2007,16 @@ mod tests {
         assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
     }
 
-    /// The Core fee is key-wallet's own size estimate at its default rate:
-    /// 10 + 148 per input + 34 per output bytes at 1 duff per byte.
+    /// The Core fee of a payment from chosen coins is key-wallet's own size
+    /// estimate at its default rate, change output included: 10 + 148 per
+    /// input + 34 per output + 34 for the change, at 1 duff per byte. A
+    /// testnet payment of two coins to two recipients built with change and
+    /// was charged 408 duffs.
     #[test]
     fn core_l1_send_fee_is_the_upstream_size_at_the_default_rate() {
-        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 192);
-        assert_eq!(estimate_core_l1_send_fee_duffs(2, 1), 340);
-        assert_eq!(estimate_core_l1_send_fee_duffs(2, 3), 408);
+        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 226);
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 2), 408);
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 3), 442);
         assert_eq!(
             estimate_core_l1_send_fee_duffs(0, 0),
             estimate_core_l1_send_fee_duffs(1, 1),
@@ -2028,7 +2032,7 @@ mod tests {
         for inputs in 1..=10 {
             assert_eq!(
                 estimate_core_send_fee_duffs(inputs),
-                estimate_core_l1_send_fee_duffs(inputs, 1)
+                core_fee_rate().calculate_fee(estimate_tx_size(inputs, 1, false))
             );
             assert_eq!(core_send_max_duffs(1_000_000, inputs), 1_000_000);
         }

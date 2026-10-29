@@ -1442,7 +1442,7 @@ mod tests {
         unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
-    use crate::model::fee_estimation::estimate_core_l1_send_fee_duffs;
+    use crate::model::fee_estimation::estimate_core_send_fee_duffs;
     use crate::wallet_backend::snapshot::DetWalletBalance;
     use dash_sdk::dpp::dashcore::ScriptBuf;
     use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -1482,8 +1482,8 @@ mod tests {
             1,
             false,
         );
-        // The balance less the model's fee estimate for one input and one output.
-        let max_amount = BALANCE_DUFFS - estimate_core_l1_send_fee_duffs(1, 1);
+        // The balance less the pooled send fee the Max is priced with.
+        let max_amount = BALANCE_DUFFS - estimate_core_send_fee_duffs(1);
 
         assert_eq!(max_amount, 9_999_808);
         let (transaction, fee, _no_reservation) = TransactionBuilder::new()

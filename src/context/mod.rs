@@ -176,6 +176,11 @@ pub struct AppContext {
     user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
+    /// TEST SEAM (compiled only into `cargo test` builds): the protocol
+    /// version tests declare proven for the current SDK. See
+    /// [`test_support::ProvenProtocolVersionOverride`].
+    #[cfg(test)]
+    pub(crate) proven_protocol_version_for_tests: test_support::ProvenProtocolVersionOverride,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
@@ -595,6 +600,8 @@ impl AppContext {
             user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
+            #[cfg(test)]
+            proven_protocol_version_for_tests: Default::default(),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
             system_contracts,
@@ -1132,7 +1139,15 @@ impl AppContext {
     /// version transitions are built at, and whether the proven version is
     /// newer than any this build defines.
     pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
-        self.sdk.load().protocol_version_info()
+        let sdk = self.sdk.load();
+        let info = sdk.protocol_version_info();
+        // TEST SEAM: compiled only into `cargo test` builds; every other build
+        // returns the SDK's answer unchanged.
+        // TODO(upstream): drop once the SDK offers a mock seam for a verified
+        // version (https://github.com/dashpay/platform/issues/5622).
+        #[cfg(test)]
+        let info = self.proven_protocol_version_for_tests.apply(&sdk, info);
+        info
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {

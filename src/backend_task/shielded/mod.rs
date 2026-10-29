@@ -309,6 +309,8 @@ mod tests {
     use crate::context::test_support::test_app_context;
     use crate::model::user_role::UserRole;
     use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::platform::DataContract;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mcp_style_direct_dispatch_rejects_unavailable_shielded_write() {
@@ -466,24 +468,38 @@ mod tests {
         (ctx, backend)
     }
 
-    /// Tell `sdk` the network runs protocol `version`, the way a response
-    /// from the network does.
-    fn network_reports_protocol_version(sdk: &dash_sdk::Sdk, version: u32) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_millis() as u64;
-        sdk.verify_response_metadata(
-            "test",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                height: 1,
-                time_ms: now_ms,
-                protocol_version: version,
-                ..Default::default()
-            },
-        )
-        .expect("fresh metadata");
-        assert_eq!(sdk.protocol_version_number(), version);
+    /// A context whose wallet backend runs on a mock connection at protocol 13
+    /// that answers the DPNS-contract fetch, so a test can move the backend's
+    /// version mid-transfer ([`network_raises_protocol_version`]).
+    async fn ctx_with_mock_backend(
+        dir: &std::path::Path,
+    ) -> (Arc<AppContext>, Arc<crate::wallet_backend::WalletBackend>) {
+        let ctx = test_app_context(dir);
+        let mut sdk = crate::context::test_support::mock_sdk_at_for(&ctx, 13);
+        let dpns = ctx.dpns_contract();
+        sdk.mock()
+            .expect_fetch(dpns.id(), Some(DataContract::clone(&dpns)))
+            .await
+            .expect("register DPNS contract response");
+        ctx.sdk.store(Arc::new(sdk));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.ensure_wallet_backend(SenderAsync::new(tx, egui::Context::default()))
+            .await
+            .expect("wallet backend");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        assert_eq!(backend.sdk().protocol_version_number(), 13);
+        (ctx, backend)
+    }
+
+    /// Have the network move `sdk` past protocol 13, the way a response from
+    /// the network does: a fetch answered by the mock raises the version the
+    /// SDK builds transitions at (to the newest this build defines).
+    async fn network_raises_protocol_version(ctx: &AppContext, sdk: &dash_sdk::Sdk) {
+        use dash_sdk::platform::Fetch;
+        DataContract::fetch(sdk, ctx.dpns_contract().id())
+            .await
+            .expect("mocked DPNS contract fetch");
+        assert!(sdk.protocol_version_number() > 13, "the version moved");
     }
 
     /// The version moves while the transfer is under way, and the transfer
@@ -493,13 +509,13 @@ mod tests {
     async fn shield_from_core_task_succeeds_without_an_amount_when_the_version_moves_mid_transfer()
     {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (ctx, backend) = ctx_with_backend(tmp.path()).await;
+        let (ctx, backend) = ctx_with_mock_backend(tmp.path()).await;
         let seed_hash = WalletSeedHash::default();
 
         let result = ctx
             .shield_from_core_with(seed_hash, 100_000, async |funding| {
                 assert_eq!(funding.lock_duffs, 100_000 + 212_852);
-                network_reports_protocol_version(backend.sdk(), 14);
+                network_raises_protocol_version(&ctx, backend.sdk()).await;
                 Ok(())
             })
             .await;

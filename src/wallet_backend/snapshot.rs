@@ -1725,12 +1725,8 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
         const CURRENT_HEIGHT: u32 = 200;
-        let wallet = Wallet::from_seed_bytes(
-            [0x5a; 64],
-            Network::Testnet,
-            WalletAccountCreationOptions::Default,
-        )
-        .expect("upstream wallet");
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("upstream wallet");
         let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
         let address = {
             let account = wallet.get_bip44_account(0).expect("BIP44 account");

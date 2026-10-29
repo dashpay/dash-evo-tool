@@ -3623,7 +3623,8 @@ mod tests {
         )
     }
 
-    const WALLET_NODE_SEED: [u8; 64] = [0x4E; 64];
+    /// The wallet-held node's wallet seed: random per run, never committed.
+    static WALLET_NODE_SEED: std::sync::LazyLock<[u8; 64]> = std::sync::LazyLock::new(rand::random);
     const WALLET_NODE_OWNER_PATH: &str = "m/9'/1'/3'/2'/3";
     const WALLET_NODE_PAYOUT_PATH: &str = "m/44'/1'/0'/0/2";
 
@@ -3639,7 +3640,8 @@ mod tests {
         use dash_sdk::dpp::identity::Purpose;
         let dir = tempfile::tempdir().unwrap();
         let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let wallet = Wallet::new_from_seed(WALLET_NODE_SEED, Network::Testnet, None, None).unwrap();
+        let wallet =
+            Wallet::new_from_seed(*WALLET_NODE_SEED, Network::Testnet, None, None).unwrap();
         let (seed_hash, _) = ctx
             .register_wallet(
                 wallet,
@@ -3767,7 +3769,7 @@ mod tests {
         let owner_wif = WALLET_NODE_OWNER_PATH
             .parse::<DerivationPath>()
             .unwrap()
-            .derive_priv_ecdsa_for_master_seed(&WALLET_NODE_SEED, Network::Testnet)
+            .derive_priv_ecdsa_for_master_seed(&*WALLET_NODE_SEED, Network::Testnet)
             .unwrap()
             .to_priv()
             .to_wif();
@@ -3825,12 +3827,12 @@ mod tests {
     async fn a_rotated_node_key_is_found_in_a_wallet_despite_the_stale_stored_one() {
         use dash_sdk::dpp::identity::Purpose;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
-        const OLD_SEED: [u8; 64] = [0x11; 64];
+        let old_seed: [u8; 64] = rand::random();
         let (ctx, _dir, seed_hash, node_id, _) = wallet_held_node().await;
         let old_owner = hash160_key(
             0,
             Purpose::OWNER,
-            wallet_key_hash(&OLD_SEED, WALLET_NODE_OWNER_PATH),
+            wallet_key_hash(&old_seed, WALLET_NODE_OWNER_PATH),
         );
         let payout = hash160_key(
             1,
@@ -3840,7 +3842,7 @@ mod tests {
         let old_owner_wif = WALLET_NODE_OWNER_PATH
             .parse::<DerivationPath>()
             .unwrap()
-            .derive_priv_ecdsa_for_master_seed(&OLD_SEED, Network::Testnet)
+            .derive_priv_ecdsa_for_master_seed(&old_seed, Network::Testnet)
             .unwrap()
             .to_priv()
             .to_wif();

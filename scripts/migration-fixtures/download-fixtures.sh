@@ -71,6 +71,14 @@ die() {
 }
 warn() { echo "::warning::$*" >&2; }
 note() { echo "==> $*"; }
+# A fixture that cannot be used. --strict stops at the first one, so the step
+# fails at once with the reason and fetches nothing further; otherwise warn and
+# count it.
+unresolved() {
+    [ "$STRICT" -eq 0 ] || die "$*"
+    warn "$*"
+    failed=$((failed + 1))
+}
 
 usage() {
     cat <<'EOF'
@@ -207,31 +215,27 @@ while IFS= read -r entry; do
     note "Fixture '$id'"
 
     if [ "$STRICT" -eq 1 ] && [[ ! "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        warn "Fixture '$id' needs a valid sha256 in strict mode — skipping."
-        failed=$((failed + 1))
+        unresolved "Fixture '$id' needs a valid sha256 in strict mode."
         continue
     fi
     expected_sha="${expected_sha,,}"
 
     if [ -z "$artifact_name" ]; then
-        warn "Fixture '$id' has no artifact name in the manifest — skipping."
-        failed=$((failed + 1))
+        unresolved "Fixture '$id' has no artifact name in the manifest — skipping."
         continue
     fi
 
     # --- resolve the run holding the artifact -----------------------------
     if [ -z "$run_id" ]; then
         if [ -z "$workflow" ]; then
-            warn "Fixture '$id' gives neither an artifact run id nor a workflow to search — skipping."
-            failed=$((failed + 1))
+            unresolved "Fixture '$id' gives neither an artifact run id nor a workflow to search — skipping."
             continue
         fi
         note "  no run id recorded; searching newest successful run of $workflow"
         run_id="$(gh api "repos/$REPO/actions/workflows/$workflow/runs?status=success&per_page=50" \
             --jq '.workflow_runs | sort_by(.run_started_at) | reverse | .[0].id // empty' 2>/dev/null || true)"
         if [ -z "$run_id" ]; then
-            warn "Fixture '$id': no successful run of $workflow found in $REPO — skipping."
-            failed=$((failed + 1))
+            unresolved "Fixture '$id': no successful run of $workflow found in $REPO — skipping."
             continue
         fi
     fi
@@ -241,13 +245,11 @@ while IFS= read -r entry; do
     expired="$(gh api "repos/$REPO/actions/runs/$run_id/artifacts?per_page=100" \
         --jq ".artifacts[] | select(.name == \"$artifact_name\") | .expired" 2>/dev/null | head -n1 || true)"
     if [ -z "$expired" ]; then
-        warn "Fixture '$id': artifact '$artifact_name' is not present in run $run_id of $REPO. It may have been deleted, or the run id in the manifest may be stale."
-        failed=$((failed + 1))
+        unresolved "Fixture '$id': artifact '$artifact_name' is not present in run $run_id of $REPO. It may have been deleted, or the run id in the manifest may be stale."
         continue
     fi
     if [ "$expired" = "true" ]; then
-        warn "Fixture '$id': artifact '$artifact_name' in run $run_id has EXPIRED. Re-capture it, or re-upload it to refresh its retention window."
-        failed=$((failed + 1))
+        unresolved "Fixture '$id': artifact '$artifact_name' in run $run_id has EXPIRED. Re-capture it, or re-upload it to refresh its retention window."
         continue
     fi
 
@@ -261,18 +263,20 @@ while IFS= read -r entry; do
     mkdir -p "$stage"
 
     note "  downloading '$artifact_name' from run $run_id"
-    if ! gh run download "$run_id" --repo "$REPO" --name "$artifact_name" --dir "$stage"; then
-        warn "Fixture '$id': download of '$artifact_name' from run $run_id failed."
+    # Keep gh's reason (e.g. "HTTP 503: ...") for the report, minus the signed
+    # download URL it appends.
+    if ! download_error="$(gh run download "$run_id" --repo "$REPO" --name "$artifact_name" \
+        --dir "$stage" 2>&1 >/dev/null)"; then
         rm -rf "$stage"
-        failed=$((failed + 1))
+        download_error="$(printf '%s' "$download_error" | sed -E 's/ \(https?:[^)]*\)//g')"
+        unresolved "Fixture '$id': download of '$artifact_name' from run $run_id failed: ${download_error:-no reason given}"
         continue
     fi
 
     mapfile -t archives < <(find "$stage" -type f \( -name '*.tar.zst' -o -name '*.tar.gz' \) | LC_ALL=C sort)
     if [ "${#archives[@]}" -ne 1 ]; then
-        warn "Fixture '$id': expected exactly one .tar.zst/.tar.gz inside artifact '$artifact_name', found ${#archives[@]}."
         rm -rf "$stage"
-        failed=$((failed + 1))
+        unresolved "Fixture '$id': expected exactly one .tar.zst/.tar.gz inside artifact '$artifact_name', found ${#archives[@]}."
         continue
     fi
     archive_path="${archives[0]}"
@@ -280,9 +284,8 @@ while IFS= read -r entry; do
     # The harness locates the archive by this name, so a mismatch here would
     # only resurface later as a less specific "archive not found".
     if [ -n "$expected_file" ] && [ "$(basename -- "$archive_path")" != "$expected_file" ]; then
-        warn "Fixture '$id': artifact '$artifact_name' holds $(basename -- "$archive_path"), but the manifest names $expected_file."
         rm -rf "$stage"
-        failed=$((failed + 1))
+        unresolved "Fixture '$id': artifact '$artifact_name' holds $(basename -- "$archive_path"), but the manifest names $expected_file."
         continue
     fi
 
@@ -349,8 +352,7 @@ if [ -n "$MERGED_MANIFEST" ]; then
             resolved=$((resolved + 1))
             note "  attestation and checksum OK"
         else
-            warn "Fixture attached to release '$tag' could not be downloaded or verified as attested by migration-fixture-capture.yml on $TRUSTED_REF — not used."
-            failed=$((failed + 1))
+            unresolved "Fixture attached to release '$tag' could not be downloaded or verified as attested by migration-fixture-capture.yml on $TRUSTED_REF — not used."
         fi
         rm -rf "$stage"
     done <<<"$release_tags"

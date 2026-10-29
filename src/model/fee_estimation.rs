@@ -271,11 +271,6 @@ impl PlatformFeeEstimator {
         Self::new(PlatformVersion::latest(), fee_multiplier_permille)
     }
 
-    /// The protocol version the estimates follow.
-    pub fn platform_version(&self) -> &'static PlatformVersion {
-        self.platform_version
-    }
-
     /// Most Platform address inputs one state transition may spend.
     pub(crate) fn max_platform_inputs(&self) -> usize {
         max_platform_inputs(self.platform_version)
@@ -760,15 +755,10 @@ impl PlatformFeeEstimator {
         self.document_write_fee(0, ESTIMATED_SEEKS)
     }
 
-    /// Estimate fee for document replacement with known size.
-    pub fn estimate_document_replace_with_size(&self, document_bytes: usize) -> u64 {
-        const ESTIMATED_SEEKS: usize = 10;
-        self.document_write_fee(document_bytes, ESTIMATED_SEEKS)
-    }
-
     /// Estimate fee for document replacement (uses default estimate of ~200 bytes).
     pub fn estimate_document_replace(&self) -> u64 {
-        self.estimate_document_replace_with_size(200)
+        const ESTIMATED_SEEKS: usize = 10;
+        self.document_write_fee(200, ESTIMATED_SEEKS)
     }
 
     /// Conservative fee estimate for a contact-info write, including all preserved
@@ -813,7 +803,7 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for data contract creation with known size: the base
     /// registration fee and Platform's minimum, plus DET's storage estimate.
-    pub fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
+    fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
         let min = self
             .platform_version
@@ -834,30 +824,21 @@ impl PlatformFeeEstimator {
         self.estimate_contract_create_with_size(500)
     }
 
-    /// Estimate fee for data contract update with known size of changes.
-    pub fn estimate_contract_update_with_size(&self, update_bytes: usize) -> u64 {
+    /// Estimate fee for data contract update (uses a ~300 byte change).
+    pub fn estimate_contract_update(&self) -> u64 {
+        const UPDATE_BYTES: usize = 300;
         const ESTIMATED_SEEKS: usize = 15;
         let min = self.min_fees().contract_update;
         self.reserve(
             tolerance::PLATFORM_STORAGE,
-            min.saturating_add(self.storage_based_fee(update_bytes, ESTIMATED_SEEKS)),
+            min.saturating_add(self.storage_based_fee(UPDATE_BYTES, ESTIMATED_SEEKS)),
             min,
         )
     }
 
-    /// Estimate fee for data contract update (uses default estimate).
-    pub fn estimate_contract_update(&self) -> u64 {
-        self.estimate_contract_update_with_size(300)
-    }
-
-    /// Estimate fee for masternode vote
-    pub fn estimate_masternode_vote(&self) -> u64 {
-        self.min_fee(self.min_fees().masternode_vote)
-    }
-
     /// Smallest fee Platform takes for a transfer between Platform addresses,
     /// scaled by the multiplier.
-    pub fn estimate_address_funds_transfer(&self, input_count: usize, output_count: usize) -> u64 {
+    fn estimate_address_funds_transfer(&self, input_count: usize, output_count: usize) -> u64 {
         self.min_fee(AddressFundsTransferTransition::estimate_min_fee(
             input_count,
             output_count,

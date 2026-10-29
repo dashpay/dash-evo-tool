@@ -19,6 +19,7 @@ use eframe::egui::Context;
 use eframe::emath::Align;
 use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 use zxcvbn::zxcvbn;
 
 /// Word count options for BIP39 mnemonic seed phrases
@@ -123,7 +124,7 @@ impl AddNewWalletScreen {
 
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
-            let seed = mnemonic.to_seed("");
+            let seed = Zeroizing::new(mnemonic.to_seed(""));
 
             let password = if self.password_input.is_empty() {
                 None
@@ -135,7 +136,7 @@ impl AddNewWalletScreen {
             // a blank name with the smallest unused "Wallet N", and rejects a
             // name another wallet already uses.
             let wallet = Wallet::new_from_seed(
-                seed,
+                *seed,
                 self.app_context.network,
                 Some(self.alias_input.text().to_owned()),
                 password.as_ref(),

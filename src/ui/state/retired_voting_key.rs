@@ -77,7 +77,8 @@ impl RetiredVotingKeyState {
     }
 
     /// What the last check answered: whether the stored key is retired.
-    /// `None` until a check has answered, or when it failed.
+    /// `None` until a check has answered, or when it failed. Test seam.
+    #[cfg(any(test, feature = "testing"))]
     pub fn check_answer(&self) -> Option<bool> {
         match self.status {
             Status::Retired => Some(true),

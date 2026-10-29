@@ -940,13 +940,8 @@ impl AppContext {
                 inputs,
                 wallet_seed_hash,
             } => {
-                self.top_up_identity_from_platform_addresses(
-                    sdk,
-                    identity,
-                    inputs,
-                    wallet_seed_hash,
-                )
-                .await
+                self.top_up_identity_from_platform_addresses(identity, inputs, wallet_seed_hash)
+                    .await
             }
             IdentityTask::TransferToAddresses {
                 identity,
@@ -1000,12 +995,11 @@ impl AppContext {
     /// Top up an identity using credits from Platform addresses
     async fn top_up_identity_from_platform_addresses(
         &self,
-        sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
+        use crate::wallet_backend::PlatformPathIndex;
 
         // Estimate the top-up fee with the active network fee multiplier
         // (context estimator) so the figure shown to the user is accurate.
@@ -1013,50 +1007,34 @@ impl AppContext {
             .fee_estimator()
             .estimate_identity_topup_from_addresses(inputs.len());
 
+        // Per-input address/amount detail stays out of default-level logs.
         tracing::info!(
-            "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",
+            "top_up_identity_from_platform_addresses: identity={}, inputs={}",
             qualified_identity.identity.id(),
-            inputs
+            inputs.len()
         );
 
-        // Clone the wallet for the pure address→path index (needed across the
-        // async boundary). The signing key never lives in this snapshot — it is
-        // derived JIT from the borrowed HD seed inside the secret scope below.
-        // No `is_open()` gate: the chokepoint resolves an unprotected or
-        // session-cached wallet without a prompt, and prompts a locked protected
-        // one — returning `WalletLocked` only if the seed is truly unavailable.
-        let wallet_snapshot = self.wallet_arc(&wallet_seed_hash)?.read()?.clone();
+        // The pure address→path index is built from the paying wallet before
+        // the secret scope. The signing keys never live in it: the backend
+        // derives them JIT from the borrowed HD seed. No `is_open()` gate: the
+        // chokepoint resolves an unprotected or session-cached wallet without
+        // a prompt and prompts for a locked protected one.
+        let path_index = {
+            let wallet = self.wallet_arc(&wallet_seed_hash)?;
+            let wallet = wallet.read()?;
+            PlatformPathIndex::from_wallet(&wallet, self.network)
+        };
 
-        tracing::info!("Wallet loaded, calling top_up_from_addresses...");
-
-        // Get the identity
-        let identity = qualified_identity.identity.clone();
-
-        // Sign each top-up input through a JIT platform signer that borrows the
-        // HD seed only for the duration of the SDK call. The pure path index is
-        // built before the secret scope; the seed zeroizes on return and never
-        // enters this layer by value.
-        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, SecretScope};
-        let network = self.network;
-        let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
-        let backend = self.wallet_backend()?;
-
-        // Execute the top-up
-        let (address_infos, new_balance, _height) = backend
-            .secret_access()
-            .with_secret_session(
-                &SecretScope::HdSeed {
-                    seed_hash: wallet_seed_hash,
-                },
-                async |session| {
-                    let plaintext = session.plaintext();
-                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                    identity
-                        .top_up_from_addresses(sdk, inputs, &signer, None)
-                        .await
-                        .map_err(TaskError::from)
-                },
+        // The identity may belong to another wallet or to none, so the
+        // backend tops it up by id and only reconciles the paying wallet's
+        // addresses in platform-wallet.
+        let (new_balance, entries) = self
+            .wallet_backend()?
+            .top_up_identity_from_platform_addresses(
+                &wallet_seed_hash,
+                &path_index,
+                &qualified_identity.identity,
+                inputs,
             )
             .await?;
 
@@ -1065,15 +1043,11 @@ impl AppContext {
             new_balance
         );
 
-        // Update source address balances using proof-verified data from SDK response
-        if let Err(e) =
-            self.update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
-        {
-            tracing::warn!("Failed to update wallet platform address info: {}", e);
-        }
+        // Show the spent balances platform-wallet committed, so both views agree.
+        self.apply_platform_address_push(vec![(wallet_seed_hash, entries)]);
 
         // Update the identity balance in memory
-        let mut updated_identity = qualified_identity.clone();
+        let mut updated_identity = qualified_identity;
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)

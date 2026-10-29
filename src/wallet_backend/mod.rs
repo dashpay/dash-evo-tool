@@ -49,6 +49,7 @@ mod loader;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
+mod platform_address_ops;
 pub mod platform_compatibility;
 pub(crate) mod poison;
 pub mod secret_access;

@@ -83,7 +83,9 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
 /// Drop `existing`'s voter identity and voting keys when the masternode list
 /// names a different voting key (`current_voting_hash`), so a merge cannot
 /// carry a retired voting key over a load that found no replacement. With no
-/// list to check against (`None`), everything is kept.
+/// current list to check against (`None`: unread, still catching up, or
+/// offline), everything is kept, since a stale list may name a key the node
+/// has since replaced.
 fn drop_retired_voting_key(
     existing: &mut QualifiedIdentity,
     current_voting_hash: Option<[u8; 20]>,
@@ -270,7 +272,8 @@ impl AppContext {
         }
 
         // The voting key is not on the node's identity: the masternode list
-        // says which one is current.
+        // says which one is current. `None` unless that list is current, so a
+        // list still catching up never retires the stored key.
         let current_voting_hash = match self.wallet_backend() {
             Ok(backend)
                 if identity_type != IdentityType::User && voting_private_key_bytes.is_none() =>
@@ -1171,8 +1174,8 @@ impl AppContext {
 /// a wallet. A stored key that a rotation replaced does not count: a main
 /// identity key must still be active on the freshly fetched `identity`, and a
 /// voting key must hash to `current_voting_hash`, the voting key the
-/// masternode list records. When that list cannot be read (`None`) there is
-/// nothing to look up, so a stored voting key counts.
+/// masternode list records. When that list cannot be read or is not current
+/// (`None`) there is nothing to look up, so a stored voting key counts.
 fn stores_current_node_key(
     existing: &QualifiedIdentity,
     identity: &Identity,

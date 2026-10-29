@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::hashes::{Hash, hash160};
 use dash_sdk::dpp::dashcore::{Address, Network, PubkeyHash, ScriptBuf};
 use dash_sdk::dpp::key_wallet::account::{AccountType, ManagedAccountTrait};
@@ -81,11 +82,23 @@ pub struct MasternodeWithdrawal {
 }
 
 impl WalletBackend {
-    /// The voting key hash the synced masternode list records for the node
-    /// whose identity is `identity_id`, or `None` while the list has not
-    /// synced or does not list the node.
+    /// The voting key hash the masternode list records for the node whose
+    /// identity is `identity_id`, or `None` while the list is not current
+    /// (see [`masternode_list_is_current`]) or does not list the node. A stale
+    /// list could name a voting key the node has since replaced, and callers
+    /// drop stored voting keys that differ from this hash.
     pub async fn masternode_voting_key_hash(&self, identity_id: Identifier) -> Option<[u8; 20]> {
-        let summaries = self.inner.pwm.spv().masternode_list_summaries().await?;
+        let spv = self.inner.pwm.spv();
+        // Progress first: the list only moves forward, so a list read after a
+        // current progress snapshot is at least as new as that snapshot.
+        if !spv
+            .sync_progress()
+            .await
+            .is_some_and(|progress| masternode_list_is_current(&progress))
+        {
+            return None;
+        }
+        let summaries = spv.masternode_list_summaries().await?;
         let wire = wire_pro_tx_hash(identity_id);
         summaries
             .iter()
@@ -337,6 +350,31 @@ fn provider_key_path(
     Ok(base.child(child))
 }
 
+/// Whether `progress` shows the masternode list built at the chain tip: both
+/// the header and the masternode phase synced, and the list no lower than the
+/// stored header tip and the best height connected peers announce.
+///
+/// A phase's `Synced` alone is not enough: both stay `Synced` while they catch
+/// up with new blocks, so a list cached before a restart or a sleep still says
+/// `Synced` while it names keys the node has since replaced. With no peers the
+/// header phase waits for connections, so an offline list is never current.
+///
+/// TODO(upstream): peers' announced height is the freshest tip available
+/// here; a block no connected peer has announced yet is not seen. A
+/// list-freshness query on `SpvRuntime` would replace this check.
+fn masternode_list_is_current(progress: &SyncProgress) -> bool {
+    let (Ok(headers), Ok(masternodes)) = (progress.headers(), progress.masternodes()) else {
+        return false;
+    };
+    headers.state() == SyncState::Synced
+        && masternodes.state() == SyncState::Synced
+        && masternodes.current_height()
+            >= headers
+                .tip_height()
+                .max(headers.target_height())
+                .max(masternodes.block_header_tip_height())
+}
+
 /// Map an upstream masternode-withdrawal error to a typed [`TaskError`].
 fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
     match error {
@@ -357,7 +395,119 @@ fn map_masternode_withdraw_error(error: PlatformWalletError) -> TaskError {
 mod tests {
     use super::*;
     use crate::context::test_support::wired_test_app_context;
+    use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
     use dash_sdk::dpp::dashcore::address::Payload;
+
+    /// Sync progress with headers stored up to `header_tip` of the
+    /// `peer_best` height peers announce, and the masternode list built at
+    /// `list_height` while the masternode phase knows of `list_tip`.
+    fn progress(
+        headers_state: SyncState,
+        header_tip: u32,
+        peer_best: u32,
+        list_state: SyncState,
+        list_height: u32,
+        list_tip: u32,
+    ) -> SyncProgress {
+        let mut headers = BlockHeadersProgress::default();
+        headers.set_state(headers_state);
+        headers.update_tip_height(header_tip);
+        headers.update_target_height(peer_best);
+        let mut masternodes = MasternodesProgress::default();
+        masternodes.set_state(list_state);
+        masternodes.update_current_height(list_height);
+        masternodes.update_block_header_tip_height(list_tip);
+        let mut progress = SyncProgress::default();
+        progress.update_headers(headers);
+        progress.update_masternodes(masternodes);
+        progress
+    }
+
+    #[test]
+    fn masternode_list_at_the_network_tip_is_current() {
+        let synced = progress(
+            SyncState::Synced,
+            1_000,
+            1_000,
+            SyncState::Synced,
+            1_000,
+            1_000,
+        );
+        assert!(masternode_list_is_current(&synced));
+    }
+
+    /// Both phases stay `Synced` while they catch up with new blocks, so a
+    /// list behind the tip still says `Synced`: its voting key may be one the
+    /// node has since replaced.
+    #[test]
+    fn stale_masternode_list_is_not_current() {
+        let behind_its_tip = progress(
+            SyncState::Synced,
+            1_010,
+            1_010,
+            SyncState::Synced,
+            1_000,
+            1_010,
+        );
+        assert!(!masternode_list_is_current(&behind_its_tip));
+        let behind_stored_headers = progress(
+            SyncState::Synced,
+            1_010,
+            1_010,
+            SyncState::Synced,
+            1_000,
+            1_000,
+        );
+        assert!(!masternode_list_is_current(&behind_stored_headers));
+        let behind_peers = progress(
+            SyncState::Synced,
+            1_000,
+            1_010,
+            SyncState::Synced,
+            1_000,
+            1_000,
+        );
+        assert!(!masternode_list_is_current(&behind_peers));
+    }
+
+    #[test]
+    fn masternode_list_is_not_current_while_any_phase_syncs() {
+        let list_syncing = progress(
+            SyncState::Synced,
+            1_000,
+            1_000,
+            SyncState::Syncing,
+            1_000,
+            1_000,
+        );
+        assert!(!masternode_list_is_current(&list_syncing));
+        let headers_syncing = progress(
+            SyncState::Syncing,
+            1_000,
+            1_000,
+            SyncState::Synced,
+            1_000,
+            1_000,
+        );
+        assert!(!masternode_list_is_current(&headers_syncing));
+        // With no peers left the header phase waits for connections.
+        let offline = progress(
+            SyncState::WaitingForConnections,
+            1_000,
+            1_000,
+            SyncState::Synced,
+            1_000,
+            1_000,
+        );
+        assert!(!masternode_list_is_current(&offline));
+        let mut list_only = SyncProgress::default();
+        let mut masternodes = MasternodesProgress::default();
+        masternodes.set_state(SyncState::Synced);
+        list_only.update_masternodes(masternodes);
+        assert!(!masternode_list_is_current(&list_only));
+        assert!(!masternode_list_is_current(&SyncProgress::default()));
+    }
+
     use std::str::FromStr;
     use std::sync::LazyLock;
 

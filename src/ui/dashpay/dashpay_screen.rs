@@ -56,6 +56,17 @@ impl DashPayScreen {
 }
 
 impl ScreenLike for DashPayScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        if update.network == self.app_context.network
+            && matches!(
+                update.domain,
+                crate::backend_task::CacheDomain::ContactPayments
+                    | crate::backend_task::CacheDomain::All
+            )
+        {
+            self.payment_history.refresh();
+        }
+    }
     fn refresh(&mut self) {
         match self.dashpay_subscreen {
             DashPaySubscreen::Contacts => {

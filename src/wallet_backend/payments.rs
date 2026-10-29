@@ -17,6 +17,7 @@ use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dash_sdk::dpp::dashcore::{ScriptBuf, TxOut, Txid};
+use dash_sdk::dpp::key_wallet::Utxo;
 use dash_sdk::dpp::key_wallet::account::{Account, AccountType};
 use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
 use dash_sdk::dpp::key_wallet::managed_account::managed_account_collection::ManagedAccountCollection;
@@ -143,31 +144,45 @@ fn first_occurrences(account_types: impl IntoIterator<Item = AccountType>) -> Ve
         .collect()
 }
 
-/// The funding accounts `sources` name at `account_index`, in funding order,
-/// cloned with their keys. An account present on only one side is skipped,
-/// as a pooled upstream build skips it.
+/// The funding accounts `sources` name at `account_index`, in funding order.
+/// An account present on only one side is skipped, as a pooled upstream build
+/// skips it.
+fn pooled_funding_account_types(
+    wallet: &Wallet,
+    accounts: &ManagedAccountCollection,
+    sources: &[AccountTypePreference],
+    account_index: u32,
+) -> Vec<AccountType> {
+    first_occurrences(sources.iter().flat_map(|preference| -> Vec<AccountType> {
+        match preference {
+            AccountTypePreference::AllDashpayReceivingFunds => accounts
+                .dashpay_receival_accounts
+                .keys()
+                .map(|key| AccountType::DashpayReceivingFunds {
+                    index: key.index,
+                    user_identity_id: key.user_identity_id,
+                    friend_identity_id: key.friend_identity_id,
+                })
+                .collect(),
+            single => single.account_type(account_index).into_iter().collect(),
+        }
+    }))
+    .into_iter()
+    .filter(|account_type| {
+        wallet.accounts.account_of_type(*account_type).is_some()
+            && accounts.funds_account(account_type).is_some()
+    })
+    .collect()
+}
+
+/// [`pooled_funding_account_types`], each account cloned with its keys.
 fn pooled_funding_accounts(
     wallet: &Wallet,
     accounts: &ManagedAccountCollection,
     sources: &[AccountTypePreference],
     account_index: u32,
 ) -> Vec<(ManagedCoreFundsAccount, Account)> {
-    let account_types =
-        first_occurrences(sources.iter().flat_map(|preference| -> Vec<AccountType> {
-            match preference {
-                AccountTypePreference::AllDashpayReceivingFunds => accounts
-                    .dashpay_receival_accounts
-                    .keys()
-                    .map(|key| AccountType::DashpayReceivingFunds {
-                        index: key.index,
-                        user_identity_id: key.user_identity_id,
-                        friend_identity_id: key.friend_identity_id,
-                    })
-                    .collect(),
-                single => single.account_type(account_index).into_iter().collect(),
-            }
-        }));
-    account_types
+    pooled_funding_account_types(wallet, accounts, sources, account_index)
         .into_iter()
         .filter_map(|account_type| {
             let account = wallet.accounts.account_of_type(account_type)?;
@@ -175,6 +190,24 @@ fn pooled_funding_accounts(
             Some((managed.clone(), account.clone()))
         })
         .collect()
+}
+
+/// Every coin held by the accounts a pooled Core send funds from
+/// ([`platform_wallet::SEND_FUNDING_SOURCES`] at the default account), read in
+/// place. Coins of other accounts, CoinJoin among them, never fund a send.
+pub(super) fn pooled_send_utxos<'a>(
+    wallet: &Wallet,
+    info: &'a ManagedWalletInfo,
+) -> impl Iterator<Item = &'a Utxo> {
+    pooled_funding_account_types(
+        wallet,
+        &info.accounts,
+        &platform_wallet::SEND_FUNDING_SOURCES,
+        DEFAULT_BIP44_ACCOUNT,
+    )
+    .into_iter()
+    .filter_map(|account_type| info.accounts.funds_account(&account_type))
+    .flat_map(|managed| managed.utxos.values())
 }
 
 /// What a non-broadcasting asset-lock dry run prices against: the funding

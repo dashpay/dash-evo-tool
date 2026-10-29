@@ -45,6 +45,8 @@ use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
 use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
+use dash_sdk::dpp::key_wallet::wallet::Wallet;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::{
     SelectionError, SelectionStrategy,
 };
@@ -55,7 +57,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
-use super::payments::{AssetLockFundingPool, ProbeDeadline};
+use super::payments::{AssetLockFundingPool, ProbeDeadline, pooled_send_utxos};
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
@@ -582,6 +584,17 @@ fn core_send_inputs_key(coins: impl IntoIterator<Item = (OutPoint, u64, bool)>) 
     hasher.finish()
 }
 
+/// [`core_send_inputs_key`] over the coins of the accounts a pooled Core send
+/// draws on, at the wallet's height. A coin in any other account (CoinJoin)
+/// cannot move the Core Max, so it must not invalidate the cached quote.
+fn pooled_send_inputs_key(wallet: &Wallet, info: &ManagedWalletInfo) -> u64 {
+    let height = info.last_processed_height();
+    core_send_inputs_key(
+        pooled_send_utxos(wallet, info)
+            .map(|u| (u.outpoint, u.txout.value, u.is_spendable(height))),
+    )
+}
+
 fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
     SnapshotState {
         balance: prior.balance,
@@ -976,13 +989,8 @@ impl SnapshotStore {
                         self.snapshot(&seed_hash).asset_lock_inputs.clone()
                     }
                 };
-                let height = state.core_wallet.last_processed_height();
-                let core_send_inputs_key = core_send_inputs_key(
-                    state
-                        .utxos()
-                        .into_iter()
-                        .map(|u| (u.outpoint, u.txout.value, u.is_spendable(height))),
-                );
+                let core_send_inputs_key =
+                    pooled_send_inputs_key(state.wallet(), &state.core_wallet);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -1676,6 +1684,80 @@ mod tests {
         if let Some(token) = reservation {
             managed_account.release_reservation_if_owner(&reserved_tx, token);
         }
+    }
+
+    /// The Core Max cache key names only the coins a pooled send draws on: a
+    /// coin arriving in an account outside `SEND_FUNDING_SOURCES` (CoinJoin)
+    /// leaves it, and one arriving in a pooled account (BIP44, BIP32) changes it.
+    #[test]
+    fn core_send_inputs_key_covers_only_the_pooled_send_accounts() {
+        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        let wallet = Wallet::from_seed_bytes(
+            [0x5a; 64],
+            Network::Testnet,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("upstream wallet");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let address = {
+            let account = wallet.get_bip44_account(0).expect("BIP44 account");
+            info.accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed BIP44 account")
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("receive address")
+        };
+        let coin = |n: u8| {
+            let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value: 100_000 + u64::from(n),
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            (outpoint, utxo)
+        };
+        let insert = |accounts: &mut BTreeMap<u32, ManagedCoreFundsAccount>, n: u8| {
+            let (outpoint, utxo) = coin(n);
+            accounts
+                .get_mut(&0)
+                .expect("managed account")
+                .utxos
+                .insert(outpoint, utxo);
+        };
+
+        insert(&mut info.accounts.standard_bip44_accounts, 1);
+        let pooled_only = pooled_send_inputs_key(&wallet, &info);
+
+        insert(&mut info.accounts.coinjoin_accounts, 2);
+        assert_eq!(
+            pooled_send_inputs_key(&wallet, &info),
+            pooled_only,
+            "a CoinJoin coin is no input of a pooled send, so it must not change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip32_accounts, 3);
+        let with_bip32 = pooled_send_inputs_key(&wallet, &info);
+        assert_ne!(
+            with_bip32, pooled_only,
+            "a BIP32 coin is pooled, so it must change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip44_accounts, 4);
+        assert_ne!(
+            pooled_send_inputs_key(&wallet, &info),
+            with_bip32,
+            "a BIP44 coin is pooled, so it must change the key"
+        );
     }
 
     #[test]

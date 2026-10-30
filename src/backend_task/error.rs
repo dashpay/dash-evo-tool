@@ -2148,6 +2148,18 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// Platform rejected a Platform-address transfer, withdrawal or identity
+    /// top-up because an input address's nonce was stale. Upstream promotes
+    /// the rejection to `PlatformWalletError::AddressNonceMismatch` before it
+    /// reaches DET. The transition did not run, so sending again is safe.
+    #[error(
+        "Your Platform address balances changed while this payment was being prepared. Refresh the wallet, then send it again."
+    )]
+    PlatformAddressNonceMismatch {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Asset-lock transaction errors
     // ──────────────────────────────────────────────────────────────────────────

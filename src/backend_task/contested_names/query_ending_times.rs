@@ -2,7 +2,8 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::prelude::TimestampMillis;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::prelude::{Identifier, TimestampMillis};
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::drive::query::VotePollsByEndDateDriveQuery;
@@ -25,6 +26,7 @@ impl AppContext {
         let mut start_time: PageStart = (start_time_dt.timestamp_millis() as u64, true);
         let end_time = end_time_dt.timestamp_millis() as u64;
 
+        let dpns_contract_id = self.dpns_contract().id();
         let mut contests_end_times = BTreeMap::new();
 
         /// The platform's largest page of vote polls.
@@ -41,28 +43,8 @@ impl AppContext {
                 order_ascending: true,
             };
 
-            let new_end_times = match VotePoll::fetch_many(&sdk, end_time_query.clone()).await {
-                Ok(vote_polls) => {
-                    let mut end_times = BTreeMap::new();
-                    for (timestamp, vote_poll_list) in vote_polls {
-                        let contests = vote_poll_list.into_iter().filter_map(|vote_poll| {
-                            let VotePoll::ContestedDocumentResourceVotePoll(
-                                ContestedDocumentResourceVotePoll {
-                                    contract_id: _,
-                                    document_type_name: _,
-                                    index_name: _,
-                                    index_values,
-                                },
-                            ) = vote_poll;
-
-                            index_values
-                                .get(1)
-                                .and_then(|a| a.to_str().ok().map(|a| (a.to_string(), timestamp)))
-                        });
-                        end_times.extend(contests);
-                    }
-                    end_times
-                }
+            let page = match VotePoll::fetch_many(&sdk, end_time_query.clone()).await {
+                Ok(vote_polls) => dpns_end_times_page(vote_polls, dpns_contract_id),
                 Err(e) => {
                     tracing::error!("Error fetching vote polls: {}", e);
                     super::log_contested_proof_error(&e, RequestType::GetVotePollsByEndDate);
@@ -86,18 +68,16 @@ impl AppContext {
                 }
             };
 
-            let page_contests = new_end_times.len();
-            let last_found_ending_time = new_end_times.values().max().copied();
+            let page_polls = page.polls;
             // A contest re-read at a page boundary keeps its single entry.
-            contests_end_times.extend(new_end_times);
+            contests_end_times.extend(page.names);
 
-            let Some(next_start) = next_page_start(start_time, last_found_ending_time, end_time)
-            else {
+            let Some(next_start) = next_page_start(start_time, page.last_end_time, end_time) else {
                 break;
             };
             // TODO(upstream): proved vote-poll queries reject a non-zero offset, so
             // polls past the page limit that share one end time cannot be fetched.
-            if next_start == (start_time.0, false) && page_contests >= usize::from(PAGE_LIMIT) {
+            if next_start == (start_time.0, false) && page_polls >= usize::from(PAGE_LIMIT) {
                 tracing::warn!(
                     end_time = start_time.0,
                     "More contests end at one time than a page holds; some may lack an end time"
@@ -109,6 +89,45 @@ impl AppContext {
         self.update_contested_name_ending_times(contests_end_times)?;
         Ok(())
     }
+}
+
+/// What one page of the end-date index says about DPNS contests.
+#[derive(Debug, Default)]
+struct EndTimesPage {
+    /// Contested names and when their contests end.
+    names: BTreeMap<String, TimestampMillis>,
+    /// The latest end time of any poll in the page, DPNS or not: it alone moves the walk on.
+    last_end_time: Option<TimestampMillis>,
+    /// Polls in the page, DPNS or not.
+    polls: usize,
+}
+
+/// Read a page of the end-date index. The index holds the contests of every contract,
+/// so only polls on the DPNS `domain` document type name a contested username.
+fn dpns_end_times_page(
+    page: impl IntoIterator<Item = (TimestampMillis, Vec<VotePoll>)>,
+    dpns_contract_id: Identifier,
+) -> EndTimesPage {
+    let mut result = EndTimesPage::default();
+    for (timestamp, vote_polls) in page {
+        result.last_end_time = result.last_end_time.max(Some(timestamp));
+        result.polls += vote_polls.len();
+        for vote_poll in vote_polls {
+            let VotePoll::ContestedDocumentResourceVotePoll(ContestedDocumentResourceVotePoll {
+                contract_id,
+                document_type_name,
+                index_values,
+                ..
+            }) = vote_poll;
+            if contract_id != dpns_contract_id || document_type_name != "domain" {
+                continue;
+            }
+            if let Some(name) = index_values.get(1).and_then(|value| value.to_str().ok()) {
+                result.names.insert(name.to_string(), timestamp);
+            }
+        }
+    }
+    result
 }
 
 /// Where a page of the vote-poll end-date index starts: `(end time, included)`.
@@ -150,7 +169,46 @@ fn next_page_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::platform_value::Value;
     use std::collections::BTreeSet;
+
+    fn contest(contract_id: Identifier, document_type: &str, name: &str) -> VotePoll {
+        VotePoll::ContestedDocumentResourceVotePoll(ContestedDocumentResourceVotePoll {
+            contract_id,
+            document_type_name: document_type.to_string(),
+            index_name: "parentNameAndLabel".to_string(),
+            index_values: vec![
+                Value::Text("dash".to_string()),
+                Value::Text(name.to_string()),
+            ],
+        })
+    }
+
+    #[test]
+    fn only_dpns_domain_polls_name_a_contest() {
+        let dpns = Identifier::from([1; 32]);
+        let other = Identifier::from([2; 32]);
+
+        let page = dpns_end_times_page(
+            vec![
+                (
+                    10,
+                    vec![
+                        contest(dpns, "domain", "alice"),
+                        contest(other, "domain", "not-a-username"),
+                        contest(dpns, "preorder", "not-a-domain"),
+                    ],
+                ),
+                (20, vec![contest(other, "domain", "also-not-a-username")]),
+            ],
+            dpns,
+        );
+
+        assert_eq!(page.names, BTreeMap::from([("alice".to_string(), 10)]));
+        assert_eq!(page.polls, 4);
+        // Polls of other contracts still move the walk on, or a page of them would end it.
+        assert_eq!(page.last_end_time, Some(20));
+    }
 
     /// A fake end-date index: `(end time, poll id)` in index order, with empty end-time
     /// trees marked by `None`. Pages follow the platform's rules: the limit counts

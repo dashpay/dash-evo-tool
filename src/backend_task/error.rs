@@ -4802,6 +4802,15 @@ impl From<SdkError> for TaskError {
             SdkError::StaleNode(_) => TaskError::DapiStaleNode {
                 source_error: boxed,
             },
+            // The SDK could not learn the network's version for a reason that
+            // can pass, so the feature may be active already: not an upgrade wait.
+            SdkError::ProtocolVersionNotActive { .. }
+                if boxed.is_transient_protocol_version_refusal() =>
+            {
+                TaskError::DapiUnavailable {
+                    source_error: boxed,
+                }
+            }
             SdkError::ProtocolVersionNotActive { .. } => TaskError::PlatformFeatureNotActive {
                 source_error: boxed,
             },
@@ -5733,12 +5742,13 @@ mod tests {
 
     #[test]
     fn from_sdk_error_protocol_version_not_active_maps_to_platform_feature_not_active() {
-        let transient_cause = Box::new(SdkError::DapiClientError(
-            DapiClientError::NoAvailableAddresses,
+        // The cause is this SDK's own setup: retrying cannot change the refusal.
+        let permanent_cause = Box::new(SdkError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config("no quorum source".to_string()),
         ));
         for sdk_err in [
             protocol_version_not_active(None),
-            protocol_version_not_active(Some(transient_cause)),
+            protocol_version_not_active(Some(permanent_cause)),
         ] {
             let err = TaskError::from(sdk_err);
             match &err {
@@ -5748,6 +5758,21 @@ mod tests {
                 ),
                 other => panic!("expected PlatformFeatureNotActive, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_transient_protocol_version_refusal_maps_to_dapi_unavailable() {
+        let sdk_err = protocol_version_not_active(Some(Box::new(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))));
+        assert!(sdk_err.is_transient_protocol_version_refusal());
+        match TaskError::from(sdk_err) {
+            TaskError::DapiUnavailable { source_error } => assert!(
+                matches!(*source_error, SdkError::ProtocolVersionNotActive { .. }),
+                "source not preserved: {source_error:?}"
+            ),
+            other => panic!("expected DapiUnavailable, got {other:?}"),
         }
     }
 

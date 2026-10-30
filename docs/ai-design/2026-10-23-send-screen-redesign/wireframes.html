@@ -840,7 +840,7 @@ details.fo > summary:hover,details.dt > summary:hover{color:var(--accent)}
           <div class="mb">
             <div class="cg">
               <span class="k">From</span><span>Main · Core</span>
-              <span class="k">To</span><span>bob (<span class="mono">yX12…9fab</span>)</span>
+              <span class="k">To</span><span>bob (<span class="mono">&lt;bob's full identity ID&gt;</span>)</span>
               <span class="k">Amount</span><span class="mono">0.5000 DASH</span>
               <span class="k">Fee</span><span class="mono">≈ 0.0001 DASH</span>
               <span class="k">Total</span><span class="mono" style="font-weight:700">≈ 0.5001 DASH</span>
@@ -852,7 +852,7 @@ details.fo > summary:hover,details.dt > summary:hover{color:var(--accent)}
       </div>
     </div>
     <div class="frag" style="align-self:start"><p class="vl">Own-wallet example: the To row</p>
-      <div class="cg" style="margin:6px 0 0"><span class="k">To</span><span>Savings · new Core address (<span class="mono">yQb7…2c1d</span>)</span></div>
+      <div class="cg" style="margin:6px 0 0"><span class="k">To</span><span class="mono">&lt;the full new Core address in Savings&gt;</span></div>
     </div>
   </div>
 </section>
@@ -863,7 +863,7 @@ details.fo > summary:hover,details.dt > summary:hover{color:var(--accent)}
   <p class="cap">The same W2 send on a narrow window: everything stacks, nothing is cut off.</p>
   <ul class="notes">
     <li>Labels above controls; chips wrap and drop their balance text (it stays in the chip tooltip and the status line). The Summary becomes stacked label/value pairs. Buttons go full width, Send on top (<a href="02-ux-spec.md#13-responsive-layout">spec §13</a>).</li>
-    <li>Status lines wrap and are never truncated; addresses are middle-ellipsised with the full value in a tooltip.</li>
+    <li>Status lines wrap and are never truncated; addresses in the form are middle-ellipsised with the full value in a tooltip; the confirmation shows them whole (spec §10).</li>
   </ul>
   <div class="phone">
     <div class="pbar"></div>

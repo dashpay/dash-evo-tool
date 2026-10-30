@@ -357,6 +357,7 @@ pub struct AddressInput {
     selected_from_autocomplete: bool,
     cached_detection: Option<(String, DetectedType)>,
     changed: bool,
+    focus_requested: bool,
 }
 
 impl AddressInput {
@@ -386,6 +387,7 @@ impl AddressInput {
             cached_detection: None,
             changed: false,
             exclude_change: false,
+            focus_requested: false,
         }
     }
 
@@ -494,6 +496,11 @@ impl AddressInput {
     pub fn with_initial_value(mut self, address: impl Into<String>) -> Self {
         self.input_text = address.into();
         self
+    }
+
+    /// Put the keyboard focus in the field on the next frame.
+    pub fn request_focus(&mut self) {
+        self.focus_requested = true;
     }
 
     /// Enable selection-only mode. When true, the user must pick from autocomplete;
@@ -913,7 +920,7 @@ impl AddressInput {
     /// the wallets segment lists up to five distinct wallet names, alphabetically,
     /// with a `(+N more)` indicator when more exist. The wallets segment is
     /// omitted entirely when no wallets are loaded.
-    fn dynamic_hint(&self) -> String {
+    pub fn dynamic_hint(&self) -> String {
         let mut segments = Vec::new();
 
         let types: Vec<String> = AddressKind::ALL
@@ -1053,6 +1060,9 @@ impl AddressInput {
                     ui.add(text_edit)
                 })
                 .inner;
+            if std::mem::take(&mut self.focus_requested) {
+                text_response.request_focus();
+            }
 
             let text_changed = text_response.changed();
             let lost_focus = text_response.lost_focus();
@@ -1076,14 +1086,21 @@ impl AddressInput {
                 self.has_blurred = true;
             }
 
-            // Autocomplete popup. A modal that blocks this field closes it: the
-            // popup's foreground layer would otherwise draw over the modal and
-            // its dimmed backdrop, and keep taking arrow keys and Enter.
+            // Autocomplete popup: it opens while the user types (a
+            // selection-only field opens on focus, as typing is not its use) and
+            // closes on a choice, Escape, or when the focus moves elsewhere. A
+            // modal that blocks this field closes it too: the popup's foreground
+            // layer would otherwise draw over the modal and its dimmed backdrop,
+            // and keep taking arrow keys and Enter.
             let behind_modal = !ui
                 .ctx()
                 .memory(|memory| memory.is_above_modal_layer(ui.layer_id()));
             let mut selected_entry: Option<AddressEntry> = None;
-            if !behind_modal && (has_focus || self.autocomplete_open) {
+            if (has_focus && text_changed) || (self.selection_only && text_response.gained_focus())
+            {
+                self.autocomplete_open = true;
+            }
+            if !behind_modal && self.autocomplete_open {
                 // Collect filtered entries into an owned snapshot to release the
                 // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();
@@ -1104,7 +1121,7 @@ impl AddressInput {
                     self.autocomplete_open = true;
                     let popup_id = ui.id().with("address_autocomplete");
 
-                    egui::Area::new(popup_id)
+                    let popup = egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
                         .fixed_pos(text_response.rect.left_bottom())
                         .show(ui.ctx(), |ui| {
@@ -1171,6 +1188,15 @@ impl AddressInput {
                                     });
                             });
                         });
+                    let pointer_in_popup = ui
+                        .input(|i| i.pointer.interact_pos())
+                        .is_some_and(|pos| popup.response.rect.contains(pos));
+                    let focus_moved_away =
+                        lost_focus || (!has_focus && ui.input(|i| i.pointer.any_pressed()));
+                    if focus_moved_away && !pointer_in_popup {
+                        self.autocomplete_open = false;
+                        self.autocomplete_highlight = None;
+                    }
 
                     // Keyboard navigation (uses snapshot data, no recomputation)
                     ui.input(|i| {
@@ -1201,8 +1227,6 @@ impl AddressInput {
                 } else {
                     self.autocomplete_open = false;
                 }
-            } else {
-                self.autocomplete_open = false;
             }
 
             // Handle autocomplete selection (clear cached_detection).

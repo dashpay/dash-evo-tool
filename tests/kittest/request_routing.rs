@@ -10,11 +10,15 @@ use dash_evo_tool::app::{AppState, TaskResult};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use std::sync::{Arc, RwLock};
 
 type App = Harness<'static, AppState>;
 
@@ -1101,10 +1105,24 @@ fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
                 "the new refresh keeps its progress banner (in view: {in_view})"
             );
 
+            // Its mid-task result only reloads the data: this network's older
+            // refresh sends the same one, so it cannot end the wait.
             deliver(&mut harness, refreshed(current_network));
             assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "a mid-task result ends nothing (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: current,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
                 !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
-                "the active network's refresh still ends it (in view: {in_view})"
+                "the refresh's own result ends it (in view: {in_view})"
             );
             assert!(
                 !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
@@ -1112,4 +1130,510 @@ fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
             );
         });
     }
+}
+
+/// Testnet to Mainnet and back, with the first Testnet refresh still running:
+/// its late result names the active network, so only the dispatch can tell the
+/// two refreshes apart. It must leave the new refresh running.
+#[test]
+fn a_late_contest_refresh_after_returning_to_a_network_leaves_the_new_refresh_running() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let network = harness.state().current_app_context().network();
+            let old = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&old);
+
+            switch_network(&mut harness);
+            switch_network(&mut harness);
+            assert_eq!(harness.state().current_app_context().network(), network);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let new = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&new);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: BackendTaskContext::Unknown,
+                    result: Box::new(BackendTaskSuccessResult::RefreshedDpnsContests { network }),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the old refresh's late result leaves the new one running (in view: {in_view})"
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and its progress banner (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: old,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "so does the old refresh's own end (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: new,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the new refresh's own result ends it (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and takes its progress banner down (in view: {in_view})"
+            );
+        });
+    }
+}
+
+/// Load the HD wallet grown from `seed` on `app_context`'s network. The same
+/// wallet is loaded on every network it is used on, so a push naming its seed
+/// finds a copy on each.
+fn insert_wallet(app_context: &AppContext, seed: [u8; 64]) -> WalletSeedHash {
+    use dash_evo_tool::model::wallet::Wallet;
+    let wallet =
+        Wallet::new_from_seed(seed, app_context.network(), None, None).expect("wallet fixture");
+    let seed_hash = wallet.seed_hash();
+    app_context
+        .wallet_context()
+        .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+    seed_hash
+}
+
+/// The platform-address balances cached on the wallet `seed_hash` of
+/// `app_context`'s network.
+fn platform_balances(app_context: &AppContext, seed_hash: WalletSeedHash) -> Vec<u64> {
+    let wallets = app_context.wallet_context().wallets();
+    let wallet = wallets
+        .get(&seed_hash)
+        .expect("the wallet is loaded")
+        .read()
+        .expect("wallet lock");
+    wallet
+        .platform_address_info
+        .values()
+        .map(|info| info.balance)
+        .collect()
+}
+
+/// A platform-address balance push the previous network's wallet backend
+/// sends after a switch lands in that network's wallet and leaves the same
+/// wallet on the new network alone.
+#[test]
+fn a_balance_push_from_the_previous_network_updates_only_that_networks_wallet() {
+    use dash_evo_tool::model::wallet::PlatformAddressEntry;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let previous = harness.state().current_app_context().clone();
+        let seed_hash = insert_wallet(&previous, [0x5a; 64]);
+        switch_network(&mut harness);
+        let current = harness.state().current_app_context().clone();
+        assert_eq!(
+            insert_wallet(&current, [0x5a; 64]),
+            seed_hash,
+            "one wallet, loaded on both networks"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: BackendTaskContext::WalletSync {
+                    network: previous.network(),
+                },
+                result: Box::new(BackendTaskSuccessResult::PlatformAddressSyncPushed {
+                    updates: vec![(
+                        seed_hash,
+                        vec![PlatformAddressEntry {
+                            hash: [0x77; 20],
+                            balance: 1_234,
+                            nonce: 1,
+                            account: 0,
+                            index: None,
+                        }],
+                    )],
+                }),
+            },
+        );
+
+        assert_eq!(
+            platform_balances(&previous, seed_hash),
+            vec![1_234],
+            "the push lands in the wallet of the network that synced"
+        );
+        assert!(
+            platform_balances(&current, seed_hash).is_empty(),
+            "the same wallet on the new network is left alone"
+        );
+    });
+}
+
+/// A user identity on `network`, enough for Add Funds to open on it.
+fn identity_on(network: Network) -> dash_evo_tool::model::qualified_identity::QualifiedIdentity {
+    use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use dash_evo_tool::model::qualified_identity::{
+        IdentityStatus, IdentityType, QualifiedIdentity,
+    };
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    QualifiedIdentity {
+        identity: Identity::create_basic_identity(
+            Identifier::from([0x5d; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity"),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: Some("Deposit fixture".to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: std::collections::BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: std::collections::BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network,
+    }
+}
+
+fn add_funds(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::identity::top_up_identity_screen::TopUpIdentityScreen {
+    match harness.state_mut().screen_stack.last_mut() {
+        Some(Screen::TopUpIdentityScreen(screen)) => screen,
+        _ => panic!("Add Funds is the visible screen"),
+    }
+}
+
+/// A payment of one DASH to `address`, as the wallet backend of `network`
+/// reports it.
+fn deposit_seen_on(network: Network, address: &Address) -> TaskResult {
+    use dash_evo_tool::backend_task::core::CoreItem;
+    use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
+    TaskResult::Success {
+        context: BackendTaskContext::WalletSync { network },
+        result: Box::new(BackendTaskSuccessResult::CoreItem(
+            CoreItem::ReceivedAvailableUTXOTransaction(
+                Transaction {
+                    version: 3,
+                    lock_time: 0,
+                    input: Vec::new(),
+                    output: Vec::new(),
+                    special_transaction_payload: None,
+                },
+                vec![(
+                    OutPoint::null(),
+                    TxOut {
+                        value: 100_000_000,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                )],
+            ),
+        )),
+    }
+}
+
+/// A deposit the previous network's wallet backend sees after a switch does
+/// not advance an Add Funds form waiting for a deposit on the new network.
+/// The new network's own deposit does.
+#[test]
+fn a_deposit_seen_by_the_previous_network_leaves_the_new_networks_add_funds_waiting() {
+    use dash_evo_tool::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
+    use dash_sdk::dpp::dashcore::PublicKey;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let previous_network = harness.state().current_app_context().network();
+        switch_network(&mut harness);
+        let app_context = harness.state().current_app_context().clone();
+        let network = app_context.network();
+        let address = Address::p2pkh(
+            &PublicKey::from_slice(&[0x02; 33]).expect("public key"),
+            network,
+        );
+        let mut screen = TopUpIdentityScreen::new(identity_on(network), &app_context);
+        screen.await_deposit_for_test(address.clone());
+        harness
+            .state_mut()
+            .screen_stack
+            .push(Screen::TopUpIdentityScreen(screen));
+        harness.run_steps(3);
+
+        deliver(&mut harness, deposit_seen_on(previous_network, &address));
+        assert!(
+            add_funds(&mut harness).is_waiting_on_funds_for_test(),
+            "the previous network's deposit leaves the form waiting"
+        );
+
+        deliver(&mut harness, deposit_seen_on(network, &address));
+        assert!(
+            !add_funds(&mut harness).is_waiting_on_funds_for_test(),
+            "the new network's own deposit advances the form"
+        );
+    });
+}
+
+fn add_existing(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::identity::add_existing_identity_screen::AddExistingIdentityScreen {
+    harness
+        .state_mut()
+        .screen_stack
+        .iter_mut()
+        .find_map(|screen| match screen {
+            Screen::AddExistingIdentityScreen(form) => Some(form),
+            _ => None,
+        })
+        .expect("the Load Identity form is open")
+}
+
+/// Open the Load Identity form and start its wallet search, recorded as the
+/// form's dispatch. Returns the dispatch.
+fn searching_form(harness: &mut App) -> BackendTaskContext {
+    let app_context = harness.state().current_app_context().clone();
+    harness
+        .state_mut()
+        .screen_stack
+        .push(ScreenType::AddExistingIdentity.create_screen(&app_context));
+    add_existing(harness).begin_wallet_search_for_test();
+    let request = BackendTaskContext::for_dispatch_for_test(&BackendTask::None);
+    harness.state_mut().test_record_visible_dispatch(&request);
+    harness.run_steps(3);
+    request
+}
+
+/// A progress report the search `request` sends from `network` at `step`.
+fn search_progress(request: &BackendTaskContext, network: Network, step: u32) -> TaskResult {
+    TaskResult::Success {
+        context: BackendTaskContext::Interim {
+            network,
+            request: Box::new(request.clone()),
+        },
+        result: Box::new(BackendTaskSuccessResult::Progress {
+            message: format!("Searching wallet identity index {step} of about 20."),
+            current: step,
+            total: 20,
+        }),
+    }
+}
+
+fn search_found(request: BackendTaskContext) -> TaskResult {
+    TaskResult::Success {
+        context: request,
+        result: Box::new(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 }),
+    }
+}
+
+/// A progress report of a wallet search reaches the form that started it
+/// while another screen covers it, updating its banner, and ends nothing:
+/// the form keeps waiting and the search's sender stays on record until the
+/// search's own result arrives.
+#[test]
+fn a_progress_report_reaches_the_covered_form_that_started_the_search_and_ends_nothing() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let network = harness.state().current_app_context().network();
+        let request = searching_form(&mut harness);
+        cover_with_registration(&mut harness);
+
+        deliver(&mut harness, search_progress(&request, network, 2));
+        let banner = add_existing(&mut harness).search_banner_text_for_test();
+        assert!(
+            banner
+                .as_deref()
+                .is_some_and(|text| text.contains("index 2 of")),
+            "the covered form shows the search's progress, got {banner:?}"
+        );
+        assert!(
+            add_existing(&mut harness).is_searching_for_test(),
+            "progress leaves the form waiting"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress leaves the search's sender on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert!(
+            !add_existing(&mut harness).is_searching_for_test(),
+            "the search's own result ends the wait"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+    });
+}
+
+/// A progress report of a search whose form was closed reaches no screen and
+/// raises no banner, and the search's sender stays on record until its own
+/// result arrives.
+#[test]
+fn a_progress_report_of_a_closed_form_raises_no_banner_and_ends_nothing() {
+    use dash_evo_tool::ui::components::MessageBanner;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        let request = searching_form(&mut harness);
+        harness.state_mut().screen_stack.pop();
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        harness.run_steps(3);
+
+        deliver(
+            &mut harness,
+            search_progress(&request, app_context.network(), 2),
+        );
+        assert!(
+            !MessageBanner::has_global(app_context.egui_ctx()),
+            "a closed form's progress raises no banner"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress leaves the search's sender on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+    });
+}
+
+/// A progress report of a search started on the previous network, arriving
+/// after a switch, leaves a Load Identity form opened on the new network
+/// alone and raises no banner. The search's sender stays on record until its
+/// own result ends it.
+#[test]
+fn a_progress_report_from_the_previous_network_leaves_the_new_networks_form_alone() {
+    use dash_evo_tool::ui::components::MessageBanner;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let previous_network = harness.state().current_app_context().network();
+        let request = searching_form(&mut harness);
+
+        switch_network(&mut harness);
+        let app_context = harness.state().current_app_context().clone();
+        harness.state_mut().screen_stack.clear();
+        harness
+            .state_mut()
+            .screen_stack
+            .push(ScreenType::AddExistingIdentity.create_screen(&app_context));
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        harness.run_steps(3);
+
+        deliver(&mut harness, search_progress(&request, previous_network, 2));
+        assert!(
+            !add_existing(&mut harness).is_searching_for_test(),
+            "the previous network's progress leaves the new form idle"
+        );
+        assert_eq!(
+            add_existing(&mut harness).search_banner_text_for_test(),
+            None,
+            "the new form shows no progress of the previous network's search"
+        );
+        assert!(
+            !MessageBanner::has_global(app_context.egui_ctx()),
+            "the previous network's progress raises no banner"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            1,
+            "progress ends nothing: the search's sender stays on record"
+        );
+
+        deliver(&mut harness, search_found(request));
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            0,
+            "the search's own result ends it"
+        );
+        assert!(!add_existing(&mut harness).is_searching_for_test());
+    });
+}
+
+/// One sub-query of a contest refresh failing reports the failure without
+/// ending the refresh: the voting panel keeps its refresh running and its
+/// sender stays on record. A failure of the previous network's refresh,
+/// arriving after a switch, raises no banner either.
+#[test]
+fn a_sub_query_failure_of_a_contest_refresh_ends_nothing_and_stays_on_its_network() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let previous_network = harness.state().current_app_context().network();
+        let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&previous);
+
+        switch_network(&mut harness);
+        let current_network = harness.state().current_app_context().network();
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+        harness.run_steps(3);
+        let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&current);
+        harness.run_steps(3);
+        assert_eq!(harness.state().test_dispatch_owner_count(), 2);
+
+        let failed_step = |network, request: &BackendTaskContext| TaskResult::Error {
+            context: BackendTaskContext::Interim {
+                network,
+                request: Box::new(request.clone()),
+            },
+            error: TaskError::NoIdentitiesFound,
+        };
+        let failure_text = TaskError::NoIdentitiesFound.to_string();
+
+        deliver(&mut harness, failed_step(previous_network, &previous));
+        assert!(
+            harness.query_by_label_contains(&failure_text).is_none(),
+            "the previous network's failed step raises no banner"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "the new network's refresh keeps running"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 2);
+
+        deliver(&mut harness, failed_step(current_network, &current));
+        assert!(
+            harness.query_by_label_contains(&failure_text).is_some(),
+            "the active network's failed step is reported"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "a failed step does not end the refresh"
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            2,
+            "a failed step leaves both refreshes on record"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: current,
+                error: TaskError::TaskManagerShuttingDown,
+            },
+        );
+        assert!(
+            !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "the refresh's own failure ends it"
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 1);
+    });
 }

@@ -628,19 +628,23 @@ impl WalletBackend {
         let coordinator_gate = Arc::new(CoordinatorGate::default());
 
         let bridge = Arc::new(EventBridge::new(
+            network,
             connection_status,
             task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
-            // The shielded sync-completed callback writes per-wallet balances
-            // into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.shielded_balances),
-            // Platform-address push writer: the platform address sync-completed callback
-            // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
-            Arc::clone(&ctx.platform_balances),
-            // ...and the matching `(timestamp, height)` sync-cursor snapshot that
-            // drives the "Addresses synced" status label.
-            Arc::clone(&ctx.platform_sync_cursors),
+            event_bridge::PushSnapshots {
+                // The shielded sync-completed callback writes per-wallet balances
+                // into AppContext's frame-safe snapshot.
+                shielded_balances: Arc::clone(&ctx.shielded_balances),
+                // Platform-address push writer: the platform address sync-completed
+                // callback writes per-wallet owned-only balances into AppContext's
+                // frame-safe snapshot.
+                platform_balances: Arc::clone(&ctx.platform_balances),
+                // ...and the matching `(timestamp, height)` sync-cursor snapshot that
+                // drives the "Addresses synced" status label.
+                platform_sync_cursors: Arc::clone(&ctx.platform_sync_cursors),
+            },
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
@@ -1978,6 +1982,7 @@ impl WalletBackend {
         // is provably reachable. Cloning the sender avoids capturing any
         // `Weak<AppContext>` in this run-loop closure.
         let task_result_sender = self.inner.task_result_sender.clone();
+        let network = self.inner.network;
         self.inner.coordinator_gate.arm(Box::new(move || {
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
@@ -2005,7 +2010,8 @@ impl WalletBackend {
             // (single-winner gate): a full 256-deep channel would drop this and
             // the sweep would not run until a reconnect re-arms the gate, but the
             // user can always run discovery manually, so the drop is tolerated.
-            let _ = task_result_sender.try_send(TaskResult::unattributed_success(
+            let _ = task_result_sender.try_send(TaskResult::wallet_event(
+                network,
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
             ));
         }));

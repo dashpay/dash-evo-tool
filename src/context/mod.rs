@@ -1357,7 +1357,8 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::ProofErrorLogged,
             ))
             .await

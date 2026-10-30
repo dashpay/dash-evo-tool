@@ -579,7 +579,10 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::DashPayProfileUpdated(_)
             | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
             | BackendTaskSuccessResult::DashPayContactRequests { .. }
-            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
+            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
+            // An identity removed from another screen may be the one the hub
+            // shows, in view or not.
+            | BackendTaskSuccessResult::RemovedIdentities { .. } => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };
@@ -1106,7 +1109,8 @@ impl ScreenLike for IdentityHubScreen {
                     );
                 }
             }
-            // AppState delivers removals even while this root is hidden and owns the banner.
+            // Reaches this root as its own result or as an observer of another
+            // screen's removal; the banner is the identity feedback's.
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
                 identity_ids,

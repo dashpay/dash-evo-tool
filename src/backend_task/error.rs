@@ -1767,11 +1767,6 @@ pub enum TaskError {
     )]
     ConfirmationTimeout,
 
-    /// The Core wallet association was auto-detected and linked; the operation's
-    /// prerequisite is now satisfied. Callers should retry the failed operation.
-    #[error("Detected the Core wallet '{wallet_name}'. Retrying your last action now.")]
-    CoreWalletAutoDetected { wallet_name: String },
-
     /// Duplicate identity public key — this key's hash is already registered and
     /// the key is marked as unique, so it cannot be reused.
     #[error(
@@ -5605,17 +5600,6 @@ mod tests {
         let msg = TaskError::CoreWalletNotConfigured.to_string();
         assert!(msg.contains("Wallets screen"));
         assert!(msg.contains("refresh"));
-    }
-
-    #[test]
-    fn core_wallet_auto_detected_displays_wallet_name() {
-        let err = TaskError::CoreWalletAutoDetected {
-            wallet_name: "mywallet".to_string(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "Detected the Core wallet 'mywallet'. Retrying your last action now."
-        );
     }
 
     #[test]

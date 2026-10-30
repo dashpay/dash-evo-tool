@@ -35,6 +35,7 @@ mod progress_overlay;
 mod register_dpns_name_screen;
 mod request_routing;
 mod restore_single_key;
+mod result_reactions;
 mod role_indicator;
 mod secret_prompt;
 #[cfg(feature = "testing")]

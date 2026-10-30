@@ -22,13 +22,8 @@ impl AppContext {
             .refresh_owned_names_of(&sdk, qualified_identities)
             .await;
 
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Identities,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+            .await;
 
         refreshed.map(|()| BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
     }

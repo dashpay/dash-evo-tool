@@ -106,13 +106,8 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Tokens,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
@@ -167,13 +162,8 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Tokens,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
@@ -194,13 +184,8 @@ impl AppContext {
             .await;
         self.mark_token_balance_untracked(pair)?;
         self.remove_token_balance(pair)?;
-        sender
-            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: self.network,
-                domain: crate::backend_task::CacheDomain::Tokens,
-            }))
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 

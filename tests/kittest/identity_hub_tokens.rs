@@ -1036,6 +1036,126 @@ fn check_balance_now_says_why_it_waits_for_a_running_refresh() {
     });
 }
 
+/// Every `label` control is disabled and its tooltip explains the running refresh.
+fn assert_refresh_blocks(hub: &mut HubHarness, label: &str) {
+    assert!(
+        hub.query_all_by_label(label)
+            .all(|node| node.accesskit_node().is_disabled()),
+        "{label} cannot run while a refresh does, so it must not look clickable"
+    );
+    hub.query_all_by_label(label)
+        .next()
+        .expect("the control is shown")
+        .hover();
+    // Tooltips appear after a short delay; step a few frames past it.
+    hub.run_steps(30);
+    assert!(
+        hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some(),
+        "the disabled control explains why it is disabled"
+    );
+}
+
+fn asked_for_a_pair_check(hub: &HubHarness) -> bool {
+    hub.state().1.iter().any(|action| {
+        matches!(
+            action,
+            AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), .. }
+                if matches!(**task, TokenTask::QueryIdentityTokenBalance(_))
+        )
+    })
+}
+
+#[test]
+fn check_balance_now_on_the_detail_page_says_why_it_waits_for_a_running_refresh() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD4);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::DETAILS_LABEL).click();
+        hub.run_steps(3);
+        assert_refresh_blocks(&mut hub, token_copy::CHECK_NOW_LABEL);
+
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        assert!(
+            asked_for_a_pair_check(&hub),
+            "the check works again once the refresh ended"
+        );
+    });
+}
+
+#[test]
+fn try_again_on_a_failed_row_says_why_it_waits_for_a_running_refresh() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD5);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+        let timed_out = || {
+            let source = runtime
+                .block_on(async {
+                    tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+                        .await
+                })
+                .expect_err("elapsed");
+            TaskError::TokenBalanceRefreshTimeout { source }
+        };
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival, &timed_out());
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::STATUS_COULD_NOT_CHECK)
+                .is_some(),
+            "precondition: a row whose balance could not be checked"
+        );
+
+        hub.get_by_label(token_copy::REFRESH_LABEL).click();
+        hub.run_steps(2);
+        assert_eq!(balance_refreshes(&hub).len(), 2, "a second refresh runs");
+        assert!(
+            hub.query_by_label(token_copy::STATUS_COULD_NOT_CHECK)
+                .is_some(),
+            "the row still offers its retry while the refresh runs"
+        );
+        assert_refresh_blocks(&mut hub, token_copy::TRY_AGAIN_LABEL);
+
+        let running = balance_refreshes(&hub)
+            .pop()
+            .expect("the second refresh is running");
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&running, &timed_out());
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.query_all_by_label(token_copy::TRY_AGAIN_LABEL)
+            .last()
+            .expect("the row's retry")
+            .click();
+        hub.run_steps(2);
+        assert!(
+            asked_for_a_pair_check(&hub),
+            "the retry works again once the refresh ended"
+        );
+    });
+}
+
 #[test]
 fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;

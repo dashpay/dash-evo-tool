@@ -191,7 +191,7 @@ fn render_header(
 }
 
 /// Why a refresh control is disabled: the network, or a refresh already running.
-fn refresh_block_reason(synced: bool) -> &'static str {
+pub(super) fn refresh_block_reason(synced: bool) -> &'static str {
     if synced {
         REFRESHING_TOOLTIP
     } else {
@@ -249,13 +249,17 @@ pub(super) fn render_failure(
         return AppAction::None;
     };
     let synced = app_context.connection_status().masternodes_ready();
+    let refreshing = state.refreshing(app_context);
     let text = match failure {
         RefreshFailure::TooSlow => ERROR_REFRESH_SLOW,
         RefreshFailure::Failed => ERROR_REFRESH_FAILED,
     };
     ui.add_space(Spacing::SM);
     let response = InlineNotice::new(MessageType::Error, text)
-        .with_link_unless(TRY_AGAIN_LABEL, (!synced).then_some(DISABLED_NOT_SYNCED))
+        .with_link_unless(
+            TRY_AGAIN_LABEL,
+            (!synced || refreshing).then_some(refresh_block_reason(synced)),
+        )
         .with_link(DISMISS_LABEL)
         .show(ui);
     ui.add_space(Spacing::SM);
@@ -502,6 +506,7 @@ pub(super) fn render_row_status(
             ui.label(RichText::new(STATUS_CHECKING).small().color(secondary));
         }
         RowStatus::CouldNotCheck => {
+            let refreshing = state.refreshing(app_context);
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new(STATUS_COULD_NOT_CHECK)
@@ -509,8 +514,11 @@ pub(super) fn render_row_status(
                         .color(DashColors::warning_color(dark)),
                 );
                 if ui
-                    .add_enabled(context.synced, egui::Button::new(TRY_AGAIN_LABEL).small())
-                    .disabled_tooltip(DISABLED_NOT_SYNCED)
+                    .add_enabled(
+                        context.synced && !refreshing,
+                        egui::Button::new(TRY_AGAIN_LABEL).small(),
+                    )
+                    .disabled_tooltip(refresh_block_reason(context.synced))
                     .clicked()
                 {
                     action = state.check_pair_action(app_context, row.pair());

@@ -7,7 +7,7 @@
 use super::token_copy::*;
 use super::tokens_tab::{
     DETAIL_MONOGRAM_SIZE, RowContext, manage_action, open_stop_tracking_dialog,
-    paint_token_monogram, render_row_actions, render_row_status,
+    paint_token_monogram, refresh_block_reason, render_row_actions, render_row_status,
 };
 use crate::app::AppAction;
 use crate::context::AppContext;
@@ -119,13 +119,14 @@ pub fn render(
                         ui.end_row();
                     });
                 ui.add_space(Spacing::MD);
+                let refreshing = state.refreshing(app_context);
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
-                            context.synced,
+                            context.synced && !refreshing,
                             ComponentStyles::secondary_button(CHECK_NOW_LABEL, dark),
                         )
-                        .disabled_tooltip(DISABLED_NOT_SYNCED)
+                        .disabled_tooltip(refresh_block_reason(context.synced))
                         .clicked()
                     {
                         action |= state.check_pair_action(app_context, row.pair());

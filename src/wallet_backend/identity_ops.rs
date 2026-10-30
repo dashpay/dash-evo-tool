@@ -9,6 +9,7 @@
 //! `map_identity_*` / `map_platform_address_fund_error` helpers.
 
 use crate::backend_task::error::TaskError;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
@@ -646,7 +647,8 @@ impl WalletBackend {
     }
 
     /// Top up **this wallet's own** identity's credit balance from its UTXOs.
-    /// Returns the post-top-up identity balance (credits).
+    /// Returns the post-top-up identity balance (credits) and where it comes
+    /// from (see [`Self::top_up_balance_provenance`]).
     ///
     /// Only for an identity whose DET wallet link names `seed_hash`: the
     /// upstream orchestrator resolves the identity through this wallet's
@@ -671,7 +673,7 @@ impl WalletBackend {
         funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
         identity_index: u32,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<u64, TaskError> {
+    ) -> Result<(u64, BalanceProvenance), TaskError> {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let identity_id = identity.id();
         let scope = Self::hd_scope(seed_hash);
@@ -695,7 +697,7 @@ impl WalletBackend {
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
-                wallet
+                let balance = wallet
                     .identity()
                     .top_up_identity_with_funding(
                         &identity_id,
@@ -704,9 +706,35 @@ impl WalletBackend {
                         settings,
                     )
                     .await
-                    .map_err(|e| map_identity_top_up_error(identity_id, e))
+                    .map_err(|e| map_identity_top_up_error(identity_id, e))?;
+                let provenance =
+                    Self::top_up_balance_provenance(&wallet, &identity_id, balance).await;
+                Ok((balance, provenance))
             })
             .await
+    }
+
+    /// Where the `balance` a top-up of `identity_id` returned comes from.
+    /// Upstream returns only the credits, but kept them on the identity's
+    /// managed record with the height of the response, so that height is
+    /// read back while the record still holds that balance. Otherwise (the
+    /// record has moved on, or upstream could not keep it) the balance is
+    /// confirmed but unordered.
+    async fn top_up_balance_provenance(
+        wallet: &platform_wallet::PlatformWallet,
+        identity_id: &dash_sdk::platform::Identifier,
+        balance: u64,
+    ) -> BalanceProvenance {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let manager = wallet.wallet_manager().read().await;
+        manager
+            .get_wallet_info(&wallet.wallet_id())
+            .and_then(|info| info.identity_manager.managed_identity(identity_id))
+            .filter(|managed| managed.identity.balance() == balance)
+            .and_then(|managed| managed.last_updated_balance_block_time)
+            .map_or(BalanceProvenance::ConfirmedUnordered, |block_time| {
+                BalanceProvenance::ObservedAt(block_time.height)
+            })
     }
 
     /// Whether `address` is already revealed in this wallet's upstream

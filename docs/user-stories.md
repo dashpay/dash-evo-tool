@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Select Core Wallet source and enter a shielded address as destination.
+- Select Core Wallet source and enter a shielded address as destination. Core funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -448,7 +448,7 @@ As a user, I want to top up an identity directly from the Send screen so that I 
 
 As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
 
-- Select Platform Addresses as source and enter a shielded address as destination.
+- Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
@@ -457,7 +457,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
-- Select Shielded Pool as source and enter a Core address as destination.
+- Select Shielded Balance as source and enter a Core address as destination.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
@@ -499,7 +499,7 @@ As a user, I want a "Max" button on a Core-to-Core send that fills in the larges
 
 As a developer, I want to move credits out of the shielded pool to one of my Platform addresses so that I can use them for ordinary Platform operations.
 
-- Select Shielded Pool as source and enter a Platform address as destination.
+- Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -509,7 +509,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 
 As a developer, I want to transfer credits privately from my shielded pool to another shielded address so that the transfer amount and parties are not exposed on Platform.
 
-- Select Shielded Pool as source and enter a shielded address as destination.
+- Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -536,6 +536,50 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
 - While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
+
+### SND-019: Let the app choose which balance pays [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want the Send screen to pick which of my balances pays for a payment, and tell me what it picked, so that I can pay someone without knowing the difference between Core and Platform.
+
+- The form has two sections, From and To. From is a wallet plus "Pay from": Auto, Core, Platform, Identity (when the wallet has identities), Shielded (when shielded sending is available) and Advanced (Expert view). Auto is the default.
+- Auto pays from the same kind of balance as the recipient (Core address → Core, Platform address → Platform, private address → private balance), then falls back to Platform, then Core. It never spends identity credits, never unshields private funds for a non-private recipient, and never splits one payment across two balances.
+- A line under Pay from says what Auto chose and how much that balance holds, and why when it fell back. The line updates as the recipient, amount or balances change. The confirmation repeats the chosen balance.
+- When no single balance covers the amount and fee, the form says so and offers the largest amount one payment can send.
+- Changing Pay from never clears the recipient. A choice that cannot reach the recipient is disabled or explained inline, never refused after pressing Send.
+- Design: `docs/ai-design/2026-10-23-send-screen-redesign/`.
+
+### SND-020: Move funds between my own wallets and balances [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want to send to one of my own wallets, balances or identities by picking it, so that I never have to copy my own address.
+
+- To offers "Someone else" (address, username or identity ID) and "My wallets" (a wallet plus "Receive into": Auto, Core, Platform, Identity, Shielded).
+- Receive into Core, Platform or Shielded uses an unused receiving address of the chosen wallet, shown on screen. Identity tops up the chosen identity.
+- Auto under Receive into uses the same kind of balance as the sender. Within the same wallet it uses the other kind (Core ↔ Platform), and from an identity it always uses a Platform address. A line says where the funds will go.
+- Auto can be on only one side. Choosing it on one side fixes the other side to what its Auto had chosen, and says so.
+- The balance being paid from cannot also be chosen as the destination.
+
+### SND-021: One Summary of what a send costs [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want a single summary of the route, fee and total before I press Send, so that I do not have to piece it together from several hints.
+
+- One Summary card shows: which balance pays and to whom, the amount, the estimated fee, the total taken from the named balance, and what the recipient gets when the fee comes out of the amount.
+- Route-specific notes (withdrawals take a while; moving to Platform first) appear at most once, in the Summary.
+- The Send button always says "Send". A disabled Send has a line saying the next step needed.
+- "Max" means "everything available" and stays that way until the amount is edited. With Auto, Max uses the balance that can send the most.
+- A locked wallet does not hide the form; Send asks for the password, then shows the confirmation.
+
+### SND-022: Choose exactly which addresses pay, or pay several recipients [Gap]
+**Persona:** Priya, Jordan
+
+As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
+
+- In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. The amount still comes from the single Amount field.
+- When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
+- "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
+- Replaces the separate "Advanced Options" form and its per-address amounts.
 
 ---
 
@@ -676,7 +720,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 - A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
 - The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
-### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
+### IDN-013: Password-protect an identity's signing keys [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
@@ -1051,6 +1095,8 @@ As a user, I want to see my contacts and their profiles so that I can manage my 
 
 - Lists all accepted contacts.
 - View individual contact details and profile.
+- In the Identity Hub Contacts tab, selecting a contact shows its picture, name, username, and
+  bio beside the list, or under it on a narrow window.
 
 ### DPY-006: Send payment to contact [Implemented]
 **Persona:** Alex, Priya
@@ -1086,7 +1132,11 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
   declining or cancelling a request. If another client saved details this app cannot read, the app
   warns that continuing will replace those details and asks for confirmation before unhiding.
-- Changes persist locally.
+- The Identity Hub contact details edit the private note, which is saved encrypted on Dash
+  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
+  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  legacy DashPay screens can continue to show an older local note.
+- Edits made through the legacy contact-details screen persist in its local memo.
 
 ### DPY-010: Remove a contact [Gap]
 **Persona:** Alex, Priya
@@ -1283,12 +1333,24 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 ---
 
+### TOK-019: Create a token each identity can claim once [Implemented]
+**Persona:** Jordan
+
+As a token creator, I want every identity to be able to claim a fixed amount of my token exactly once, so that I can run a fair airdrop without a list of recipients.
+
+- The token creator offers a once-per-identity distribution with the amount each identity can claim, on networks that support it.
+- The fee estimate includes the network's extra fee for this distribution.
+- The Claim screen and My Tokens show the distribution.
+- After a successful claim, the Claim screen notes that the identity may have already claimed and when; the note never blocks claiming and can be dismissed.
+- A second claim refused by the network is explained.
+
 ### TOK-020: Create a token holders cannot transfer [Implemented]
 **Persona:** Jordan
 
 As a token creator, I want to create a token that holders cannot send to other identities, so that it can work as a membership badge or a non-transferable credit.
 
-- The token creator offers "Holders can send this token to other identities", on by default; turning it off is offered only on networks that support it.
+- The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
+- The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
 - For a token that cannot be transferred, My Tokens disables Transfer and says why.
 - A transfer refused by the network is explained.
@@ -1418,6 +1480,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
+- When the network runs a newer protocol version than this build knows, the current-epoch report advises updating Dash Evo Tool; some features stay unavailable until then.
+- The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
@@ -1453,6 +1517,7 @@ As a user, I want to switch between Mainnet, Testnet, Devnet, and Local networks
 - Network chooser screen with all available networks.
 - Per-network data isolation (wallets, identities, contracts).
 - Switch without app restart.
+- While the app opens a network for the first time this session, a progress window names it ("Switching to Testnet…") and blocks the app until the switch finishes. Nothing on the previous network, such as Connect, can be pressed meanwhile, so chain sync never starts on the network being left. A failed switch closes the window and shows why.
 
 ### NET-002: Auto-update from dashmate config [Implemented]
 **Persona:** Jordan
@@ -1588,6 +1653,7 @@ As a user, I want a clear connection indicator and status rows so that I know at
 
 - Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
 - Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+- When wallet sync data could not be saved, the tooltip adds a line saying so and advising a restart of Dash Evo Tool. The indicator colour is not affected by this fault in any connection state.
 
 ### NET-018: Auto-start SPV sync on startup [Implemented]
 **Persona:** Priya, Jordan
@@ -1679,7 +1745,7 @@ As a masternode operator, I want to withdraw my node's Platform credits to Core 
 As a user, while a long operation that is unsafe to interrupt is running (broadcasting a state transition, signing, key import, a multi-step registration, a network migration), I want to see a clear please-wait block over the whole window so that I understand the app is busy and cannot accidentally fire a conflicting second action.
 
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
-- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
+- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath. The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
 - The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
 - Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exceptions: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness. The identity top-up block of IDN-004 can wait on the Dash network without a fixed limit, so after 30 s it offers "Continue in background" as its designated escape. The top-up keeps running, the funding form for that identity stays paused until it ends, and a banner tracks it to its result.)_
@@ -1714,7 +1780,7 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 As an existing user upgrading into the platform-wallet version, I want a one-time in-app notice explaining what changed — notably that direct funding from a scanned external payment (QR) was removed — so that I understand why a workflow I relied on is gone.
 
 - A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
-- Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+- Note: not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
 
 ### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1764,6 +1830,7 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Move to wallet uses the same form, restricted to receiving addresses of loaded wallets. Arbitrary destinations remain available through Send.
 - Receive shares the username or identity ID and its QR code; it does not create or send a payment.
 - Setup and actual recent contact payments appear beside a contacts/request preview, stacking on narrow windows. Empty payment history and the unfinished Activity tab are hidden. Pending username requests and their outcomes remain visible.
+- Selecting a contact in Home's preview opens Contacts with that person's profile and private note selected in Contact details. The selection stays visible while the list refreshes.
 - Technical identity details and keys are available from Profile → Advanced or the summary's menu.
 
 ### IDH-003: Multi-identity switching [Implemented]
@@ -1811,7 +1878,8 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Sent requests offer Cancel, which withdraws the request (see DPY-014).
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
-- Contacts the user has hidden do not appear in the list.
+- Contacts the user has hidden do not appear in the main list; they stay available in the collapsed "Show hidden contacts" section (see DPY-009).
+- Selecting a contact shows its details (picture, name, username, bio) and a private note beside the list, or under it on a narrow window (see DPY-005, DPY-009).
 
 ## Masternodes (MN)
 

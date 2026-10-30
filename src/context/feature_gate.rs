@@ -14,6 +14,11 @@ use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
+/// Version 1 token distribution rules (the once-per-identity distribution)
+/// are accepted from protocol version 14. Upstream names no feature constant
+/// for it, so the protocol version it shipped in is used directly.
+const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
+
 /// Tokens that cannot be transferred (a version 1 token configuration) are
 /// accepted from protocol version 14. Upstream names no feature constant for
 /// them, so the protocol version they shipped in is used directly.
@@ -37,6 +42,9 @@ pub enum Capability {
     /// The connected platform keeps contract fee pots (filled by document
     /// action fees) and accepts the transition that pays them out.
     ContractFeePots,
+    /// The connected platform accepts tokens with a once-per-identity
+    /// distribution.
+    OncePerIdentityDistribution,
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
@@ -70,6 +78,10 @@ impl Capability {
             Capability::ContractFeePots => {
                 known_protocol_version_at_least(ctx, CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION)
             }
+            Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
+                ctx,
+                ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
+            ),
             Capability::NonTransferableTokens => known_protocol_version_at_least(
                 ctx,
                 NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
@@ -172,6 +184,10 @@ pub enum FeatureGate {
     /// Viewing and claiming the fee pots of a contract. Offered only where
     /// the connected network keeps them.
     ContractFeePots,
+    /// Creating a token with a once-per-identity distribution. Offered only
+    /// where the connected network accepts it; claiming from an existing one
+    /// needs no gate, since such a token can only exist on such a network.
+    TokenOncePerIdentityDistribution,
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
@@ -192,6 +208,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
+            FeatureGate::TokenOncePerIdentityDistribution => {
+                &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
             }
@@ -475,6 +494,7 @@ mod tests {
         // One entry per protocol version 14 gate this build offers.
         let gates = [
             FeatureGate::ContractFeePots,
+            FeatureGate::TokenOncePerIdentityDistribution,
             FeatureGate::NonTransferableTokens,
         ];
         for role in ROLES {
@@ -500,6 +520,7 @@ mod tests {
         let capabilities = [
             Capability::ShieldedProtocol,
             Capability::ContractFeePots,
+            Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
         ];
 

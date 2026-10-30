@@ -10,6 +10,7 @@ pub mod dashpay_derivation;
 pub(crate) mod data_migration;
 pub mod datetime;
 pub mod derived_identity_key;
+pub mod document;
 pub mod dpns;
 pub mod dpns_usernames;
 pub mod dpns_voting;

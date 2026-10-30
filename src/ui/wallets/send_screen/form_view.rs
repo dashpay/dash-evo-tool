@@ -167,7 +167,7 @@ pub(super) fn short_address(address: &str) -> String {
 }
 
 /// Why a route is refused, as the inline sentence under To.
-fn refusal_message(refusal: RouteRefusal, own_pool: bool) -> &'static str {
+pub(super) fn refusal_message(refusal: RouteRefusal, own_pool: bool) -> &'static str {
     match refusal {
         RouteRefusal::IdentityToShielded if own_pool => {
             "You can't send from an identity to a private address. Choose Auto or Platform under Pay from."
@@ -180,6 +180,9 @@ fn refusal_message(refusal: RouteRefusal, own_pool: bool) -> &'static str {
         }
         RouteRefusal::ShieldedNotOwnPool => {
             "Core and Platform funds can only move into your own private balance. To pay this private address, choose Shielded under Pay from."
+        }
+        RouteRefusal::TickedPlatformToShielded => {
+            "A payment into your private balance can't use only the addresses you tick. Choose Auto or Platform under Pay from."
         }
     }
 }
@@ -657,14 +660,17 @@ impl WalletSendScreen {
                         total = format_credits_as_dash(selected_total)
                     ),
                 );
-                status_line(
-                    ui,
-                    if self.form.advanced_type() == AdvancedSourceType::Core {
-                        "Core pays from the whole wallet. The ticked addresses only limit how much you can send."
-                    } else {
-                        "Leave the amounts empty to spread the payment over the ticked addresses."
-                    },
-                );
+                if self.form.advanced_type() == AdvancedSourceType::Core {
+                    status_line(
+                        ui,
+                        "Core pays from the whole wallet. The ticked addresses only limit how much you can send.",
+                    );
+                } else if self.destination_kind() != Some(AddressKind::Shielded) {
+                    status_line(
+                        ui,
+                        "Leave the amounts empty to spread the payment over the ticked addresses.",
+                    );
+                }
             });
     }
 
@@ -802,7 +808,13 @@ impl WalletSendScreen {
                             "Core and Platform funds can only move into the paying wallet's own private balance. Choose the same wallet, or pay from Shielded.",
                         );
                     }
-                    None => {}
+                    Some(RouteRefusal::TickedPlatformToShielded) | None => {}
+                }
+                if self.form.pay_from() == PayFrom::Advanced
+                    && let Some(refusal) =
+                        crate::model::send_route::ticked_source_refusal(source, kind.address_kind())
+                {
+                    chip = chip.disabled(refusal_message(refusal, same_wallet));
                 }
             }
             chips.push(chip);

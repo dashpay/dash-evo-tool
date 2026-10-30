@@ -155,6 +155,9 @@ pub enum RouteRefusal {
     /// Core and Platform can only shield into the paying wallet's own private
     /// balance, never into someone else's.
     ShieldedNotOwnPool,
+    /// A shield's planner picks its own input addresses, so ticked Platform
+    /// addresses cannot be the ones paying into a private balance.
+    TickedPlatformToShielded,
 }
 
 /// Candidates Auto tries for `destination`, in order, before exclusions.
@@ -345,6 +348,16 @@ pub fn route_refusal(
         }
         _ => None,
     }
+}
+
+/// Why ticked addresses of `source` cannot pay a `destination` of this kind,
+/// if they cannot.
+pub fn ticked_source_refusal(
+    source: PayFromKind,
+    destination: AddressKind,
+) -> Option<RouteRefusal> {
+    (source == PayFromKind::Platform && destination == AddressKind::Shielded)
+        .then_some(RouteRefusal::TickedPlatformToShielded)
 }
 
 #[cfg(test)]
@@ -806,5 +819,11 @@ mod tests {
         }
         assert_eq!(route_refusal(Shielded, AddressKind::Shielded, false), None);
         assert_eq!(route_refusal(Identity, AddressKind::Core, false), None);
+        assert_eq!(
+            ticked_source_refusal(Platform, AddressKind::Shielded),
+            Some(RouteRefusal::TickedPlatformToShielded)
+        );
+        assert_eq!(ticked_source_refusal(Platform, AddressKind::Core), None);
+        assert_eq!(ticked_source_refusal(Core, AddressKind::Shielded), None);
     }
 }

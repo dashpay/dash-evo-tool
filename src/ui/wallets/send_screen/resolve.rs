@@ -8,6 +8,7 @@ use crate::model::address::validate_platform_address_for_network;
 use crate::model::send_route::{
     AutoDestination, AutoMax, AutoSource, CandidateMax, CandidateMaxima, PayFromKind, RouteRefusal,
     resolve_auto_max, resolve_destination_auto, resolve_source_auto, route_refusal,
+    ticked_source_refusal,
 };
 use crate::model::spend_limit::CoreSendShortfall;
 use crate::model::wallet::DerivationPathHelpers;
@@ -979,6 +980,15 @@ impl WalletSendScreen {
             && self.form.pay_from() != PayFrom::Auto
         {
             view.quote_sources.push(source.clone());
+        }
+        // Refused before anything is ticked, so no ticking is wasted on it.
+        if self.form.pay_from() == PayFrom::Advanced
+            && self.form.advanced_type() == AdvancedSourceType::Platform
+            && let Some(kind) = self.destination_kind()
+        {
+            view.refusal = view
+                .refusal
+                .or_else(|| ticked_source_refusal(PayFromKind::Platform, kind));
         }
         view.destination = Some(destination);
         self.route = view;

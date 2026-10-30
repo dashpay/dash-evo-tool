@@ -2963,6 +2963,9 @@ impl WalletSendScreen {
                 crate::model::send_route::RouteRefusal::ShieldedNotOwnPool => {
                     SHIELDED_NOT_OWN_POOL.to_string()
                 }
+                crate::model::send_route::RouteRefusal::TickedPlatformToShielded => {
+                    form_view::refusal_message(refusal, false).to_string()
+                }
                 _ => self
                     .validated_send_route()
                     .err()
@@ -8461,5 +8464,76 @@ mod tests {
             message.contains(&format!("Fee: ≈ {}", format_credits_as_dash(fee))),
             "{message}"
         );
+    }
+
+    /// A shield's planner picks its own input addresses, so ticked Platform
+    /// addresses cannot pay into the private balance: the form says so, keeps
+    /// Send off, and drops the promise that the ticks decide who pays.
+    #[test]
+    fn ticked_platform_addresses_cannot_shield() {
+        use egui_kittest::kittest::NodeT;
+        const REFUSAL: &str = "A payment into your private balance can't use only the addresses you tick. Choose Auto or Platform under Pay from.";
+        const PROMISE: &str = "spread the payment over the ticked addresses";
+
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen
+            .app_context
+            .set_user_role(crate::model::user_role::UserRole::Power);
+        let core = testnet_core_address(9);
+        let platform = PlatformAddress::try_from(core.clone()).expect("platform source");
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: Vec::new(),
+            platform: vec![(core, platform, 300_000_000 * CREDITS_PER_DUFF)],
+            shielded_credits: 0,
+        });
+        screen.form.choose_pay_from(
+            PayFrom::Advanced,
+            crate::model::send_route::PayFromKind::Platform,
+        );
+        screen
+            .form
+            .choose_advanced_type(AdvancedSourceType::Platform);
+        screen
+            .form
+            .set_advanced_ticked(&platform.to_bech32m_string(Network::Testnet), true);
+        screen.typed_destination = Some(ValidatedAddress::Shielded(testnet_shielded_address(7)));
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.01));
+        screen.amount_input = Some(amount_input);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 1200.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+
+        assert!(
+            harness.query_by_label_contains(REFUSAL).is_some(),
+            "the reason must be visible before any click"
+        );
+        assert!(harness.query_by_label_contains(PROMISE).is_none());
+        assert!(
+            !harness
+                .get_by_label("Send")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click),
+            "Send must be off"
+        );
+        assert_eq!(
+            harness.state_mut().prepare_send().err().as_deref(),
+            Some(REFUSAL)
+        );
+
+        // Other destinations still spread over the ticks, so the panel says so.
+        harness.state_mut().typed_destination = Some(platform_destination());
+        harness.run();
+        assert!(harness.query_by_label_contains(REFUSAL).is_none());
+        assert!(harness.query_by_label_contains(PROMISE).is_some());
     }
 }

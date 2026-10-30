@@ -88,6 +88,8 @@ pub(crate) fn user_identity_with_signing_key(
     key.set_id(1);
     key.set_purpose(Purpose::AUTHENTICATION);
     key.set_security_level(SecurityLevel::HIGH);
+    // Username registrations are signed with ECDSA keys only.
+    key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
     let mut identity = bare_user_identity(id, network);
     identity.identity.add_public_key(key.clone());
     if held {
@@ -279,4 +281,147 @@ pub(crate) fn dpns_name_document(owner: Identifier, label: &str, identity: Value
         transferred_at_core_block_height: None,
         contract_version: None,
     })
+}
+
+/// An ECDSA AUTHENTICATION key `id` at `level`, unbound and unlimited.
+pub(crate) fn auth_key(
+    id: u32,
+    level: dash_sdk::dpp::identity::SecurityLevel,
+) -> dash_sdk::platform::IdentityPublicKey {
+    dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+        id,
+        purpose: dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+        security_level: level,
+        contract_bounds: None,
+        key_type: dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![2; 33].into(),
+        disabled_at: None,
+    }
+    .into()
+}
+
+/// `key`, a version 0 key such as [`auth_key`] builds, bound to `bounds`.
+pub(crate) fn bound_to(
+    key: dash_sdk::platform::IdentityPublicKey,
+    bounds: dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
+) -> dash_sdk::platform::IdentityPublicKey {
+    let dash_sdk::platform::IdentityPublicKey::V0(mut v0) = key else {
+        panic!("bound_to takes a version 0 key");
+    };
+    v0.contract_bounds = Some(bounds);
+    v0.into()
+}
+
+/// A testnet user identity publishing `keys` and holding the private half of
+/// each.
+pub(crate) fn identity_holding(
+    keys: &[dash_sdk::platform::IdentityPublicKey],
+) -> QualifiedIdentity {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    let mut qi = bare_user_identity(Identifier::new([0xD0; 32]), Network::Testnet);
+    qi.identity
+        .set_public_keys(keys.iter().map(|key| (key.id(), key.clone())).collect());
+    for key in keys {
+        qi.private_keys
+            .insert_non_encrypted(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey {
+                        identity_public_key: key.clone(),
+                        in_wallet_at_derivation_path: None,
+                    },
+                    [key.id() as u8; 32],
+                ),
+            )
+            .expect("a free slot");
+    }
+    qi
+}
+
+/// The DashPay system contract, whose document types require a HIGH key.
+pub(crate) fn dashpay_contract() -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+    load_system_data_contract(
+        SystemDataContract::Dashpay,
+        dash_sdk::dpp::version::PlatformVersion::latest(),
+    )
+    .expect("the DashPay contract")
+}
+
+/// The DPNS system contract with its `preorder` and `domain` document types
+/// replaced by minimal types requiring `preorder` and `domain` security, for
+/// tests where the two registration documents disagree.
+pub(crate) fn dpns_contract_requiring(
+    preorder: dash_sdk::dpp::identity::SecurityLevel,
+    domain: dash_sdk::dpp::identity::SecurityLevel,
+) -> dash_sdk::platform::DataContract {
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::config::DataContractConfig;
+    use dash_sdk::dpp::data_contract::document_type::DocumentType;
+    use dash_sdk::dpp::platform_value::platform_value;
+    use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+
+    let version = dash_sdk::dpp::version::PlatformVersion::latest();
+    let mut contract =
+        load_system_data_contract(SystemDataContract::DPNS, version).expect("the DPNS contract");
+    let config = DataContractConfig::default_for_version(version).expect("config");
+    for (name, level) in [("preorder", preorder), ("domain", domain)] {
+        let document_type = DocumentType::try_from_schema(
+            contract.id(),
+            1,
+            config.version(),
+            name,
+            platform_value!({
+                "type": "object",
+                "signatureSecurityLevelRequirement": level as u8 as u32,
+                "properties": {"value": {"type": "string", "maxLength": 20_u32, "position": 0_u32}},
+                "additionalProperties": false,
+            }),
+            None,
+            &std::collections::BTreeMap::new(),
+            &config,
+            false,
+            &mut Vec::new(),
+            version,
+        )
+        .expect("a document type");
+        contract
+            .document_types_mut()
+            .insert(name.to_string(), document_type);
+    }
+    contract
+}
+
+/// A user identity whose only key, key 1 (an ECDSA HIGH AUTHENTICATION key
+/// bound to `bounds`), is held as a reference into an open test wallet, and
+/// that wallet.
+pub(crate) fn identity_with_bound_wallet_key(
+    bounds: dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds,
+) -> (
+    QualifiedIdentity,
+    Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+) {
+    let wallet = crate::model::wallet::test_support::open_wallet();
+    let seed_hash = wallet.seed_hash();
+    let key = bound_to(
+        auth_key(1, dash_sdk::dpp::identity::SecurityLevel::HIGH),
+        bounds,
+    );
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    let mut identity = bare_user_identity(Identifier::new([0xD1; 32]), Network::Testnet);
+    identity
+        .identity
+        .set_public_keys(std::collections::BTreeMap::from([(key.id(), key)]));
+    hold_as_wallet_reference(&mut identity, 1, seed_hash);
+    let wallet = Arc::new(std::sync::RwLock::new(wallet));
+    identity
+        .associated_wallets
+        .insert(seed_hash, Arc::clone(&wallet));
+    (identity, wallet)
 }

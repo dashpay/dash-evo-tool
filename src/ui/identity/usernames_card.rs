@@ -22,8 +22,9 @@ use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::register_dpns_name_screen::{RegisterDpnsNameSource, status_line};
 use crate::ui::identity::username_copy::{
     ENTER_KEY_TO_REGISTER, IMPORT_OR_RESTORE_WALLET_TO_REGISTER, IMPORT_WALLET_TO_REGISTER,
-    NEEDS_KEY_TO_REGISTER, RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER, RESTORE_KEYS_TO_REGISTER,
-    Tone, finished_request_detail, pending_request_detail, phase_label, registered_on_line,
+    NEEDS_KEY_TO_REGISTER, REENTER_KEY_TO_REGISTER, RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
+    RESTORE_KEYS_TO_REGISTER, Tone, finished_request_detail, pending_request_detail, phase_label,
+    registered_on_line,
 };
 use crate::ui::masternodes::KeyVocabulary;
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
@@ -137,6 +138,9 @@ pub(crate) enum KeyHint {
     PreviousVersion,
     /// An earlier version saved nothing: enter the key.
     EnterKey,
+    /// An early version saved the key in a form this version cannot open:
+    /// enter it again.
+    ReenterKey,
     /// The key comes from a wallet that is not on this device: import it.
     ImportWallet,
     /// The same on an updated install: import the wallet or restore from Settings.
@@ -155,6 +159,7 @@ impl KeyHint {
         match status {
             RegistrationKeyStatus::Ready => None,
             RegistrationKeyStatus::NoSuitableKey => Some(Self::AddKey),
+            RegistrationKeyStatus::KeySavedByOlderVersion => Some(Self::ReenterKey),
             RegistrationKeyStatus::KeyNotOnDevice | RegistrationKeyStatus::KeyWalletNotOnDevice
                 if restorable_here =>
             {
@@ -176,6 +181,7 @@ impl KeyHint {
             Self::Restore => RESTORE_KEYS_TO_REGISTER,
             Self::PreviousVersion => RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER,
             Self::EnterKey => ENTER_KEY_TO_REGISTER,
+            Self::ReenterKey => REENTER_KEY_TO_REGISTER,
             Self::ImportWallet => IMPORT_WALLET_TO_REGISTER,
             Self::ImportWalletOrPreviousVersion => IMPORT_OR_RESTORE_WALLET_TO_REGISTER,
         }
@@ -211,7 +217,7 @@ pub(crate) fn key_hint_links(
     // has nowhere to enter a key this identity already has an entry for.
     let keys_link = match hint {
         KeyHint::AddKey => Some("Add a key"),
-        KeyHint::PreviousVersion | KeyHint::EnterKey => Some("Open keys"),
+        KeyHint::PreviousVersion | KeyHint::EnterKey | KeyHint::ReenterKey => Some("Open keys"),
         KeyHint::Restore | KeyHint::ImportWallet | KeyHint::ImportWalletOrPreviousVersion => None,
     };
     if keys_link.is_some_and(|label| ui.link(label).clicked()) {
@@ -889,6 +895,23 @@ mod tests {
             KeyHint::for_status(status, false, false),
             Some(KeyHint::ImportWallet)
         );
+    }
+
+    /// A key an early version saved in a form this version cannot open is
+    /// entered again; restoring from the previous version cannot open it
+    /// either, so no restore is offered for it.
+    #[test]
+    fn a_key_saved_by_an_older_version_is_entered_again() {
+        let status = RegistrationKeyStatus::KeySavedByOlderVersion;
+        assert!(!status.key_is_unusable_here());
+        for (restorable_here, updated_install) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            assert_eq!(
+                KeyHint::for_status(status, restorable_here, updated_install),
+                Some(KeyHint::ReenterKey)
+            );
+        }
     }
 
     /// The hub reads the identity again on every frame, so a wallet imported

@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::qualified_identity::IdentityType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -14,10 +15,12 @@ use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
+use dash_sdk::dpp::consensus::signature::SignatureError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
@@ -1748,6 +1751,16 @@ pub enum TaskError {
     )]
     NoUsableWithdrawalKey,
 
+    /// No active key this app can sign with was available for a masternode or
+    /// evonode withdrawal, which may be signed with the payout (transfer) key
+    /// or, failing that, the owner key — the chosen key may have been disabled,
+    /// or neither is loaded for this identity. See
+    /// [`TaskError::no_usable_withdrawal_key`].
+    #[error(
+        "This withdrawal can't be signed because no active payout or owner key for this identity is available in this app. Load an active payout or owner key for this identity and try again."
+    )]
+    NoUsableNodeWithdrawalKey,
+
     /// No active key this app can sign with was available for the transfer —
     /// the chosen key may have been disabled, or no transfer key is loaded for
     /// this identity.
@@ -2511,6 +2524,37 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// The scanned text is not a DashPay contact QR code (DIP-15
+    /// `dash:?du=…&dapk=…`), as upstream platform-wallet's codecs read it.
+    #[error(
+        "This is not a DashPay contact QR code. Scan your contact's QR code again, or ask them for a new one."
+    )]
+    ContactQrInvalid {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The scanned contact QR code's auto-accept key has expired.
+    #[error("This contact QR code has expired. Ask your contact for a new one.")]
+    ContactQrExpired,
+
+    /// The identity has no wallet on this device whose recovery phrase can
+    /// derive its contact QR code's auto-accept key.
+    #[error(
+        "This identity's wallet is not on this device, so it cannot create a contact QR code. Import the wallet that created the identity and try again."
+    )]
+    ContactQrWalletMissing,
+
+    /// Upstream platform-wallet could not build the contact QR code, for
+    /// example because the identity has no username to put in it.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// Deriving the per-contact encryption keys from the wallet's recovery
     /// phrase failed. The seam already proved the seed is present, so this is a
     /// derivation-math failure rather than a missing wallet.
@@ -2543,6 +2587,66 @@ pub enum TaskError {
          Open the Key Info screen for this identity, add a key whose private key you hold, then try again."
     )]
     NoWithdrawalSigningKey {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Signing key refusals (protocol version 14)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The signing key's expiry time has passed.
+    #[error(
+        "The key used to sign this action expired and can no longer sign. Choose a different key, or add a new key to this identity, then try again."
+    )]
+    SigningKeyExpired {
+        key_id: KeyID,
+        /// When the key expired, in milliseconds since the Unix epoch.
+        expired_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The signing key has spent its whole budget.
+    #[error(
+        "The key used to sign this action has used up its spending limit and can no longer sign. Raise the key's spending limit or choose a different key, then try again."
+    )]
+    SigningKeyBudgetExhausted {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The action costs more than the signing key's remaining budget.
+    #[error(
+        "This action costs {required_dash}, but the key used to sign it has only {remaining_dash} of its spending limit left. Raise the key's spending limit or choose a different key, then try again.",
+        required_dash = format_credits_as_dash(*.required_budget),
+        remaining_dash = format_credits_as_dash(*.remaining_budget)
+    )]
+    SigningKeyBudgetExceeded {
+        key_id: KeyID,
+        remaining_budget: Credits,
+        required_budget: Credits,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed something outside its contract bounds.
+    #[error(
+        "The key used to sign this action is limited to other contracts or documents, so it cannot sign this one. Choose a different key, then try again."
+    )]
+    SigningKeyOutOfContractBounds {
+        key_id: KeyID,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A contract-bound key signed an action that is not a document or token
+    /// operation.
+    #[error(
+        "The key used to sign this action is limited to one contract, so it cannot sign this kind of action. Choose a key that is not limited to a contract, then try again."
+    )]
+    SigningKeyContractBoundForNonBatch {
+        key_id: KeyID,
         #[source]
         source_error: Box<SdkError>,
     },
@@ -4211,6 +4315,20 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
+    /// The error for a withdrawal from an identity of `identity_type` that no
+    /// usable key can sign. A masternode or evonode may sign with its owner key
+    /// as well as its payout key, so it gets
+    /// [`TaskError::NoUsableNodeWithdrawalKey`], which names both; a user
+    /// identity gets [`TaskError::NoUsableWithdrawalKey`].
+    pub fn no_usable_withdrawal_key(identity_type: IdentityType) -> Self {
+        match identity_type {
+            IdentityType::User => TaskError::NoUsableWithdrawalKey,
+            IdentityType::Masternode | IdentityType::Evonode => {
+                TaskError::NoUsableNodeWithdrawalKey
+            }
+        }
+    }
+
     /// The error for a token operation the wallet runtime reported as failed
     /// (`PlatformWalletError::TokenOperationFailed`).
     ///
@@ -4552,6 +4670,61 @@ impl From<SdkError> for TaskError {
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(SignatureError::PublicKeyExpiredError(e)) => {
+                        let (key_id, expired_at_ms) = (e.public_key_id(), e.expires_at());
+                        Some(Box::new(move |source_error| TaskError::SigningKeyExpired {
+                            key_id,
+                            expired_at_ms,
+                            source_error,
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::PublicKeyBudgetExhaustedError(e),
+                    ) => {
+                        let key_id = e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExhausted {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyBudgetExceededError(e),
+                    ) => {
+                        let (key_id, remaining_budget, required_budget) =
+                            (e.public_key_id(), e.remaining_budget(), e.required_budget());
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyBudgetExceeded {
+                                key_id,
+                                remaining_budget,
+                                required_budget,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyOutOfBoundsError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyOutOfContractBounds {
+                                key_id,
+                                source_error,
+                            }
+                        }))
+                    }
+                    ConsensusError::SignatureError(
+                        SignatureError::ContractBoundedKeyNonBatchError(e),
+                    ) => {
+                        let key_id = *e.public_key_id();
+                        Some(Box::new(move |source_error| {
+                            TaskError::SigningKeyContractBoundForNonBatch {
+                                key_id,
+                                source_error,
+                            }
                         }))
                     }
                     ConsensusError::StateError(StateError::ContractUserBannedError(e)) => {
@@ -7106,14 +7279,18 @@ mod tests {
         })
     }
 
-    /// The protocol-version-14 refusals of contract and document authoring map
-    /// to their own variants, keep the SDK error as their source, and read as
-    /// complete sentences free of protocol jargon.
+    /// The protocol-version-14 refusals of signing keys and of contract and
+    /// document authoring map to their own variants, keep the SDK error as
+    /// their source, and read as complete sentences free of protocol jargon.
     #[test]
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
         use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
+        use dash_sdk::dpp::consensus::signature::{
+            ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
+            PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
+        };
         use dash_sdk::dpp::consensus::state::contract_moderation::{
             ContractUserBannedError, ContractUserSuspendedError,
         };
@@ -7122,6 +7299,7 @@ mod tests {
             referenced_document_type_not_deletable_error::ReferencedDocumentTypeNotDeletableError,
         };
         use dash_sdk::dpp::consensus::state::identity::gas_sponsor_insufficient_balance_error::GasSponsorInsufficientBalanceError;
+        use dash_sdk::dpp::consensus::state::identity::identity_public_key_budget_exceeded_error::IdentityPublicKeyBudgetExceededError;
         use dash_sdk::dpp::consensus::state::token::{
             GasFeesPaidByNotAllowedError, InconsistentGasFeesPaidByInBatchError,
         };
@@ -7130,6 +7308,45 @@ mod tests {
         let (contract_id, identity_id) = (Identifier::random(), Identifier::random());
         type Expectation = fn(&TaskError) -> bool;
         let cases: Vec<(ConsensusError, Expectation)> = vec![
+            (PublicKeyExpiredError::new(3, 1_000, 2_000).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyExpired {
+                        key_id: 3,
+                        expired_at_ms: 1_000,
+                        ..
+                    }
+                )
+            }),
+            (PublicKeyBudgetExhaustedError::new(4).into(), |e| {
+                matches!(e, TaskError::SigningKeyBudgetExhausted { key_id: 4, .. })
+            }),
+            (
+                IdentityPublicKeyBudgetExceededError::new(identity_id, 5, 10, 20).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::SigningKeyBudgetExceeded {
+                            key_id: 5,
+                            remaining_budget: 10,
+                            required_budget: 20,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (ContractBoundedKeyOutOfBoundsError::new(6).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyOutOfContractBounds { key_id: 6, .. }
+                )
+            }),
+            (ContractBoundedKeyNonBatchError::new(7).into(), |e| {
+                matches!(
+                    e,
+                    TaskError::SigningKeyContractBoundForNonBatch { key_id: 7, .. }
+                )
+            }),
             (
                 ContractUserBannedError::new(contract_id, identity_id).into(),
                 |e| matches!(e, TaskError::ContractUserBanned { .. }),
@@ -7344,6 +7561,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn budget_exceeded_names_both_amounts_in_dash() {
+        let error = TaskError::SigningKeyBudgetExceeded {
+            key_id: 1,
+            remaining_budget: 50_000_000_000,
+            required_budget: 100_000_000_000,
+            source_error: Box::new(SdkError::Generic("budget".to_string())),
+        };
+        let message = error.to_string();
+        assert!(message.contains("costs 1 DASH"), "got: {message}");
+        assert!(message.contains("only 0.5 DASH"), "got: {message}");
     }
 
     #[test]
@@ -8152,6 +8382,29 @@ mod tests {
             assert!(
                 !msg.contains(jargon),
                 "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
+        }
+    }
+
+    /// A masternode or evonode withdrawal may also be signed with the owner
+    /// key, so its "no usable key" message must name both remedies; a user
+    /// identity, which can only use a transfer key, keeps its own message.
+    #[test]
+    fn no_usable_withdrawal_key_names_the_purposes_the_identity_type_allows() {
+        assert!(matches!(
+            TaskError::no_usable_withdrawal_key(IdentityType::User),
+            TaskError::NoUsableWithdrawalKey
+        ));
+        for node in [IdentityType::Masternode, IdentityType::Evonode] {
+            let error = TaskError::no_usable_withdrawal_key(node);
+            assert!(
+                matches!(error, TaskError::NoUsableNodeWithdrawalKey),
+                "{node:?} must get the node message, got {error:?}"
+            );
+            let msg = error.to_string();
+            assert!(
+                msg.contains("payout") && msg.contains("owner"),
+                "the node message must name both usable keys, got: {msg}"
             );
         }
     }

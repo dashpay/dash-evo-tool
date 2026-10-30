@@ -19,6 +19,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::token::validate_contract_keyword;
 use crate::model::token::{
     distribution_rules_with_once_per_identity, once_per_identity_amount_in_rules,
@@ -255,6 +256,7 @@ impl TokensScreen {
                                 &mut self.selected_identity,
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
+                                SigningScope::NonBatch,
                             );
                             let after_id = self
                                 .selected_identity

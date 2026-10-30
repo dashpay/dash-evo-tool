@@ -4,8 +4,6 @@ use crate::context::AppContext;
 use dash_sdk::Sdk;
 use std::sync::Arc;
 
-pub mod auto_accept_handler;
-pub mod auto_accept_proof;
 pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
@@ -85,12 +83,12 @@ pub enum DashPayTask {
         to_username: String,
         account_label: Option<String>,
     },
+    /// Send a contact request to the owner of a scanned contact QR code,
+    /// carrying the auto-accept proof its key signs.
     SendContactRequestWithProof {
         identity: QualifiedIdentity,
         signing_key: IdentityPublicKey,
-        to_identity_id: Identifier,
-        account_label: Option<String>,
-        qr_auto_accept: crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData,
+        qr: crate::model::dashpay::ContactQr,
     },
     AcceptContactRequest {
         identity: QualifiedIdentity,
@@ -138,13 +136,11 @@ pub enum DashPayTask {
     DetectIncomingContactPayments {
         outputs: Vec<crate::model::dashpay::DetectedIncomingOutput>,
     },
-    /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
-    /// derives the auto-accept key through the JIT chokepoint in the backend, so
-    /// the UI never reads a seed.
+    /// Build the identity's contact QR code through upstream platform-wallet;
+    /// the wallet seed is read through the secret seam in the backend, so the
+    /// UI never reads a seed.
     GenerateAutoAcceptQrCode {
         identity: QualifiedIdentity,
-        account_reference: u32,
-        validity_hours: u32,
     },
 }
 
@@ -206,18 +202,15 @@ impl AppContext {
             DashPayTask::SendContactRequestWithProof {
                 identity,
                 signing_key,
-                to_identity_id,
-                account_label,
-                qr_auto_accept,
+                qr,
             } => Ok(contact_requests::send_contact_request_with_proof(
                 self,
                 sdk,
                 identity,
                 signing_key,
-                to_identity_id
-                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
-                account_label,
-                Some(qr_auto_accept),
+                qr.dpns_name(),
+                None,
+                Some(qr),
             )
             .await?),
             DashPayTask::AcceptContactRequest {
@@ -375,20 +368,12 @@ impl AppContext {
                     ))
                 }
             }
-            DashPayTask::GenerateAutoAcceptQrCode {
-                identity,
-                account_reference,
-                validity_hours,
-            } => {
-                let proof = auto_accept_proof::generate_auto_accept_proof(
-                    &identity,
-                    account_reference,
-                    validity_hours,
-                )
-                .await?;
-                Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(
-                    proof.to_qr_string(),
-                ))
+            DashPayTask::GenerateAutoAcceptQrCode { identity } => {
+                let uri = self
+                    .wallet_backend()?
+                    .dashpay_build_auto_accept_qr(&identity)
+                    .await?;
+                Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri))
             }
         }
     }

@@ -4,7 +4,8 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -95,13 +96,7 @@ impl TransferTokensScreen {
 
         let max_amount = Amount::from(&identity_token_balance);
         let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
-            id.identity
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+            id.single_token_transition_key(identity_token_balance.data_contract_id)
                 .cloned()
         });
         let selected_wallet = identity.as_ref().and_then(|id| {
@@ -444,33 +439,40 @@ impl ScreenLike for TransferTokensScreen {
             });
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !identity.identity.public_keys().is_empty()
+            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
+                if identity.identity.public_keys().is_empty() {
+                    SigningKeyStatus::NoneHeld
+                } else {
+                    SigningKeyStatus::Usable
+                }
             } else {
-                !identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
+                identity.single_token_transition_key_status(
+                    self.identity_token_balance.data_contract_id,
+                )
             };
 
-            if !has_keys {
+            if key_status != SigningKeyStatus::Usable {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
-                let key = identity
-                    .identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
+                let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]
+                    .into_iter()
+                    .find_map(|purpose| {
+                        identity.identity.get_first_public_key_matching(
+                            purpose,
+                            HashSet::from([SecurityLevel::CRITICAL]),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                    })
                     .cloned();
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No key on this device can sign this token transfer. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                } else {
                     format!(
-                        "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
-                        identity_type
-                    ),
-                );
+                        "You do not have a CRITICAL authentication or transfer key loaded for this {identity_type} identity."
+                    )
+                };
+                ui.colored_label(DashColors::error_color(dark_mode), message);
                 ui.add_space(10.0);
 
                 if let Some(key) = key {
@@ -530,6 +532,9 @@ impl ScreenLike for TransferTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenTransfer,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_balance.data_contract_id,
+                        },
                     );
                     ui.add_space(10.0);
                     ui.separator();

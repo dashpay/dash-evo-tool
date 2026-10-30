@@ -1,10 +1,11 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::ContactQr;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -13,14 +14,11 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use egui::{RichText, ScrollArea, TextEdit, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
@@ -28,7 +26,7 @@ pub struct QRScannerScreen {
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     qr_data_input: String,
-    parsed_qr_data: Option<AutoAcceptProofData>,
+    parsed_qr_data: Option<ContactQr>,
     sending: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -56,6 +54,10 @@ impl QRScannerScreen {
             })
             .unwrap_or_default();
 
+        let selected_wallet = selected_identity
+            .as_ref()
+            .and_then(|identity| signing_key_wallet(&app_context, identity));
+
         Self {
             app_context,
             selected_identity,
@@ -63,7 +65,7 @@ impl QRScannerScreen {
             qr_data_input: String::new(),
             parsed_qr_data: None,
             sending: false,
-            selected_wallet: None,
+            selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
         }
@@ -80,7 +82,7 @@ impl QRScannerScreen {
             return;
         }
 
-        match AutoAcceptProofData::from_qr_string(&self.qr_data_input) {
+        match ContactQr::parse(&self.qr_data_input, now_secs()) {
             Ok(data) => {
                 self.parsed_qr_data = Some(data);
                 MessageBanner::set_global(
@@ -93,7 +95,7 @@ impl QRScannerScreen {
                 self.parsed_qr_data = None;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    "The QR code is not valid for DashPay. Scan a DashPay code and try again.",
+                    error.to_string(),
                     MessageType::Error,
                 )
                 .with_details(error);
@@ -105,21 +107,14 @@ impl QRScannerScreen {
         if let Some(identity) = &self.selected_identity {
             if let Some(qr_data) = &self.parsed_qr_data {
                 // Get signing key
-                let signing_key = match identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([
-                        SecurityLevel::CRITICAL,
-                        SecurityLevel::HIGH,
-                        SecurityLevel::MEDIUM,
-                    ]),
-                    HashSet::from([KeyType::ECDSA_SECP256K1]),
-                    false,
-                ) {
+                let signing_key = match identity
+                    .dashpay_signing_key(&self.app_context.dashpay_contract(), "contactRequest")
+                {
                     Some(key) => key,
                     None => {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            "No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.",
+                            "This identity has no key that can send a contact request. Add a high-security authentication key to the identity and try again.",
                             MessageType::Error,
                         );
                         return AppAction::None;
@@ -133,12 +128,7 @@ impl QRScannerScreen {
                     BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequestWithProof {
                         identity: identity.clone(),
                         signing_key: signing_key.clone(),
-                        to_identity_id: qr_data.identity_id,
-                        account_label: Some(format!(
-                            "QR Contact (Account #{})",
-                            qr_data.account_reference
-                        )),
-                        qr_auto_accept: qr_data.clone(),
+                        qr: qr_data.clone(),
                     }));
 
                 return AppAction::BackendTask(task);
@@ -208,17 +198,10 @@ impl QRScannerScreen {
                 // Update wallet if identity changed
                 let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
                 if prev_identity_id != new_identity_id {
-                    if let Some(identity) = &self.selected_identity {
-                        self.selected_wallet = get_selected_wallet(
-                            identity,
-                            Some(&self.app_context),
-                            None,
-                        )
-                        .or_show_error(self.app_context.egui_ctx())
-                        .unwrap_or(None);
-                    } else {
-                        self.selected_wallet = None;
-                    }
+                    self.selected_wallet = self
+                        .selected_identity
+                        .as_ref()
+                        .and_then(|identity| signing_key_wallet(&self.app_context, identity));
                     self.wallet_open_attempted = false;
                 }
             });
@@ -233,7 +216,7 @@ impl QRScannerScreen {
 
                 ui.add(
                     TextEdit::multiline(&mut self.qr_data_input)
-                        .hint_text("dash:?di=...")
+                        .hint_text("dash:?du=...&dapk=...")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
                 );
@@ -262,19 +245,14 @@ impl QRScannerScreen {
                         .num_columns(2)
                         .spacing([10.0, 5.0])
                         .show(ui, |ui| {
-                            ui.label("Contact Identity:");
-                            ui.label(qr_data.identity_id.to_string(
-                                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
-                            ));
-                            ui.end_row();
-
-                            ui.label("Account Reference:");
-                            ui.label(format!("{}", qr_data.account_reference));
+                            ui.label("Contact:");
+                            ui.label(qr_data.dpns_name());
                             ui.end_row();
 
                             ui.label("Expires:");
-                            let expiry_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(qr_data.expires_at);
-                            ui.label(format!("{:?}", expiry_time));
+                            ui.label(crate::model::datetime::local_date_time_from_unix_millis(
+                                u64::from(qr_data.expires_at()) * 1000,
+                            ));
                             ui.end_row();
                         });
 
@@ -316,8 +294,7 @@ impl QRScannerScreen {
 
                     ui.add_space(10.0);
 
-                    ui.label(RichText::new("ℹ️ This will send a contact request that will be automatically accepted").small());
-                    ui.label(RichText::new("⚡ Both you and the contact will become mutual contacts instantly").small());
+                    ui.label(RichText::new("ℹ️ This sends a contact request that your contact's DashPay wallet can accept automatically.").small());
                 });
             }
 
@@ -327,11 +304,9 @@ impl QRScannerScreen {
             ui.group(|ui| {
                 ui.label(RichText::new("ℹ️ About QR Code Scanning").strong());
                 ui.separator();
-                ui.label("• QR codes enable instant mutual contact establishment");
-                ui.label("• The contact request is automatically accepted by both parties");
-                ui.label("• No manual approval is needed when using valid QR codes");
-                ui.label("• QR codes expire after the specified time period");
-                ui.label("• Each QR code can only be used once");
+                ui.label("• A contact QR code names your contact's username");
+                ui.label("• Your contact's DashPay wallet can accept a request sent from it automatically");
+                ui.label("• A contact QR code works for one hour after it is created");
             });
         });
 
@@ -402,5 +377,57 @@ impl ScreenLike for QRScannerScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.display_task_result(result);
+    }
+}
+
+/// The wall clock in Unix seconds, the clock a contact QR code's expiry is
+/// compared against.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+/// The wallet holding the key a contact request from `identity` is signed
+/// with (the key [`QRScannerScreen::send_contact_request_with_proof`] takes),
+/// for the unlock prompt.
+fn signing_key_wallet(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let key = identity.dashpay_signing_key(&app_context.dashpay_contract(), "contactRequest");
+    wallet_for_signing_key(identity, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the screen preselected an identity but no wallet, and
+    /// picked the wallet only when the identity changed, so the default path
+    /// never checked whether the wallet holding the DashPay signing key was
+    /// locked before offering to send.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_preselected_identity_brings_its_signing_key_wallet() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let seed_hash = wallet.read().expect("wallet").seed_hash();
+        ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        let screen = QRScannerScreen::new(ctx);
+        let selected = screen
+            .selected_wallet
+            .expect("the wallet holding the DashPay signing key");
+        assert_eq!(selected.read().expect("wallet").seed_hash(), seed_hash);
     }
 }

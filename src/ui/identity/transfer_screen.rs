@@ -4,7 +4,8 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -24,7 +25,7 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Frame, Margin, Ui};
@@ -92,13 +93,8 @@ impl TransferScreen {
             .unwrap_or_default();
 
         let max_amount = identity.identity.balance();
-        let identity_clone = identity.identity.clone();
-        let selected_key = identity_clone.get_first_public_key_matching(
-            Purpose::TRANSFER,
-            SecurityLevel::full_range().into(),
-            KeyType::all_key_types().into(),
-            false,
-        );
+        let identity_clone = identity.clone();
+        let selected_key = identity_clone.transfer_signing_key();
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
                 MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
@@ -139,6 +135,7 @@ impl TransferScreen {
             &self.identity,
             &mut self.selected_key,
             TransactionType::Transfer,
+            SigningScope::NonBatch,
         )
     }
 
@@ -603,30 +600,41 @@ impl ScreenLike for TransferScreen {
                 return inner_action;
             }
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
+            // Outside developer mode the form opens exactly when the key its
+            // constructor pre-selects can sign, as the backend's own choice.
+            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
+                if self.identity.identity.public_keys().is_empty() {
+                    SigningKeyStatus::NoneHeld
+                } else {
+                    SigningKeyStatus::Usable
+                }
             } else {
-                !self.identity.available_transfer_keys().is_empty()
+                self.identity.transfer_key_status()
             };
+            let has_keys = key_status == SigningKeyStatus::Usable;
 
             let key_for_info = key_info_when_available(
                 has_keys,
-                self.identity.identity.get_first_public_key_matching(
+                self.identity.matching_key_now(KeyRequirements::new(
                     Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                ),
+                    &SecurityLevel::full_range(),
+                    SigningScope::NonBatch,
+                )),
             );
 
             if !has_keys {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No transfer key on this device can sign a transfer from this identity. \
+                     Its transfer keys are disabled, expired, or not available on this device. \
+                     Add a new key, or load the wallet that holds one, then try again."
+                        .to_string()
+                } else {
                     format!(
                         "You do not have any transfer keys loaded for this {identity_type} identity.",
                         identity_type = self.identity.identity_type
-                    ),
-                );
+                    )
+                };
+                ui.colored_label(egui::Color32::DARK_RED, message);
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {

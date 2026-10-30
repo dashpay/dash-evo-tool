@@ -4,6 +4,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -16,7 +17,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::wallet_for_signing_key;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
@@ -24,13 +25,12 @@ use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMe
 use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 #[derive(PartialEq)]
@@ -83,12 +83,6 @@ impl UpdateDataContractScreen {
             })
             .or_else(|| qualified_identities.first().cloned());
 
-        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
-        } else {
-            None
-        };
-
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let contracts = app_context.get_contracts().unwrap_or_else(|error| {
             MessageBanner::set_global(
@@ -109,15 +103,17 @@ impl UpdateDataContractScreen {
 
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity
-                .identity
-                .get_first_public_key_matching(
+                .signing_key_now(KeyRequirements::new(
                     Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
+                    &[SecurityLevel::CRITICAL],
+                    SigningScope::NonBatch,
+                ))
                 .cloned()
         });
+
+        let selected_wallet = selected_qualified_identity
+            .as_ref()
+            .and_then(|identity| wallet_for_signing_key(identity, selected_key.as_ref()));
 
         let selected_identity_string = selected_qualified_identity
             .as_ref()
@@ -493,20 +489,15 @@ impl ScreenLike for UpdateDataContractScreen {
                 if let Some(identity) = &self.selected_qualified_identity {
                     // Auto-select a suitable key for contract updates
                     self.selected_key = identity
-                        .identity
-                        .get_first_public_key_matching(
+                        .signing_key_now(KeyRequirements::new(
                             Purpose::AUTHENTICATION,
-                            HashSet::from([SecurityLevel::CRITICAL]),
-                            KeyType::all_key_types().into(),
-                            false,
-                        )
+                            &[SecurityLevel::CRITICAL],
+                            SigningScope::NonBatch,
+                        ))
                         .cloned();
 
-                    // Update wallet
                     self.selected_wallet =
-                        get_selected_wallet(identity, Some(&self.app_context), None)
-                            .or_show_error(self.app_context.egui_ctx())
-                            .unwrap_or(None);
+                        wallet_for_signing_key(identity, self.selected_key.as_ref());
                     self.wallet_open_attempted = false;
 
                     // Re-parse contract with new owner ID
@@ -528,6 +519,7 @@ impl ScreenLike for UpdateDataContractScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::UpdateContract,
+                        SigningScope::NonBatch,
                     );
                 }
             }

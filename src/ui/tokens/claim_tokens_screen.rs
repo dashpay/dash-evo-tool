@@ -1,6 +1,7 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::datetime::local_date_time_from_unix_millis;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::token::once_per_identity_amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
@@ -32,7 +33,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -103,22 +104,8 @@ impl ClaimTokensScreen {
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
         let (selected_key, selected_wallet) = if let Some(ref id) = identity {
-            let identity_inner = &id.identity;
-            let key = identity_inner
-                .get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                )
-                .or_else(|| {
-                    identity_inner.get_first_public_key_matching(
-                        Purpose::TRANSFER,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                })
+            let key = id
+                .single_token_transition_key(identity_token_basic_info.contract_id)
                 .cloned();
 
             let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
@@ -502,27 +489,26 @@ impl ScreenLike for ClaimTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !identity.identity.public_keys().is_empty()
-            } else {
-                match identity.identity_type {
-                    IdentityType::User => !identity
-                        .available_authentication_keys_with_critical_security_level()
-                        .is_empty(),
-                    IdentityType::Masternode | IdentityType::Evonode => {
-                        !identity.available_transfer_keys().is_empty()
-                    }
+            let key_status = if self.app_context.user_role().at_least(UserRole::Developer) {
+                if identity.identity.public_keys().is_empty() {
+                    SigningKeyStatus::NoneHeld
+                } else {
+                    SigningKeyStatus::Usable
                 }
+            } else {
+                claim_key_status(identity, self.identity_token_basic_info.contract_id)
             };
 
-            if !has_keys {
-                ui.colored_label(
-                    Color32::RED,
+            if key_status != SigningKeyStatus::Usable {
+                let message = if key_status == SigningKeyStatus::HeldButUnusable {
+                    "No key on this device can sign this token claim. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
+                } else {
                     format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        identity.identity_type,
-                    ),
-                );
+                        "No CRITICAL authentication or transfer key is loaded for this {identity_type} identity.",
+                        identity_type = identity.identity_type,
+                    )
+                };
+                ui.colored_label(Color32::RED, message);
                 ui.add_space(10.0);
 
                 let first_key = identity.identity.get_first_public_key_matching(
@@ -598,6 +584,9 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_basic_info.contract_id,
+                        },
                     );
                     ui.add_space(10.0);
                 }
@@ -787,6 +776,25 @@ impl ScreenLike for ClaimTokensScreen {
     }
 }
 
+/// Whether `identity` can sign a claim on `contract_id`, the gate in front
+/// of the form outside developer mode: for a user identity, whether
+/// [`QualifiedIdentity::single_token_transition_key`] picks a key.
+fn claim_key_status(
+    identity: &QualifiedIdentity,
+    contract_id: dash_sdk::platform::Identifier,
+) -> SigningKeyStatus {
+    match identity.identity_type {
+        IdentityType::User => identity.single_token_transition_key_status(contract_id),
+        IdentityType::Masternode | IdentityType::Evonode => {
+            if identity.available_transfer_keys().is_empty() {
+                SigningKeyStatus::NoneHeld
+            } else {
+                SigningKeyStatus::Usable
+            }
+        }
+    }
+}
+
 /// The claim confirmation text: which distribution of `token` is claimed and,
 /// for the once-per-identity distribution, how much.
 fn claim_confirmation_text(
@@ -834,6 +842,7 @@ mod tests {
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
     use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -1028,5 +1037,82 @@ mod tests {
             pair,
         ));
         assert_eq!(screen.once_per_identity_claimed_at, None);
+    }
+
+    /// Regression: the claim key falls back to a CRITICAL TRANSFER key, but
+    /// the gate in front of the form counted only CRITICAL AUTHENTICATION
+    /// keys for a user identity, so one holding only a transfer key was told
+    /// it had no key.
+    #[test]
+    fn the_claim_gate_admits_the_keys_the_claim_signs_with() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let mut transfer = auth_key(1, SecurityLevel::CRITICAL);
+        transfer.set_purpose(Purpose::TRANSFER);
+        let identity = identity_holding(&[transfer]);
+        assert_eq!(identity.identity_type, IdentityType::User);
+        let contract_id = Identifier::new([0x70; 32]);
+        assert_eq!(
+            claim_key_status(&identity, contract_id),
+            SigningKeyStatus::Usable
+        );
+
+        assert_eq!(
+            claim_key_status(
+                &identity_holding(&[auth_key(1, SecurityLevel::HIGH)]),
+                contract_id
+            ),
+            SigningKeyStatus::NoneHeld
+        );
+    }
+
+    /// Regression: the claim gate counted any filed CRITICAL key, while the
+    /// claim signs only with a live key valid for the token's contract whose
+    /// private half this device can read, so an identity holding only an
+    /// expired, elsewhere-bound or unreadable key got the form with Claim
+    /// disabled. The gate and the claim's key choice now agree.
+    #[test]
+    fn the_claim_gate_refuses_keys_the_claim_cannot_sign_with() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let expired =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let elsewhere = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::SingleContract {
+                id: Identifier::new([0x09; 32]),
+            },
+        )]);
+        let key = auth_key(1, SecurityLevel::CRITICAL);
+        let mut unreadable = identity_holding(std::slice::from_ref(&key));
+        unreadable.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+            (
+                QualifiedIdentityPublicKey {
+                    identity_public_key: key,
+                    in_wallet_at_derivation_path: None,
+                },
+                PrivateKeyData::Encrypted(vec![1; 48]),
+            ),
+        );
+        for (case, identity) in [
+            ("expired", expired),
+            ("bound elsewhere", elsewhere),
+            ("not readable here", unreadable),
+        ] {
+            assert!(
+                identity.single_token_transition_key(contract_id).is_none(),
+                "{case}"
+            );
+            assert_eq!(
+                claim_key_status(&identity, contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}"
+            );
+        }
     }
 }

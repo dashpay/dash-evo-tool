@@ -2300,7 +2300,9 @@ impl WalletSendScreen {
         // withdrawal no key can sign before the confirmation.
         qualified_identity
             .resolve_withdrawal_signing_key(None)
-            .map_err(|_| TaskError::NoUsableWithdrawalKey.to_string())?;
+            .map_err(|_| {
+                TaskError::no_usable_withdrawal_key(qualified_identity.identity_type).to_string()
+            })?;
 
         let core_address = self
             .validated_destination

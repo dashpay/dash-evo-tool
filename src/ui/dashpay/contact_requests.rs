@@ -7,14 +7,14 @@ use crate::context::AppContext;
 use crate::model::dashpay::{UnreadableContactInfoPolicy, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, ResultBannerExt};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::dashpay::dashpay_action_wallet;
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
@@ -116,9 +116,8 @@ impl ContactRequests {
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet =
+                dashpay_action_wallet(&preferred, &app_context, "contactRequest");
         }
 
         new_self
@@ -141,9 +140,8 @@ impl ContactRequests {
                     .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
                 // Update wallet for the newly selected identity
-                self.selected_wallet = get_selected_wallet(id, Some(&self.app_context), None)
-                    .or_show_error(self.app_context.egui_ctx())
-                    .unwrap_or(None);
+                self.selected_wallet =
+                    dashpay_action_wallet(id, &self.app_context, "contactRequest");
                 self.wallet_open_attempted = false;
             } else {
                 self.selected_identity_string.clear();
@@ -462,10 +460,11 @@ impl ContactRequests {
 
                             // Update wallet for the newly selected identity
                             if let Some(identity) = &self.selected_identity {
-                                self.selected_wallet =
-                                    get_selected_wallet(identity, Some(&self.app_context), None)
-                                        .or_show_error(self.app_context.egui_ctx())
-                                        .unwrap_or(None);
+                                self.selected_wallet = dashpay_action_wallet(
+                                    identity,
+                                    &self.app_context,
+                                    "contactRequest",
+                                );
                             } else {
                                 self.selected_wallet = None;
                             }

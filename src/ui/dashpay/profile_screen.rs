@@ -7,6 +7,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -15,9 +16,8 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{MessageBanner, ResultBannerExt};
+use crate::ui::dashpay::dashpay_action_wallet;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::identity::get_selected_wallet;
 use crate::ui::state::{AvatarCache, PendingRequest};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -138,9 +138,7 @@ impl ProfileScreen {
                 new_self.selected_identity_string
             );
 
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet = dashpay_action_wallet(&preferred, &app_context, "profile");
         }
 
         new_self
@@ -404,9 +402,7 @@ impl ProfileScreen {
                         // Update wallet for the newly selected identity
                         if let Some(identity) = &self.selected_identity {
                             self.selected_wallet =
-                                get_selected_wallet(identity, Some(&self.app_context), None)
-                                    .or_show_error(self.app_context.egui_ctx())
-                                    .unwrap_or(None);
+                                dashpay_action_wallet(identity, &self.app_context, "profile");
                         } else {
                             self.selected_wallet = None;
                         }

@@ -4,6 +4,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::key_input::decode_hex_secret;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -32,7 +33,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 
@@ -137,12 +137,11 @@ pub struct AddKeyScreen {
 impl AddKeyScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
@@ -183,12 +182,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
@@ -234,12 +232,11 @@ impl AddKeyScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let identity_clone = identity.clone();
-        let selected_key = identity_clone.identity.get_first_public_key_matching(
+        let selected_key = identity_clone.signing_key_now(KeyRequirements::new(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::MASTER]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ));
         let selected_wallet = get_selected_wallet(&identity, None, selected_key)
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);

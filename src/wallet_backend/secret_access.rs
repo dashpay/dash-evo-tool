@@ -1225,7 +1225,8 @@ mod tests {
     /// of these byte sequences appears in an error, log, or Debug output,
     /// the chokepoint leaked a secret.
     const SENTINEL_PASSPHRASE: &str = "correct-horse-battery-staple-SENTINEL";
-    const SENTINEL_SEED: [u8; HD_SEED_LEN] = [0x5A; HD_SEED_LEN];
+    static SENTINEL_SEED: std::sync::LazyLock<[u8; HD_SEED_LEN]> =
+        std::sync::LazyLock::new(crate::test_support::keys::seed);
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         let path = dir.join("secrets.pwsvault");
@@ -1417,7 +1418,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
         let matched = sa
             .with_secret(&scope, |pt| {
-                Ok(pt.expose_hd_seed().copied() == Some(SENTINEL_SEED))
+                Ok(pt.expose_hd_seed().copied() == Some(*SENTINEL_SEED))
             })
             .await
             .expect("with_secret");
@@ -1449,7 +1450,7 @@ mod tests {
         assert!(sa.is_session_cached(&scope), "promoted to session cache");
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1530,7 +1531,7 @@ mod tests {
         let sa = access(store, Arc::new(NullSecretPrompt));
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1550,7 +1551,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1594,7 +1595,7 @@ mod tests {
         // without a prompt.
         sa.remember_session(
             &protected_scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::UntilAppClose,
         );
         assert!(
@@ -1619,7 +1620,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -1690,14 +1691,14 @@ mod tests {
         // None is a no-op.
         sa.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::None,
         );
         assert!(!sa.is_session_cached(&scope), "None ⇒ not cached");
 
         sa.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            SecretPlaintext::HdSeed(&Zeroizing::new(*SENTINEL_SEED)),
             RememberPolicy::UntilAppClose,
         );
         assert!(sa.is_session_cached(&scope), "promoted to session cache");
@@ -1963,7 +1964,7 @@ mod tests {
 
         let display = err.to_string();
         let debug = format!("{err:?}");
-        let sentinel_seed_hex = hex::encode(SENTINEL_SEED);
+        let sentinel_seed_hex = hex::encode(*SENTINEL_SEED);
         for (label, haystack) in [("display", &display), ("debug", &debug)] {
             assert!(
                 !haystack.contains(SENTINEL_PASSPHRASE),
@@ -2023,7 +2024,8 @@ mod tests {
         let sa_inner = sa.clone();
         let both = sa
             .with_secret_session(&scope_a, async move |session| {
-                let outer_ok = session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED);
+                let outer_ok =
+                    session.plaintext().expose_hd_seed().copied() == Some(*SENTINEL_SEED);
                 // Re-enter the chokepoint for scope B from inside scope A's
                 // live session. If the outer call still held the cache lock,
                 // this would deadlock.
@@ -2061,7 +2063,7 @@ mod tests {
             .with_secret_session(&scope, async |session| {
                 let mut matches = 0;
                 for _ in 0..3 {
-                    if session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED) {
+                    if session.plaintext().expose_hd_seed().copied() == Some(*SENTINEL_SEED) {
                         matches += 1;
                     }
                 }
@@ -2740,7 +2742,7 @@ mod tests {
         let sa = access(store, prompt.clone());
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2797,7 +2799,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2816,7 +2818,7 @@ mod tests {
         let pw = SecretString::new(SENTINEL_PASSPHRASE);
         assert_eq!(
             view.get_protected(&seed_hash, &pw).unwrap().map(|z| *z),
-            Some(SENTINEL_SEED)
+            Some(*SENTINEL_SEED)
         );
         // ... and NOT without it (a raw read sees a protected blob).
         assert!(
@@ -2845,7 +2847,7 @@ mod tests {
         let scope = SecretScope::HdSeed { seed_hash };
 
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await
@@ -2929,7 +2931,7 @@ mod tests {
         let sa = access(store, prompt.clone());
         let scope = SecretScope::HdSeed { seed_hash };
         sa.with_secret(&scope, |pt| {
-            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            assert_eq!(pt.expose_hd_seed().copied(), Some(*SENTINEL_SEED));
             Ok(())
         })
         .await

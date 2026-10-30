@@ -670,7 +670,7 @@ mod tests {
             let runtime = tokio::runtime::Handle::current();
             std::thread::spawn(move || {
                 let _runtime_guard = runtime.enter();
-                let seed = [byte; 64];
+                let seed = crate::test_support::keys::labelled_seed("rename_wallet", byte);
                 let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).unwrap();
                 ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
             })

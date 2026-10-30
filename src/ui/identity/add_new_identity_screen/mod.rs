@@ -1897,7 +1897,8 @@ mod funding_method_tests {
     ) -> (AddNewIdentityScreen, WalletSeedHash, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
-        let seed = [seed_byte; 64];
+        let seed =
+            crate::test_support::keys::labelled_seed("add_new_identity", u64::from(seed_byte));
         let wallet = Arc::new(RwLock::new(
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
         ));
@@ -1932,7 +1933,7 @@ mod funding_method_tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x63, "Alpha"), (0x64, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("add_new_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,

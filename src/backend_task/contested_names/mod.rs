@@ -1707,11 +1707,13 @@ mod tests {
             result.is_ok(),
             "independent contest reads must survive journal errors: {result:?}"
         );
-        assert!(
-            std::iter::from_fn(|| rx.try_recv().ok()).any(|result| matches!(
-                result, TaskResult::Success { result, .. }
-                    if matches!(*result, BackendTaskSuccessResult::RefreshedDpnsContests { .. })
-            ))
+        assert_eq!(
+            std::iter::from_fn(|| rx.try_recv().ok()).find_map(|sent| match sent {
+                TaskResult::Success { result, .. } => result.dpns_contests_refresh_network(),
+                _ => None,
+            }),
+            Some(context.network()),
+            "the refresh is published under its own network"
         );
         assert!(
             context.ensure_dpns_vote_recovery(&sdk).await.is_err(),
@@ -2378,12 +2380,13 @@ mod tests {
             "a pass with unread end times must stay open to an early retry"
         );
         let sent: Vec<TaskResult> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        assert!(
-            sent.iter().any(|sent| matches!(
-                sent, TaskResult::Success { result, .. }
-                    if matches!(**result, BackendTaskSuccessResult::RefreshedDpnsContests { .. })
-            )),
-            "what the pass did refresh is still published"
+        assert_eq!(
+            sent.iter().find_map(|sent| match sent {
+                TaskResult::Success { result, .. } => result.dpns_contests_refresh_network(),
+                _ => None,
+            }),
+            Some(context.network()),
+            "what the pass did refresh is still published, under its own network"
         );
         assert!(
             !sent

@@ -10,6 +10,7 @@ use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::SigningKeyStatus;
@@ -42,6 +43,7 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, RichText, Ui};
 use std::collections::HashSet;
@@ -60,6 +62,19 @@ impl StepCounter {
         self.0 += 1;
         self.0
     }
+}
+
+/// The entered amount in base units, when it is greater than zero.
+pub fn positive_amount(amount: &Option<Amount>) -> Option<u64> {
+    amount
+        .as_ref()
+        .map(Amount::value)
+        .filter(|value| *value > 0)
+}
+
+/// The identity ID typed into a field (Base58 or hex), when it is valid.
+pub fn parse_identity_id(input: &str) -> Option<Identifier> {
+    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex]).ok()
 }
 
 /// Lifecycle of a single-shot token action.
@@ -86,6 +101,9 @@ impl TokenActionCtx<'_> {
     }
 }
 
+/// Default tooltip on a disabled primary button: the form is incomplete.
+pub const FILL_IN_THE_FORM: &str = "Fill in the form to continue.";
+
 /// The per-action differences between the otherwise-identical token action screens.
 pub trait TokenAction: Sized + 'static {
     /// Verb used in breadcrumbs, headings and buttons (e.g. `"Pause"`).
@@ -111,6 +129,18 @@ pub trait TokenAction: Sized + 'static {
     /// Renders the per-action form section between the key chooser and the note.
     fn render_form(&mut self, ui: &mut Ui, ctx: &TokenActionCtx, step: &mut StepCounter) {
         let _ = (ui, ctx, step);
+    }
+
+    /// Whether the form holds everything [`Self::build_action`] needs. The primary
+    /// button stays disabled until it does.
+    fn inputs_ready(&self) -> bool {
+        true
+    }
+
+    /// Tooltip on the disabled primary button: what the user must do before
+    /// the action can run.
+    fn disabled_reason(&self) -> &'static str {
+        FILL_IN_THE_FORM
     }
 
     /// Validates inputs and builds the dispatch action. Returns `None` after showing
@@ -547,12 +577,16 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     app_context: &self.common.app_context,
                     is_group_signing: self.common.group_action_id.is_some(),
                 };
+                let steps_before = step.0;
                 self.action.render_form(ui, &action_ctx, &mut step);
+                // Pause and resume have no form; a separator there would only
+                // leave a blank band under the heading.
+                if step.0 > steps_before {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                }
             }
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
 
             let note_step = step.advance();
             self.render_public_note(ui, note_step);
@@ -576,7 +610,11 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 || !button_text.contains("Test")
             {
                 ui.add_space(10.0);
-                if ComponentStyles::add_primary_button(ui, button_text).clicked() {
+                let ready = self.action.inputs_ready();
+                if ComponentStyles::add_primary_button_enabled(ui, ready, button_text)
+                    .disabled_tooltip(self.action.disabled_reason())
+                    .clicked()
+                {
                     let message = self.action.confirm_message(&self.ctx());
                     let mut dialog = ConfirmationDialog::new(A::CONFIRM_TITLE, message)
                         .confirm_text(Some(A::VERB))

@@ -13,6 +13,8 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose};
+use dash_sdk::platform::Identifier;
+use std::collections::BTreeSet;
 
 /// The hash160 of each masternode key a wallet can be checked against.
 /// `None` for a key the node does not expose in a wallet-matchable form.
@@ -138,6 +140,36 @@ pub fn retired_voting_keys(node: &QualifiedIdentity, current: [u8; 20]) -> Retir
     }
 }
 
+/// What a node's record says about its voting keys: the voter identity with
+/// its key's hash, and the hash of every key stored on the voter identity.
+/// Compared to tell whether a record's voting state changed between two reads.
+/// A key whose hash cannot be computed counts as `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVotingKeys {
+    voter_identity: Option<(Identifier, Option<[u8; 20]>)>,
+    placements: BTreeSet<(KeyID, Option<[u8; 20]>)>,
+}
+
+/// The voting keys `node` stores right now.
+pub fn stored_voting_keys(node: &QualifiedIdentity) -> StoredVotingKeys {
+    StoredVotingKeys {
+        voter_identity: node
+            .associated_voter_identity
+            .as_ref()
+            .map(|(voter, key)| (voter.id(), key.public_key_hash().ok())),
+        placements: node
+            .private_keys
+            .identity_public_keys()
+            .into_iter()
+            .filter(|(target, _)| **target == PrivateKeyTarget::PrivateKeyOnVoterIdentity)
+            .map(|(_, key)| {
+                let key = &key.identity_public_key;
+                (key.id(), key.public_key_hash().ok())
+            })
+            .collect(),
+    }
+}
+
 /// hash160 data of the first active `ECDSA_HASH160` key with `purpose`.
 fn active_key_hash(identity: &Identity, purpose: Purpose) -> Option<[u8; 20]> {
     identity
@@ -157,7 +189,7 @@ mod tests {
     use dash_sdk::dpp::identity::SecurityLevel;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::v0::IdentityV0;
-    use dash_sdk::dpp::platform_value::{BinaryData, Identifier};
+    use dash_sdk::dpp::platform_value::BinaryData;
     use std::collections::BTreeMap;
 
     fn key(
@@ -372,5 +404,34 @@ mod tests {
             retired.placements,
             vec![(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1)]
         );
+    }
+
+    /// The comparison sees a new voting key, whichever way the record names
+    /// it, and ignores everything that is not voting state.
+    #[test]
+    fn stored_voting_keys_change_only_with_the_voting_state() {
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        let node = node_with_voter(&voting_key(1, 0x21));
+        let before = stored_voting_keys(&node);
+
+        let mut renamed = node.clone();
+        renamed.alias = Some("renamed".to_owned());
+        assert_eq!(stored_voting_keys(&renamed), before);
+
+        let mut new_voter_key = node.clone();
+        let (_, voter_key) = new_voter_key.associated_voter_identity.as_mut().unwrap();
+        *voter_key = voting_key(1, 0x22);
+        assert_ne!(stored_voting_keys(&new_voter_key), before);
+
+        let mut new_placement = node;
+        new_placement.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, 2),
+            (
+                QualifiedIdentityPublicKey::from(voting_key(2, 0x22)),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+        assert_ne!(stored_voting_keys(&new_placement), before);
     }
 }

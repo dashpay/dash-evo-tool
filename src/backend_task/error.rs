@@ -1835,6 +1835,15 @@ pub enum TaskError {
     )]
     VotingKeyCheckUnavailable,
 
+    /// Removing a masternode's old voting key was refused because a reload
+    /// changed the node's stored voting keys after the masternode list was
+    /// read, so that list no longer tells which key is retired. Nothing was
+    /// removed.
+    #[error(
+        "The node's saved voting key changed while the old one was being removed, so nothing was removed. Open the node's page again to see whether an old key is still there."
+    )]
+    VotingKeyChangedDuringRemoval,
+
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(

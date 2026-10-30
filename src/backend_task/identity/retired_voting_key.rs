@@ -11,7 +11,9 @@
 
 use crate::backend_task::{BackendTaskSuccessResult, TaskError};
 use crate::context::AppContext;
-use crate::model::masternode_keys::{retired_voting_keys, stores_voting_key};
+use crate::model::masternode_keys::{
+    StoredVotingKeys, retired_voting_keys, stored_voting_keys, stores_voting_key,
+};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 
@@ -43,12 +45,21 @@ impl AppContext {
     /// stores that the masternode list no longer names, after the user asked
     /// for it. The list is read again now, not taken from when the notice was
     /// shown; a key that is current again is kept.
+    ///
+    /// The stored voting keys are read before the list. If they are the same
+    /// under the record guard, the list read is at least as new as whatever
+    /// reload stored them, so it can judge them. If not, it cannot, and
+    /// nothing is removed.
     pub(super) async fn remove_retired_voting_key(
         &self,
         identity_id: Identifier,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let node = self
+            .get_local_qualified_identity(&identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let expected = stored_voting_keys(&node);
         let current = self.current_voting_key_hash(identity_id).await;
-        self.remove_retired_voting_key_against(identity_id, current)
+        self.remove_retired_voting_key_against(identity_id, current, &expected)
     }
 
     /// The list's current voting key hash for the node, or `None` when it
@@ -67,11 +78,13 @@ impl AppContext {
     }
 
     /// [`Self::remove_retired_voting_key`] against `current`, the voting key
-    /// hash just read from the masternode list.
+    /// hash just read from the masternode list, and `expected`, the voting
+    /// keys the record named before that read.
     ///
-    /// Everything is decided and done under the node's record guard, so the
-    /// keys and voter identity removed are the ones the record names now, not
-    /// before a concurrent reload changed them. Lock order: the
+    /// Everything is decided and done under the node's record guard. A
+    /// concurrent reload that changed the voting keys since `expected` was
+    /// read fails the removal with nothing removed, because `current` may
+    /// predate the key that reload stored. Lock order: the
     /// storage-migration gate, the node's record guard, then the record guard
     /// of a separate voter record (as identity removal takes them). This is
     /// the only place two record guards nest; the gate serializes it against
@@ -87,6 +100,7 @@ impl AppContext {
         &self,
         identity_id: Identifier,
         current: Option<[u8; 20]>,
+        expected: &StoredVotingKeys,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let current = current.ok_or(TaskError::VotingKeyCheckUnavailable)?;
         let _migration_guard = self
@@ -102,6 +116,9 @@ impl AppContext {
         let mut node = self
             .get_local_qualified_identity(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
+        if stored_voting_keys(&node) != *expected {
+            return Err(TaskError::VotingKeyChangedDuringRemoval);
+        }
         let retired = retired_voting_keys(&node, current);
         if retired.is_empty() {
             return Ok(BackendTaskSuccessResult::RetiredVotingKeyKept { identity_id });
@@ -223,7 +240,11 @@ mod tests {
 
         let result = staged
             .ctx
-            .remove_retired_voting_key_against(staged.id, Some([0xEE; 20]))
+            .remove_retired_voting_key_against(
+                staged.id,
+                Some([0xEE; 20]),
+                &stored_voting_keys(&stored(&staged)),
+            )
             .unwrap();
 
         assert!(matches!(
@@ -258,7 +279,11 @@ mod tests {
 
         let result = staged
             .ctx
-            .remove_retired_voting_key_against(staged.id, Some([0xEE; 20]))
+            .remove_retired_voting_key_against(
+                staged.id,
+                Some([0xEE; 20]),
+                &stored_voting_keys(&stored(&staged)),
+            )
             .unwrap();
 
         assert!(matches!(
@@ -271,11 +296,10 @@ mod tests {
     }
 
     /// A reload can switch the node's voter identity from A to B while the
-    /// removal waits for the node's record. The removal must act on what the
-    /// record names once it holds it: B's separate record goes with B's
-    /// association, and A's record, which the node no longer names, stays.
+    /// removal waits for the node's record. The list was read before that
+    /// reload, so it cannot judge B: both voters and B's association stay.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_voter_switched_while_waiting_is_the_one_removed() {
+    async fn a_voter_switched_while_waiting_keeps_everything() {
         use crate::context::lock_probe::{LockProbe, LockSite};
         use crate::context::test_staging::qi_with_plaintext_and_derived_at;
         let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
@@ -290,6 +314,7 @@ mod tests {
             .ctx
             .insert_local_qualified_identity(&voter_b, &None)
             .unwrap();
+        let expected = stored_voting_keys(&stored(&staged));
         let mut switched = stored(&staged);
         switched.associated_voter_identity = Some((
             voter_b.identity.clone(),
@@ -304,7 +329,7 @@ mod tests {
         let node_id = staged.id;
         let removal = std::thread::spawn(move || {
             let _attached = removal_probe.attach();
-            ctx.remove_retired_voting_key_against(node_id, Some([0xEE; 20]))
+            ctx.remove_retired_voting_key_against(node_id, Some([0xEE; 20]), &expected)
         });
         let removal = probe.wait_for(
             LockSite::RecordRequest,
@@ -316,24 +341,67 @@ mod tests {
             .write_local_qualified_identity_locked(&switched)
             .unwrap();
         drop(guard);
-        let result = removal.join().unwrap().unwrap();
+        let result = removal.join().unwrap();
 
         assert!(matches!(
             result,
-            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
+            Err(TaskError::VotingKeyChangedDuringRemoval)
         ));
-        assert!(stored(&staged).associated_voter_identity.is_none());
+        assert_eq!(stored(&staged), switched);
         assert!(
-            !staged
+            staged
                 .ctx
                 .is_identity_listed(&voter_b.identity.id())
                 .unwrap(),
-            "the voter the node named when the removal ran is removed"
+            "the voter the reload just stored stays"
         );
         assert!(
             staged.ctx.is_identity_listed(&voter_a).unwrap(),
-            "a voter the node no longer names is left alone"
+            "nothing is decided from a list that predates the reload"
         );
+    }
+
+    /// A reload stores the node's newer voting key after the list was read,
+    /// and the list read names another key. That key is not the one the list
+    /// judged, so it and its vault secret survive.
+    #[tokio::test]
+    async fn a_voting_key_stored_after_the_list_was_read_survives() {
+        let (staged, old) = node_with_vaulted_voting_key().await;
+        let expected = stored_voting_keys(&stored(&staged));
+        let newer = IdentityPublicKey::random_key(8, Some(8), PlatformVersion::latest());
+        IdentityKeyView::new(&staged.store, staged.id.to_buffer())
+            .store(&V, newer.id(), &rand::random::<[u8; 32]>())
+            .unwrap();
+        staged
+            .ctx
+            .edit_local_qualified_identity(&staged.id, |node| {
+                node.private_keys.insert_at(
+                    (V, newer.id()),
+                    (
+                        QualifiedIdentityPublicKey::from(newer.clone()),
+                        PrivateKeyData::InVault,
+                    ),
+                );
+                let (_, key) = node.associated_voter_identity.as_mut().unwrap();
+                *key = newer.clone();
+                Ok(())
+            })
+            .unwrap();
+        let reloaded = stored(&staged);
+
+        let result = staged.ctx.remove_retired_voting_key_against(
+            staged.id,
+            Some(old.public_key_hash().unwrap()),
+            &expected,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TaskError::VotingKeyChangedDuringRemoval)
+        ));
+        assert_eq!(stored(&staged), reloaded);
+        assert!(voting_secret_held(&staged, newer.id()));
+        assert!(voting_secret_held(&staged, old.id()));
     }
 
     /// By the time of the click the list names the stored key again: nothing
@@ -345,7 +413,11 @@ mod tests {
 
         let result = staged
             .ctx
-            .remove_retired_voting_key_against(staged.id, Some(voting.public_key_hash().unwrap()))
+            .remove_retired_voting_key_against(
+                staged.id,
+                Some(voting.public_key_hash().unwrap()),
+                &stored_voting_keys(&before),
+            )
             .unwrap();
 
         assert!(matches!(
@@ -362,9 +434,11 @@ mod tests {
         let (staged, voting) = node_with_vaulted_voting_key().await;
         let before = stored(&staged);
 
-        let result = staged
-            .ctx
-            .remove_retired_voting_key_against(staged.id, None);
+        let result = staged.ctx.remove_retired_voting_key_against(
+            staged.id,
+            None,
+            &stored_voting_keys(&before),
+        );
 
         assert!(matches!(result, Err(TaskError::VotingKeyCheckUnavailable)));
         assert_eq!(stored(&staged), before);

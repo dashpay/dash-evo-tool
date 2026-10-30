@@ -3218,9 +3218,11 @@ impl WalletSendScreen {
             None => lines.push("Fee: calculated when you send".to_string()),
         }
         if reduces_output {
-            lines.push("The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount.".to_string());
+            lines.push("The Platform fee comes out of the amount you entered, so the recipient receives less than that amount.".to_string());
+            lines.push("The Core fee is charged on top, from your Core balance.".to_string());
         } else if core_to_platform {
-            lines.push("The network fee will be paid from the selected inputs, so the recipient will receive the entered amount.".to_string());
+            lines.push("Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee.".to_string());
+            lines.push("The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance.".to_string());
         }
         if let Some(note) = self.route_note() {
             lines.push(note.to_string());
@@ -3439,6 +3441,25 @@ impl WalletSendScreen {
     /// Renders the production simple-send button in a headless harness.
     pub fn render_simple_send_button_for_test(&mut self, ui: &mut Ui) -> AppAction {
         self.render_send_button(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Opens the confirmation of an explicit Core to Platform payment.
+    pub fn open_core_to_platform_confirmation_for_test(
+        &mut self,
+        destination: String,
+        amount: &str,
+        fee_strategy: PlatformFeeStrategy,
+    ) {
+        self.advanced_source_type = AdvancedSourceType::Core;
+        self.fee_strategy = fee_strategy;
+        self.advanced_outputs = vec![AdvancedOutput {
+            address: destination,
+            amount: amount.to_string(),
+        }];
+        let message = self.advanced_send_confirmation_message();
+        self.open_send_confirmation(AppAction::None, message);
     }
 
     #[cfg(feature = "testing")]
@@ -6760,7 +6781,7 @@ mod tests {
         let message = screen.advanced_send_confirmation_message();
 
         assert!(message.contains(
-            "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
+            "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount."
         ));
         assert!(!message.contains("will receive 1 DASH"));
     }

@@ -9,7 +9,9 @@ use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
-use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
+use dash_evo_tool::ui::wallets::send_screen::{
+    PlatformFeeStrategy, SourceSelection, WalletSendScreen,
+};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
@@ -463,6 +465,60 @@ fn cancelling_an_unshield_leaves_send_usable() {
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
         "Send",
+    );
+}
+
+/// The confirmation of an explicit Core to Platform payment says who pays
+/// which fee: `shown` for `fee_strategy`, and none of `hidden`.
+fn assert_core_to_platform_confirmation(
+    fee_strategy: PlatformFeeStrategy,
+    shown: &[&str],
+    hidden: &[&str],
+) {
+    with_isolated_data_dir(|| {
+        let (_runtime, mut screen, _seed_hash) = send_screen();
+        let destination = PlatformAddress::P2pkh([8; 20]).to_bech32m_string(Network::Testnet);
+        screen.open_core_to_platform_confirmation_for_test(destination, "1", fee_strategy);
+        let harness = send_harness(screen);
+        for sentence in shown {
+            assert!(
+                harness.query_by_label_contains(sentence).is_some(),
+                "{fee_strategy}: the confirmation must say: {sentence}"
+            );
+        }
+        for sentence in hidden {
+            assert!(
+                harness.query_by_label_contains(sentence).is_none(),
+                "{fee_strategy}: the confirmation must not say: {sentence}"
+            );
+        }
+    });
+}
+
+const PLATFORM_FEE_FROM_AMOUNT: &str = "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount.";
+const CORE_FEE_ON_TOP: &str = "The Core fee is charged on top, from your Core balance.";
+const CORE_PAYS_ALL: &str = "Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee.";
+const RESERVE_RETURNS: &str = "The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance.";
+
+/// "Reduce first output" takes the Platform fee from what the recipient gets,
+/// while the Core fee is still paid separately.
+#[test]
+fn core_to_platform_confirmation_states_the_charge_when_the_output_pays() {
+    assert_core_to_platform_confirmation(
+        PlatformFeeStrategy::ReduceFirstOutput,
+        &[PLATFORM_FEE_FROM_AMOUNT, CORE_FEE_ON_TOP],
+        &[CORE_PAYS_ALL, RESERVE_RETURNS],
+    );
+}
+
+/// "Deduct from first input" takes more than the amount from Core; the
+/// Platform fee reserve it does not use comes back on Platform.
+#[test]
+fn core_to_platform_confirmation_states_the_charge_when_the_inputs_pay() {
+    assert_core_to_platform_confirmation(
+        PlatformFeeStrategy::DeductFromFirstInput,
+        &[CORE_PAYS_ALL, RESERVE_RETURNS],
+        &[PLATFORM_FEE_FROM_AMOUNT, CORE_FEE_ON_TOP],
     );
 }
 

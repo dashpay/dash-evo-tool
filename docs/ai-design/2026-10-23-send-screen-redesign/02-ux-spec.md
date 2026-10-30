@@ -161,7 +161,8 @@ Fee options: Deduct from first input ▸
 
 - **Shown when all three hold:** Expert/Developer view, Advanced source or several recipients is active, and Platform is involved (a Platform source or a Platform recipient; today's condition). Otherwise the row is absent: Everyday users never see it, and simple sends keep today's per-route fee behaviour.
 - It starts collapsed on every visit. The choice survives collapsing and section changes (SR-16), and resets with the form.
-- Choosing a "Reduce … output" strategy adds the "Recipient gets ≈" row and the confirmation sentence "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount." (today's copy).
+- Choosing a "Reduce … output" strategy adds the "Recipient gets ≈" row. On Core → Platform the confirmation says: "The Platform fee comes out of the amount you entered, so the recipient receives less than that amount. The Core fee is charged on top, from your Core balance."
+- A "Deduct from … input" strategy on Core → Platform confirms with: "Your Core balance pays the amount you entered, an extra amount held back for the Platform fee, and the Core fee. The recipient receives the full amount, and whatever is left of the extra amount returns to your Platform balance."
 - Each option has an `info_tooltip` in plain words, e.g. "Reduce first output: the first recipient receives the amount minus the fee."
 
 Route notes:

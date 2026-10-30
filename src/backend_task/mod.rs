@@ -405,6 +405,13 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// The read of what is left of one identity's key budgets.
+    KeyRemainingBudgets(Identifier),
+    /// The raise of one identity key's limits.
+    RaiseKeyLimits {
+        identity_id: Identifier,
+        key_id: dash_sdk::dpp::identity::KeyID,
+    },
     /// Warming the identity-auth public-key cache for one wallet identity
     /// index, so a screen can tell its own failed warm from other errors.
     IdentityAuthPubkeyWarm {
@@ -633,6 +640,29 @@ impl BackendTaskContext {
         }
     }
 
+    /// The identity whose key budgets this operation read, or `None` for
+    /// anything else.
+    pub(crate) fn key_remaining_budgets_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::KeyRemainingBudgets(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
+
+    /// The identity key whose limits this operation raised, or `None` for
+    /// anything else.
+    pub(crate) fn raise_key_limits_target(
+        &self,
+    ) -> Option<(Identifier, dash_sdk::dpp::identity::KeyID)> {
+        match self.operation() {
+            Self::RaiseKeyLimits {
+                identity_id,
+                key_id,
+            } => Some((*identity_id, *key_id)),
+            _ => None,
+        }
+    }
+
     /// The identity whose legacy-recovery offer this operation belongs to, or
     /// `None` for anything else. A screen showing the recovery affordance uses
     /// it to tell its own failed check or restore from any other task's error
@@ -735,6 +765,16 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::FetchKeyRemainingBudgets {
+                identity_id,
+                ..
+            }) => Self::KeyRemainingBudgets(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RaiseKeyLimits { identity, raise }) => {
+                Self::RaiseKeyLimits {
+                    identity_id: identity.identity.id(),
+                    key_id: raise.key_id,
+                }
+            }
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
                 Self::IdentityRefresh(identity.identity.id())
             }
@@ -1144,6 +1184,22 @@ pub enum BackendTaskSuccessResult {
     IdentityKeysUnprotected {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
+    },
+    /// What is left of the budgets of an identity's keys, one entry per
+    /// requested key: `Some(credits)` for a budgeted key (zero means spent),
+    /// `None` for a key without a budget.
+    IdentityKeyRemainingBudgets {
+        identity_id: Identifier,
+        budgets: std::collections::BTreeMap<
+            dash_sdk::dpp::identity::KeyID,
+            Option<dash_sdk::dpp::fee::Credits>,
+        >,
+    },
+    /// The limits of an identity key were raised; `key` is the key as
+    /// Platform now stores it.
+    IdentityKeyLimitsRaised {
+        identity_id: Identifier,
+        key: dash_sdk::dpp::identity::IdentityPublicKey,
     },
     /// What the preserved legacy database could restore for this identity.
     /// Descriptors only — public key metadata, never key bytes. An empty plan

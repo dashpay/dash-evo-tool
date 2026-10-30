@@ -3,12 +3,20 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_limits::{
+    KeyLimitsError, key_with_limits, limits_allowed, new_key_limits, parse_key_validity_days,
+};
+use crate::model::identity_key_usability::now_ms;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::key_input::decode_hex_secret;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
@@ -24,6 +32,7 @@ use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -132,6 +141,15 @@ pub struct AddKeyScreen {
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
+    /// Give the key a spending limit (protocol version 14 key limits).
+    enable_budget: bool,
+    budget_input: Option<AmountInput>,
+    budget: Option<Amount>,
+    /// Give the key an expiry, this many days from now.
+    enable_expiry: bool,
+    validity_days_input: String,
+    /// Why the number of days is not valid, shown under the field.
+    validity_days_error: Option<String>,
 }
 
 impl AddKeyScreen {
@@ -172,6 +190,12 @@ impl AddKeyScreen {
             enable_contract_bounds: false,
             completed_fee_result: None,
             refresh_banner: None,
+            enable_budget: false,
+            budget_input: None,
+            budget: None,
+            enable_expiry: false,
+            validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -222,6 +246,12 @@ impl AddKeyScreen {
             enable_contract_bounds: true,
             completed_fee_result: None,
             refresh_banner: None,
+            enable_budget: false,
+            budget_input: None,
+            budget: None,
+            enable_expiry: false,
+            validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -272,6 +302,12 @@ impl AddKeyScreen {
             enable_contract_bounds: true,
             completed_fee_result: None,
             refresh_banner: None,
+            enable_budget: false,
+            budget_input: None,
+            budget: None,
+            enable_expiry: false,
+            validity_days_input: String::new(),
+            validity_days_error: None,
         }
     }
 
@@ -305,6 +341,29 @@ impl AddKeyScreen {
             None
         };
 
+        // A mistyped number of days is a note under its field, not an error
+        // for the whole screen.
+        if self.limits_offered()
+            && self.enable_expiry
+            && let Err(error) = parse_key_validity_days(&self.validity_days_input)
+        {
+            self.validity_days_error = Some(error.to_string());
+            return app_action;
+        }
+
+        let limits = match self.requested_limits() {
+            Ok(limits) => limits,
+            Err(error) => {
+                self.add_key_status = AddKeyStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    error.to_string(),
+                    MessageType::Error,
+                );
+                return app_action;
+            }
+        };
+
         if self.derivation.derived() {
             let Some(index) = self.derivation.submit() else {
                 return app_action;
@@ -323,9 +382,11 @@ impl AddKeyScreen {
             return self.dispatch_add(BackendTask::IdentityTask(
                 IdentityTask::AddDerivedKeyToIdentity {
                     identity: self.identity.clone(),
-                    key: QualifiedIdentityPublicKey::from(
-                        dash_sdk::platform::IdentityPublicKey::from(new_key),
-                    ),
+                    key: QualifiedIdentityPublicKey::from(key_with_limits(
+                        new_key.into(),
+                        limits.0,
+                        limits.1,
+                    )),
                     index,
                     expected_key_id: self.derivation.expected_key_id(),
                 },
@@ -378,9 +439,11 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let new_qualified_key = QualifiedIdentityPublicKey::from(
-                            dash_sdk::platform::IdentityPublicKey::from(new_key),
-                        );
+                        let new_qualified_key = QualifiedIdentityPublicKey::from(key_with_limits(
+                            new_key.into(),
+                            limits.0,
+                            limits.1,
+                        ));
                         self.submitted_private_key
                             .set_text(hex::encode(private_key_bytes.as_slice()));
                         app_action = self.dispatch_add(BackendTask::IdentityTask(
@@ -418,6 +481,104 @@ impl AddKeyScreen {
             }
         }
         app_action
+    }
+
+    fn limits_offered(&self) -> bool {
+        !self.enable_contract_bounds && limits_allowed(self.purpose, self.security_level)
+    }
+
+    fn requested_limits(&self) -> Result<(Option<Credits>, Option<u64>), KeyLimitsError> {
+        if !self.limits_offered() {
+            return Ok((None, None));
+        }
+        let total_budget = if self.enable_budget {
+            Some(self.budget.as_ref().map(Amount::value).unwrap_or(0))
+        } else {
+            None
+        };
+        let validity_days = if self.enable_expiry {
+            Some(parse_key_validity_days(&self.validity_days_input)?)
+        } else {
+            None
+        };
+        new_key_limits(
+            self.purpose,
+            self.security_level,
+            total_budget,
+            validity_days,
+            now_ms(),
+        )
+    }
+
+    fn render_limits_rows(&mut self, ui: &mut Ui) {
+        if !self.limits_offered() {
+            return;
+        }
+        let available = FeatureGate::IdentityKeyLimits.is_available(&self.app_context);
+        let unavailable_hint =
+            "Key limits need a network that supports them. Connect to such a network to use them.";
+
+        ui.label("Spending Limit:");
+        ui.horizontal(|ui| {
+            let checkbox = ui.add_enabled(
+                available,
+                egui::Checkbox::new(&mut self.enable_budget, ""),
+            );
+            if available {
+                checkbox.on_hover_text(
+                    "The most this key can ever spend in total. Once used up, the key can no longer sign.",
+                );
+            } else {
+                checkbox.on_disabled_hover_text(unavailable_hint);
+            }
+            if available && self.enable_budget {
+                let input = self.budget_input.get_or_insert_with(|| {
+                    AmountInput::new(Amount::new_dash(0.0)).with_hint_text("0.1")
+                });
+                let response = input.show(ui);
+                response.inner.update(&mut self.budget);
+            }
+        });
+        ui.end_row();
+
+        ui.label("Expires After (days):");
+        ui.horizontal(|ui| {
+            let checkbox =
+                ui.add_enabled(available, egui::Checkbox::new(&mut self.enable_expiry, ""));
+            if available {
+                checkbox.on_hover_text("After this many days the key can no longer sign.");
+            } else {
+                checkbox.on_disabled_hover_text(unavailable_hint);
+            }
+            if available && self.enable_expiry {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.validity_days_input)
+                        .hint_text("30")
+                        .desired_width(80.0),
+                );
+                if response.changed() {
+                    self.validity_days_error = None;
+                }
+                if response.lost_focus() {
+                    self.validity_days_error = parse_key_validity_days(&self.validity_days_input)
+                        .err()
+                        .map(|error| error.to_string());
+                }
+            }
+        });
+        ui.end_row();
+        if let Some(error) = &self.validity_days_error
+            && self.enable_expiry
+        {
+            ui.label("");
+            ui.colored_label(DashColors::VALIDATION_WARNING, error);
+            ui.end_row();
+        }
+
+        if !available {
+            self.enable_budget = false;
+            self.enable_expiry = false;
+        }
     }
 
     fn show_key_source(&mut self, ui: &mut Ui) {
@@ -1100,6 +1261,7 @@ impl ScreenLike for AddKeyScreen {
                     }
                     ui.end_row();
 
+                    self.render_limits_rows(ui);
                     self.show_key_source(ui);
 
                     // Contract Bounds Toggle
@@ -1991,6 +2153,36 @@ mod derived_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a mistyped number of days surfaced as a global error banner
+    /// that put the whole screen into its error state, instead of a note
+    /// under the field like the app's other form fields.
+    #[test]
+    fn a_mistyped_expiry_is_reported_under_its_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        crate::context::test_support::prove_protocol_version(&context, 14);
+        let identity = crate::context::test_support::bare_user_identity(
+            dash_sdk::platform::Identifier::new([0xA1; 32]),
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let mut screen = AddKeyScreen::new(identity, &context);
+        screen.purpose = Purpose::AUTHENTICATION;
+        screen.security_level = SecurityLevel::HIGH;
+        screen.enable_expiry = true;
+        screen.validity_days_input = "thirty".to_string();
+
+        let action = screen.validate_and_add_key();
+        assert!(matches!(action, AppAction::None));
+        assert!(
+            !matches!(screen.add_key_status, AddKeyStatus::Error),
+            "a typo must not put the screen into its error state"
+        );
+        assert_eq!(
+            screen.validity_days_error.as_deref(),
+            Some(KeyLimitsError::DaysNotANumber.to_string().as_str())
+        );
+    }
 
     /// SEC-104: both "on the network, not saved here" outcomes switch the
     /// screen to keeping the private key on hand; the derived-key ones switch

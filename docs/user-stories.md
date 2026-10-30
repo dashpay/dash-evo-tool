@@ -1119,12 +1119,14 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
 - Set custom nickname and personal notes per contact.
 - Toggle contact visibility (hidden/visible).
 - Hidden contacts stay listed in a collapsed "Show hidden contacts" section of the Identity Hub
-  Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
-  declining or cancelling a request. If another client saved details this app cannot read, the app
-  warns that continuing will replace those details and asks for confirmation before unhiding.
+  Contacts tab, and can be unhidden from there.
+- Declining a received request or withdrawing a sent one is recorded on this device only and
+  publishes nothing.
 - The Identity Hub contact details edit the private note, which is saved encrypted on Dash
-  Platform; a conservative fee estimate is shown before saving, and the saved note loads with
-  the contact from the network. Hub notes are not copied to the local memo: offline views and
+  Platform in the DashPay (DIP-0015) format other DashPay clients read; a conservative fee
+  estimate is shown before saving, and the saved note loads with the contact from the network.
+  Until the identity has two contacts, details are kept on this device only, and the app says so;
+  saving them again after that publishes them. Details saved by older versions of this app still show until replaced. Hub notes are not copied to the local memo: offline views and
   legacy DashPay screens can continue to show an older local note.
 - Edits made through the legacy contact-details screen persist in its local memo.
 
@@ -1169,7 +1171,7 @@ As a user, I want to cancel a contact request I sent so that it stops sitting in
 
 - A DashPay contact request is immutable on Platform and cannot be deleted, so cancelling cannot un-send it. The UI states this plainly rather than implying a withdrawal.
 - Cancelling re-checks the request against the network first: it must still exist, must have been sent by the acting identity, and must not have already been answered.
-- Cancelling publishes a hidden contact-info document and records the withdrawal locally, so the request leaves the sent list and stays gone across restarts.
+- Cancelling records the withdrawal on this device only and publishes nothing, so the request leaves the sent list and stays gone across restarts.
 - A request the other person already accepted is reported as an established contact instead of being cancelled.
 
 ---

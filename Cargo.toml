@@ -46,6 +46,9 @@ platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "
     "shielded",
     "serde",
 ] }
+# DIP-15 contactInfo AES primitives for the host-side `ContactCryptoProvider`;
+# the same crate platform-wallet seals and opens with.
+platform-encryption = { git = "https://github.com/dashpay/platform", rev = "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb" }
 zip32 = "0.2.1"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.12.0"

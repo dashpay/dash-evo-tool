@@ -3,7 +3,7 @@ use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{ContactDetails, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
@@ -128,16 +128,18 @@ pub(super) fn decrypt_private_data(
     Ok(decrypted.to_vec())
 }
 
-/// The nickname, note and visibility the owner stored for each contact, read
-/// from every page of the owner's `contactInfo` documents.
+/// The nickname, note and visibility the owner stored for each contact in
+/// `contactInfo` documents sealed under the legacy key root, read from every
+/// page of the owner's documents.
 ///
-/// Documents come oldest first, the order the write lookup scans, and the
-/// newest document for a contact wins, so the load shows the document a save
-/// rewrites.
+/// Pages are ordered by `$updatedAt`, oldest first, and a later document for
+/// a contact replaces an earlier one, so the newest document wins. The test
+/// seam over [`stored_contact_details`]'s legacy half.
+#[cfg(test)]
 pub(super) async fn load_contact_details<P, PF, D, DF>(
     query: DocumentQuery,
     fetch_page: P,
-    mut derive_keys: D,
+    derive_keys: D,
 ) -> Result<HashMap<Identifier, ContactData>, TaskError>
 where
     P: FnMut(DocumentQuery) -> PF,
@@ -145,15 +147,49 @@ where
     D: FnMut(u32) -> DF,
     DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
 {
+    let documents = fetch_contact_info_documents(query, fetch_page).await?;
+    legacy_details_from(&documents, derive_keys).await
+}
+
+/// Every page of the owner's `contactInfo` documents, oldest first by
+/// `$updatedAt`.
+async fn fetch_contact_info_documents<P, PF>(
+    query: DocumentQuery,
+    fetch_page: P,
+) -> Result<Vec<Document>, TaskError>
+where
+    P: FnMut(DocumentQuery) -> PF,
+    PF: Future<Output = Result<Documents, TaskError>>,
+{
     let query = query.with_order_by(OrderClause {
         field: "$updatedAt".to_string(),
         ascending: true,
     });
     let documents =
         super::contact_info::fetch_all_contact_info_documents(query, fetch_page).await?;
+    Ok(documents.into_values().flatten().collect())
+}
 
+/// The details `documents` (oldest first) hold under the legacy key root;
+/// a later document for a contact replaces an earlier one. A document whose
+/// keys or contact id do not open is skipped, since nothing tells whose it
+/// is. One whose details do not decrypt or decode marks its contact
+/// unreadable and hidden.
+///
+/// # Errors
+///
+/// The keys could not be derived for a reason that holds for every
+/// document, such as a cancelled password prompt.
+async fn legacy_details_from<D, DF>(
+    documents: &[Document],
+    mut derive_keys: D,
+) -> Result<HashMap<Identifier, ContactData>, TaskError>
+where
+    D: FnMut(u32) -> DF,
+    DF: Future<Output = Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError>>,
+{
     let mut contact_info_map: HashMap<Identifier, ContactData> = HashMap::new();
-    for doc in documents.into_values().flatten() {
+    for doc in documents {
         let props = doc.properties();
         let Some(deriv_idx) = props
             .get("derivationEncryptionKeyIndex")
@@ -161,8 +197,11 @@ where
         else {
             continue;
         };
-        let Ok((enc_user_id_key, private_data_key)) = derive_keys(deriv_idx).await else {
-            continue;
+        let (enc_user_id_key, private_data_key) = match derive_keys(deriv_idx).await {
+            Ok(keys) => keys,
+            // The document's own index cannot be derived.
+            Err(TaskError::ContactKeyDerivationFailed { .. }) => continue,
+            Err(error) => return Err(error),
         };
         // Platform returns the fixed 32-byte field as `Value::Bytes32`; a
         // document built locally carries `Value::Bytes`.
@@ -182,9 +221,10 @@ where
             );
             continue;
         };
-        // The DIP-15 codec platform-wallet writes with. A payload that is
-        // present but cannot be opened is not "no details": its hidden flag
-        // is unknown, so the contact stays hidden.
+        // Read with both the DIP-15 codec and the layout older versions of
+        // this client wrote. A payload that is present but cannot be opened
+        // is not "no details": its hidden flag is unknown, so the contact
+        // stays hidden.
         let private_data = match props.get("privateData") {
             None => Some(ContactInfoPrivateData::default()),
             Some(value) => value
@@ -199,8 +239,6 @@ where
             ..Default::default()
         });
 
-        // Documents come oldest first, so the newest replaces older ones: it
-        // is the one a save rewrites, and the rewrite keeps it the newest.
         contact_info_map.insert(
             contact_id,
             ContactData {
@@ -219,6 +257,158 @@ where
     }
 
     Ok(contact_info_map)
+}
+
+/// Run `sync` unless a contact details save of `owner` is in flight; `None`
+/// when one is.
+///
+/// A save stores its details on this device before it publishes them; a
+/// sync in between would put the older published details back over them.
+/// A read does not wait for the save, which can sit behind a password prompt
+/// or a slow publish. Until the save lands, the read can show the details as
+/// they were before it; the contacts list reloads once it does.
+pub(super) async fn unless_saving<T>(
+    writes: &crate::context::ContactInfoWrites,
+    owner: Identifier,
+    sync: impl Future<Output = T>,
+) -> Option<T> {
+    let _write_guard = writes.try_acquire(owner)?;
+    Some(sync.await)
+}
+
+/// The details the owner's stored `contactInfo` documents hold.
+pub(super) struct StoredContactDetails {
+    /// From DIP-0015 documents platform-wallet can read, newest per contact;
+    /// an error when the seed could not be used to read them. A save must not
+    /// guess past that error; the contacts list may.
+    pub(super) published: Result<crate::wallet_backend::PublishedContactInfos, TaskError>,
+    /// From documents older versions of this app wrote under the legacy
+    /// key root, newest per contact; an error as for `published`.
+    pub(super) legacy: Result<HashMap<Identifier, ContactData>, TaskError>,
+}
+
+/// Read every `contactInfo` document the owner stored, both as DIP-0015
+/// documents and as legacy-key ones.
+///
+/// platform-wallet does not read DIP-0015 documents back for a wallet loaded
+/// without its seed, which is how wallets load after a restart, so they are
+/// opened here with platform-wallet's keys and codec.
+pub(super) async fn stored_contact_details(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: &QualifiedIdentity,
+) -> Result<StoredContactDetails, TaskError> {
+    let query = DocumentQuery::new(app_context.dashpay_contract(), "contactInfo")
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactInfo",
+            source: Box::new(e.into()),
+        })?
+        .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(identity.identity.id().to_buffer()),
+        });
+    let documents = fetch_contact_info_documents(query, |query| async move {
+        Document::fetch_many(sdk, query)
+            .await
+            .map_err(TaskError::from)
+    })
+    .await?;
+    let published = match app_context.wallet_backend() {
+        Ok(backend) => {
+            backend
+                .dashpay_open_contact_infos(identity, &documents)
+                .await
+        }
+        Err(_) => Ok(crate::wallet_backend::PublishedContactInfos::default()),
+    };
+    // Without a wallet seed no legacy key exists, so no document opens.
+    let legacy = if identity.dashpay_wallet_seed_hash().is_some() {
+        legacy_details_from(&documents, |derivation_index| {
+            derive_contact_info_keys(app_context, identity, derivation_index)
+        })
+        .await
+    } else {
+        Ok(HashMap::new())
+    };
+    Ok(StoredContactDetails { published, legacy })
+}
+
+/// The details the contacts list shows for one contact, and that a save
+/// keeps for every field it does not replace.
+///
+/// A published DIP-0015 document wins: Platform holds the latest saved state
+/// from any device. Without one, platform-wallet's details on this device
+/// win; a legacy-key document stands in only while platform-wallet has never
+/// held details for the contact (`synced_before` false). Once it has, its
+/// details win even when empty, so a cleared note or an unhide is never
+/// undone by an old legacy document.
+pub(super) fn shown_contact_details(
+    published: Option<ContactDetails>,
+    local: Option<ContactDetails>,
+    synced_before: bool,
+    legacy: Option<ContactDetails>,
+) -> ContactDetails {
+    if let Some(published) = published {
+        return published;
+    }
+    if synced_before {
+        return local.unwrap_or_default();
+    }
+    local
+        .filter(|details| !details.is_empty())
+        .or(legacy)
+        .unwrap_or_default()
+}
+
+/// Whether [`shown_contact_details`] shows the legacy document's details:
+/// only then can unreadable legacy details mark the contact unreadable.
+pub(super) fn legacy_details_shown(
+    published: Option<&ContactDetails>,
+    local: Option<&ContactDetails>,
+    synced_before: bool,
+) -> bool {
+    published.is_none() && !synced_before && local.is_none_or(ContactDetails::is_empty)
+}
+
+/// Whether platform-wallet's side holds details worth recording as its own:
+/// a published DIP-0015 document (even an empty one), or non-empty details on
+/// this device.
+pub(super) fn holds_details(
+    published: Option<&ContactDetails>,
+    local: Option<&ContactDetails>,
+) -> bool {
+    published.is_some() || local.is_some_and(|details| !details.is_empty())
+}
+
+/// The people both sides have sent a contact request to, minus anyone the
+/// owner withdrew their request from: a reply to a withdrawn request is a new
+/// request for the owner to answer, not an established contact.
+pub(super) fn mutual_contacts(
+    incoming: &[(Identifier, Document)],
+    outgoing: &[(Identifier, Document)],
+    is_withdrawn: impl Fn(&Identifier) -> bool,
+) -> HashSet<Identifier> {
+    incoming
+        .iter()
+        .map(|(_, doc)| doc.owner_id())
+        .filter(|from_id| !is_withdrawn(from_id))
+        .filter(|from_id| {
+            outgoing
+                .iter()
+                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
+        })
+        .collect()
+}
+
+impl ContactData {
+    pub(super) fn details(&self) -> ContactDetails {
+        ContactDetails {
+            nickname: self.nickname.clone(),
+            note: self.note.clone(),
+            hidden: self.is_hidden,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -289,60 +479,115 @@ pub async fn load_contacts(
         .collect();
 
     // Find mutual contacts (where both parties have sent requests to each other)
-    let contacts: HashSet<Identifier> = incoming
-        .iter()
-        .map(|(_, doc)| doc.owner_id())
-        .filter(|from_id| {
-            outgoing
-                .iter()
-                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
-        })
-        .collect();
-
-    // Now query for contact info documents
-    let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactInfo",
-            source: Box::new(e.into()),
-        })?;
-
-    contact_info_query = contact_info_query.with_where(WhereClause {
-        field: "$ownerId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
+    let backend = app_context.wallet_backend().ok();
+    // As for the request lists: withdrawn and declined people are not
+    // contacts until the owner re-engages.
+    let contacts = mutual_contacts(&incoming, &outgoing, |peer| {
+        backend
+            .as_ref()
+            .is_some_and(|backend| backend.dashpay_disengaged_from(&identity_id, peer))
     });
-    let contact_info_map = load_contact_details(
-        contact_info_query,
-        |query| async move {
-            Document::fetch_many(sdk, query)
-                .await
-                .map_err(TaskError::from)
-        },
-        |derivation_index| derive_contact_info_keys(app_context, &identity, derivation_index),
-    )
-    .await?;
 
+    // platform-wallet's synced details first; a refresh failure leaves the
+    // last synced details in place.
+    let mut synced = match &backend {
+        Some(backend) => {
+            if let Err(error) = backend.dashpay_sync(&identity_id).await {
+                tracing::debug!(
+                    ?error,
+                    "LoadContacts: DashPay sync degraded; using cached state"
+                );
+            }
+            match unless_saving(
+                &app_context.contact_info_writes,
+                identity_id,
+                backend.dashpay_sync_contact_infos(&identity_id),
+            )
+            .await
+            {
+                Some(Ok(())) => {}
+                Some(Err(error)) => tracing::debug!(
+                    ?error,
+                    "LoadContacts: contact details sync degraded; using cached state"
+                ),
+                None => tracing::debug!(
+                    "LoadContacts: a contact details save is running; using cached state"
+                ),
+            }
+            backend.dashpay_contact_details(&identity_id).await
+        }
+        None => {
+            tracing::debug!("LoadContacts: no wallet backend; showing legacy details");
+            Default::default()
+        }
+    };
+    let StoredContactDetails { published, legacy } =
+        stored_contact_details(app_context, sdk, &identity).await?;
+    let mut published = published.unwrap_or_else(|error| {
+        tracing::debug!(?error, "LoadContacts: published contact details not read");
+        crate::wallet_backend::PublishedContactInfos::default()
+    });
+    let legacy = legacy.unwrap_or_else(|error| {
+        tracing::debug!(?error, "LoadContacts: legacy contact details not read");
+        HashMap::new()
+    });
+
+    // Recording which details platform-wallet holds must not race a save,
+    // which stores its details here before it publishes them: with a save
+    // running, nothing is recorded this time.
+    let record_guard = app_context.contact_info_writes.try_acquire(identity_id);
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
         .into_iter()
         .map(|contact_id| {
-            contact_info_map
-                .get(&contact_id)
-                .cloned()
-                .unwrap_or(ContactData {
-                    identity_id: contact_id,
-                    nickname: None,
-                    note: None,
-                    is_hidden: false,
-                    details_unreadable: false,
-                    account_reference: 0,
-                    username: None,
-                    display_name: None,
-                    avatar_url: None,
-                    bio: None,
-                })
+            let legacy = legacy.get(&contact_id);
+            let synced = synced.remove(&contact_id);
+            let (published, published_unreadable) = match published.take(&contact_id) {
+                Some((details, unreadable)) => (Some(details), unreadable),
+                None => (None, false),
+            };
+            let synced_before = backend.as_ref().is_some_and(|backend| {
+                let synced_before = backend
+                    .dashpay_details_synced(&identity_id, &contact_id)
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(?error, "LoadContacts: synced record not read");
+                        false
+                    });
+                if !synced_before
+                    && record_guard.is_some()
+                    && holds_details(published.as_ref(), synced.as_ref())
+                    && let Err(error) =
+                        backend.dashpay_mark_details_synced(&identity_id, &contact_id)
+                {
+                    tracing::debug!(?error, "LoadContacts: could not record synced details");
+                }
+                synced_before
+            });
+            let details_unreadable = published_unreadable
+                || legacy_details_shown(published.as_ref(), synced.as_ref(), synced_before)
+                    && legacy.is_some_and(|legacy| legacy.details_unreadable);
+            let details = shown_contact_details(
+                published,
+                synced,
+                synced_before,
+                legacy.map(ContactData::details),
+            );
+            ContactData {
+                identity_id: contact_id,
+                nickname: details.nickname,
+                note: details.note,
+                is_hidden: details.hidden,
+                details_unreadable,
+                account_reference: legacy.map_or(0, |legacy| legacy.account_reference),
+                username: None,
+                display_name: None,
+                avatar_url: None,
+                bio: None,
+            }
         })
         .collect();
+    // Saves wait on this guard: it must not be held through the profile reads.
+    drop(record_guard);
 
     // Fetch profiles and usernames for all contacts in parallel with bounded concurrency.
     // Each contact requires two network queries (profile + DPNS username), so parallelizing
@@ -428,9 +673,11 @@ pub async fn load_contacts(
 }
 
 /// Read the contact list for `identity` entirely from offline state: contact
-/// relationships and private memos come from the upstream-rehydrated
-/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), and each
-/// contact's display profile is served from the DET contact-profile cache.
+/// relationships and contact details come from the upstream-rehydrated
+/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), with this
+/// device's private-info copy as a fallback (see [`shown_contact_details`]),
+/// and each contact's display profile is served from the DET contact-profile
+/// cache.
 ///
 /// No network round-trip — a view rendered from this result does not require
 /// connectivity. Profiles a contact has not yet been fetched for are returned
@@ -444,6 +691,9 @@ pub async fn load_contacts_offline(
     let backend = app_context.wallet_backend()?;
 
     let stored = backend.dashpay_view().contacts(&owner_id).await;
+    // The details platform-wallet holds win, as in the network list; this
+    // device's private-info copy only stands in where it never held any.
+    let mut synced = backend.dashpay_contact_details(&owner_id).await;
 
     let mut contact_list = Vec::with_capacity(stored.len());
     for sc in stored {
@@ -455,23 +705,39 @@ pub async fn load_contacts_offline(
         if contact_id == owner_id {
             continue;
         }
+        // Withdrawn and declined people stay hidden, as in the network list
+        // (`mutual_contacts`). Filtered here rather than in
+        // `DashpayView::contacts`, whose other callers register payment
+        // addresses and must keep every contact.
+        if backend.dashpay_disengaged_from(&owner_id, &contact_id) {
+            continue;
+        }
 
         let cached = backend.contact_profile_cache().get(&contact_id);
         let memo = backend
             .dashpay_get_private_info(&owner_id, &contact_id)
-            .unwrap_or(None);
+            .unwrap_or_else(|error| {
+                tracing::debug!(?error, "LoadContactsOffline: private info not read");
+                None
+            })
+            .map(|memo| ContactDetails {
+                nickname: Some(memo.nickname).filter(|s| !s.is_empty()),
+                note: Some(memo.notes).filter(|s| !s.is_empty()),
+                hidden: memo.is_hidden,
+            });
+        let synced_before = backend
+            .dashpay_details_synced(&owner_id, &contact_id)
+            .unwrap_or_else(|error| {
+                tracing::debug!(?error, "LoadContactsOffline: synced record not read");
+                false
+            });
+        let details = shown_contact_details(None, synced.remove(&contact_id), synced_before, memo);
 
         contact_list.push(ContactData {
             identity_id: contact_id,
-            nickname: memo
-                .as_ref()
-                .map(|m| m.nickname.clone())
-                .filter(|s| !s.is_empty()),
-            note: memo
-                .as_ref()
-                .map(|m| m.notes.clone())
-                .filter(|s| !s.is_empty()),
-            is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            nickname: details.nickname,
+            note: details.note,
+            is_hidden: details.hidden,
             details_unreadable: false,
             // Carry the cached account reference so the "Account #N" badge shows
             // and offline ordering matches the post-refresh view. Falls back to
@@ -534,6 +800,421 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    /// A details sync is skipped, not queued, while a save of the same owner
+    /// runs: it would put older published details over the save's own, and
+    /// waiting would hold the contacts behind the save's password prompt.
+    #[tokio::test]
+    async fn a_details_sync_is_skipped_while_a_save_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::Poll;
+        let writes = crate::context::ContactInfoWrites::default();
+        let owner = Identifier::from([1; 32]);
+        let ran = AtomicBool::new(false);
+        let sync = || async {
+            ran.store(true, Ordering::SeqCst);
+        };
+        let save = writes.acquire(owner).await;
+
+        let mut skipped = Box::pin(unless_saving(&writes, owner, sync()));
+        assert!(matches!(futures::poll!(&mut skipped), Poll::Ready(None)));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "nothing synced during the save"
+        );
+
+        drop(save);
+        assert_eq!(unless_saving(&writes, owner, sync()).await, Some(()));
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    /// After a restart the offline list shows the details platform-wallet
+    /// holds (synced from Platform) rather than this device's older copy, so
+    /// a contact hidden on another device is not listed as visible here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_shows_platform_wallets_details() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed: [u8; 64] = rand::random();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let contact = Identifier::from([0x22; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        let request = |from, to| {
+            platform_wallet::ContactRequest::new(from, to, 0, 0, 0, vec![0u8; 96], 100_000, 1)
+        };
+        backend
+            .record_sent_contact_request(&seed_hash, &owner, request(owner, contact))
+            .await
+            .expect("record sent request");
+        backend
+            .record_incoming_contact_request(&seed_hash, &owner, request(contact, owner))
+            .await
+            .expect("record incoming request");
+        // This device's older copy.
+        backend
+            .dashpay_set_private_info(
+                &owner,
+                &contact,
+                &crate::model::dashpay::ContactPrivateInfo {
+                    nickname: "Old".to_string(),
+                    notes: "old note".to_string(),
+                    is_hidden: false,
+                },
+            )
+            .expect("sidecar written");
+        let synced = ContactDetails {
+            nickname: Some("Bao".into()),
+            note: None,
+            hidden: true,
+        };
+        backend
+            .set_contact_details_for_tests(&seed_hash, &owner, &contact, synced.clone())
+            .await;
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        let [row] = contacts.as_slice() else {
+            panic!("expected one contact, got {contacts:?}");
+        };
+        assert_eq!(row.details(), synced);
+    }
+
+    /// After a restart the contacts list is built offline; a request the
+    /// owner withdrew stays hidden there, as it does in the network list.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_hides_a_withdrawn_request() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed: [u8; 64] = rand::random();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let withdrawn = Identifier::from([0x22; 32]);
+        let pending = Identifier::from([0x33; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        for recipient in [withdrawn, pending] {
+            backend
+                .record_sent_contact_request(
+                    &seed_hash,
+                    &owner,
+                    platform_wallet::ContactRequest::new(
+                        owner,
+                        recipient,
+                        0,
+                        0,
+                        0,
+                        vec![0u8; 96],
+                        100_000,
+                        1,
+                    ),
+                )
+                .await
+                .expect("record sent request");
+        }
+        backend
+            .dashpay_mark_withdrawn(&owner, &withdrawn)
+            .expect("withdraw");
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        assert_eq!(
+            contacts.iter().map(|c| c.identity_id).collect::<Vec<_>>(),
+            vec![pending]
+        );
+    }
+
+    /// Declining someone's request hides them from the offline list even
+    /// while the owner's own request to them still stands, as in the network
+    /// list (`dashpay_disengaged_from`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_offline_list_hides_a_declined_person() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed: [u8; 64] = rand::random();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = Identifier::from([0x11; 32]);
+        let declined = Identifier::from([0x22; 32]);
+        let kept = Identifier::from([0x33; 32]);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+        let request = |from, to| {
+            platform_wallet::ContactRequest::new(from, to, 0, 0, 0, vec![0u8; 96], 100_000, 1)
+        };
+        for peer in [declined, kept] {
+            backend
+                .record_sent_contact_request(&seed_hash, &owner, request(owner, peer))
+                .await
+                .expect("record sent request");
+        }
+        backend
+            .record_incoming_contact_request(&seed_hash, &owner, request(declined, owner))
+            .await
+            .expect("record incoming request");
+        // Only the decline marker: the owner's own request still stands.
+        backend
+            .dashpay_mark_declined(&owner, &declined)
+            .expect("decline");
+        assert!(!backend.dashpay_is_withdrawn(&owner, &declined));
+        let mut qualified =
+            crate::context::test_support::bare_user_identity(owner, Network::Testnet);
+        qualified.associated_wallets = BTreeMap::from([(seed_hash, wallet)]);
+
+        let result = load_contacts_offline(&context, qualified)
+            .await
+            .expect("offline list");
+
+        let BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } = result else {
+            panic!("expected DashPayContactsWithInfo, got {result:?}");
+        };
+        assert_eq!(
+            contacts.iter().map(|c| c.identity_id).collect::<Vec<_>>(),
+            vec![kept]
+        );
+    }
+
+    fn details(note: &str) -> ContactDetails {
+        ContactDetails {
+            nickname: None,
+            note: Some(note.to_string()),
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn synced_contact_details_win_over_legacy_ones() {
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(details("synced")),
+                false,
+                Some(details("legacy"))
+            ),
+            details("synced")
+        );
+    }
+
+    #[test]
+    fn legacy_contact_details_show_when_none_were_ever_synced() {
+        assert_eq!(
+            shown_contact_details(None, None, false, Some(details("legacy"))),
+            details("legacy")
+        );
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(ContactDetails::default()),
+                false,
+                Some(details("legacy"))
+            ),
+            details("legacy"),
+            "a contact platform-wallet never held details for shows the legacy ones"
+        );
+        assert_eq!(
+            shown_contact_details(None, None, false, None),
+            ContactDetails::default()
+        );
+    }
+
+    /// SEC-002: a note the user cleared, or a contact they unhid, must not
+    /// come back from an old legacy document — nor be saved again by the
+    /// next edit, which keeps these details for every field it leaves alone.
+    #[test]
+    fn cleared_details_do_not_come_back_from_a_legacy_document() {
+        let legacy = ContactDetails {
+            nickname: None,
+            note: Some("old".into()),
+            hidden: true,
+        };
+        assert_eq!(
+            shown_contact_details(
+                None,
+                Some(ContactDetails::default()),
+                true,
+                Some(legacy.clone())
+            ),
+            ContactDetails::default()
+        );
+        assert_eq!(
+            shown_contact_details(None, None, true, Some(legacy)),
+            ContactDetails::default()
+        );
+    }
+
+    /// Unreadable legacy details mark a contact unreadable only while they
+    /// stand in for its details, exactly when `shown_contact_details` shows
+    /// them.
+    #[test]
+    fn legacy_details_are_shown_only_when_nothing_newer_holds_details() {
+        let empty = ContactDetails::default();
+        let note = details("note");
+        for (published, local, synced_before) in [
+            (None, None, false),
+            (None, Some(&empty), false),
+            (None, Some(&note), false),
+            (None, None, true),
+            (None, Some(&empty), true),
+            (None, Some(&note), true),
+            (Some(&empty), None, false),
+            (Some(&note), None, false),
+            (Some(&note), Some(&note), true),
+        ] {
+            let legacy = details("legacy");
+            assert_eq!(
+                legacy_details_shown(published, local, synced_before),
+                shown_contact_details(
+                    published.cloned(),
+                    local.cloned(),
+                    synced_before,
+                    Some(legacy.clone())
+                ) == legacy,
+                "{published:?} {local:?} {synced_before}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_non_empty_synced_details_are_recorded_as_synced() {
+        assert!(holds_details(None, Some(&details("note"))));
+        assert!(!holds_details(None, Some(&ContactDetails::default())));
+        assert!(!holds_details(None, None));
+    }
+
+    /// SEC-003: Platform's DIP-0015 document is the latest saved state from
+    /// any device, so it wins over this device's details and legacy ones —
+    /// and a save keeps it for the fields it does not replace.
+    #[test]
+    fn a_published_document_wins_over_local_and_legacy_details() {
+        assert_eq!(
+            shown_contact_details(
+                Some(details("published")),
+                Some(details("local")),
+                true,
+                Some(details("legacy"))
+            ),
+            details("published")
+        );
+        assert_eq!(
+            shown_contact_details(
+                Some(ContactDetails::default()),
+                None,
+                false,
+                Some(details("legacy"))
+            ),
+            ContactDetails::default(),
+            "details cleared on another device stay cleared"
+        );
+    }
+
+    #[test]
+    fn an_empty_published_document_counts_as_held_details() {
+        assert!(holds_details(Some(&ContactDetails::default()), None));
+    }
+
+    fn request(document_id: u8, owner: Identifier, to: Identifier) -> (Identifier, Document) {
+        use dash_sdk::dpp::document::DocumentV0;
+        let id = Identifier::from([document_id; 32]);
+        let document = Document::V0(DocumentV0 {
+            id,
+            owner_id: owner,
+            properties: std::collections::BTreeMap::from([(
+                "toUserId".to_string(),
+                Value::Identifier(to.to_buffer()),
+            )]),
+            ..Default::default()
+        });
+        (id, document)
+    }
+
+    /// SEC-001: after the owner withdraws their request, a reply from the
+    /// other person does not make them a contact.
+    #[test]
+    fn a_reply_to_a_withdrawn_request_is_not_a_contact() {
+        let owner = Identifier::from([1; 32]);
+        let bob = Identifier::from([2; 32]);
+        let carol = Identifier::from([3; 32]);
+        let incoming = [request(10, bob, owner), request(11, carol, owner)];
+        let outgoing = [request(20, owner, bob), request(21, owner, carol)];
+
+        let contacts = mutual_contacts(&incoming, &outgoing, |peer| *peer == bob);
+
+        assert_eq!(contacts, HashSet::from([carol]));
+    }
 
     /// Known-answer vectors generated independently with Python
     /// `cryptography` 46 (OpenSSL). They pin DIP-15 interoperability with other

@@ -36,7 +36,6 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::Wallet;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::platform::Identifier;
-use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use platform_wallet::wallet::identity::types::dashpay::contact_request::ContactRequest;
@@ -222,8 +221,14 @@ const KV_PREFIX_DECLINED: &str = "det:dashpay:declined:";
 /// opposite directions: withdrawing our request to Bob says nothing about a
 /// request Bob later sends us, and a single marker would silently hide it.
 const KV_PREFIX_WITHDRAWN: &str = "det:dashpay:withdrawn:";
-/// Durable recovery journal for paid decline/cancel visibility transitions.
-/// Value: [`ContactRequestActionPhase`]. Scope: the acting identity.
+/// Presence marker: platform-wallet holds `owner`'s details for this contact,
+/// so a legacy-key `contactInfo` document no longer stands in for them — not
+/// even when those details are empty because the user cleared them.
+/// Scope: the owner identity.
+const KV_PREFIX_DETAILS_SYNCED: &str = "det:dashpay:details_synced:";
+/// Recovery journal older versions kept while a decline or withdrawal wrote
+/// contact details. Declines and withdrawals only clear it. Scope: the
+/// acting identity.
 const KV_PREFIX_REQUEST_ACTION: &str = "det:dashpay:request_action:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
@@ -324,7 +329,9 @@ impl ContactRequestActionKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The journal value older versions stored; tests seed such records.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ContactRequestActionPhase {
     HideIntent,
     HideCommitted,
@@ -379,6 +386,23 @@ impl ContactRequestActionLocks {
             }
         };
         action_lock.lock_owned().await
+    }
+}
+
+/// `owner`'s request-action lock for `peer`, held while this lives. The lock
+/// is not reentrant, so code running under it is handed this instead of
+/// locking again. Only [`WalletBackend::dashpay_lock_contact_peer`] mints it,
+/// so the pair it names is the pair it locks.
+pub(crate) struct HeldPeerLock {
+    owner: Identifier,
+    peer: Identifier,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl HeldPeerLock {
+    /// Whether this is `owner`'s lock for `peer`.
+    pub(crate) fn covers(&self, owner: &Identifier, peer: &Identifier) -> bool {
+        self.owner == *owner && self.peer == *peer
     }
 }
 
@@ -899,6 +923,21 @@ fn kv_contains(kv: &DetKv, owner: &Identifier, prefix: &str, counterparty: &Iden
     )
 }
 
+/// Whether `owner`'s marker for `counterparty` exists, whatever its value
+/// encodes. Unlike [`kv_contains`], a failed read is an error, not absence.
+fn kv_marker_present(
+    kv: &DetKv,
+    owner: &Identifier,
+    prefix: &str,
+    counterparty: &Identifier,
+) -> Result<bool, crate::wallet_backend::KvAdapterError> {
+    let owner_buf = owner.to_buffer();
+    kv.contains(
+        DetScope::Identity(&owner_buf),
+        &sidecar_key(prefix, counterparty),
+    )
+}
+
 fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
     let key = sidecar_key(KV_PREFIX_TIMESTAMPS, id);
     kv_get_or_default(kv, DetScope::Global, &key, "dashpay_contact_timestamps")
@@ -1051,6 +1090,14 @@ impl WalletBackend {
         };
         let identity = wallet.identity();
         let dashpay = identity.dashpay();
+        // TODO(dashpay auto-accept): `sync_contact_requests` queues an
+        // `AutoAccept` op for every incoming request that carries a DIP-0015
+        // `autoAcceptProof`, but DET never drains that queue, so requests
+        // from scanned contact QR codes wait for a manual accept. Wire
+        // `PlatformWallet::drain_pending_contact_crypto_verified(provider,
+        // Some(signer), deadline)` after this sync; it needs a full
+        // seed-backed `ContactCryptoProvider` (receiving xpub, ECDH,
+        // accountReference), not the narrow `AutoAcceptKeyExport`.
         dashpay.sync_contact_requests().await.map_err(|e| {
             crate::backend_task::error::TaskError::WalletBackend {
                 source: Arc::new(e),
@@ -1174,6 +1221,66 @@ impl WalletBackend {
         self.put_marker(owner, KV_PREFIX_DECLINED, counterparty_id)
     }
 
+    /// Ignore `sender`'s contact requests in platform-wallet, as declining
+    /// does. Local only: nothing is published, so the decline stays on this
+    /// device. Does nothing when no wallet manages `owner`.
+    pub(crate) async fn dashpay_ignore_contact_sender(
+        &self,
+        owner: &Identifier,
+        sender: &Identifier,
+    ) -> Result<(), TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(());
+        };
+        wallet
+            .identity()
+            .dashpay()
+            .ignore_contact_sender(owner, sender)
+            .await
+            .map_err(|source| TaskError::WalletBackend {
+                source: Arc::new(source),
+            })
+    }
+
+    /// Whether platform-wallet ignores `sender`'s contact requests for
+    /// `owner`. `false` when no wallet manages `owner`.
+    pub(crate) async fn dashpay_sender_ignored(
+        &self,
+        owner: &Identifier,
+        sender: &Identifier,
+    ) -> bool {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return false;
+        };
+        wallet
+            .state()
+            .await
+            .identity_manager
+            .managed_identity(owner)
+            .is_some_and(|managed| managed.is_sender_ignored(sender))
+    }
+
+    /// Undo [`Self::dashpay_ignore_contact_sender`]: platform-wallet skips an
+    /// ignored sender's requests entirely, so re-engaging with them must
+    /// lift the ignore or their reply never establishes the contact.
+    pub(crate) async fn dashpay_unignore_contact_sender(
+        &self,
+        owner: &Identifier,
+        sender: &Identifier,
+    ) -> Result<(), TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(());
+        };
+        wallet
+            .identity()
+            .dashpay()
+            .unignore_contact_sender(owner, sender)
+            .await
+            .map_err(|source| TaskError::WalletBackend {
+                source: Arc::new(source),
+            })
+    }
+
     /// Whether `owner` declined the incoming contact request from
     /// `counterparty_id`. Reads the same owner-scoped marker
     /// [`dashpay_mark_declined`](Self::dashpay_mark_declined) writes.
@@ -1183,6 +1290,23 @@ impl WalletBackend {
     /// listing.
     pub fn dashpay_is_declined(&self, owner: &Identifier, counterparty_id: &Identifier) -> bool {
         kv_contains(&self.kv(), owner, KV_PREFIX_DECLINED, counterparty_id)
+    }
+
+    /// [`Self::dashpay_is_declined`] for a decision that changes state: a
+    /// failed read is an error, not "not declined".
+    pub(crate) fn dashpay_decline_recorded(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_DECLINED, counterparty_id)
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
+    }
+
+    /// Whether `owner` withdrew their request to `peer` or declined `peer`'s:
+    /// either keeps the pair from being contacts until the owner re-engages.
+    pub fn dashpay_disengaged_from(&self, owner: &Identifier, peer: &Identifier) -> bool {
+        self.dashpay_is_withdrawn(owner, peer) || self.dashpay_is_declined(owner, peer)
     }
 
     /// Clear `owner`'s decline marker for `counterparty_id`. Idempotent —
@@ -1222,6 +1346,46 @@ impl WalletBackend {
         kv_contains(&self.kv(), owner, KV_PREFIX_WITHDRAWN, counterparty_id)
     }
 
+    /// [`Self::dashpay_is_withdrawn`] for a decision that changes state: a
+    /// failed read is an error, not "not withdrawn".
+    pub(crate) fn dashpay_withdrawal_recorded(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_WITHDRAWN, counterparty_id)
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
+    }
+
+    /// Ignore `peer` for `owner` unless platform-wallet has established the
+    /// contact; returns whether the ignore stands.
+    ///
+    /// Establishing a contact and ignoring a sender each take platform-wallet's
+    /// wallet lock, and once `peer` is ignored their requests are no longer
+    /// ingested and their pending one is dropped. So a contact found
+    /// established after the ignore was established before it: the ignore lost
+    /// the race, and is lifted again.
+    pub(crate) async fn dashpay_ignore_unless_established(
+        &self,
+        owner: &Identifier,
+        peer: &Identifier,
+    ) -> Result<bool, TaskError> {
+        self.dashpay_ignore_contact_sender(owner, peer).await?;
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            return Ok(true);
+        };
+        let established = wallet
+            .state()
+            .await
+            .identity_manager
+            .managed_identity(owner)
+            .is_some_and(|managed| managed.dashpay().established_contacts().contains_key(peer));
+        if established {
+            self.dashpay_unignore_contact_sender(owner, peer).await?;
+        }
+        Ok(!established)
+    }
+
     /// Clear `owner`'s withdrawal marker for `counterparty_id`. Idempotent —
     /// clearing an absent marker is `Ok(())`. Re-sending a request to the same
     /// person retires the earlier withdrawal, so the fresh request lists.
@@ -1233,21 +1397,33 @@ impl WalletBackend {
         self.delete_marker(owner, KV_PREFIX_WITHDRAWN, counterparty_id)
     }
 
-    pub(crate) fn dashpay_contact_request_action_phase(
+    /// Record that platform-wallet holds `owner`'s details for `contact_id`;
+    /// see [`KV_PREFIX_DETAILS_SYNCED`]. Idempotent.
+    pub(crate) fn dashpay_mark_details_synced(
         &self,
         owner: &Identifier,
-        request_id: &Identifier,
-        kind: ContactRequestActionKind,
-    ) -> Result<Option<ContactRequestActionPhase>, TaskError> {
-        let owner_buf = owner.to_buffer();
-        self.kv()
-            .get(
-                DetScope::Identity(&owner_buf),
-                &request_action_key(kind, request_id),
-            )
-            .map_err(|source| TaskError::DashpaySidecarStorage { source })
+        contact_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        self.put_marker(owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
     }
 
+    /// Whether platform-wallet holds `owner`'s details for `contact_id`.
+    ///
+    /// # Errors
+    ///
+    /// The marker could not be read; a save must not take that for absence,
+    /// or legacy details would stand in for ones the user cleared.
+    pub(crate) fn dashpay_details_synced(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> Result<bool, TaskError> {
+        kv_marker_present(&self.kv(), owner, KV_PREFIX_DETAILS_SYNCED, contact_id)
+            .map_err(|source| TaskError::DashPayLocalStateRead { source })
+    }
+
+    /// Serialize `owner`'s request actions keyed by `request_id`: a request
+    /// id, or the id of the person the requests are with.
     pub(crate) async fn dashpay_lock_contact_request_action(
         &self,
         owner: &Identifier,
@@ -1259,21 +1435,19 @@ impl WalletBackend {
             .await
     }
 
-    pub(crate) fn dashpay_set_contact_request_action_phase(
+    /// [`Self::dashpay_lock_contact_request_action`] keyed by the person,
+    /// returned as a [`HeldPeerLock`] that code running under it is handed
+    /// instead of locking again.
+    pub(crate) async fn dashpay_lock_contact_peer(
         &self,
         owner: &Identifier,
-        request_id: &Identifier,
-        kind: ContactRequestActionKind,
-        phase: ContactRequestActionPhase,
-    ) -> Result<(), TaskError> {
-        let owner_buf = owner.to_buffer();
-        self.kv()
-            .put(
-                DetScope::Identity(&owner_buf),
-                &request_action_key(kind, request_id),
-                &phase,
-            )
-            .map_err(|source| TaskError::DashpaySidecarStorage { source })
+        peer: &Identifier,
+    ) -> HeldPeerLock {
+        HeldPeerLock {
+            owner: *owner,
+            peer: *peer,
+            _guard: self.dashpay_lock_contact_request_action(owner, peer).await,
+        }
     }
 
     pub(crate) fn dashpay_clear_contact_request_action(
@@ -1504,6 +1678,7 @@ impl WalletBackend {
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
             KV_PREFIX_REQUEST_ACTION,
+            KV_PREFIX_DETAILS_SYNCED,
         ] {
             let keys = kv.list(scope, Some(prefix)).map_err(sidecar_err)?;
             for key in keys {
@@ -1526,7 +1701,7 @@ impl WalletBackend {
     /// `identity_manager` for the id. `None` if no registered wallet
     /// knows about it (e.g. pre-registration, wrong network, observed-
     /// only identities that were never indexed).
-    async fn find_wallet_for_identity(
+    pub(super) async fn find_wallet_for_identity(
         &self,
         identity_id: &Identifier,
     ) -> Option<Arc<PlatformWallet>> {
@@ -2582,6 +2757,53 @@ mod tests {
         );
     }
 
+    /// The synced and withdrawn markers are
+    /// read for presence only, so
+    /// a value in an unknown encoding still counts; a failed read is an error.
+    #[test]
+    fn a_marker_read_tells_failure_from_absence() {
+        for prefix in [KV_PREFIX_DETAILS_SYNCED, KV_PREFIX_WITHDRAWN] {
+            use platform_wallet_storage::{KvError, KvStore, ObjectId};
+
+            let store = Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default());
+            let kv = DetKv::from_store(store.clone());
+            let (owner, contact) = (id_from_byte(1), id_from_byte(2));
+            assert!(!kv_marker_present(&kv, &owner, prefix, &contact).unwrap());
+            store
+                .put(
+                    &ObjectId::Identity(owner.to_buffer()),
+                    &sidecar_key(prefix, &contact),
+                    &[crate::wallet_backend::kv::SCHEMA_VERSION.wrapping_add(1), 0],
+                )
+                .unwrap();
+            assert!(
+                kv_marker_present(&kv, &owner, prefix, &contact).unwrap(),
+                "a marker in an unknown encoding is still present"
+            );
+
+            struct UnreadableKv;
+            impl KvStore for UnreadableKv {
+                fn get(&self, _: &ObjectId, _: &str) -> Result<Option<Vec<u8>>, KvError> {
+                    Err(KvError::LockPoisoned)
+                }
+                fn put(&self, _: &ObjectId, _: &str, _: &[u8]) -> Result<(), KvError> {
+                    Ok(())
+                }
+                fn delete(&self, _: &ObjectId, _: &str) -> Result<(), KvError> {
+                    Ok(())
+                }
+                fn list_keys(&self, _: &ObjectId, _: Option<&str>) -> Result<Vec<String>, KvError> {
+                    Ok(Vec::new())
+                }
+            }
+            let unreadable = DetKv::from_store(Arc::new(UnreadableKv));
+            assert!(
+                kv_marker_present(&unreadable, &owner, prefix, &contact).is_err(),
+                "a failed read is not absence"
+            );
+        }
+    }
+
     /// F40: two identities that share a wallet must not see each other's
     /// blocked / declined markers. Identity A blocks/declines a counterparty;
     /// identity B's view of that same counterparty stays clean.
@@ -3050,6 +3272,7 @@ mod tests {
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
             KV_PREFIX_REQUEST_ACTION,
+            KV_PREFIX_DETAILS_SYNCED,
         ] {
             for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner), &k).unwrap();
@@ -3558,6 +3781,57 @@ mod tests {
             published.public_key,
             other_scanned.public_key.to_compressed(),
             "the unselected wallet's seed must derive a different xpub"
+        );
+    }
+
+    /// `dashpay_sender_ignored` reads platform-wallet's ignore as decline,
+    /// withdrawal and their rollback leave it, and is `false` for an identity
+    /// no wallet manages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_ignore_query_follows_ignore_and_unignore() {
+        use crate::model::wallet::Wallet;
+        use crate::model::wallet::birth_height::WalletOrigin;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let backend = context.wallet_backend().expect("backend wired");
+        let seed: [u8; 64] = rand::random();
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("w".into()), None).expect("wallet");
+        let (seed_hash, _wallet) = context
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("register upstream");
+        let owner = id_from_byte(0x11);
+        let peer = id_from_byte(0x22);
+        let identity =
+            Identity::create_basic_identity(owner, PlatformVersion::latest()).expect("identity");
+        backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("manage identity");
+
+        assert!(!backend.dashpay_sender_ignored(&owner, &peer).await);
+        backend
+            .dashpay_ignore_contact_sender(&owner, &peer)
+            .await
+            .expect("ignore");
+        assert!(backend.dashpay_sender_ignored(&owner, &peer).await);
+        backend
+            .dashpay_unignore_contact_sender(&owner, &peer)
+            .await
+            .expect("unignore");
+        assert!(!backend.dashpay_sender_ignored(&owner, &peer).await);
+        assert!(
+            !backend
+                .dashpay_sender_ignored(&id_from_byte(0x33), &peer)
+                .await
         );
     }
 }

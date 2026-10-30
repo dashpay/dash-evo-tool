@@ -1754,6 +1754,16 @@ impl AppState {
         tasks: Vec<(BackendTask, BackendTaskContext)>,
         mode: BackendTasksExecutionMode,
     ) {
+        // A full rescan gets a dispatch of its own and arms the SPV block, so
+        // its result or its terminal outcome (panic, stopped worker, shutdown)
+        // also lowers the block.
+        let tasks: Vec<_> = tasks
+            .into_iter()
+            .map(|(task, context)| {
+                let context = self.prepare_backend_task_context(&task, context);
+                (task, context)
+            })
+            .collect();
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
             captured.extend(tasks);
@@ -1766,6 +1776,29 @@ impl AppState {
             tasks,
             mode,
         ));
+    }
+
+    /// Give a full wallet rescan a dispatch of its own and arm the SPV block
+    /// until that dispatch finishes. Other tasks keep `context`.
+    fn prepare_backend_task_context(
+        &mut self,
+        task: &BackendTask,
+        context: BackendTaskContext,
+    ) -> BackendTaskContext {
+        if matches!(
+            task,
+            BackendTask::CoreTask(crate::backend_task::core::CoreTask::FullResyncWallet { .. })
+        ) {
+            let context = if context.dispatch_id().is_some() {
+                context
+            } else {
+                BackendTaskContext::for_dispatch_on(task, self.current_app_context().network)
+            };
+            self.spv_block.arm_resync(context.clone());
+            context
+        } else {
+            context
+        }
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
@@ -2358,6 +2391,11 @@ impl App for AppState {
                 .connection_status()
                 .handle_task_result(&task_result, active_context.network);
 
+            if let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
+                &task_result
+            {
+                self.spv_block.finish_resync(context);
+            }
             // The open screen that dispatched this task, if any. Its result is
             // delivered there, in view or not. A closed sender's result reaches
             // no screen; undispatched results go to the screen in view.

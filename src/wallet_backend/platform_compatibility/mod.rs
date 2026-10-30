@@ -72,13 +72,19 @@ fn upgrade(
     }
     let stage_dir = builder.tempdir_in(parent)?;
     let stage_path = stage_dir.path().join("wallet.sqlite");
-    drop(SqlitePersister::open(SqlitePersisterConfig::new(&stage_path)).map_err(validation_error)?);
+    engine::initialize_stage(&stage_path)?;
+    let reference_path = stage_dir.path().join("current-reference.sqlite");
+    drop(
+        SqlitePersister::open(SqlitePersisterConfig::new(&reference_path))
+            .map_err(validation_error)?,
+    );
     let backup = engine::upgrade_locked(guard, &stage_path, |path| {
         let staged =
             SqlitePersister::open(SqlitePersisterConfig::new(path)).map_err(validation_error)?;
         staged.load().map_err(validation_error)?;
         staged.load_unowned_identities().map_err(validation_error)?;
-        Ok(())
+        drop(staged);
+        engine::verify_current_schema(path, &reference_path)
     })?;
     if let Some(backup) = backup {
         tracing::info!(backup = %backup.display(), "Upgraded pinned Platform database and retained original backup");
@@ -270,6 +276,139 @@ mod tests {
     }
 
     #[test]
+    fn platform_compatibility_runs_core_reset_on_populated_legacy_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("fixtures/67d4ef3.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("fixtures/public-rows.sql"))
+            .unwrap();
+        conn.execute_batch("INSERT INTO core_instant_locks SELECT wallet_id, txid, X'00ff' FROM core_transactions;
+            INSERT INTO meta_global VALUES ('opaque', X'00ff80', 123);
+            INSERT INTO wallets VALUES (zeroblob(32), 'testnet', 0);
+            INSERT INTO core_sync_state VALUES (zeroblob(32), 777, NULL, NULL);
+            INSERT INTO wallets VALUES (randomblob(32), 'testnet', 500);
+            INSERT INTO core_sync_state SELECT wallet_id, 888, 20, NULL FROM main.wallets WHERE birth_height = 500;").unwrap();
+        drop(conn);
+        drop(open(SqlitePersisterConfig::new(&path)).unwrap());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for table in ["core_transactions", "core_utxos", "core_instant_locks"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{table} must be rebuilt by SPV"
+            );
+        }
+        for (birth, processed, synced) in [(100, 200, 99), (0, 777, 0), (500, 888, 20)] {
+            let found = conn.query_row("SELECT last_processed_height, synced_height FROM core_sync_state JOIN wallets USING(wallet_id) WHERE birth_height = ?1", [birth], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap();
+            assert_eq!(found, (processed, synced));
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT hex(value) FROM meta_global WHERE key = 'opaque'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "00FF80"
+        );
+        for table in ["identities", "contacts", "account_registrations"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM refinery_schema_history WHERE name = 'core_transaction_accounting'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the upstream Core accounting migration must have run"
+        );
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".platform-67d4ef3-backup-")
+            })
+            .unwrap();
+        let backup = rusqlite::Connection::open(backup).unwrap();
+        for table in ["core_transactions", "core_utxos", "core_instant_locks"] {
+            assert_eq!(
+                backup
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    /// The Core accounting migration keeps spend evidence a block rescan cannot
+    /// redeliver: a spent coin whose spender is not known to be mined survives with
+    /// its funding transaction, which loses its block details. The bridge accepts any
+    /// such retained subset of the original Core rows.
+    #[test]
+    fn platform_compatibility_keeps_unsettled_spend_evidence_through_core_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("fixtures/67d4ef3.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("fixtures/public-rows.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "UPDATE core_utxos SET spent = 1;
+            INSERT INTO core_instant_locks SELECT wallet_id, txid, X'00ff' FROM core_transactions;",
+        )
+        .unwrap();
+        drop(conn);
+
+        drop(open(SqlitePersisterConfig::new(&path)).expect("the bridge must accept kept spends"));
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let count = |table: &str| {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count("core_utxos"), 1, "the spent coin is kept as evidence");
+        assert_eq!(count("core_instant_locks"), 0, "a mined lock is rebuilt");
+        let funding = conn
+            .query_row(
+                "SELECT height, block_hash IS NULL, record_blob IS NULL FROM core_transactions",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, bool>(1)?,
+                        r.get::<_, bool>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            funding,
+            (200, true, true),
+            "mined funding keeps only its height"
+        );
+    }
+
+    #[test]
     fn platform_compatibility_normal_open_upgrades_old_profile() {
         let dir = tempfile::tempdir().unwrap();
         crate::app_dir::ensure_data_dir_exists(dir.path()).unwrap();
@@ -297,7 +436,7 @@ mod tests {
         let loaded = persister.load().unwrap();
         assert_eq!(loaded.wallets.len(), 1);
         let wallet = loaded.wallets.get(&[0xA1; 32]).unwrap();
-        assert_eq!(wallet.wallet_info.balance.total(), 150_000);
+        assert_eq!(wallet.wallet_info.balance.total(), 0);
         assert_eq!(
             wallet.identity_manager.wallet_identities[&[0xA1; 32]][&0]
                 .identity
@@ -316,7 +455,7 @@ mod tests {
             conn.query_row("SELECT count(*) FROM core_utxos", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
         drop(persister);
         let upstream = platform_wallet_storage::default_auto_backup_dir(&path);

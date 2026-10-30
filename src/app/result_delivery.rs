@@ -206,6 +206,17 @@ impl AppState {
         self.captured_dispatches.get_or_insert_with(Vec::new);
     }
 
+    /// Test seam: prepare a maintenance dispatch without starting backend work.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn test_prepare_backend_task_context(
+        &mut self,
+        task: &BackendTask,
+        context: BackendTaskContext,
+    ) -> BackendTaskContext {
+        self.prepare_backend_task_context(task, context)
+    }
+
     /// Test seam: the tasks captured since [`Self::test_capture_dispatches`].
     #[cfg(feature = "testing")]
     #[doc(hidden)]

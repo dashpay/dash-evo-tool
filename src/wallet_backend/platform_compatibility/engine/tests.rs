@@ -1057,6 +1057,26 @@ fn platform_compatibility_lock_survives_concurrent_process_spawns() {
 }
 
 #[test]
+fn platform_compatibility_refuses_non_core_loss_during_upstream_migration() {
+    let (dir, path, target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO meta_global VALUES ('opaque', X'00ff80', 1)",
+            [],
+        )
+        .unwrap();
+    let before = snapshot(&path);
+    let result = upgrade(&path, &target, |stage| {
+        Connection::open(stage)?.execute("DELETE FROM meta_global WHERE key = 'opaque'", [])?;
+        Ok(())
+    });
+    assert!(matches!(result, Err(UpgradeError::Verification)));
+    assert_eq!(snapshot(&path), before);
+    assert!(backup_files(dir.path()).is_empty());
+}
+
+#[test]
 fn platform_compatibility_asset_lock_blobs_survive_with_no_operation_id() {
     let (_dir, path, target) = fixture();
     let conn = Connection::open(&path).unwrap();
@@ -1101,4 +1121,326 @@ fn platform_compatibility_refuses_a_different_version_19_without_changes() {
     );
     assert_eq!(snapshot(&path), before);
     assert!(backup_files(dir.path()).is_empty());
+}
+
+/// Stage the public rows and run `migrate` as if it were the accounting migration.
+fn upgrade_through_core_rescan(
+    migrate: &str,
+) -> (
+    tempfile::TempDir,
+    PathBuf,
+    String,
+    Result<Option<PathBuf>, UpgradeError>,
+) {
+    let (dir, path, target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(include_str!("../fixtures/public-rows.sql"))
+        .unwrap();
+    let before = snapshot(&path);
+    let result = upgrade(&path, &target, |stage| {
+        let conn = Connection::open(stage)?;
+        conn.execute(
+            "INSERT INTO refinery_schema_history VALUES (20, ?1, '2026-01-01T00:00:00Z', '1')",
+            [CORE_ACCOUNTING_MIGRATION],
+        )?;
+        // The checkpoint rewind the bridge verifies independently of `migrate`.
+        conn.execute_batch(
+            "UPDATE core_sync_state SET synced_height = (
+                SELECT MIN(COALESCE(core_sync_state.synced_height, MAX(w.birth_height - 1, 0)),
+                           MAX(w.birth_height - 1, 0))
+                FROM main.wallets w WHERE w.wallet_id = core_sync_state.wallet_id);",
+        )?;
+        conn.execute_batch(migrate)?;
+        Ok(())
+    });
+    (dir, path, before, result)
+}
+
+#[test]
+fn platform_compatibility_accepts_core_rows_the_rescan_drops_or_strips() {
+    let (_dir, path, _, result) = upgrade_through_core_rescan(
+        "UPDATE core_transactions SET block_hash = NULL, block_time = NULL, finalized = 0, record_blob = NULL;",
+    );
+    result.unwrap().unwrap();
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM core_transactions WHERE record_blob IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+
+    // As the migration does, a mined transaction goes with the outputs it funded.
+    let (_dir, _, _, result) = upgrade_through_core_rescan(
+        "DELETE FROM core_utxos; DELETE FROM core_transactions WHERE height IS NOT NULL;",
+    );
+    result.unwrap().unwrap();
+}
+
+#[test]
+fn platform_compatibility_refuses_core_rows_the_rescan_alters_or_invents() {
+    for migrate in [
+        "UPDATE core_utxos SET value = value + 1;",
+        "UPDATE core_transactions SET height = height + 1;",
+        "INSERT INTO core_instant_locks SELECT wallet_id, txid, X'00' FROM core_transactions;",
+        "UPDATE core_transactions SET height = NULL;",
+    ] {
+        let (dir, path, before, result) = upgrade_through_core_rescan(migrate);
+        assert!(
+            matches!(result, Err(UpgradeError::Verification)),
+            "{migrate}: {result:?}"
+        );
+        assert_eq!(snapshot(&path), before, "{migrate}");
+        assert!(backup_files(dir.path()).is_empty(), "{migrate}");
+    }
+}
+
+/// A kept mined transaction must carry exactly the accounting migration's
+/// stripping: no block hash or time, not finalized, no record. Any other value,
+/// including the untouched original, means a different migration or loader ran.
+#[test]
+fn platform_compatibility_refuses_mined_transactions_not_stripped_exactly() {
+    const STRIP: &str = "block_hash = NULL, block_time = NULL, finalized = 0, record_blob = NULL";
+    for migrate in [
+        "SELECT 1;".to_string(),
+        format!("UPDATE core_transactions SET {STRIP}, record_blob = X'ff';"),
+        format!("UPDATE core_transactions SET {STRIP}, finalized = 1;"),
+        format!("UPDATE core_transactions SET {STRIP}, block_time = 7;"),
+        format!("UPDATE core_transactions SET {STRIP}, block_hash = X'01';"),
+    ] {
+        let (dir, path, before, result) = upgrade_through_core_rescan(&migrate);
+        assert!(
+            matches!(result, Err(UpgradeError::Verification)),
+            "{migrate}: {result:?}"
+        );
+        assert_eq!(snapshot(&path), before, "{migrate}");
+        assert!(backup_files(dir.path()).is_empty(), "{migrate}");
+    }
+}
+
+/// Two connections holding table `t` with columns `cols`, filled by `source` and `target`.
+fn retained_pair(schema: &str, source: &str, target: &str) -> (Connection, Connection) {
+    let open = |rows: &str| {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(schema).unwrap();
+        conn.execute_batch(rows).unwrap();
+        conn
+    };
+    (open(source), open(target))
+}
+
+fn retained(
+    source: &Connection,
+    target: &Connection,
+    cols: &[&str],
+    filters: (&str, &str),
+) -> bool {
+    let cols = cols.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+    match rows_retained(source, target, "t", &cols, filters.0, filters.1) {
+        Ok(()) => true,
+        Err(UpgradeError::Verification) => false,
+        Err(e) => panic!("unexpected error: {e:?}"),
+    }
+}
+
+const RETAINED_SCHEMA: &str = "CREATE TABLE t (k INTEGER, v)";
+
+#[test]
+fn rows_retained_accepts_dropped_rows_and_refuses_added_or_changed_ones() {
+    let source = "INSERT INTO t VALUES (1, X'aa'), (2, X'bb'), (3, X'cc')";
+    let all = (RETAINED_SCHEMA, "", "1");
+    for (target, expected) in [
+        ("", true),
+        ("INSERT INTO t VALUES (2, X'bb')", true),
+        ("INSERT INTO t VALUES (3, X'cc'), (1, X'aa')", true),
+        (
+            "INSERT INTO t VALUES (1, X'aa'), (2, X'bb'), (3, X'cc')",
+            true,
+        ),
+        ("INSERT INTO t VALUES (2, X'bc')", false),
+        ("INSERT INTO t VALUES (1, X'aa'), (4, X'dd')", false),
+        ("INSERT INTO t VALUES (0, X'aa')", false),
+    ] {
+        let (s, t) = retained_pair(all.0, source, target);
+        assert_eq!(
+            retained(&s, &t, &["k", "v"], (all.1, all.2)),
+            expected,
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn rows_retained_matches_repeated_target_rows_against_one_source_row() {
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        "INSERT INTO t VALUES (1, 'a'), (2, 'b')",
+        "INSERT INTO t VALUES (2, 'b'), (2, 'b'), (2, 'b')",
+    );
+    assert!(retained(&s, &t, &["k", "v"], ("", "1")));
+}
+
+#[test]
+fn rows_retained_compares_storage_classes_exactly() {
+    let source = "INSERT INTO t VALUES (1, 1), (2, NULL), (3, 'x'), (4, X'78'), (5, 2.5)";
+    for (target, expected) in [
+        (
+            "INSERT INTO t VALUES (1, 1), (2, NULL), (3, 'x'), (4, X'78'), (5, 2.5)",
+            true,
+        ),
+        ("INSERT INTO t VALUES (1, 1.0)", false),
+        ("INSERT INTO t VALUES (1, '1')", false),
+        ("INSERT INTO t VALUES (1, X'01')", false),
+        ("INSERT INTO t VALUES (2, 0)", false),
+        ("INSERT INTO t VALUES (2, '')", false),
+        ("INSERT INTO t VALUES (3, X'78')", false),
+        ("INSERT INTO t VALUES (4, 'x')", false),
+        ("INSERT INTO t VALUES (5, 2.5000000000000004)", false),
+    ] {
+        let (s, t) = retained_pair(RETAINED_SCHEMA, source, target);
+        assert_eq!(
+            retained(&s, &t, &["k", "v"], ("", "1")),
+            expected,
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn rows_retained_compares_text_by_bytes_despite_column_collation() {
+    let schema = "CREATE TABLE t (k INTEGER, v TEXT COLLATE NOCASE)";
+    for (source, target, expected) in [
+        (
+            "INSERT INTO t VALUES (1, 'A')",
+            "INSERT INTO t VALUES (1, 'a')",
+            false,
+        ),
+        (
+            "INSERT INTO t VALUES (1, 'a'), (1, 'A'), (1, 'B'), (1, 'b')",
+            "INSERT INTO t VALUES (1, 'b'), (1, 'A'), (1, 'a'), (1, 'B')",
+            true,
+        ),
+        (
+            "INSERT INTO t VALUES (1, 'a')",
+            "INSERT INTO t VALUES (1, 'a ')",
+            false,
+        ),
+        (
+            "INSERT INTO t VALUES (1, 'ab'), (1, 'a')",
+            "INSERT INTO t VALUES (1, 'a'), (1, 'ab')",
+            true,
+        ),
+    ] {
+        let (s, t) = retained_pair(schema, source, target);
+        assert_eq!(
+            retained(&s, &t, &["k", "v"], ("", "1")),
+            expected,
+            "{source} -> {target}"
+        );
+    }
+}
+
+#[test]
+fn rows_retained_compares_reals_by_stored_bits() {
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        "INSERT INTO t VALUES (1, 0.0)",
+        "INSERT INTO t VALUES (1, -0.0)",
+    );
+    assert!(
+        t.query_row("SELECT v FROM t", [], |r| r.get::<_, f64>(0))
+            .unwrap()
+            .is_sign_negative(),
+        "SQLite must keep the sign bit of a stored -0.0 for this test to mean anything"
+    );
+    // Equal numbers stored with different bits are different values.
+    assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
+
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        "INSERT INTO t VALUES (1, -0.0), (1, 0.0), (1, -1.5), (1, 3)",
+        "INSERT INTO t VALUES (1, 3), (1, 0.0), (1, -1.5), (1, -0.0)",
+    );
+    assert!(retained(&s, &t, &["k", "v"], ("", "1")));
+}
+
+#[test]
+fn rows_retained_orders_mixed_storage_classes_consistently() {
+    let rows = "INSERT INTO t VALUES (1, X'0100'), (1, 'ab'), (1, NULL), (1, 7), (1, -2.5), \
+                (1, X'01'), (1, 'a'), (1, -9), (1, 7.5), (1, '')";
+    let (s, t) = retained_pair(RETAINED_SCHEMA, rows, rows);
+    assert!(retained(&s, &t, &["k", "v"], ("", "1")));
+    let (s, t) = retained_pair(RETAINED_SCHEMA, rows, "INSERT INTO t VALUES (1, X'010000')");
+    assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
+}
+
+#[test]
+fn rows_retained_honours_both_filters() {
+    let source = "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')";
+    let (s, t) = retained_pair(RETAINED_SCHEMA, source, "INSERT INTO t VALUES (2, 'b')");
+    assert!(!retained(&s, &t, &["k", "v"], (" WHERE k <> 2", "1")));
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        source,
+        "INSERT INTO t VALUES (2, 'b'), (9, 'invented')",
+    );
+    assert!(retained(&s, &t, &["k", "v"], (" WHERE k <> 3", "k < 9")));
+    assert!(!retained(&s, &t, &["k", "v"], (" WHERE k <> 3", "1")));
+}
+
+#[test]
+fn rows_retained_compares_only_the_named_columns() {
+    let (s, t) = retained_pair(
+        "CREATE TABLE t (k INTEGER, v, extra)",
+        "INSERT INTO t VALUES (1, 'a', 'old')",
+        "INSERT INTO t VALUES (1, 'a', 'new')",
+    );
+    assert!(retained(&s, &t, &["k", "v"], ("", "1")));
+    assert!(!retained(&s, &t, &["k", "v", "extra"], ("", "1")));
+}
+
+#[test]
+fn rows_retained_walks_large_interleaved_histories() {
+    let schema = "CREATE TABLE t (k INTEGER, v BLOB)";
+    let source = (0..2000)
+        .map(|i| {
+            format!(
+                "INSERT INTO t VALUES ({}, X'{:04x}');",
+                (i * 7919) % 2000,
+                i
+            )
+        })
+        .collect::<String>();
+    let kept = (0..2000)
+        .filter(|i| i % 3 != 0)
+        .map(|i| {
+            format!(
+                "INSERT INTO t VALUES ({}, X'{:04x}');",
+                (i * 7919) % 2000,
+                i
+            )
+        })
+        .collect::<String>();
+    let (s, t) = retained_pair(schema, &source, &kept);
+    assert!(retained(&s, &t, &["k", "v"], ("", "1")));
+    let (s, t) = retained_pair(
+        schema,
+        &source,
+        &format!("{kept}INSERT INTO t VALUES (0, X'0001');"),
+    );
+    assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
+}
+
+#[test]
+fn rows_retained_keeps_column_boundaries() {
+    let (s, t) = retained_pair(
+        RETAINED_SCHEMA,
+        "INSERT INTO t VALUES (X'61', X'6204')",
+        "INSERT INTO t VALUES (X'610462', X'')",
+    );
+    assert!(!retained(&s, &t, &["k", "v"], ("", "1")));
 }

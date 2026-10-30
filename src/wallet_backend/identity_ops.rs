@@ -307,6 +307,12 @@ impl WalletBackend {
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
+        if !matches!(
+            funding,
+            platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock { .. }
+        ) {
+            self.validate_core_spend_history(seed_hash).await?;
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -599,7 +605,9 @@ impl WalletBackend {
         self.inner
             .wallet_persister
             .load_unowned_identities()
-            .map_err(|source| TaskError::WalletStorage { source })
+            .map_err(|source| TaskError::WalletStorage {
+                source: source.into(),
+            })
     }
 
     /// The unowned identities as a manager, so a mutation keeps the bucket and
@@ -674,6 +682,12 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let identity_id = identity.id();
+        if !matches!(
+            funding,
+            platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock { .. }
+        ) {
+            self.validate_core_spend_history(seed_hash).await?;
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -777,6 +791,12 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<(), TaskError> {
+        if !matches!(
+            funding,
+            platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock { .. }
+        ) {
+            self.validate_core_spend_history(seed_hash).await?;
+        }
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access

@@ -389,6 +389,11 @@ pub enum BackendTaskContext {
     DpnsScheduledVoteEdit { key: DpnsVoteTargetKey },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// Read-only funding assessment, scoped to one UI request.
+    PlatformTransferAssessment {
+        seed_hash: WalletSeedHash,
+        request_id: u64,
+    },
     /// Live asset-lock builder ceiling query for one wallet.
     AssetLockMaxAmount {
         seed_hash: WalletSeedHash,
@@ -544,6 +549,16 @@ impl BackendTaskContext {
             Self::Dispatched { operation, .. }
             | Self::LegacyRecoveryOnNetwork { operation, .. } => operation.operation(),
             operation => operation,
+        }
+    }
+
+    pub(crate) fn platform_transfer_assessment(&self) -> Option<(WalletSeedHash, u64)> {
+        match self.operation() {
+            Self::PlatformTransferAssessment {
+                seed_hash,
+                request_id,
+            } => Some((*seed_hash, *request_id)),
+            _ => None,
         }
     }
 
@@ -786,6 +801,13 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
+            BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+                seed_hash,
+                request_id,
+            }) => Self::PlatformTransferAssessment {
+                seed_hash: *seed_hash,
+                request_id: *request_id,
+            },
             BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation,
@@ -977,6 +999,13 @@ pub enum BackendTaskSuccessResult {
     TrackedAssetLocks {
         seed_hash: WalletSeedHash,
         locks: Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>,
+    },
+    /// Read-only assessment of the selected wallet's persisted funding operations.
+    PlatformTransfersAssessed {
+        network: Network,
+        seed_hash: WalletSeedHash,
+        request_id: u64,
+        assessment: crate::model::pending_transfers::TransferAssessment,
     },
     /// Largest asset-lock credit output the live upstream builder accepts.
     AssetLockMaxAmount {
@@ -1193,6 +1222,9 @@ pub enum BackendTaskSuccessResult {
     ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
+    WalletResyncCompleted {
+        seed_hash: crate::model::wallet::WalletSeedHash,
+    },
     RefreshedWallet {
         /// Set when Core refresh succeeded but the Platform balance sync
         /// failed; carries the typed error for the banner's details panel.
@@ -1715,6 +1747,20 @@ impl AppContext {
                 .list_tracked_asset_locks(&seed_hash)
                 .await
                 .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
+            WalletTask::AssessPlatformTransfers {
+                seed_hash,
+                request_id,
+            } => backend
+                .assess_platform_transfers(&seed_hash)
+                .await
+                .map(
+                    |assessment| BackendTaskSuccessResult::PlatformTransfersAssessed {
+                        network: self.network,
+                        seed_hash,
+                        request_id,
+                        assessment,
+                    },
+                ),
             WalletTask::GetAssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation,
@@ -2697,7 +2743,8 @@ mod tests {
             &TaskError::WalletDataIncompatible {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
                     "incompatible test fixture",
-                )),
+                ))
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
@@ -2707,14 +2754,16 @@ mod tests {
                     reason: platform_wallet_storage::InsecureAncestor::WritableWithoutSticky {
                         mode: 0o777,
                     },
-                },
+                }
+                .into(),
             }
         ));
         assert!(is_terminal_storage_open_error(
             &TaskError::WalletStorageAccessDenied {
                 source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::from(
                     std::io::ErrorKind::PermissionDenied,
-                )),
+                ))
+                .into(),
             }
         ));
         use crate::wallet_backend::platform_compatibility::UpgradeError;

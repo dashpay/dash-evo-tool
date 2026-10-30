@@ -29,14 +29,11 @@ const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 const FIXTURE_ID: &str = "v1.0.0-weekly.20260908-wallet-only";
 /// The committed manifest: the archive name and checksum the download is held to.
 const MANIFEST: &str = include_str!("../../../tests/migration-fixtures/manifest.json");
-/// The fixture wallet's balance at capture: one faucet payment of 1 tDASH.
-const CAPTURED_BALANCE_DUFFS: u64 = 100_000_000;
 /// Per-network store holding the fixture wallet.
 const NETWORK_DB: &str = "det-testnet.sqlite";
 /// Cross-network app store.
 const APP_DB: &str = "det-app.sqlite";
-/// Version bookkeeping the upgrade rewrites by design; every other table must
-/// keep its rows.
+/// Version bookkeeping the bridge rewrites by design.
 const VERSION_TABLES: [&str; 2] = ["refinery_schema_history", "meta_data_versions"];
 /// Marker in the name of the backup the bridge retains next to an upgraded
 /// database.
@@ -50,8 +47,8 @@ fn platform_compatibility_upgrades_the_real_weekly_20260908_profile() {
 
     assert_eq!(
         assert_upgrade(&staged, NETWORK_DB),
-        [CAPTURED_BALANCE_DUFFS],
-        "{NETWORK_DB} must still load its one captured wallet, with the captured balance"
+        [0],
+        "{NETWORK_DB} must load its captured wallet with Core balance awaiting SPV rescan"
     );
     assert_upgrade(&staged, APP_DB);
 }
@@ -152,7 +149,7 @@ fn stage() -> Option<Staged> {
 ///
 /// The contract: the captured file really is the divergent 67d4ef3 schema (it
 /// does not open without the bridge); the bridge opens it and the typed loads
-/// succeed; no row is lost (see [`assert_rows_kept`]); one backup of the
+/// succeed; non-Core rows survive and Core history is reset (see [`assert_rows_kept`]); one backup of the
 /// original is retained with the same rows; and a second open changes nothing.
 fn assert_upgrade(staged: &Staged, db_name: &str) -> Vec<u64> {
     let path = staged.data_dir.join(db_name);
@@ -251,11 +248,19 @@ fn table_counts(path: &Path, scratch: &Path) -> BTreeMap<String, i64> {
         .collect()
 }
 
-/// The upgrade loses no row: every data table keeps its row count (a table
-/// the target schema drops may disappear only if it was empty), and every
-/// table the target schema adds starts empty.
+/// Non-Core tables retain their rows; the Core accounting migration drops the
+/// Core history SPV rebuilds and keeps only unsettled evidence.
+/// Every newly added table starts empty.
 fn assert_rows_kept(db_name: &str, before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) {
     for (table, rows) in data_tables(before) {
+        if ["core_transactions", "core_utxos", "core_instant_locks"].contains(&table) {
+            let kept = after.get(table).copied().unwrap_or(0);
+            assert!(
+                kept <= rows,
+                "{db_name}: the Core rescan may only drop {table} rows, kept {kept} of {rows}"
+            );
+            continue;
+        }
         assert_eq!(
             after.get(table).copied().unwrap_or(0),
             rows,

@@ -698,6 +698,7 @@ impl WalletBackend {
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
+        self.validate_core_spend_history(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -825,6 +826,7 @@ impl WalletBackend {
         // One held-seed scope covers account provisioning, the funding-input
         // signer, and the credit-output key derivation, so the whole operation
         // prompts at most once and the seed zeroizes when the scope ends.
+        self.validate_core_spend_history(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access

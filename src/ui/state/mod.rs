@@ -21,6 +21,7 @@ pub mod identity_home;
 pub mod legacy_recovery;
 pub mod masternodes_view;
 pub mod pending_request;
+pub mod pending_transfers;
 pub mod tracked_asset_lock_cache;
 
 pub use asset_lock_balance::AssetLockBalanceCache;

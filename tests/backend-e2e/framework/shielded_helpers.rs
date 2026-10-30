@@ -92,3 +92,26 @@ pub async fn force_shielded_sync(app_context: &Arc<AppContext>, seed_hash: Walle
     }
     app_context.shielded_balance_credits(&seed_hash)
 }
+
+/// Wait for a confirmed operation to appear in the asynchronously updated shielded balance.
+pub async fn wait_for_balance_change(
+    app_context: &Arc<AppContext>,
+    seed_hash: WalletSeedHash,
+    previous: u64,
+    direction: std::cmp::Ordering,
+) -> u64 {
+    let mut balance = previous;
+    tokio::time::timeout(super::harness::MAX_TEST_TIMEOUT, async {
+        loop {
+            balance = force_shielded_sync(app_context, seed_hash).await;
+            if balance.cmp(&previous) == direction {
+                return balance;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("Shielded balance did not move {direction:?}: {previous} -> {balance}")
+    })
+}

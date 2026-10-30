@@ -19,6 +19,10 @@ const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
 /// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
 const KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION: u32 =
     IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION;
+/// Version 1 token distribution rules (the once-per-identity distribution)
+/// are accepted from protocol version 14. Upstream names no feature constant
+/// for it, so the protocol version it shipped in is used directly.
+const ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION_14;
 
 /// Tokens that cannot be transferred (a version 1 token configuration) are
 /// accepted from protocol version 14. Upstream names no feature constant for
@@ -43,6 +47,9 @@ pub enum Capability {
     /// The connected platform accepts authentication keys with a budget or an
     /// expiry, and the transition that raises them.
     IdentityKeyLimits,
+    /// The connected platform accepts tokens with a once-per-identity
+    /// distribution.
+    OncePerIdentityDistribution,
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
@@ -76,6 +83,10 @@ impl Capability {
             Capability::IdentityKeyLimits => {
                 known_protocol_version_at_least(ctx, KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION)
             }
+            Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
+                ctx,
+                ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
+            ),
             Capability::NonTransferableTokens => known_protocol_version_at_least(
                 ctx,
                 NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
@@ -178,6 +189,10 @@ pub enum FeatureGate {
     /// Adding a key with a budget or an expiry, and raising those limits.
     /// Offered only where the connected network accepts them.
     IdentityKeyLimits,
+    /// Creating a token with a once-per-identity distribution. Offered only
+    /// where the connected network accepts it; claiming from an existing one
+    /// needs no gate, since such a token can only exist on such a network.
+    TokenOncePerIdentityDistribution,
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
@@ -198,6 +213,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
+            FeatureGate::TokenOncePerIdentityDistribution => {
+                &[Check::Capability(Capability::OncePerIdentityDistribution)]
+            }
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
             }
@@ -481,6 +499,7 @@ mod tests {
         // One entry per protocol version 14 gate this build offers.
         let gates = [
             FeatureGate::IdentityKeyLimits,
+            FeatureGate::TokenOncePerIdentityDistribution,
             FeatureGate::NonTransferableTokens,
         ];
         for role in ROLES {
@@ -506,6 +525,7 @@ mod tests {
         let capabilities = [
             Capability::ShieldedProtocol,
             Capability::IdentityKeyLimits,
+            Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
         ];
 

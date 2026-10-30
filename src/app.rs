@@ -1,8 +1,27 @@
 #[cfg(test)]
 use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
-use crate::ui::dpns::copy::{DPNS_ALL_VOTES_ALREADY_CAST, dpns_vote_feedback};
+#[cfg(test)]
+use crate::ui::dpns::copy::dpns_vote_feedback;
 mod reconcilers;
+mod shutdown;
+use shutdown::{ShutdownOutcome, ShutdownSession, shutdown_hard_deadline};
+mod dpns_background;
+use dpns_background::{DpnsBackground, migration_allows_scheduled_vote_sweep, unix_time_ms};
+pub use reconcilers::{
+    MIGRATION_APP_DATA_ACK_ACTION_ID, MIGRATION_IDENTITIES_ACK_ACTION_ID,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, SPV_CANCEL_ACTION_ID,
+    SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID, SPV_CANCEL_QUESTION,
+    STORAGE_PREP_CLOSE_ACTION_ID, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_data_text, migration_unreadable_identities_text,
+};
 pub mod request_routing;
+mod result_delivery;
+mod task_dispatch;
+use crate::ui::identity::task_feedback::{
+    clear_profile_saving_banner_after_error, clear_profile_saving_banner_after_success,
+};
+use result_delivery::PendingRefresh;
 
 use reconcilers::{
     AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, PendingConfirmation,
@@ -14,26 +33,27 @@ use request_routing::{RequestOwners, ResultRoute, ScreenOwner, ScreenStack};
 use crate::app_dir::data_file_path;
 #[cfg(feature = "testing")]
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
-use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::connection_status::ConnectionStatus;
 use crate::context::feature_gate::FeatureGate;
-use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::migration_status::MigrationState;
 use crate::database::Database;
 use crate::model::settings::AppSettings;
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
+use crate::ui::components::{
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay,
+};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
+#[cfg(test)]
 use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
+#[cfg(test)]
 use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
-use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::top_up_identity_screen::{
     finish_top_up, follow_top_ups_after_network_switch,
 };
@@ -52,172 +72,23 @@ use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
-use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
-use crate::wallet_backend::{DetScope, WalletBackend};
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::DetScope;
+use dash_sdk::dpp::dashcore::Network;
+#[cfg(test)]
 use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokiompsc;
 use tokio::sync::watch;
 
-/// Banner action id pushed when the user clicks "Retry now" on the
-/// migration-failure banner. The app loop matches this id and
-/// re-dispatches the FinishUnwire backend task. Kept as a `const` so a
-/// future second migration variant can pick a distinct id without
-/// risking a typo collision. Exposed for kittest coverage.
-pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
-
-/// Banner action id pushed when the user acknowledges the warning about
-/// unreadable balance top-up records. Until it fires, the warning is re-raised
-/// on every launch — a dismissed banner is not an acknowledgement. Exposed for
-/// kittest coverage.
-pub const MIGRATION_APP_DATA_ACK_ACTION_ID: &str = "migration:ack:unreadable_app_data";
-
-/// Banner action id pushed when the user acknowledges the unreadable-identity
-/// warning. Until it fires, the warning is re-raised on every launch — a
-/// dismissed banner is not an acknowledgement, because the identities it names
-/// hold keys the user cannot sign with until they are loaded again. Exposed for
-/// kittest coverage.
-pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
-
-/// Banner action id pushed when the user acknowledges the combined warning — the
-/// launch where both unreadable identities and unreadable top-up records were
-/// left behind.
-/// One banner names both problems, so its single acknowledgement retires both
-/// records: re-raising either half after the user has read and dismissed the
-/// sentence describing it would be a notice they have already acted on. Exposed
-/// for kittest coverage.
-pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
-    "migration:ack:unreadable_identities_and_app_data";
-
-const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
-
-/// Settle recovery operations on retained screens, including hosts hidden by navigation.
-pub(crate) fn deliver_legacy_recovery_result<'a>(
-    roots: &'a mut BTreeMap<RootScreenType, Screen>,
-    stack: impl IntoIterator<Item = &'a mut Screen>,
-    task_result: &TaskResult,
-) -> bool {
-    let context = match task_result {
-        TaskResult::Success { context, result }
-            if matches!(
-                result.as_ref(),
-                BackendTaskSuccessResult::LegacyRecoveryCandidates { .. }
-                    | BackendTaskSuccessResult::LegacyRecoveryCompleted { .. }
-            ) =>
-        {
-            context
-        }
-        TaskResult::Error { context, .. } if context.legacy_recovery_identity().is_some() => {
-            context
-        }
-        _ => return false,
-    };
-    let completed = matches!(task_result, TaskResult::Success { result, .. }
-        if matches!(result.as_ref(), BackendTaskSuccessResult::LegacyRecoveryCompleted { .. }));
-    for screen in roots.values_mut().chain(stack) {
-        if !screen.accepts_legacy_recovery_result(context, completed) {
-            continue;
-        }
-        match task_result {
-            TaskResult::Success { result, .. } => {
-                screen.display_backend_task_result(context, *result.clone());
-            }
-            TaskResult::Error { error, .. } => {
-                screen.display_backend_task_error(context, error);
-            }
-            _ => unreachable!(),
-        }
-    }
-    true
-}
-
-/// Deliver removal outcomes to persistent roots even while another screen is visible.
-pub(crate) fn deliver_identity_removal_result(
-    ctx: &egui::Context,
-    roots: &mut BTreeMap<RootScreenType, Screen>,
-    result: &BackendTaskSuccessResult,
-) -> Option<BannerHandle> {
-    let BackendTaskSuccessResult::RemovedIdentities {
-        network,
-        associated_cleanup_failed,
-        local_data_cleanup_failed,
-        cleanup_deferred,
-        ..
-    } = result
-    else {
-        return None;
-    };
-    for root in [
-        RootScreenType::RootScreenIdentityHub,
-        RootScreenType::RootScreenMasternodes,
-    ] {
-        if let Some(screen) = roots.get_mut(&root) {
-            screen.display_task_result(result.clone());
-        }
-    }
-    let (message, message_type) = crate::ui::identity::removed_identities_banner(
-        *associated_cleanup_failed,
-        *cleanup_deferred,
-        *local_data_cleanup_failed,
-    );
-    let network = chooser_network_label(*network);
-    let handle = MessageBanner::set_global(
-        ctx,
-        format!("Identity removal on {network}: {message}"),
-        message_type,
-    );
-    if message_type == MessageType::Warning {
-        handle.disable_auto_dismiss();
-    }
-    Some(handle)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShutdownOutcome {
-    Complete,
-    TaskManagerFailed,
-    BackendTasksTimedOut,
-    WalletBackendTimedOut,
-}
-
-fn shutdown_hard_deadline() -> Duration {
-    TaskManager::graceful_shutdown_budget()
-        + WALLET_BACKEND_SHUTDOWN_TIMEOUT
-        + SHUTDOWN_DEADLINE_MARGIN
-}
-
-trait ShutdownWalletBackend: Send + Sync {
-    fn forget_all_secrets(&self);
-    fn shutdown(&self) -> futures::future::BoxFuture<'_, ()>;
-}
-
-impl ShutdownWalletBackend for WalletBackend {
-    fn forget_all_secrets(&self) {
-        WalletBackend::forget_all_secrets(self);
-    }
-
-    fn shutdown(&self) -> futures::future::BoxFuture<'_, ()> {
-        Box::pin(WalletBackend::shutdown(self))
-    }
-}
-
-fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
-    matches!(
-        state,
-        MigrationState::Ready
-            | MigrationState::Success
-            | MigrationState::SucceededWithUnreadableData { .. }
-    )
-}
+pub(crate) use result_delivery::{deliver_identity_removal_result, deliver_legacy_recovery_result};
 
 pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
     matches!(
@@ -306,143 +177,6 @@ fn boot_auto_start_spv(
     onboarding_completed && auto_start_spv && !network_selection_required
 }
 
-fn clear_scheduled_vote_sweep_guard_on_error(
-    in_progress: &mut BTreeSet<Network>,
-    context: &BackendTaskContext,
-    error: &TaskError,
-) {
-    let network = match (context, error) {
-        (_, TaskError::ScheduledVoteSweepFailed { network, .. }) => Some(*network),
-        (_, TaskError::ScheduledVoteSweepAllAddressesExhausted { network, .. }) => Some(*network),
-        (
-            BackendTaskContext::ScheduledVoteSweep { network },
-            TaskError::BackendTaskFailed { .. },
-        ) => Some(*network),
-        _ => None,
-    };
-    if let Some(network) = network {
-        in_progress.remove(&network);
-    }
-}
-
-fn clear_profile_saving_banner_after_error(ctx: &egui::Context, context: &BackendTaskContext) {
-    if let Some(identity_id) = context.dashpay_profile_update_identity() {
-        crate::ui::identity::settings::clear_profile_saving_banner(ctx, &identity_id);
-    }
-}
-
-fn clear_profile_saving_banner_after_success(
-    ctx: &egui::Context,
-    context: &BackendTaskContext,
-    result: &BackendTaskSuccessResult,
-) {
-    if let BackendTaskSuccessResult::DashPayProfileUpdated(snapshot) = result
-        && context.dashpay_profile_update_identity() == Some(snapshot.owner)
-    {
-        crate::ui::identity::settings::clear_profile_saving_banner(ctx, &snapshot.owner);
-    }
-}
-
-/// How often local state re-derives the voting attention summary.
-const DPNS_ATTENTION_RECOMPUTE_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Sweeps that re-check unconfirmed votes right after startup or vote activity.
-const UNCONFIRMED_VOTE_QUICK_CHECKS: u8 = 3;
-
-/// How often unconfirmed votes are re-checked once the quick checks are used.
-const UNCONFIRMED_VOTE_RECHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
-
-/// Paces the sweep's re-check of unconfirmed votes. A vote can stay
-/// unconfirmed until its contest closes, so it is queried on a few sweeps and
-/// then only every [`UNCONFIRMED_VOTE_RECHECK_INTERVAL`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UnconfirmedVoteChecks {
-    quick_left: u8,
-    last_check: Option<Instant>,
-}
-
-impl Default for UnconfirmedVoteChecks {
-    fn default() -> Self {
-        Self {
-            quick_left: UNCONFIRMED_VOTE_QUICK_CHECKS,
-            last_check: None,
-        }
-    }
-}
-
-impl UnconfirmedVoteChecks {
-    /// Whether the sweep starting at `now` re-checks; records the check if so.
-    fn take_due(&mut self, now: Instant) -> bool {
-        let due = self.quick_left > 0
-            || self
-                .last_check
-                .is_none_or(|last| now.duration_since(last) >= UNCONFIRMED_VOTE_RECHECK_INTERVAL);
-        if due {
-            self.quick_left = self.quick_left.saturating_sub(1);
-            self.last_check = Some(now);
-        }
-        due
-    }
-}
-
-/// Whether `result` reports vote activity that can leave a vote unconfirmed.
-fn restarts_unconfirmed_vote_checks(result: &BackendTaskSuccessResult) -> bool {
-    matches!(
-        result,
-        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
-            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
-    )
-}
-
-fn unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn clear_confirmed_vote_recovery_cutoff(
-    deferred: &mut BTreeMap<Network, u64>,
-    network: Network,
-    confirmed_cutoff: Option<u64>,
-) -> bool {
-    if confirmed_cutoff.is_some() && deferred.get(&network).copied() == confirmed_cutoff {
-        deferred.remove(&network);
-        true
-    } else {
-        false
-    }
-}
-
-/// Action id for the SPV-sync block's "Cancel" button.
-///
-/// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
-/// with no terminal signal — so a button-less hard block would trap the user
-/// (violating the overlay's C1/C2 contract). Cancel is also designated the
-/// block's single keyboard-reachable escape (`with_keyboard_escape`), so a
-/// keyboard-only / assistive-tech user can activate it with Enter or Space.
-///
-/// Because that makes a *destructive* action reachable by the universal dismiss
-/// key, for users who may not be able to see what they are dismissing, Cancel
-/// does not stop sync: it swaps the action row for the confirmation below. One
-/// reflexive keypress is therefore never destructive.
-/// Colon-namespaced per the overlay action-id convention. Exposed for kittest
-/// coverage.
-pub const SPV_CANCEL_ACTION_ID: &str = "spv:sync:cancel";
-
-/// Action id for the "Stop syncing" button of the Cancel confirmation.
-/// Activating it disconnects; it is deliberately NOT the keyboard escape.
-pub const SPV_CANCEL_CONFIRM_ACTION_ID: &str = "spv:sync:cancel_confirm";
-
-/// Action id for the "Keep syncing" button of the Cancel confirmation — the
-/// non-destructive default, and the confirmation's keyboard escape, so Enter or
-/// Space returns to the block rather than disconnecting.
-pub const SPV_CANCEL_KEEP_ACTION_ID: &str = "spv:sync:cancel_keep";
-
-/// The Cancel confirmation's question. Names the consequence and the way back,
-/// so the choice is answerable without seeing the screen behind it.
-pub const SPV_CANCEL_QUESTION: &str = "Stop syncing? You can start again from the Network screen.";
-
 /// The root screen every fallback route lands on: an unregistered persisted
 /// screen at startup, and live de-gating of a role-gated tab.
 ///
@@ -452,77 +186,8 @@ pub const SPV_CANCEL_QUESTION: &str = "Stop syncing? You can start again from th
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
-/// Whether the root screen `root` is the one a task result goes to: the screen
-/// that dispatched the task while it is open, or else the screen in view.
-fn root_takes_result(root: RootScreenType, owner: Option<ScreenOwner>, root_in_view: bool) -> bool {
-    match owner {
-        Some(owner) => owner == ScreenOwner::Root(root),
-        None => root_in_view,
-    }
-}
-
-fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
-    selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
-}
-
 /// The root screen hosting the voting workspace (Masternodes ▸ Votes).
 const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
-
-/// Whether a DPNS root screen is currently out of view, either because another
-/// root screen is selected or because a modal covers it. Shared by success and
-/// error routing so both agree on what "hidden" means.
-fn dpns_screen_is_hidden(
-    target: RootScreenType,
-    selected: RootScreenType,
-    screen_stack_is_empty: bool,
-) -> bool {
-    selected != target || !screen_stack_is_empty
-}
-
-/// Whether a result needs its own route to the voting panel: one the panel
-/// acts on, going to another screen than the voting root.
-fn dpns_result_needs_route(
-    voting_root_takes_result: bool,
-    result: &BackendTaskSuccessResult,
-) -> bool {
-    // The voting panel says which results it acts on, so it receives each of
-    // them even while its root screen is hidden.
-    DPNSScreen::handles_result(result) && !voting_root_takes_result
-}
-
-/// The screen refresh owed for the cache notifications merged so far in a
-/// frame. Ordered by reach, so merging two keeps the wider one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum PendingRefresh {
-    #[default]
-    None,
-    /// Contest data changed: the voting screen re-reads, if it is in view.
-    VotingScreen,
-    /// Local data changed: whatever screen is in view re-reads.
-    VisibleScreen,
-}
-
-/// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
-/// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
-/// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
-const SPV_CONNECTING_DESCRIPTION: &str = "Connecting to the Dash network.";
-const SPV_SYNCING_DESCRIPTION: &str = "Syncing with the Dash network.";
-
-/// What the per-frame SPV-sync block driver should do with the overlay this
-/// frame, given whether a startup/Connect sync is **armed** and the current
-/// connection state. Pure so the policy is unit-testable in isolation from
-/// `AppState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpvBlockStep {
-    /// Armed and still connecting/syncing: raise (or keep + update).
-    Block,
-    /// Armed episode reached a terminal state (Synced/Error): lower the block and
-    /// DISARM, so subsequent ambient Connecting/Syncing (reconnect, per-block
-    /// catch-up) never re-blocks (F-SPV-A).
-    Disarm,
-    /// Not armed (ambient sync, or already disarmed): ensure no block is shown.
-    Idle,
-}
 
 #[cfg(test)]
 mod backend_task_join_tests {
@@ -733,155 +398,122 @@ mod backend_task_join_tests {
     }
 
     #[tokio::test]
-    async fn panicking_backend_task_is_forwarded_as_typed_error() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let sender = SenderAsync::new(tx, egui::Context::default());
-        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
-
-        forward_backend_task_join_error(
-            join_handle.await,
-            sender,
-            None,
-            BackendTaskContext::Unknown,
+    async fn panicking_backend_task_produces_redacted_typed_error() {
+        let error = task_dispatch::run_batch(
+            vec![async {
+                panic!("backend task panic");
+                #[expect(unreachable_code)]
+                Ok::<(), TaskError>(())
+            }],
+            BackendTasksExecutionMode::Sequential,
         )
-        .await;
-
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("join failure must be reported promptly")
-            .expect("join failure result must be sent");
-        let TaskResult::Error {
-            error: error @ TaskError::BackendTaskFailed { .. },
-            ..
-        } = result
-        else {
-            panic!("expected typed backend task failure, got {result:?}");
-        };
+        .await
+        .pop()
+        .unwrap()
+        .expect_err("the executor must report the panic");
+        assert!(matches!(error, TaskError::BackendTaskPanicked));
         assert!(
             !format!("{error:?}").contains("backend task panic"),
             "panic payload must be redacted from diagnostics"
         );
     }
 
-    /// A batch that stops part-way reports the failure under each dispatch
-    /// context it carries, so the screen waiting on that read is settled
-    /// instead of loading for good; the rest of the batch keeps its one
-    /// unattributed report.
-    #[tokio::test]
-    async fn panicking_batch_settles_each_dispatched_read() {
-        use crate::model::dashpay::ContactsLoadKind;
-        let read = |dispatch_id, kind| BackendTaskContext::Dispatched {
-            dispatch_id,
-            operation: Box::new(BackendTaskContext::DashPayContactsLoad {
-                network: Network::Testnet,
-                identity_id: Identifier::from([0x45; 32]),
-                kind,
-            }),
-        };
-        let contacts = read(u64::MAX - 1, ContactsLoadKind::Contacts);
-        let requests = read(u64::MAX, ContactsLoadKind::Requests);
-        for (contexts, expected) in [
-            (
-                vec![contacts.clone(), requests.clone()],
-                vec![contacts.clone(), requests.clone()],
-            ),
-            (
-                vec![contacts.clone(), BackendTaskContext::Other],
-                vec![contacts.clone(), BackendTaskContext::Unknown],
-            ),
-            (
-                vec![BackendTaskContext::Other, BackendTaskContext::Other],
-                vec![BackendTaskContext::Unknown],
-            ),
-        ] {
-            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-            let sender = SenderAsync::new(tx, egui::Context::default());
-            let join_handle = tokio::task::spawn_blocking(|| panic!("batch child panic"));
-
-            forward_backend_tasks_join_error(join_handle.await, sender, contexts).await;
-
-            let mut reported = Vec::new();
-            while let Ok(result) = rx.try_recv() {
-                let TaskResult::Error {
-                    context,
-                    error: TaskError::BackendTaskFailed { .. },
-                } = result
-                else {
-                    panic!("expected a typed backend task failure, got {result:?}");
-                };
-                reported.push(context);
-            }
-            assert_eq!(reported, expected);
-        }
-    }
-
     #[tokio::test]
     async fn panicking_scheduled_vote_sweep_clears_in_progress_guard() {
         let network = Network::Testnet;
         let unrelated_network = Network::Regtest;
-        let mut in_progress = BTreeSet::from([network, unrelated_network]);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let sender = SenderAsync::new(tx, egui::Context::default());
-        let join_handle = tokio::task::spawn_blocking(|| panic!("scheduled sweep panic"));
-
-        forward_backend_task_join_error(
-            join_handle.await,
-            sender,
-            None,
-            BackendTaskContext::ScheduledVoteSweep { network },
+        let now = Instant::now();
+        let mut scheduler = DpnsBackground::new(now);
+        for net in [network, unrelated_network] {
+            assert!(
+                scheduler
+                    .scheduled_vote_task(net, false, false, now, 42)
+                    .is_none()
+            );
+            assert!(
+                scheduler
+                    .scheduled_vote_task(net, true, false, now, 43)
+                    .is_some()
+            );
+        }
+        let result = task_dispatch::run_batch(
+            vec![async {
+                panic!("scheduled sweep panic");
+                #[expect(unreachable_code)]
+                Ok::<(), TaskError>(())
+            }],
+            BackendTasksExecutionMode::Sequential,
         )
-        .await;
-
-        let TaskResult::Error { context, error } = rx
-            .recv()
-            .await
-            .expect("join failure result must be forwarded")
-        else {
-            panic!("expected a scheduled-vote sweep error");
-        };
-        assert!(matches!(error, TaskError::BackendTaskFailed { .. }));
-
-        clear_scheduled_vote_sweep_guard_on_error(&mut in_progress, &context, &error);
+        .await
+        .pop()
+        .unwrap();
+        let error = result.expect_err("the actual executor catches the sweep panic");
+        let context = BackendTaskContext::ScheduledVoteSweep { network };
+        assert!(matches!(error, TaskError::BackendTaskPanicked));
+        scheduler.sweep_failed(&context, &error);
 
         assert!(
-            !in_progress.contains(&network),
+            scheduler
+                .scheduled_vote_task(network, true, false, now + Duration::from_secs(61), 44)
+                .is_some(),
             "a terminal panic must allow the next scheduled-vote sweep"
         );
         assert!(
-            in_progress.contains(&unrelated_network),
+            scheduler
+                .scheduled_vote_task(
+                    unrelated_network,
+                    true,
+                    false,
+                    now + Duration::from_secs(61),
+                    44
+                )
+                .is_none(),
             "a terminal panic must not release another network's sweep guard"
         );
     }
 
     #[tokio::test]
-    async fn panicking_paid_contact_action_keeps_its_request_correlation() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    async fn rejected_paid_contact_action_keeps_its_request_correlation() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_context = crate::context::test_support::test_app_context(dir.path());
+        let manager = TaskManager::new();
+        manager.shutdown_async().await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let sender = SenderAsync::new(tx, egui::Context::default());
         let request_id = Identifier::from([0x44; 32]);
-        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
-
-        forward_backend_task_join_error(
-            join_handle.await,
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([0x45; 32]),
+            Network::Testnet,
+        );
+        let task = BackendTask::DashPayTask(Box::new(
+            crate::backend_task::dashpay::DashPayTask::AcceptContactRequest {
+                identity,
+                request_id,
+            },
+        ));
+        let context = BackendTaskContext::Dispatched {
+            dispatch_id: 77,
+            operation: Box::new(BackendTaskContext::for_task_on(&task, Network::Testnet)),
+        };
+        let results = task_dispatch::spawn(
+            app_context,
+            &manager,
             sender,
-            Some(request_id),
-            BackendTaskContext::Unknown,
-        )
-        .await;
-
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("join failure must be reported promptly")
-            .expect("join failure result must be sent");
+            vec![(task, context.clone())],
+            BackendTasksExecutionMode::Sequential,
+        );
+        assert_eq!(results.len(), 1);
         assert!(matches!(
-            result,
+            &results[0],
             TaskResult::Error {
+                context: actual_context,
                 error: TaskError::DashPayContactRequestActionFailed {
                     request_id: correlated,
                     source,
                 },
-                ..
-            } if correlated == request_id
-                && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
+            } if *correlated == request_id
+                && *actual_context == context
+                && matches!(source.as_ref(), TaskError::TaskManagerShuttingDown)
         ));
     }
 
@@ -919,142 +551,6 @@ mod backend_task_join_tests {
     }
 }
 
-/// Pure SPV-sync block policy (F-SPV-A scope gate + C1/C2). The block is **scoped
-/// to user-initiated sync** — armed only on startup auto-start and the Connect
-/// button — so an ambient reconnect or the SPV engine flipping Synced→Syncing on
-/// each new block never hard-blocks a working user. Once an armed episode reaches
-/// a terminal state it disarms and stays disarmed until the next Connect/startup.
-fn spv_block_step(armed: bool, state: OverallConnectionState) -> SpvBlockStep {
-    use OverallConnectionState as S;
-    if !armed {
-        return SpvBlockStep::Idle;
-    }
-    match state {
-        // Terminal for an armed episode: lower and disarm (banner surfaces Error).
-        S::Synced | S::Error => SpvBlockStep::Disarm,
-        // Still getting connected/synced for this episode. Disconnected stays
-        // blocking while armed — it just means we are still trying to connect.
-        S::Connecting | S::Syncing | S::Disconnected => SpvBlockStep::Block,
-    }
-}
-
-/// One-sentence user-facing label for an in-progress migration step.
-/// Mirrors Diziet §2.2 D-1 banner copy — single complete sentence per
-/// variant so i18n extraction is trivial. Exposed for kittest
-/// coverage so a regression in the label table fails the test suite.
-pub fn migration_running_text(step: MigrationStep) -> &'static str {
-    match step {
-        MigrationStep::Wiring => "The app is opening your saved data.",
-        MigrationStep::Detecting => "The app is checking your wallet data.",
-        MigrationStep::AppData => "The app is restoring your identity balance history.",
-        MigrationStep::SingleKey => "The app is updating your imported keys.",
-        MigrationStep::Shielded => "The app is verifying your shielded balance.",
-        MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
-        MigrationStep::WalletMeta => "The app is updating your wallet names.",
-        MigrationStep::Identities => "The app is restoring your identities and their keys.",
-        MigrationStep::Finalize => "The app is finishing the storage update.",
-    }
-}
-
-/// User-facing banner copy for a migration that finished the wallet drain but
-/// could not decode `count` identities. Their keys are therefore not loaded, so
-/// the sentence names both the screen and the control that restore them — a user
-/// who has never opened that flow cannot act on "load them again" alone. The
-/// previous version's data is never deleted, so the re-import is always
-/// possible. No "Retry now": a corrupt row decodes no better on a second pass.
-/// Exposed for kittest coverage.
-pub fn migration_unreadable_identities_text(count: u32) -> String {
-    format!(
-        "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total). Your previous data is untouched. For a user identity, choose Load \
-         Identity on the Identities screen. For a masternode or evonode identity, choose + Load \
-         on the Masternodes tab."
-    )
-}
-
-/// User-facing banner copy for the rare launch where both DET-owned passes broke:
-/// `count` identities could not be read AND updating the rest of the previous
-/// version's data (such as balance top-up records) hit a hard error. Names each problem
-/// in its own sentence and offers the retry the app-data half needs — the
-/// identity half recovers by loading the identities again. The previous version's
-/// data is never deleted, so both are recoverable. Exposed for kittest coverage.
-pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
-    format!(
-        "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total), and updating the rest of your previous data did not finish. Your \
-         previous data is untouched. Choose Retry now to finish updating. For a user identity, \
-         choose Load Identity on the Identities screen. For a masternode or evonode identity, \
-         choose + Load on the Masternodes tab."
-    )
-}
-
-/// User-facing banner copy for every combination of unreadable legacy identity
-/// and top-up rows. One sentence per problem, each naming its own remedy.
-/// Exposed for kittest coverage.
-pub fn migration_unreadable_data_text(identities: u32, top_ups: u32) -> String {
-    match (identities > 0, top_ups > 0) {
-        (true, false) => migration_unreadable_identities_text(identities),
-        (false, true) => format!(
-            "Some records of earlier additions to identity balances from the previous version \
-             could not be read and were not carried over ({top_ups} in total). Check each \
-             identity's balance history before adding more funds."
-        ),
-        (true, true) => format!(
-            "Some identities ({identities} in total) and some records of earlier additions to \
-             identity balances ({top_ups} in total) from the previous version could not be read \
-             and were not carried over. For a user identity, choose Load Identity on the \
-             Identities screen. For a masternode or evonode identity, choose + Load on the \
-             Masternodes tab. Check each identity's balance history before adding more funds."
-        ),
-        (false, false) => {
-            "Some data from the previous version could not be read. Check your identities and identity balance history before continuing.".to_string()
-        }
-    }
-}
-
-/// How long storage preparation may run before the gate offers a way out.
-///
-/// Preparation is local, non-network work (open the SQLite sidecar, run the
-/// schema ladder, hydrate wallets, drain the previous version's rows) that
-/// normally completes within a few frames of boot — sub-second in the common
-/// case. 30 seconds is ~two orders of magnitude past that, generous enough never
-/// to false-positive on a slow disk or a large wallet set, yet short enough that
-/// a genuinely wedged persister (or a second process holding the file lock)
-/// surfaces within half a minute instead of never. It sits well below the
-/// network-bound waits (the 120 s SPV no-progress watchdog, the 10 min MCP sync
-/// gate), matching that this wait is local, not on the wire. The bound matters
-/// more than it used to: the gate has no background escape, so a hang here would
-/// otherwise be unrecoverable.
-const STORAGE_PREP_STUCK_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Overlay copy once preparation exceeds [`STORAGE_PREP_STUCK_TIMEOUT`].
-/// Everyday-User copy (no "backend"/"wiring"/"SPV" jargon): what happened plus
-/// the two self-serviceable choices. Complete sentences so i18n extracts each as
-/// one unit.
-const STORAGE_PREP_STUCK_MESSAGE: &str = "Preparing your saved data is taking longer than usual. \
-     Wait a little longer, or close the app and open it again.";
-
-/// Overlay copy for a preparation that failed and can be retried. Names what
-/// happened, reassures about the data, and offers both actions the surface has.
-const STORAGE_PREP_FAILED_MESSAGE: &str = "We couldn't finish updating your saved data. Your \
-     wallets and keys are unchanged. Try again, or close the app and open it later.";
-
-/// Overlay copy while preparation waits for a migrated wallet's password. The
-/// password prompt itself renders above the gate and carries the controls; this
-/// is what the card says once the prompt closes. Exposed for kittest coverage:
-/// the gate's contract is that this is NOT painted while the prompt is up, and a
-/// test asserting that has to name the exact string the card would show.
-pub const STORAGE_PREP_PASSWORD_DESCRIPTION: &str =
-    "Enter your wallet password to continue the storage update.";
-
-/// Action id for the storage-preparation gate's "Try again" button.
-pub const STORAGE_PREP_RETRY_ACTION_ID: &str = "storage:prepare:retry";
-
-/// Action id for the storage-preparation gate's "Close the app" button. Also the
-/// gate's single keyboard-reachable exit, so a keyboard-only / assistive-tech
-/// user is never stranded behind a block with no background escape.
-pub const STORAGE_PREP_CLOSE_ACTION_ID: &str = "storage:prepare:close";
-
 /// Where boot has got to, and therefore what may render.
 ///
 /// The app is three things that used to race — wiring, the legacy drain, chain
@@ -1084,216 +580,7 @@ impl BootPhase {
     }
 }
 
-/// How often a pending-confirmation watch re-reads the display snapshot. The
-/// snapshot only changes when a wallet event lands, so a faster tick would buy
-/// nothing but a repeated scan of every wallet's history.
-const PENDING_POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// How long a watch stays unconfirmed before its banner is re-worded once.
-/// dash-spv rebroadcasts a pending transaction every 600 s and Dash targets a
-/// block every 2.5 min, so by eleven minutes the network has had a full retry
-/// cycle and several block windows — past which "wait a moment" is no longer
-/// true. The watch itself continues; only the copy changes.
-const PENDING_STALE_AFTER: Duration = Duration::from_secs(11 * 60);
-
-/// Cap on simultaneously watched transactions, so a pathological run of
-/// ambiguous sends cannot grow the watch list without bound. The oldest watch
-/// is retired to [`PENDING_STALE_MESSAGE`], which points at the durable
-/// transaction-history row rather than going silent.
-const MAX_PENDING_WATCHES: usize = 8;
-
-/// Replaces the ambiguous-outcome banner once the network has demonstrably
-/// taken the transaction. Everyday-User copy: the whole outcome in one plain
-/// sentence, with nothing left for the user to do.
-///
-/// Names the transaction because up to [`MAX_PENDING_WATCHES`] payments can be
-/// waiting at once and the warning for the others stays up beside this. An
-/// unattributed "your transaction is confirmed" next to an unattributed "could
-/// not be verified" leaves the user to guess which is which, and guessing wrong
-/// in either direction ends in paying the same person twice. The id is
-/// shortened the way every other identifier in the app is, and its head and
-/// tail still match by eye against the full id in the transaction history the
-/// stale copy points at.
-fn pending_confirmed_message(txid: &Txid) -> String {
-    let transaction = shorten_id(&txid.to_string());
-    format!("Your transaction {transaction} is confirmed.")
-}
-
-/// Replaces the ambiguous-outcome banner once a watch passes
-/// [`PENDING_STALE_AFTER`]. Deliberately promises nothing about the funds
-/// becoming spendable again — upstream releases them on a block-height
-/// schedule this app does not measure — and hands the user the transaction
-/// history, which tracks the same data live, instead of an instruction to act
-/// blind. It names no status either: this copy is reached for every
-/// non-confirmed observation, including one no loaded wallet has seen at all,
-/// so the history row it points at may not exist and may not read the way a
-/// named status would promise. Complete sentences so i18n extracts it as one
-/// unit.
-const PENDING_STALE_MESSAGE: &str = "The app still cannot verify whether your transaction was confirmed. Check the transaction history for the wallet you sent from before sending it again, because sending now could pay the same person twice if the first one arrives later.";
-
-/// What the pending-confirmation watch should do about one watched transaction
-/// this tick. Pure so the policy is unit-testable in isolation from `AppState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingStep {
-    /// No verdict yet: keep the ambiguous-outcome banner and keep watching.
-    Waiting,
-    /// The network took it: replace the banner and retire the watch.
-    Confirmed,
-    /// Unconfirmed for long enough that the original advice has expired:
-    /// re-word the banner once and keep watching.
-    Stale,
-}
-
-/// Pure pending-confirmation policy. `confirmation` is the watched
-/// transaction's state in the display snapshot (`None` when no loaded wallet
-/// has seen it), `elapsed` how long the watch has been open, and
-/// `already_stale` whether the re-wording has already happened — so the copy
-/// changes at most once.
-///
-/// There is deliberately no failure outcome. Modern Dash Core has no rejection
-/// signal on the wire, so an invalid transaction and a slow one are
-/// indistinguishable; a synthesised "failed" would eventually tell someone
-/// their money is safe to send again when it is not.
-///
-/// TODO(R-1, docs/gui-testing/scenarios/pending-broadcast-auto-reconcile.md):
-/// still unverified against a live network — no funded testnet wallet is
-/// available in this environment. `network_took_transaction`'s
-/// `height.is_some()` guard is the code-side mitigation for a locally-injected
-/// transaction reaching `Confirmed` without a real network verdict, and that
-/// guard is what the scenario exists to exercise. Unit tests cover the policy
-/// against a synthetic snapshot; what is outstanding is confirming that a real
-/// dash-spv mempool injection is in fact reported height-less, which only a
-/// funded run can show. Also closes R-4 (no-change-output send shape).
-fn pending_step(
-    confirmation: Option<TransactionConfirmation>,
-    elapsed: Duration,
-    already_stale: bool,
-) -> PendingStep {
-    if confirmation.is_some_and(network_took_transaction) {
-        PendingStep::Confirmed
-    } else if !already_stale && elapsed >= PENDING_STALE_AFTER {
-        PendingStep::Stale
-    } else {
-        PendingStep::Waiting
-    }
-}
-
-/// Whether a snapshot entry is evidence the network actually took the
-/// transaction, rather than evidence this app tried to send it.
-///
-/// Presence alone proves nothing: dash-spv injects a broadcast transaction into
-/// its own mempool before any peer verdict, so an `Unconfirmed` entry appears
-/// even for one no peer ever accepted. An InstantSend lock is driven only by a
-/// real lock message, and a genuinely mined transaction carries the height of
-/// the block holding it — a mined tier without one is not evidence worth
-/// spending a funds message on.
-fn network_took_transaction(confirmation: TransactionConfirmation) -> bool {
-    match confirmation.status {
-        TransactionStatus::Unconfirmed => false,
-        TransactionStatus::InstantSendLocked => true,
-        TransactionStatus::Confirmed | TransactionStatus::ChainLocked => {
-            confirmation.height.is_some()
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum TaskResult {
-    Repaint,
-    Refresh,
-    /// Name-contest or vote data changed. Only the voting screen re-reads it,
-    /// and only while in view; other readers take it live on the repaint.
-    DpnsContestsChanged,
-    Success {
-        context: BackendTaskContext,
-        result: Box<BackendTaskSuccessResult>,
-    },
-    Error {
-        context: BackendTaskContext,
-        error: TaskError,
-    },
-}
-
-impl TaskResult {
-    fn from_backend_task_result(
-        context: BackendTaskContext,
-        value: Result<BackendTaskSuccessResult, TaskError>,
-    ) -> Self {
-        match value {
-            Ok(value) => TaskResult::Success {
-                context,
-                result: Box::new(value),
-            },
-            Err(error) => TaskResult::Error { context, error },
-        }
-    }
-
-    pub(crate) fn unattributed_success(result: BackendTaskSuccessResult) -> Self {
-        Self::Success {
-            context: BackendTaskContext::Unknown,
-            result: Box::new(result),
-        }
-    }
-
-    pub(crate) fn unattributed_error(error: TaskError) -> Self {
-        Self::Error {
-            context: BackendTaskContext::Unknown,
-            error,
-        }
-    }
-}
-
-async fn forward_backend_task_join_error(
-    join_result: Result<(), tokio::task::JoinError>,
-    sender: egui_mpsc::SenderAsync<TaskResult>,
-    request_id: Option<Identifier>,
-    context: BackendTaskContext,
-) {
-    if let Err(source) = join_result {
-        let stopped = TaskError::BackendTaskFailed {
-            source: source.into(),
-        };
-        let error = match request_id {
-            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
-                request_id,
-                source: Box::new(stopped),
-            },
-            None => stopped,
-        };
-        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
-            tracing::error!(%error, "Failed to report a stopped backend task");
-        }
-    }
-}
-
-/// Report a task batch that stopped before returning its results. A batch runs
-/// its tasks in one join, so one panic loses every result. Each task sent under
-/// a dispatch context hears of the failure under that context, which settles
-/// the screen waiting on it; the batch's other tasks share one unattributed
-/// report, as a single stopped task does.
-async fn forward_backend_tasks_join_error(
-    join_result: Result<(), tokio::task::JoinError>,
-    sender: egui_mpsc::SenderAsync<TaskResult>,
-    contexts: Vec<BackendTaskContext>,
-) {
-    let Err(source) = join_result else {
-        return;
-    };
-    let source = crate::backend_task::error::BackendTaskJoinError::from(source);
-    let (dispatched, others): (Vec<_>, Vec<_>) = contexts
-        .into_iter()
-        .partition(|context| context.dispatch_id().is_some());
-    let unattributed =
-        (dispatched.is_empty() || !others.is_empty()).then_some(BackendTaskContext::Unknown);
-    for context in dispatched.into_iter().chain(unattributed) {
-        let error = TaskError::BackendTaskFailed {
-            source: source.clone(),
-        };
-        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
-            tracing::error!(%error, "Failed to report a stopped backend task batch");
-        }
-    }
-}
+pub use crate::backend_task::TaskResult;
 
 struct ThemeState {
     preference: ThemeMode,
@@ -1424,42 +711,34 @@ pub struct AppState {
     /// Which screen sent each dispatched task still running, so its result can
     /// reach that screen wherever it is.
     request_owners: RequestOwners,
+    rejected_requests: std::collections::VecDeque<TaskResult>,
     /// Kittests set this to keep dispatched tasks from running: each one is
     /// recorded here instead, after the frame loop has done its bookkeeping.
     #[cfg(feature = "testing")]
     captured_dispatches: Option<Vec<(BackendTask, BackendTaskContext)>>,
+    /// Actions a kittest dispatched as if a control had returned them. The
+    /// frame loop handles them with the frame's own actions.
+    #[cfg(feature = "testing")]
+    test_actions: Vec<AppAction>,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Network whose context is being created asynchronously. While `Some`,
-    /// the UI shows a progress banner and ignores further switch requests.
+    /// the app is blocked behind [`Self::network_switch_overlay`] and ignores
+    /// further switch requests and Connect.
     network_switch_pending: Option<Network>,
-    /// Progress banner displayed while a network switch is in progress.
-    network_switch_banner: Option<BannerHandle>,
+    /// Blocking progress overlay naming the destination while a network switch
+    /// builds its context. The same overlay the storage-preparation gate raises
+    /// at startup, so the outgoing network's controls are out of reach.
+    network_switch_overlay: Option<OverlayHandle>,
     /// Whether boot must remain on the network chooser until the user confirms a network.
     network_selection_required: bool,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
-    last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    /// Per-network start of a migration wait that deferred scheduled-vote casting.
-    scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
-    /// Networks with a scheduled-vote sweep currently running.
-    scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
-    /// Per-network pacing of the sweep's re-check of unconfirmed votes.
-    unconfirmed_vote_checks: BTreeMap<Network, UnconfirmedVoteChecks>,
-    /// Unix ms of the last background contest refresh dispatched per network.
-    dpns_background_refresh_dispatched_at_ms: BTreeMap<Network, u64>,
-    /// Unix ms at which an incomplete background refresh is retried per network.
-    dpns_background_refresh_retry_at_ms: BTreeMap<Network, u64>,
-    /// When the voting attention summary was last recomputed per network, so
-    /// nodes loaded or keys added elsewhere reach the chip, badge and timer.
-    dpns_attention_recomputed_at: BTreeMap<Network, Instant>,
+    dpns_background: DpnsBackground,
     /// The vote progress drawer shown over every screen (VOTE-FR-083).
     dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState,
-    /// Last recovery-sweep attempt per network, used to throttle retries while
-    /// retaining the original eligibility cutoff.
-    scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
     last_repaint_request: Instant, // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>, // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
@@ -1602,6 +881,12 @@ pub enum AppAction {
         context: BackendTaskContext,
     },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// [`Self::BackendTasks`] with the context each task's result comes back
+    /// under, so a screen can tell one dispatch of a task from another.
+    BackendTasksWithContexts(
+        Vec<(BackendTask, BackendTaskContext)>,
+        BackendTasksExecutionMode,
+    ),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
     /// the wiring step requires. Used by the manual Connect button so a click
@@ -1631,7 +916,7 @@ pub enum AppAction {
 /// screen whichever screen is visible: it tracks the task and must hear how it ended.
 fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
     matches!(
-        context,
+        context.operation(),
         BackendTaskContext::ClearNetworkDatabase
             | BackendTaskContext::UpdateBackupRetention
             | BackendTaskContext::RestoreFromPreviousVersion
@@ -2041,26 +1326,22 @@ impl AppState {
             selected_main_screen,
             screen_stack: ScreenStack::default(),
             request_owners: RequestOwners::default(),
+            rejected_requests: Default::default(),
             #[cfg(feature = "testing")]
             captured_dispatches: None,
+            #[cfg(feature = "testing")]
+            test_actions: Vec::new(),
             chosen_network,
             connection_status,
             network_contexts,
             network_switch_pending: None,
-            network_switch_banner: None,
+            network_switch_overlay: None,
             network_selection_required,
             task_result_sender,
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
-            last_scheduled_vote_check: Instant::now(),
-            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
-            scheduled_vote_sweeps_in_progress: BTreeSet::new(),
-            unconfirmed_vote_checks: BTreeMap::new(),
-            dpns_background_refresh_dispatched_at_ms: BTreeMap::new(),
-            dpns_background_refresh_retry_at_ms: BTreeMap::new(),
-            dpns_attention_recomputed_at: BTreeMap::new(),
+            dpns_background: DpnsBackground::new(Instant::now()),
             dpns_progress_drawer: crate::ui::dpns::progress_drawer::DrawerState::new(unix_time_ms()),
-            scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: show_welcome_screen(
@@ -2465,110 +1746,26 @@ impl AppState {
     }
 
     fn handle_backend_task_with_context(&mut self, task: BackendTask, context: BackendTaskContext) {
-        #[cfg(feature = "testing")]
-        if let Some(captured) = &mut self.captured_dispatches {
-            captured.push((task, context));
-            return;
-        }
-        let request_id = crate::backend_task::dashpay_request_id(&task);
-        let sender = self.task_result_sender.clone();
-        let watcher_sender = sender.clone();
-        let watcher_context = context.clone();
-        let app_context = self.current_app_context().clone();
-        let handle = tokio::runtime::Handle::current();
-        let _ = self.subtasks.spawn_blocking_sync(
-            "backend_task_join_watcher",
-            move || {
-                handle.block_on(async move {
-                    let result = app_context.run_backend_task(task, sender.clone()).await;
-                    if let Err(e) = sender
-                        .send(TaskResult::from_backend_task_result(context, result))
-                        .await
-                    {
-                        tracing::error!("Failed to send task result: {}", e);
-                    }
-                });
-            },
-            move |join_result| {
-                forward_backend_task_join_error(
-                    join_result,
-                    watcher_sender,
-                    request_id,
-                    watcher_context,
-                )
-            },
-        );
+        self.execute_requests(vec![(task, context)], BackendTasksExecutionMode::Sequential);
     }
 
-    /// Handle the backend tasks and send the results through the channel.
-    ///
-    /// Contact-list reads in a batch report to the screen that sent them, as a
-    /// task dispatched with its own context does: the hub asks for its lists
-    /// once per arrival, so a failure delivered to a screen covering it would
-    /// leave it waiting for good.
-    fn handle_backend_tasks(
+    fn execute_requests(
         &mut self,
-        tasks: Vec<BackendTask>,
+        tasks: Vec<(BackendTask, BackendTaskContext)>,
         mode: BackendTasksExecutionMode,
-        owner: Option<ScreenOwner>,
     ) {
-        let sender = self.task_result_sender.clone();
-        let watcher_sender = sender.clone();
-        let app_context = self.current_app_context().clone();
-        let network = app_context.network;
-        let contexts = tasks
-            .iter()
-            .map(|task| {
-                let context = BackendTaskContext::for_task_on(task, network);
-                match owner {
-                    Some(owner) if context.contacts_load().is_some() => {
-                        let context = BackendTaskContext::for_dispatch_on(task, network);
-                        self.request_owners.record(&context, owner);
-                        context
-                    }
-                    _ => context,
-                }
-            })
-            .collect::<Vec<_>>();
         #[cfg(feature = "testing")]
         if let Some(captured) = &mut self.captured_dispatches {
-            captured.extend(tasks.into_iter().zip(contexts));
+            captured.extend(tasks);
             return;
         }
-        let handle = tokio::runtime::Handle::current();
-        let watcher_contexts = contexts.clone();
-
-        let _ = self.subtasks.spawn_blocking_sync(
-            "backend_tasks_join_watcher",
-            move || {
-                handle.block_on(async move {
-                    let results = match mode {
-                        BackendTasksExecutionMode::Sequential => {
-                            app_context
-                                .run_backend_tasks_sequential(tasks, sender.clone())
-                                .await
-                        }
-                        BackendTasksExecutionMode::Concurrent => {
-                            app_context
-                                .run_backend_tasks_concurrent(tasks, sender.clone())
-                                .await
-                        }
-                    };
-
-                    for (context, result) in contexts.into_iter().zip(results) {
-                        if let Err(e) = sender
-                            .send(TaskResult::from_backend_task_result(context, result))
-                            .await
-                        {
-                            tracing::error!("Failed to send task result: {}", e);
-                        }
-                    }
-                });
-            },
-            move |join_result| {
-                forward_backend_tasks_join_error(join_result, watcher_sender, watcher_contexts)
-            },
-        );
+        self.rejected_requests.extend(task_dispatch::spawn(
+            self.current_app_context().clone(),
+            &self.subtasks,
+            self.task_result_sender.clone(),
+            tasks,
+            mode,
+        ));
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
@@ -2643,12 +1840,18 @@ impl AppState {
         // The task never starts chain sync for the GUI: that decision waits
         // for `finalize_network_switch`, so a Disconnect pressed while the
         // context is still being built is honored.
+        tracing::info!(from = ?self.chosen_network, to = ?network, "Network switch started");
         self.network_switch_pending = Some(network);
-        self.network_switch_banner = Some(MessageBanner::set_global(
-            self.current_app_context().egui_ctx(),
-            format!("Connecting to {network:?}..."),
-            MessageType::Info,
-        ));
+        // Blocks the whole app until the switch lands or fails: until then
+        // every screen still belongs to the outgoing network, and a Connect
+        // there would start its chain sync instead of the destination's.
+        let label = chooser_network_label(network);
+        let ctx = self.current_app_context().egui_ctx().clone();
+        self.network_switch_overlay.raise(
+            &ctx,
+            format!("Switching to {label}…"),
+            OverlayConfig::new(),
+        );
         self.handle_backend_task(BackendTask::SwitchNetwork {
             network,
             start_spv: false,
@@ -2690,6 +1893,12 @@ impl AppState {
         // preparation and leave the gate raised over nothing to poll.
         self.boot.reset_for_switch(network);
         let auto_start_spv = self.auto_start_spv_allowed();
+        tracing::info!(
+            ?network,
+            auto_start_spv,
+            manually_disconnected = self.spv_manually_disconnected,
+            "Network switch completed"
+        );
         if self.boot.is_prepared(network) {
             if auto_start_spv {
                 self.start_spv_for(BackendInitReason::NetworkSwitch);
@@ -2743,9 +1952,9 @@ impl AppState {
         // network chooser is a root screen, so no stacked screen can start the
         // switch that removes it.
         self.screen_stack.clear();
-        // Results of tasks sent before the switch go to the screen in view:
-        // pushed screens are gone, and root screens now show the new network.
-        self.request_owners.clear();
+        // Senders are kept: each records the network its task ran on, so a
+        // result arriving after the switch is kept off this network's screens
+        // (`ResultRoute::PreviousNetwork`).
 
         self.connection_status.reset();
 
@@ -2797,6 +2006,14 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_set_secret_prompt_active(&mut self, active: bool) {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
+    }
+
+    /// Test seam: hand `action` to the next frame as if a control had returned
+    /// it, so a kittest can drive an action whose button the frame does not
+    /// offer, e.g. while a blocking overlay covers it.
+    #[cfg(feature = "testing")]
+    pub fn test_dispatch_action(&mut self, action: AppAction) {
+        self.test_actions.push(action);
     }
 
     /// Test seam (Task 9 / F-SPV-A): arm a user-initiated SPV-sync block episode,
@@ -2929,274 +2146,14 @@ impl AppState {
         }
     }
 
-    /// The screen in view, as an owner of the tasks it dispatches.
-    fn visible_owner(&mut self) -> ScreenOwner {
-        match self.screen_stack.top_id() {
-            Some(id) => ScreenOwner::Stacked(id),
-            None => ScreenOwner::Root(self.active_root()),
-        }
-    }
-
-    /// Whether `owner` is still open: a root screen, or a pushed screen not yet
-    /// closed.
-    fn has_screen(&self, owner: ScreenOwner) -> bool {
-        match owner {
-            ScreenOwner::Root(root) => self.main_screens.contains_key(&root),
-            ScreenOwner::Stacked(id) => self.screen_stack.contains_id(id),
-        }
-    }
-
-    /// The screen a task result is for under `route`, or `None` when no
-    /// screen takes it.
-    fn result_screen_mut(&mut self, route: ResultRoute) -> Option<&mut Screen> {
-        match route {
-            ResultRoute::Owner(owner) if self.has_screen(owner) => match owner {
-                ScreenOwner::Root(root) => self.main_screens.get_mut(&root),
-                ScreenOwner::Stacked(id) => self.screen_stack.by_id_mut(id),
-            },
-            ResultRoute::Owner(_) | ResultRoute::ClosedOwner => None,
-            ResultRoute::Visible => Some(self.visible_screen_mut()),
-        }
-    }
-
-    /// Hand a successful result to the screen `route` names, if any.
-    fn deliver_result(
-        &mut self,
-        route: ResultRoute,
-        context: &BackendTaskContext,
-        result: BackendTaskSuccessResult,
-    ) {
-        if let Some(screen) = self.result_screen_mut(route) {
-            screen.display_backend_task_result(context, result);
-        }
-    }
-
-    /// Tell the open screen that dispatched a task that the task failed, for an
-    /// error the general error path does not deliver. A screen waiting on its
-    /// own task would otherwise wait for good.
-    fn tell_owner_its_task_failed(
-        &mut self,
-        route: ResultRoute,
-        context: &BackendTaskContext,
-        error: &TaskError,
-    ) {
-        if let ResultRoute::Owner(_) = route
-            && let Some(screen) = self.result_screen_mut(route)
-        {
-            screen.display_backend_task_error(context, error);
-        }
-    }
-
-    /// Where the result behind `task_result` goes. The sender of a dispatch is
-    /// taken off the record: each dispatch reports once.
-    fn take_result_route(&mut self, task_result: &TaskResult) -> ResultRoute {
-        let context = match task_result {
-            TaskResult::Success { context, .. } | TaskResult::Error { context, .. } => context,
-            TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
-                return ResultRoute::Visible;
-            }
-        };
-        match self.request_owners.take(context) {
-            Some(owner) if self.has_screen(owner) => ResultRoute::Owner(owner),
-            Some(_) => ResultRoute::ClosedOwner,
-            None => ResultRoute::Visible,
-        }
-    }
-
-    /// Test seam: record the screen in view as the sender of `context`, as the
-    /// frame loop does for a task that screen returns. Lets a kittest stand in
-    /// for a dispatch whose task must not run.
-    #[cfg(feature = "testing")]
-    #[doc(hidden)]
-    pub fn test_record_visible_dispatch(&mut self, context: &BackendTaskContext) {
-        let owner = self.visible_owner();
-        self.request_owners.record(context, owner);
-    }
-
-    /// Test seam: from now on, record each task dispatched with a context
-    /// instead of running it. The frame loop still does everything else a
-    /// dispatch involves, such as recording the screen that sent it.
-    #[cfg(feature = "testing")]
-    #[doc(hidden)]
-    pub fn test_capture_dispatches(&mut self) {
-        self.captured_dispatches.get_or_insert_with(Vec::new);
-    }
-
-    /// Test seam: the tasks captured since [`Self::test_capture_dispatches`].
-    #[cfg(feature = "testing")]
-    #[doc(hidden)]
-    pub fn test_captured_dispatches(&self) -> &[(BackendTask, BackendTaskContext)] {
-        self.captured_dispatches.as_deref().unwrap_or_default()
-    }
-
-    /// Test seam: how many dispatched tasks still have a recorded sender.
-    #[cfg(feature = "testing")]
-    #[doc(hidden)]
-    pub fn test_dispatch_owner_count(&self) -> usize {
-        self.request_owners.len()
-    }
-
-    pub fn visible_screen_mut(&mut self) -> &mut Screen {
-        if self.screen_stack.is_empty() {
-            self.active_root_screen_mut()
-        } else {
-            self.screen_stack
-                .last_mut()
-                .expect("invariant: screen_stack is non-empty in this branch")
-        }
-    }
-
-    /// Run the refresh owed for the merged cache notifications and clear it.
-    fn run_pending_refresh(&mut self, pending: &mut PendingRefresh) {
-        match std::mem::take(pending) {
-            PendingRefresh::None => {}
-            PendingRefresh::VotingScreen => {
-                if let voting @ Screen::MasternodesScreen(_) = self.visible_screen_mut() {
-                    voting.refresh();
-                }
-            }
-            PendingRefresh::VisibleScreen => self.visible_screen_mut().refresh(),
-        }
-    }
-
-    /// Whether the hub is the screen a result goes to: the screen that
-    /// dispatched it, or else the screen in view.
-    fn hub_takes_result(&self, owner: Option<ScreenOwner>) -> bool {
-        root_takes_result(
-            RootScreenType::RootScreenIdentityHub,
-            owner,
-            identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()),
-        )
-    }
-
-    /// Tell the hub about results it would otherwise miss: those of loads it
-    /// starts without a dispatch context, and other screens' profile saves.
-    fn route_identity_result_to_hidden_hub(
-        &mut self,
-        owner: Option<ScreenOwner>,
-        context: &BackendTaskContext,
-        result: &BackendTaskSuccessResult,
-    ) {
-        if self.hub_takes_result(owner) {
-            return;
-        }
-        if let Some(Screen::IdentityHubScreen(hub)) = self
-            .main_screens
-            .get_mut(&RootScreenType::RootScreenIdentityHub)
-        {
-            let needs_completion = match result {
-                // Another screen's save changes the profile the hub caches.
-                BackendTaskSuccessResult::DashPayProfileUpdated(_) => true,
-                // The hub asks for its contact lists once per arrival, so an
-                // answer that misses it is never asked for again. It drops
-                // answers that are not for what it shows.
-                BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
-                | BackendTaskSuccessResult::DashPayContactRequests { .. } => true,
-                BackendTaskSuccessResult::DashPayAvatar { url, .. } => {
-                    hub.is_waiting_for_avatar(url)
-                }
-                _ => false,
-            };
-            if needs_completion {
-                hub.display_backend_task_result(context, result.clone());
-            } else {
-                hub.handle_contact_request_result(result);
-            }
-        }
-    }
-
-    /// Release the hub's contact-request guards on a failed request action,
-    /// which it dispatches without a dispatch context, when the error goes to
-    /// another screen.
-    fn route_identity_error_to_hidden_hub(
-        &mut self,
-        owner: Option<ScreenOwner>,
-        error: &TaskError,
-    ) {
-        if self.hub_takes_result(owner) {
-            return;
-        }
-        if let Some(Screen::IdentityHubScreen(hub)) = self
-            .main_screens
-            .get_mut(&RootScreenType::RootScreenIdentityHub)
-        {
-            hub.handle_contact_request_error(error);
-        }
-    }
-
-    /// Called when a background contest refresh ends: if it failed, or left a
-    /// contest unread or a node's vote state unchecked, try again soon instead
-    /// of a whole interval later.
-    fn retry_incomplete_dpns_background_refresh(&mut self, network: Network) {
-        use crate::model::dpns_voting::operator::{
-            background_refresh_incomplete, background_refresh_retry_delay,
-        };
-        let Some(dispatched_at) = self
-            .dpns_background_refresh_dispatched_at_ms
-            .get(&network)
-            .copied()
-        else {
-            return;
-        };
+    /// Supplies the originating network's completion timestamp to the scheduler.
+    fn record_dpns_refresh_completion(&mut self, network: Network) {
         let completed_at = self
             .network_contexts
             .get(&network)
             .and_then(|context| context.dpns_contests_refreshed_at_ms());
-        if background_refresh_incomplete(completed_at, dispatched_at) {
-            let delay = u64::try_from(background_refresh_retry_delay(network).as_millis())
-                .unwrap_or(u64::MAX);
-            self.dpns_background_refresh_retry_at_ms
-                .insert(network, unix_time_ms().saturating_add(delay));
-        }
-    }
-
-    /// Whether the voting root is the screen a result goes to: the screen that
-    /// dispatched it, or else the screen in view. Otherwise the result needs
-    /// its own route to the voting panel.
-    fn voting_panel_takes_result(&self, owner: Option<ScreenOwner>) -> bool {
-        root_takes_result(
-            VOTING_ROOT_SCREEN,
-            owner,
-            !dpns_screen_is_hidden(
-                VOTING_ROOT_SCREEN,
-                self.selected_main_screen,
-                self.screen_stack.is_empty(),
-            ),
-        )
-    }
-
-    /// Deliver a vote result to the voting panel when it goes to another
-    /// screen. Results the Masternodes screen takes, it forwards itself.
-    fn route_dpns_vote_result_to_hidden_screens(
-        &mut self,
-        owner: Option<ScreenOwner>,
-        context: &BackendTaskContext,
-        result: &BackendTaskSuccessResult,
-    ) {
-        if dpns_result_needs_route(self.voting_panel_takes_result(owner), result)
-            && let Some(masternodes) = self.masternodes_screen_mut()
-        {
-            let votes = masternodes.votes_mut();
-            votes.display_backend_task_result(context, result.clone());
-        }
-    }
-
-    fn route_dpns_vote_error_to_hidden_screens(
-        &mut self,
-        owner: Option<ScreenOwner>,
-        context: &BackendTaskContext,
-        error: &TaskError,
-    ) {
-        if !context.is_dpns_vote_task() {
-            return;
-        }
-        if !self.voting_panel_takes_result(owner)
-            && let Some(masternodes) = self.masternodes_screen_mut()
-        {
-            let votes = masternodes.votes_mut();
-            votes.display_backend_task_error(context, error);
-            votes.display_task_error(error);
-        }
+        self.dpns_background
+            .refresh_completed(network, completed_at, unix_time_ms());
     }
 
     /// Promote at most one queued passphrase request before overlay handling.
@@ -3269,221 +2226,22 @@ impl AppState {
         }
     }
 
-    fn push_unique_context(contexts: &mut Vec<Arc<AppContext>>, context: Arc<AppContext>) {
-        if !contexts
-            .iter()
-            .any(|existing| Arc::ptr_eq(existing, &context))
-        {
-            contexts.push(context);
-        }
-    }
-
-    fn collect_created_context(contexts: &mut Vec<Arc<AppContext>>, task_result: TaskResult) {
-        if let TaskResult::Success { result, .. } = task_result {
-            match *result {
-                BackendTaskSuccessResult::NetworkContextRegistered { context, .. }
-                | BackendTaskSuccessResult::NetworkContextCreated { context, .. } => {
-                    Self::push_unique_context(contexts, context);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    async fn shutdown_wallet_backend_instances<B: ShutdownWalletBackend>(
-        wallet_backends: &[Arc<B>],
-        shutdown_timeout: Duration,
-    ) -> ShutdownOutcome {
-        Self::forget_wallet_backend_secrets(wallet_backends);
-
-        let shutdowns = futures::future::join_all(
-            wallet_backends
-                .iter()
-                .map(|wallet_backend| wallet_backend.shutdown()),
-        );
-        let outcome = if tokio::time::timeout(shutdown_timeout, shutdowns)
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                timeout_secs = shutdown_timeout.as_secs(),
-                "Wallet backend shutdown timed out; closing with degraded teardown"
-            );
-            ShutdownOutcome::WalletBackendTimedOut
-        } else {
-            ShutdownOutcome::Complete
-        };
-
-        Self::forget_wallet_backend_secrets(wallet_backends);
-
-        outcome
-    }
-
-    fn forget_wallet_backend_secrets<B: ShutdownWalletBackend>(wallet_backends: &[Arc<B>]) {
-        for backend in wallet_backends {
-            backend.forget_all_secrets();
-        }
-    }
-
-    async fn shutdown_wallet_backends(
-        task_shutdown_outcome: Option<TaskShutdownOutcome>,
-        contexts: Vec<Arc<AppContext>>,
-    ) -> ShutdownOutcome {
-        let mut wallet_backends = Vec::new();
-        for context in contexts {
-            if let Ok(backend) = context.wallet_backend()
-                && !wallet_backends
-                    .iter()
-                    .any(|existing| Arc::ptr_eq(existing, &backend))
-            {
-                wallet_backends.push(backend);
-            }
-        }
-
-        Self::finish_shutdown_after_tasks(
-            task_shutdown_outcome,
-            &wallet_backends,
-            Self::shutdown_wallet_backend_instances(
-                &wallet_backends,
-                WALLET_BACKEND_SHUTDOWN_TIMEOUT,
-            ),
+    fn begin_shutdown(&mut self) -> ShutdownSession {
+        ShutdownSession::begin(
+            self.network_contexts.values().cloned(),
+            &self.subtasks,
+            &mut self.task_result_receiver,
+            #[cfg(feature = "mcp")]
+            self.mcp_app_context.clone(),
         )
-        .await
-    }
-
-    fn initial_shutdown_contexts(&self) -> Vec<Arc<AppContext>> {
-        let mut contexts = Vec::new();
-        for context in self.network_contexts.values() {
-            Self::push_unique_context(&mut contexts, Arc::clone(context));
-        }
-        contexts
-    }
-
-    async fn finish_wallet_shutdown(
-        task_shutdown_outcome: Option<TaskShutdownOutcome>,
-        mut contexts: Vec<Arc<AppContext>>,
-        mut task_result_receiver: tokiompsc::Receiver<TaskResult>,
-        #[cfg(feature = "mcp")] mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
-    ) -> ShutdownOutcome {
-        while let Ok(task_result) = task_result_receiver.try_recv() {
-            Self::collect_created_context(&mut contexts, task_result);
-        }
-
-        #[cfg(feature = "mcp")]
-        if let Some(mcp_app_context) = mcp_app_context {
-            Self::push_unique_context(&mut contexts, mcp_app_context.load_full());
-        }
-
-        Self::shutdown_wallet_backends(task_shutdown_outcome, contexts).await
-    }
-
-    async fn finish_shutdown_after_tasks<B, F>(
-        task_shutdown_outcome: Option<TaskShutdownOutcome>,
-        wallet_backends: &[Arc<B>],
-        wallet_shutdown: F,
-    ) -> ShutdownOutcome
-    where
-        B: ShutdownWalletBackend,
-        F: std::future::Future<Output = ShutdownOutcome>,
-    {
-        Self::forget_wallet_backend_secrets(wallet_backends);
-
-        match task_shutdown_outcome {
-            Some(TaskShutdownOutcome::Complete) => wallet_shutdown.await,
-            Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
-                ShutdownOutcome::BackendTasksTimedOut
-            }
-            None => ShutdownOutcome::TaskManagerFailed,
-        }
     }
 
     fn start_async_shutdown(&mut self) -> tokio::sync::oneshot::Receiver<ShutdownOutcome> {
-        let mut contexts = self.initial_shutdown_contexts();
-        let mut task_shutdown = self.subtasks.shutdown_async();
-        let (_empty_sender, empty_receiver) = tokiompsc::channel(1);
-        let mut task_result_receiver =
-            std::mem::replace(&mut self.task_result_receiver, empty_receiver);
-        #[cfg(feature = "mcp")]
-        let mcp_app_context = self.mcp_app_context.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        tokio::spawn(async move {
-            let task_shutdown_outcome = loop {
-                tokio::select! {
-                    result = &mut task_shutdown => break result.ok(),
-                    task_result = task_result_receiver.recv() => {
-                        let Some(task_result) = task_result else {
-                            break task_shutdown.await.ok();
-                        };
-                        Self::collect_created_context(&mut contexts, task_result);
-                    }
-                }
-            };
-
-            let outcome = Self::finish_wallet_shutdown(
-                task_shutdown_outcome,
-                contexts,
-                task_result_receiver,
-                #[cfg(feature = "mcp")]
-                mcp_app_context,
-            )
-            .await;
-            let _ = tx.send(outcome);
-        });
-
-        rx
+        self.begin_shutdown().start()
     }
 
     fn run_blocking_shutdown_fallback(&mut self) {
-        const POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-        let mut contexts = self.initial_shutdown_contexts();
-        let mut task_shutdown = self.subtasks.shutdown_async();
-        let (_empty_sender, empty_receiver) = tokiompsc::channel(1);
-        let mut task_result_receiver =
-            std::mem::replace(&mut self.task_result_receiver, empty_receiver);
-        #[cfg(feature = "mcp")]
-        let mcp_app_context = self.mcp_app_context.clone();
-        let task_shutdown_outcome = loop {
-            while let Ok(task_result) = task_result_receiver.try_recv() {
-                Self::collect_created_context(&mut contexts, task_result);
-            }
-
-            match task_shutdown.try_recv() {
-                Ok(outcome) => break Some(outcome),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break None,
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    std::thread::sleep(POLL_INTERVAL);
-                }
-            }
-        };
-
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        tokio::spawn(async move {
-            let outcome = Self::finish_wallet_shutdown(
-                task_shutdown_outcome,
-                contexts,
-                task_result_receiver,
-                #[cfg(feature = "mcp")]
-                mcp_app_context,
-            )
-            .await;
-            let _ = tx.send(outcome);
-        });
-
-        match rx.recv_timeout(WALLET_BACKEND_SHUTDOWN_TIMEOUT + SHUTDOWN_DEADLINE_MARGIN) {
-            Ok(ShutdownOutcome::Complete)
-                if task_shutdown_outcome == Some(TaskShutdownOutcome::Complete) => {}
-            Ok(outcome) => tracing::warn!(
-                ?outcome,
-                ?task_shutdown_outcome,
-                "Blocking shutdown fallback completed with degraded teardown"
-            ),
-            Err(error) => tracing::warn!(
-                ?error,
-                "Blocking wallet backend shutdown did not report a terminal outcome"
-            ),
-        }
+        self.begin_shutdown().run_blocking();
     }
 }
 
@@ -3580,19 +2338,20 @@ impl App for AppState {
 
         // Bound result work so refresh bursts cannot starve window input and painting.
         let result_work_started = Instant::now();
-        let mut pending_refresh = PendingRefresh::None;
+        let mut pending_refresh = PendingRefresh::default();
         for processed in 0..64 {
             if processed > 0 && result_work_started.elapsed() >= Duration::from_millis(8) {
                 break;
             }
-            let Ok(task_result) = self.task_result_receiver.try_recv() else {
+            let Some(task_result) = self
+                .rejected_requests
+                .pop_front()
+                .or_else(|| self.task_result_receiver.try_recv().ok())
+            else {
                 break;
             };
             // Merge adjacent cache invalidations without moving refreshes past typed results.
-            if !matches!(
-                task_result,
-                TaskResult::Refresh | TaskResult::DpnsContestsChanged
-            ) {
+            if !matches!(task_result, TaskResult::CacheUpdated(_)) {
                 self.run_pending_refresh(&mut pending_refresh);
             }
             active_context
@@ -3603,6 +2362,12 @@ impl App for AppState {
             // delivered there, in view or not. A closed sender's result reaches
             // no screen; undispatched results go to the screen in view.
             let route = self.take_result_route(&task_result);
+            if let ResultRoute::PreviousNetwork(Some(sender)) = route
+                && let TaskResult::Success { context, .. } | TaskResult::Error { context, .. } =
+                    &task_result
+            {
+                self.end_previous_network_request(sender, context);
+            }
             let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
 
@@ -3614,16 +2379,15 @@ impl App for AppState {
                     finish_top_up(ctx, context, true, owner_in_view)
                 }
                 TaskResult::Error { context, .. } => finish_top_up(ctx, context, false, true),
-                TaskResult::Refresh | TaskResult::DpnsContestsChanged | TaskResult::Repaint => {
-                    false
-                }
+                TaskResult::CacheUpdated(_) | TaskResult::Repaint => false,
             };
 
-            let recovery_delivered = deliver_legacy_recovery_result(
-                &mut self.main_screens,
-                self.screen_stack.iter_mut(),
-                &task_result,
-            );
+            let recovery_delivered = !matches!(route, ResultRoute::PreviousNetwork(_))
+                && deliver_legacy_recovery_result(
+                    &mut self.main_screens,
+                    self.screen_stack.iter_mut(),
+                    &task_result,
+                );
             if recovery_delivered && matches!(task_result, TaskResult::Success { .. }) {
                 continue;
             }
@@ -3636,29 +2400,41 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     if let BackendTaskContext::DpnsBackgroundRefresh { network } = &context {
-                        self.retry_incomplete_dpns_background_refresh(*network);
+                        self.record_dpns_refresh_completion(*network);
                     }
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
-                    self.route_identity_result_to_hidden_hub(owner, &context, &unboxed_message);
-                    self.route_dpns_vote_result_to_hidden_screens(
-                        owner,
-                        &context,
-                        &unboxed_message,
-                    );
-                    if restarts_unconfirmed_vote_checks(&unboxed_message) {
-                        self.unconfirmed_vote_checks.clear();
+                    self.route_result_to_observers(route, &context, &unboxed_message);
+                    pending_refresh
+                        .0
+                        .extend(crate::ui::dpns::task_feedback::show(
+                            ctx,
+                            &self.network_contexts,
+                            &unboxed_message,
+                        ));
+                    if !matches!(
+                        unboxed_message,
+                        BackendTaskSuccessResult::RemovedIdentities { .. }
+                    ) {
+                        crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
                     }
+                    self.dpns_background.record_vote_result(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
-                            deliver_identity_removal_result(
-                                ctx,
-                                &mut self.main_screens,
-                                &unboxed_message,
-                            );
+                            if let ResultRoute::PreviousNetwork(_) = route {
+                                // The banner alone: the identities were on the
+                                // previous network, not on this one's screens.
+                                crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
+                            } else {
+                                deliver_identity_removal_result(
+                                    ctx,
+                                    &mut self.main_screens,
+                                    &unboxed_message,
+                                );
+                            }
                         }
                         BackendTaskSuccessResult::None => {}
-                        BackendTaskSuccessResult::Refresh => {
-                            self.visible_screen_mut().refresh();
+                        BackendTaskSuccessResult::CacheUpdated(update) => {
+                            pending_refresh.0.insert(update);
                         }
                         BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
                             let network_label = chooser_network_label(network);
@@ -3738,32 +2514,6 @@ impl App for AppState {
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.deliver_result(route, &context, unboxed_message);
                         }
-                        BackendTaskSuccessResult::DashPayAddressesRegistered {
-                            addresses,
-                            contacts,
-                            errors,
-                        } => {
-                            let msg = if errors == 0 {
-                                format!(
-                                    "Registered {addresses} DashPay addresses for {contacts} contacts."
-                                )
-                            } else {
-                                format!(
-                                    "Registered {addresses} DashPay addresses for {contacts} contacts. {errors} addresses could not be registered."
-                                )
-                            };
-                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.deliver_result(route, &context, unboxed_message);
-                        }
-                        BackendTaskSuccessResult::IdentitiesLoaded { count } => {
-                            let msg = if count == 1 {
-                                "Successfully loaded 1 identity from your wallet.".to_string()
-                            } else {
-                                format!("Successfully loaded {count} identities from your wallet.")
-                            };
-                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.deliver_result(route, &context, unboxed_message);
-                        }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
                             // The screen updates its existing banner handle in-place.
@@ -3792,77 +2542,10 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                            network,
-                            operation_id,
-                        } => {
-                            let operation_context = self.network_contexts.get(&network).cloned();
-                            match operation_context
-                                .as_ref()
-                                .map(|context| context.dpns_vote_operation(operation_id))
-                            {
-                                Some(Ok(Some(operation))) => {
-                                    let diagnostics = operation_context
-                                        .as_ref()
-                                        .map(|context| {
-                                            context.dpns_vote_operation_diagnostics(operation_id)
-                                        })
-                                        .unwrap_or_default();
-                                    let (message, message_type, keep_visible) =
-                                        dpns_vote_feedback(&operation);
-                                    let handle =
-                                        MessageBanner::set_global(ctx, message, message_type);
-                                    if !diagnostics.is_empty() {
-                                        handle.with_details(&diagnostics);
-                                    }
-                                    if keep_visible {
-                                        handle.disable_auto_dismiss();
-                                    }
-                                }
-                                // A submit whose targets were all no-ops never
-                                // persists an operation, so the skipped count is
-                                // not recoverable here: use the plural copy.
-                                Some(Ok(None)) => {
-                                    MessageBanner::set_global(
-                                        ctx,
-                                        DPNS_ALL_VOTES_ALREADY_CAST,
-                                        MessageType::Info,
-                                    );
-                                }
-                                Some(Err(error)) => tracing::warn!(
-                                    ?error,
-                                    ?network,
-                                    operation_id = %operation_id,
-                                    "Could not load DPNS vote operation feedback"
-                                ),
-                                None => tracing::warn!(
-                                    ?network,
-                                    operation_id = %operation_id,
-                                    "Could not find the originating network for DPNS vote feedback"
-                                ),
-                            }
-                            self.deliver_result(
-                                route,
-                                &context,
-                                BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                                    network,
-                                    operation_id,
-                                },
-                            );
-                            self.visible_screen_mut().refresh();
-                        }
                         BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
                             network,
                             preserve_eligibility_since_ms,
                         } => {
-                            self.scheduled_vote_sweeps_in_progress.remove(&network);
-                            if clear_confirmed_vote_recovery_cutoff(
-                                &mut self.scheduled_vote_sweep_deferred_since_ms,
-                                network,
-                                preserve_eligibility_since_ms,
-                            ) {
-                                self.scheduled_vote_recovery_last_attempt.remove(&network);
-                            }
                             self.deliver_result(
                                 route,
                                 &context,
@@ -3872,16 +2555,6 @@ impl App for AppState {
                                 },
                             );
                         }
-                        BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
-                            let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
-                            MessageBanner::set_global(ctx, message, message_type);
-                            self.deliver_result(
-                                route,
-                                &context,
-                                BackendTaskSuccessResult::ScheduledVotesCleared(outcomes),
-                            );
-                            self.visible_screen_mut().refresh();
-                        }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
                             context,
@@ -3889,7 +2562,7 @@ impl App for AppState {
                         } => {
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
-                            self.network_switch_banner.take_and_clear();
+                            self.network_switch_overlay.take_and_clear();
                             self.finalize_network_switch(network);
                         }
                         BackendTaskSuccessResult::NetworkContextRegistered { network, context } => {
@@ -3913,14 +2586,17 @@ impl App for AppState {
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
-                            if tracked_top_up && !owner_in_view {
+                            if tracked_top_up
+                                && !owner_in_view
+                                && !matches!(route, ResultRoute::PreviousNetwork(_))
+                            {
                                 // Not this screen's top-up, but the balances it shows changed.
                                 self.visible_screen_mut().refresh();
                             }
                             // No refresh for any other task whose screen is closed:
                             // `refresh()` resets some screens, such as a running
                             // document query, and the screen in view did not send it.
-                            if route == ResultRoute::ClosedOwner
+                            if route.sender_gone()
                                 && !tracked_top_up
                                 && let Some(message) = closed_send_form_message(&unboxed_message)
                             {
@@ -3946,15 +2622,20 @@ impl App for AppState {
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
+                // Any failure of the switch's own task releases the app it is
+                // blocking, including one that stopped without a result (a
+                // panic arrives as `BackendTaskFailed`, not as the typed error).
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::NetworkContextCreationFailed { .. },
-                } => {
+                    error: err,
+                } if matches!(err, TaskError::NetworkContextCreationFailed { .. })
+                    || matches!(context, BackendTaskContext::NetworkSwitch { .. }) =>
+                {
                     if !recovery_delivered {
                         self.tell_owner_its_task_failed(route, &context, &err);
                     }
                     self.network_switch_pending = None;
-                    self.network_switch_banner.take_and_clear();
+                    self.network_switch_overlay.take_and_clear();
                     let current_context = self.current_app_context().clone();
                     if let Some(screen) = self
                         .main_screens
@@ -3962,8 +2643,12 @@ impl App for AppState {
                     {
                         screen.change_context(current_context);
                     }
-                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
-                        .disable_auto_dismiss();
+                    let handle =
+                        MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                    handle.disable_auto_dismiss();
+                    // TaskError Debug output is shown to users, deliberately.
+                    // Ensure inner error types don't expose secrets.
+                    handle.with_details(&err);
                 }
                 TaskResult::Error {
                     context,
@@ -3986,7 +2671,7 @@ impl App for AppState {
                     // A background refresh retries by itself; the voting
                     // panel's Refresh is where failures are reported.
                     tracing::debug!(?error, ?network, "Background contest refresh failed");
-                    self.retry_incomplete_dpns_background_refresh(network);
+                    self.record_dpns_refresh_completion(network);
                 }
                 TaskResult::Error {
                     context,
@@ -3994,22 +2679,24 @@ impl App for AppState {
                         err @ (TaskError::ScheduledVoteSweepFailed { .. }
                         | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }),
                 } => {
-                    clear_scheduled_vote_sweep_guard_on_error(
-                        &mut self.scheduled_vote_sweeps_in_progress,
-                        &context,
-                        &err,
-                    );
-                    self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
-                    self.visible_screen_mut()
-                        .display_backend_task_error(&context, &err);
-                    let handled = self.visible_screen_mut().display_task_error(&err);
+                    self.dpns_background.sweep_failed(&context, &err);
+                    self.route_error_to_observers(route, &context, &err);
+                    // A sweep of the previous network reaches no screen; the
+                    // banner alone reports it.
+                    if let Some(screen) = self.result_screen_mut(route) {
+                        screen.display_backend_task_error(&context, &err);
+                    }
+                    let handled = self
+                        .result_screen_mut(route)
+                        .is_some_and(|screen| screen.display_task_error(&err));
                     if !handled && !scheduled_vote_sweep_is_quiet(&err) {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         handle.disable_auto_dismiss();
                         handle.with_details(&err);
-                        self.visible_screen_mut()
-                            .display_message(&msg, MessageType::Error);
+                        if let Some(screen) = self.result_screen_mut(route) {
+                            screen.display_message(&msg, MessageType::Error);
+                        }
                     }
                 }
                 TaskResult::Error {
@@ -4017,13 +2704,8 @@ impl App for AppState {
                     error: err,
                 } => {
                     clear_profile_saving_banner_after_error(ctx, &context);
-                    clear_scheduled_vote_sweep_guard_on_error(
-                        &mut self.scheduled_vote_sweeps_in_progress,
-                        &context,
-                        &err,
-                    );
-                    self.route_identity_error_to_hidden_hub(owner, &err);
-                    self.route_dpns_vote_error_to_hidden_screens(owner, &context, &err);
+                    self.dpns_background.sweep_failed(&context, &err);
+                    self.route_error_to_observers(route, &context, &err);
                     let chooser_owned = network_chooser_owns_task(&context);
                     // A top-up nobody open sent, or any task whose screen is
                     // closed, did not come from the screen in view: the banner
@@ -4032,7 +2714,7 @@ impl App for AppState {
                     let screen_owned = !chooser_owned
                         && !recovery_delivered
                         && !foreign_top_up
-                        && route != ResultRoute::ClosedOwner;
+                        && !route.sender_gone();
                     let suppress_stale_error = screen_owned
                         && self.result_screen_mut(route).is_some_and(|screen| {
                             screen.should_suppress_backend_task_error(&context, &err)
@@ -4100,11 +2782,8 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Refresh => {
-                    pending_refresh = PendingRefresh::VisibleScreen;
-                }
-                TaskResult::DpnsContestsChanged => {
-                    pending_refresh = pending_refresh.max(PendingRefresh::VotingScreen);
+                TaskResult::CacheUpdated(update) => {
+                    pending_refresh.0.insert(update);
                 }
                 TaskResult::Repaint => {
                     // SenderAsync/SenderSync already requested a repaint when sending; avoid
@@ -4114,7 +2793,7 @@ impl App for AppState {
         }
 
         self.run_pending_refresh(&mut pending_refresh);
-        if !self.task_result_receiver.is_empty() {
+        if !self.task_result_receiver.is_empty() || !self.rejected_requests.is_empty() {
             ctx.request_repaint();
         }
 
@@ -4126,104 +2805,41 @@ impl App for AppState {
             self.last_repaint_request = Instant::now();
         }
 
-        // Periodically cast any scheduled masternode votes that have come due.
-        // The poll itself — the journal read, local-identity load, and per-vote
-        // casting — runs off the UI thread in the `CastDueScheduledVotes`
-        // backend task; this tick only dispatches it. The voting panel learns
-        // which votes are in progress / cast via `display_task_result`, so a
-        // slow or failing query never stalls a frame.
-        let now = Instant::now();
         let network = active_context.network;
-        if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
-            self.scheduled_vote_sweep_deferred_since_ms
-                .entry(network)
-                .or_insert_with(unix_time_ms);
-        } else if !self.network_selection_required
-            && !self.scheduled_vote_sweeps_in_progress.contains(&network)
-        {
-            let preserve_eligibility_since_ms = self
-                .scheduled_vote_sweep_deferred_since_ms
-                .get(&network)
-                .copied();
-            let recovery_due = preserve_eligibility_since_ms.is_some()
-                && self
-                    .scheduled_vote_recovery_last_attempt
-                    .get(&network)
-                    .is_none_or(|last| now.duration_since(*last) > Duration::from_secs(60));
-            let periodic_due = preserve_eligibility_since_ms.is_none()
-                && now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60);
-            if recovery_due || periodic_due {
-                self.last_scheduled_vote_check = now;
-                if preserve_eligibility_since_ms.is_some() {
-                    self.scheduled_vote_recovery_last_attempt
-                        .insert(network, now);
-                }
-                self.scheduled_vote_sweeps_in_progress.insert(network);
-                let reconcile_unconfirmed = self
-                    .unconfirmed_vote_checks
-                    .entry(network)
-                    .or_default()
-                    .take_due(now);
-                self.handle_backend_task_with_context(
-                    BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::CastDueScheduledVotes {
-                            preserve_eligibility_since_ms,
-                            reconcile_unconfirmed,
-                        },
-                    ),
-                    BackendTaskContext::ScheduledVoteSweep { network },
-                );
-            }
+        if let Some(task) = self.dpns_background.scheduled_vote_task(
+            network,
+            migration_allows_scheduled_vote_sweep(migration_state.as_ref()),
+            self.network_selection_required,
+            Instant::now(),
+            unix_time_ms(),
+        ) {
+            self.handle_backend_task_with_context(
+                BackendTask::ContestedResourceTask(task),
+                BackendTaskContext::ScheduledVoteSweep { network },
+            );
         }
 
-        // Prime and periodically re-derive the attention summary from local
-        // state (no network); the timer below depends on its voting-node count.
-        if self.boot.phase().renders_screens()
+        let voting_available = self.boot.phase().renders_screens()
             && !self.network_selection_required
-            && FeatureGate::Masternodes.is_available(&active_context)
-            && active_context.wallet_backend().is_ok()
-            && self
-                .dpns_attention_recomputed_at
-                .get(&network)
-                .is_none_or(|at| at.elapsed() >= DPNS_ATTENTION_RECOMPUTE_INTERVAL)
-        {
-            self.dpns_attention_recomputed_at
-                .insert(network, Instant::now());
+            && FeatureGate::Masternodes.is_available(&active_context);
+        // Refresh local attention before deciding whether loaded nodes need network work.
+        if self.dpns_background.attention_recompute_due(
+            network,
+            voting_available && active_context.wallet_backend().is_ok(),
+            Instant::now(),
+        ) {
             active_context.recompute_dpns_vote_attention();
         }
-
-        // Background contest + vote-state refresh feeding the attention chip and
-        // the Masternodes badge (VOTE-FR-074): only while voting nodes are loaded.
-        if self.boot.phase().renders_screens()
-            && !self.network_selection_required
-            && FeatureGate::Masternodes.is_available(&active_context)
-            && active_context.dpns_vote_attention().voting_nodes > 0
-        {
-            let now_ms = unix_time_ms();
-            let retry_due = self
-                .dpns_background_refresh_retry_at_ms
-                .get(&network)
-                .is_some_and(|retry_at| now_ms >= *retry_at);
-            if retry_due
-                || crate::model::dpns_voting::operator::background_refresh_due(
-                    active_context.dpns_contests_refreshed_at_ms(),
-                    self.dpns_background_refresh_dispatched_at_ms
-                        .get(&network)
-                        .copied(),
-                    now_ms,
-                    crate::model::dpns_voting::operator::background_refresh_interval(network),
-                )
-            {
-                self.dpns_background_refresh_retry_at_ms.remove(&network);
-                self.dpns_background_refresh_dispatched_at_ms
-                    .insert(network, now_ms);
-                self.handle_backend_task_with_context(
-                    BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::RefreshContestsInBackground,
-                    ),
-                    BackendTaskContext::DpnsBackgroundRefresh { network },
-                );
-            }
+        if let Some(task) = self.dpns_background.refresh_task(
+            network,
+            voting_available && active_context.dpns_vote_attention().voting_nodes > 0,
+            active_context.dpns_contests_refreshed_at_ms(),
+            unix_time_ms(),
+        ) {
+            self.handle_backend_task_with_context(
+                BackendTask::ContestedResourceTask(task),
+                BackendTaskContext::DpnsBackgroundRefresh { network },
+            );
         }
 
         // Drive the SPV-sync block BEFORE claiming input and running the screen, so
@@ -4341,12 +2957,9 @@ impl App for AppState {
         self.render_secret_prompt(ctx);
 
         // Schedule connection status refresh
-        actions.push((
-            None,
-            active_context
-                .connection_status()
-                .trigger_refresh(active_context.as_ref()),
-        ));
+        active_context
+            .connection_status()
+            .trigger_refresh(active_context.as_ref());
 
         // The SPV-sync block was already driven at frame start (above), before the
         // input claim + screen, to close the one-frame interactive gap. It still
@@ -4381,6 +2994,8 @@ impl App for AppState {
         }
         self.drain_overlay_actions(ctx);
 
+        #[cfg(feature = "testing")]
+        actions.extend(self.test_actions.drain(..).map(|action| (None, action)));
         for (owner, action) in actions {
             if !network_selection_allows_action(self.network_selection_required, &action) {
                 tracing::debug!("Blocked an action until the user confirms a network");
@@ -4428,17 +3043,11 @@ impl App for AppState {
                     self.screen_stack.clear();
                     self.active_root_screen_mut().refresh_on_arrival();
                 }
-                AppAction::BackendTask(task) => {
-                    self.handle_backend_task(task);
-                }
-                AppAction::BackendTaskWithContext { task, context } => {
-                    if let Some(owner) = owner {
-                        self.request_owners.record(&context, owner);
-                    }
-                    self.handle_backend_task_with_context(task, context);
-                }
-                AppAction::BackendTasks(tasks, mode) => {
-                    self.handle_backend_tasks(tasks, mode, owner);
+                action @ (AppAction::BackendTask(_)
+                | AppAction::BackendTaskWithContext { .. }
+                | AppAction::BackendTasks(..)
+                | AppAction::BackendTasksWithContexts(..)) => {
+                    self.dispatch_screen_task(owner, action)
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
                     self.set_main_screen(root_screen_type);
@@ -4461,6 +3070,18 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
+                    // The screens still belong to the outgoing network until a
+                    // pending switch lands, so a Connect here would start the
+                    // wrong network's chain sync and lift the user's Disconnect.
+                    if let Some(pending) = self.network_switch_pending {
+                        tracing::info!(
+                            network = ?self.chosen_network,
+                            switching_to = ?pending,
+                            "Ignored Connect while a network switch is pending"
+                        );
+                        continue;
+                    }
+                    tracing::info!(network = ?self.chosen_network, "User pressed Connect");
                     // Arm the SPV-sync block for this user-initiated Connect (a
                     // fresh episode — re-arm the escape). The block conveys the
                     // "connecting" state, so no separate Info banner is set here
@@ -4471,6 +3092,11 @@ impl App for AppState {
                     self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
+                    tracing::info!(
+                        network = ?self.chosen_network,
+                        switching_to = ?self.network_switch_pending,
+                        "User asked to disconnect"
+                    );
                     self.spv_manually_disconnected = true;
                     // Overrule every start still on its way, on any network.
                     self.spv_manual_disconnects.fetch_add(1, Ordering::SeqCst);
@@ -4929,38 +3555,6 @@ mod migration_banner_tests {
         );
     }
 
-    /// Scheduled-vote work resumes only after every migration pass has finished.
-    #[test]
-    fn scheduled_vote_sweep_waits_for_successful_migration_completion() {
-        use crate::context::migration_status::{MigrationState, MigrationStep};
-
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::Idle
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::Ready
-        ));
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::Running {
-                step: MigrationStep::Identities,
-            },
-        ));
-        assert!(!migration_allows_scheduled_vote_sweep(
-            &MigrationState::AwaitingWalletPasswords {
-                wallets: Vec::new(),
-            },
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::Success,
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::SucceededWithUnreadableData {
-                identities: 1,
-                top_ups: 1,
-            },
-        ));
-    }
-
     #[test]
     fn startup_reports_old_schedules_without_queueing_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -4995,18 +3589,6 @@ mod migration_banner_tests {
             "Votes you scheduled in an earlier version of the app on Mainnet were not carried over and will not be cast. They are not listed in this version. Open Masternodes > Votes and schedule the ones you still want."
         );
         assert!(!notice.contains("review"));
-    }
-
-    /// Scheduled votes are never imported or inspected by the storage update:
-    /// no migration copy may claim otherwise.
-    #[test]
-    fn migration_copy_does_not_mention_scheduled_votes() {
-        let progress = MigrationStep::ALL.map(|step| migration_running_text(step).to_owned());
-        let warnings = [(0, 0), (1, 0), (0, 2), (1, 2)]
-            .map(|(identities, top_ups)| migration_unreadable_data_text(identities, top_ups));
-        for text in progress.iter().chain(&warnings) {
-            assert!(!text.to_lowercase().contains("scheduled vote"), "{text}");
-        }
     }
 
     #[test]
@@ -5088,180 +3670,6 @@ mod migration_banner_tests {
         assert!(!show_welcome_screen(true, false));
     }
 
-    #[test]
-    fn deferred_vote_cutoff_clears_only_after_matching_success() {
-        let mut deferred = BTreeMap::from([(Network::Testnet, 42)]);
-
-        assert!(!clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            None,
-        ));
-        assert!(!clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            Some(41),
-        ));
-        assert_eq!(deferred.get(&Network::Testnet), Some(&42));
-
-        assert!(clear_confirmed_vote_recovery_cutoff(
-            &mut deferred,
-            Network::Testnet,
-            Some(42),
-        ));
-        assert!(!deferred.contains_key(&Network::Testnet));
-    }
-
-    #[test]
-    fn unreadable_identity_copy_names_both_loading_paths() {
-        let text = migration_unreadable_identities_text(2);
-        assert!(text.contains("Identities screen"));
-        assert!(text.contains("Masternodes tab"));
-        assert!(text.contains("+ Load"));
-    }
-
-    #[test]
-    fn unreadable_top_up_copy_is_actionable() {
-        let text = migration_unreadable_data_text(0, 2);
-        assert!(text.contains("balance history"));
-        assert!(text.contains("before adding more funds"));
-        assert!(text.ends_with('.'));
-    }
-
-    /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,
-    /// sentence-shaped label so i18n extraction picks it up as one
-    /// translation unit (no concatenation).
-    #[test]
-    fn migration_running_text_is_sentence_for_every_step() {
-        for step in MigrationStep::ALL {
-            let text = migration_running_text(step);
-            assert!(!text.is_empty(), "{step:?} has empty banner text");
-            assert!(
-                text.ends_with('.'),
-                "{step:?} text `{text}` is not a complete sentence",
-            );
-        }
-    }
-
-    /// TC-MIG-001 / TC-MIG-013 — every step has a distinct sentence so
-    /// the per-frame reconciler can detect transitions by text equality
-    /// alone (`set_global` is idempotent for matching text).
-    #[test]
-    fn migration_running_text_distinct_per_step() {
-        let labels = MigrationStep::ALL.map(migration_running_text);
-        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            labels.len(),
-            "duplicate banner text across MigrationStep variants",
-        );
-    }
-
-    /// Retry action id is stable — kittest + production both match on
-    /// this constant, so a typo would mean the click silently drops on
-    /// the floor.
-    #[test]
-    fn migration_retry_action_id_is_stable() {
-        assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
-    }
-
-    /// Every banner action id is distinct. `drain_actions` dispatches on these
-    /// strings, so a collision would silently route one banner's acknowledgement
-    /// to another's task — retiring a warning the user was never shown.
-    #[test]
-    fn migration_action_ids_are_distinct() {
-        let ids = [
-            MIGRATION_RETRY_ACTION_ID,
-            MIGRATION_APP_DATA_ACK_ACTION_ID,
-            MIGRATION_IDENTITIES_ACK_ACTION_ID,
-            MIGRATION_UNREADABLE_ACK_ACTION_ID,
-        ];
-        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
-        assert_eq!(
-            unique.len(),
-            ids.len(),
-            "banner action ids must not collide"
-        );
-    }
-
-    /// The combined-failure banner must surface BOTH signals in one message: the
-    /// unreadable-identity count AND the app-data failure, plus the retry the
-    /// app-data half needs. If it named only one, the other would be silently
-    /// swallowed — exactly the bug this copy exists to prevent.
-    #[test]
-    fn migration_combined_failure_text_names_both_problems_and_the_retry() {
-        let text = migration_failed_with_unreadable_identities_text(3);
-        assert!(
-            text.contains("identities"),
-            "must name the identity problem"
-        );
-        assert!(
-            text.contains('3'),
-            "must carry the unreadable-identity count"
-        );
-        assert!(
-            text.contains("did not finish"),
-            "must name the app-data failure, not only the identities",
-        );
-        assert!(
-            text.contains("Retry now"),
-            "must offer the retry the app-data half needs",
-        );
-        assert!(text.ends_with('.'), "one complete sentence-shaped message");
-    }
-
-    /// The gate's copy must be self-contained, actionable Everyday-User text:
-    /// what happened plus what the user can do, in complete sentences so i18n
-    /// extracts each as one unit. No jargon — these surface behind a block the
-    /// user cannot dismiss, so a vague sentence has no screen to fall back to.
-    #[test]
-    fn storage_prep_copy_is_actionable_and_jargon_free() {
-        for text in [
-            STORAGE_PREP_FAILED_MESSAGE,
-            STORAGE_PREP_STUCK_MESSAGE,
-            STORAGE_PREP_PASSWORD_DESCRIPTION,
-            SPV_CANCEL_QUESTION,
-        ] {
-            assert!(
-                text.ends_with('.') || text.ends_with('?'),
-                "`{text}` is not a sentence"
-            );
-            for jargon in [
-                "SPV",
-                "backend",
-                "wiring",
-                "migration",
-                "sentinel",
-                "persister",
-            ] {
-                assert!(
-                    !text.contains(jargon),
-                    "`{text}` leaks the internal term `{jargon}`",
-                );
-            }
-        }
-        assert!(
-            STORAGE_PREP_FAILED_MESSAGE.contains("unchanged"),
-            "a failed update must say the user's wallets and keys are untouched",
-        );
-    }
-
-    /// Every gate and cancel action id is distinct, so a click can never be
-    /// attributed to the wrong button — the confirm/keep pair especially, where
-    /// a collision would turn "Keep syncing" into a disconnect.
-    #[test]
-    fn overlay_action_ids_are_distinct() {
-        let ids = [
-            SPV_CANCEL_ACTION_ID,
-            SPV_CANCEL_CONFIRM_ACTION_ID,
-            SPV_CANCEL_KEEP_ACTION_ID,
-            STORAGE_PREP_RETRY_ACTION_ID,
-            STORAGE_PREP_CLOSE_ACTION_ID,
-        ];
-        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
-        assert_eq!(unique.len(), ids.len(), "duplicate overlay action id");
-    }
-
     /// Root screens exist only once preparation is done, so only `Ready` may
     /// render them. `AwaitingNetworkChoice` still renders — the chooser is the
     /// one screen built before the gate, and the user needs it to get past it.
@@ -5284,40 +3692,19 @@ mod contact_request_routing_tests {
     use super::*;
 
     #[test]
-    fn hidden_hub_needs_authoritative_contact_result_forwarding() {
-        assert!(!identity_hub_is_visible(
-            RootScreenType::RootScreenWalletsBalances,
-            true
-        ));
-        assert!(!identity_hub_is_visible(
-            RootScreenType::RootScreenIdentityHub,
-            false
-        ));
-        assert!(identity_hub_is_visible(
-            RootScreenType::RootScreenIdentityHub,
-            true
-        ));
-    }
-
-    /// A root screen hears about a result it would not otherwise get: one
-    /// another open screen dispatched, even while the root is in view, and
-    /// one nobody open dispatched while the root is hidden.
-    #[test]
-    fn a_root_takes_its_own_results_and_undispatched_ones_in_view() {
-        use super::request_routing::ScreenStack;
-        let hub = RootScreenType::RootScreenIdentityHub;
-        let other_root = ScreenOwner::Root(RootScreenType::RootScreenWalletsBalances);
+    fn hub_completion_routes_distinguish_owners_visibility_and_closed_forms() {
+        let hub = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
+        let other = ScreenOwner::Root(RootScreenType::RootScreenWalletsBalances);
         let stacked = ScreenOwner::Stacked(ScreenStack::default().push(()));
-
-        for in_view in [false, true] {
-            assert!(root_takes_result(
-                hub,
-                Some(ScreenOwner::Root(hub)),
-                in_view
-            ));
-            assert!(!root_takes_result(hub, Some(other_root), in_view));
-            assert!(!root_takes_result(hub, Some(stacked), in_view));
-            assert_eq!(root_takes_result(hub, None, in_view), in_view);
+        for visible in [hub, other, stacked] {
+            assert!(ResultRoute::Owner(hub).delivers_to(hub, visible));
+            assert!(!ResultRoute::Owner(other).delivers_to(hub, visible));
+            assert!(!ResultRoute::Owner(stacked).delivers_to(hub, visible));
+            assert_eq!(
+                ResultRoute::Visible.delivers_to(hub, visible),
+                visible == hub
+            );
+            assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
     }
 }
@@ -5326,170 +3713,13 @@ mod contact_request_routing_tests {
 mod dpns_result_routing_tests {
     use super::*;
 
-    /// The route a result nobody open dispatched takes to the voting panel.
-    fn dpns_result_needs_hidden_route(
-        target: RootScreenType,
-        selected: RootScreenType,
-        screen_stack_is_empty: bool,
-        result: &BackendTaskSuccessResult,
-    ) -> bool {
-        dpns_result_needs_route(
-            root_takes_result(
-                target,
-                None,
-                !dpns_screen_is_hidden(target, selected, screen_stack_is_empty),
-            ),
-            result,
-        )
-    }
     use crate::model::dpns_voting::{
         DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
         DpnsVoteOperationId,
     };
 
-    /// A vote can stay unconfirmed until its contest closes: it is re-checked
-    /// on a few sweeps, then rarely, and promptly again after vote activity.
     #[test]
-    fn unconfirmed_votes_are_rechecked_a_few_times_then_rarely() {
-        let start = Instant::now();
-        let minute = Duration::from_secs(60);
-        let mut checks = UnconfirmedVoteChecks::default();
-        let due: Vec<bool> = (0..15u32)
-            .map(|sweep| checks.take_due(start + minute * sweep))
-            .collect();
-        let mut expected = vec![false; 15];
-        expected[..usize::from(UNCONFIRMED_VOTE_QUICK_CHECKS)].fill(true);
-        // The last quick check ran at minute 2; the next is one interval later.
-        expected[12] = true;
-        assert_eq!(due, expected);
-
-        assert!(restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network: Network::Testnet,
-                operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
-            }
-        ));
-        assert!(restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
-        ));
-        assert!(!restarts_unconfirmed_vote_checks(
-            &BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: Network::Testnet,
-                preserve_eligibility_since_ms: None,
-            }
-        ));
-    }
-
-    #[test]
-    fn voting_ui_results_route_to_the_hidden_voting_panel_only_once() {
-        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-            network: Network::Testnet,
-            preserve_eligibility_since_ms: None,
-        };
-        let root = VOTING_ROOT_SCREEN;
-        assert_eq!(root, RootScreenType::RootScreenMasternodes);
-        assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
-        assert!(dpns_result_needs_hidden_route(root, root, false, &result));
-        assert!(dpns_result_needs_hidden_route(
-            root,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &result
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            root,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &BackendTaskSuccessResult::None
-        ));
-    }
-
-    #[test]
-    fn correlated_vote_result_routes_when_masternodes_is_hidden() {
-        let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-            network: Network::Testnet,
-            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
-        };
-
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &result,
-        ));
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            false,
-            &result,
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            true,
-            &result,
-        ));
-    }
-
-    #[test]
-    fn refreshed_contests_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &BackendTaskSuccessResult::RefreshedDpnsContests,
-        ));
-    }
-
-    #[test]
-    fn scheduled_vote_sweep_completion_routes_when_masternodes_is_hidden() {
-        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-            network: Network::Testnet,
-            preserve_eligibility_since_ms: None,
-        };
-
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &result,
-        ));
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            false,
-            &result,
-        ));
-        assert!(!dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            VOTING_ROOT_SCREEN,
-            true,
-            &result,
-        ));
-    }
-
-    #[test]
-    fn cleared_scheduled_votes_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenIdentityHub,
-            true,
-            &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-        ));
-    }
-
-    /// The panel itself says which results it handles, so routing follows the
-    /// handler: every such result reaches a hidden panel, and nothing else does.
-    #[test]
-    fn hidden_routing_follows_the_results_the_voting_panel_handles() {
-        let hidden = |result: &BackendTaskSuccessResult| {
-            dpns_result_needs_hidden_route(
-                VOTING_ROOT_SCREEN,
-                RootScreenType::RootScreenIdentityHub,
-                true,
-                result,
-            )
-        };
+    fn voting_observer_interest_matches_supported_results() {
         for handled in [
             BackendTaskSuccessResult::DpnsVoteOperationUpdated {
                 network: Network::Testnet,
@@ -5504,41 +3734,17 @@ mod dpns_result_routing_tests {
             BackendTaskSuccessResult::RefreshedDpnsContests,
         ] {
             assert!(DPNSScreen::handles_result(&handled));
-            assert!(hidden(&handled));
         }
         for unrelated in [
             BackendTaskSuccessResult::None,
-            BackendTaskSuccessResult::Refresh,
+            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network: Network::Testnet,
+                domain: crate::backend_task::CacheDomain::Dpns,
+            }),
             BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
         ] {
             assert!(!DPNSScreen::handles_result(&unrelated));
-            assert!(!hidden(&unrelated));
         }
-    }
-
-    #[test]
-    fn scheduled_votes_in_progress_route_when_masternodes_is_hidden() {
-        assert!(dpns_result_needs_hidden_route(
-            VOTING_ROOT_SCREEN,
-            RootScreenType::RootScreenWalletsBalances,
-            true,
-            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
-        ));
-    }
-
-    /// The visibility rule both `route_dpns_vote_result_to_hidden_screens` and
-    /// `route_dpns_vote_error_to_hidden_screens` route on.
-    #[test]
-    fn the_voting_panel_is_hidden_behind_another_root_screen_or_a_modal() {
-        let target = VOTING_ROOT_SCREEN;
-
-        assert!(!dpns_screen_is_hidden(target, target, true));
-        assert!(dpns_screen_is_hidden(target, target, false));
-        assert!(dpns_screen_is_hidden(
-            target,
-            RootScreenType::RootScreenWalletsBalances,
-            true
-        ));
     }
 
     #[test]
@@ -5596,594 +3802,6 @@ mod dpns_result_routing_tests {
 }
 
 #[cfg(test)]
-mod pending_confirmation_tests {
-    use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
-
-    fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
-        Some(TransactionConfirmation { status, height })
-    }
-
-    /// The window the whole feature lives in: the transaction is in the
-    /// snapshot because this app injected it locally, which says nothing about
-    /// whether any peer took it. Keep the ambiguous banner, keep watching.
-    #[test]
-    fn a_mempool_only_transaction_keeps_waiting() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                Duration::from_secs(5),
-                false
-            ),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// A transaction no loaded wallet has seen at all is likewise no verdict.
-    #[test]
-    fn an_unseen_transaction_keeps_waiting() {
-        assert_eq!(
-            pending_step(None, Duration::from_secs(5), false),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// An InstantSend lock is driven only by a real lock message from the
-    /// network, and arrives before any block — so it confirms on its own, with
-    /// no height to wait for.
-    #[test]
-    fn an_instant_send_lock_confirms_without_a_height() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::InstantSendLocked, None),
-                Duration::from_secs(5),
-                false
-            ),
-            PendingStep::Confirmed,
-        );
-    }
-
-    /// A mined transaction carries the height of the block holding it.
-    #[test]
-    fn a_mined_transaction_confirms() {
-        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
-            assert_eq!(
-                pending_step(seen(status, Some(1_234)), Duration::from_secs(5), false),
-                PendingStep::Confirmed,
-                "{status:?} at a known height must confirm"
-            );
-        }
-    }
-
-    /// The phantom guard. A record reported at a mined tier but carrying no
-    /// block height is not evidence of a block, and this verdict becomes a
-    /// message about someone's money — so withhold it and keep watching.
-    #[test]
-    fn a_mined_tier_without_a_height_keeps_waiting() {
-        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
-            assert_eq!(
-                pending_step(seen(status, None), Duration::from_secs(5), false),
-                PendingStep::Waiting,
-                "{status:?} without a height must not be treated as mined"
-            );
-        }
-    }
-
-    /// Past the threshold, "wait a moment, then refresh" has expired and the
-    /// user needs different advice.
-    #[test]
-    fn a_long_unconfirmed_watch_goes_stale() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                PENDING_STALE_AFTER,
-                false
-            ),
-            PendingStep::Stale,
-        );
-    }
-
-    /// The re-wording happens once. Repeating it every tick would keep
-    /// rebuilding a banner the user is trying to read, or dismiss.
-    #[test]
-    fn an_already_stale_watch_does_not_re_word_itself() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Unconfirmed, None),
-                PENDING_STALE_AFTER * 4,
-                true
-            ),
-            PendingStep::Waiting,
-        );
-    }
-
-    /// The watch never expires: a confirmation long after the copy changed
-    /// still resolves it, so a slow network ends in the truth rather than in
-    /// the warning.
-    #[test]
-    fn a_late_confirmation_still_beats_a_stale_watch() {
-        assert_eq!(
-            pending_step(
-                seen(TransactionStatus::Confirmed, Some(9_001)),
-                PENDING_STALE_AFTER * 4,
-                true
-            ),
-            PendingStep::Confirmed,
-        );
-    }
-
-    /// Both pending messages are written for the Everyday User: no jargon, and
-    /// no promise about the funds becoming spendable again, which this app
-    /// cannot verify.
-    #[test]
-    fn pending_copy_stays_jargon_free_and_promises_nothing_about_the_funds() {
-        let confirmed = pending_confirmed_message(&Txid::from_byte_array([0xab; 32]));
-        for message in [confirmed.as_str(), PENDING_STALE_MESSAGE] {
-            for jargon in [
-                "mempool",
-                "broadcast",
-                "InstantSend",
-                "SPV",
-                "nonce",
-                "state transition",
-                "txid",
-                "UTXO",
-            ] {
-                assert!(
-                    !message.contains(jargon),
-                    "Expected no jargon ({jargon}) in: {message}"
-                );
-            }
-            assert!(
-                !message.contains("safe"),
-                "the copy must not vouch for the safety of a resend: {message}"
-            );
-        }
-    }
-
-    /// The confirmation has to name the payment it answers for. Several can be
-    /// waiting at once and the others keep their warning on screen beside it,
-    /// so an unattributed "your transaction is confirmed" leaves the user to
-    /// guess which one landed — and either guess ends in paying twice.
-    #[test]
-    fn the_confirmation_copy_names_the_payment_it_answers_for() {
-        let first = Txid::from_byte_array([0x11; 32]);
-        let second = Txid::from_byte_array([0x22; 32]);
-
-        let message = pending_confirmed_message(&first);
-        assert_ne!(
-            message,
-            pending_confirmed_message(&second),
-            "two payments must not produce the same confirmation, or the shared \
-             banner list collapses them into one indistinguishable message"
-        );
-
-        let full = first.to_string();
-        let head = &full[..5];
-        assert!(
-            message.contains(head),
-            "the copy must carry enough of the id to match the transaction \
-             history row it sends the user to: {message}"
-        );
-    }
-
-    /// The stale copy is reached for every non-confirmed observation, including
-    /// one no loaded wallet has seen at all and one reported at a mined tier
-    /// with no block height. Naming a status asserts a transaction-history row
-    /// the app has not established — and, in the mined-tier case, one the
-    /// wallet would render under a different word entirely.
-    #[test]
-    fn the_stale_copy_names_no_transaction_status_it_cannot_establish() {
-        for status in ["Pending", "Unconfirmed", "Confirmed", "ChainLocked"] {
-            assert!(
-                !PENDING_STALE_MESSAGE.contains(status),
-                "the copy must not name the {status} status: {PENDING_STALE_MESSAGE}"
-            );
-        }
-        assert!(
-            PENDING_STALE_MESSAGE.contains("transaction history"),
-            "the copy must still hand the user the durable surface: {PENDING_STALE_MESSAGE}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod spv_overlay_tests {
-    use super::*;
-
-    const ALL_STATES: [OverallConnectionState; 5] = [
-        OverallConnectionState::Disconnected,
-        OverallConnectionState::Connecting,
-        OverallConnectionState::Syncing,
-        OverallConnectionState::Synced,
-        OverallConnectionState::Error,
-    ];
-
-    /// F-SPV-A — UN-armed (ambient sync, or already disarmed): NEVER block, for
-    /// every state. This is the regression guard: a mid-session reconnect or
-    /// per-block Synced→Syncing flip must not hard-block.
-    #[test]
-    fn unarmed_never_blocks() {
-        for state in ALL_STATES {
-            assert_eq!(
-                spv_block_step(false, state),
-                SpvBlockStep::Idle,
-                "un-armed {state:?} must not block"
-            );
-        }
-    }
-
-    /// Armed + getting-connected (Connecting/Syncing/Disconnected) → hard block.
-    ///
-    /// There is no longer a "stand down without disarming" row: the background
-    /// escape it modelled is gone. Cancel stops sync outright (after a confirm),
-    /// which lands on Disarm through the reconciler, not on a third step.
-    #[test]
-    fn armed_blocks_while_getting_connected() {
-        for state in [
-            OverallConnectionState::Disconnected,
-            OverallConnectionState::Connecting,
-            OverallConnectionState::Syncing,
-        ] {
-            assert_eq!(spv_block_step(true, state), SpvBlockStep::Block);
-        }
-    }
-
-    /// C1 / F-SPV-A — armed + terminal (Synced/Error) → Disarm: lower and disarm
-    /// so ambient sync afterwards never re-blocks.
-    #[test]
-    fn armed_terminal_state_disarms() {
-        for state in [
-            OverallConnectionState::Synced,
-            OverallConnectionState::Error,
-        ] {
-            assert_eq!(spv_block_step(true, state), SpvBlockStep::Disarm);
-        }
-    }
-
-    /// The cancel action ids are stable — production raises them and the
-    /// SPV-sync block reconciler matches on them; a typo would drop the click,
-    /// and on the confirm pair it could drop it onto the wrong button.
-    #[test]
-    fn cancel_action_ids_are_stable() {
-        assert_eq!(SPV_CANCEL_ACTION_ID, "spv:sync:cancel");
-        assert_eq!(SPV_CANCEL_CONFIRM_ACTION_ID, "spv:sync:cancel_confirm");
-        assert_eq!(SPV_CANCEL_KEEP_ACTION_ID, "spv:sync:cancel_keep");
-    }
-
-    /// F-SPV-B — the block descriptions are jargon-free complete sentences (no
-    /// "SPV"/"headers"/"masternodes"/raw heights/percentages).
-    #[test]
-    fn descriptions_are_jargon_free_sentences() {
-        for desc in [SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION] {
-            assert!(desc.ends_with('.'), "`{desc}` must be a complete sentence");
-            let lower = desc.to_lowercase();
-            for jargon in ["header", "masternode", "filter", "spv", "rpc", "%", "/"] {
-                assert!(
-                    !lower.contains(jargon),
-                    "`{desc}` leaks blockchain jargon `{jargon}` to the Everyday User"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod shutdown_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    struct MockShutdownBackend {
-        forget_calls: AtomicUsize,
-        secret_cached: AtomicBool,
-        shutdown_completes: bool,
-    }
-
-    impl ShutdownWalletBackend for MockShutdownBackend {
-        fn forget_all_secrets(&self) {
-            self.forget_calls.fetch_add(1, Ordering::Relaxed);
-            self.secret_cached.store(false, Ordering::Release);
-        }
-
-        fn shutdown(&self) -> futures::future::BoxFuture<'_, ()> {
-            self.secret_cached.store(true, Ordering::Release);
-            if self.shutdown_completes {
-                Box::pin(async {})
-            } else {
-                Box::pin(std::future::pending())
-            }
-        }
-    }
-
-    struct TestDataDir {
-        prior: Option<String>,
-        _temp_dir: tempfile::TempDir,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TestDataDir {
-        fn enter() -> Self {
-            let lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let temp_dir = tempfile::tempdir().expect("temporary app data directory");
-            let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
-            // Safety: the process-global test lock serializes this environment override.
-            unsafe { std::env::set_var("DASH_EVO_DATA_DIR", temp_dir.path()) };
-            Self {
-                prior,
-                _temp_dir: temp_dir,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for TestDataDir {
-        fn drop(&mut self) {
-            // Safety: `_lock` remains held until after the prior value is restored.
-            unsafe {
-                match &self.prior {
-                    Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
-                    None => std::env::remove_var("DASH_EVO_DATA_DIR"),
-                }
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn second_exit_after_async_attempt_does_not_repeat_wallet_teardown() {
-        use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
-        use zeroize::Zeroizing;
-
-        let _data_dir = TestDataDir::enter();
-        let mut app = AppState::new(egui::Context::default()).expect("test AppState");
-        let context = app.current_app_context().clone();
-        context
-            .ensure_wallet_backend(app.task_result_sender.clone())
-            .await
-            .expect("wire test wallet backend");
-        let backend = context.wallet_backend().expect("wired wallet backend");
-        let secret_access = backend.secret_access();
-        let scope = SecretScope::HdSeed {
-            seed_hash: [0x42; 32],
-        };
-        let secret = Zeroizing::new([0x24; 64]);
-        secret_access.remember_session(
-            &scope,
-            SecretPlaintext::HdSeed(&secret),
-            RememberPolicy::UntilAppClose,
-        );
-
-        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        assert!(
-            app.subtasks
-                .spawn_blocking_sync(
-                    "slow-shutdown-regression-task",
-                    move || {
-                        started_tx.send(()).expect("report slow task start");
-                        release_rx.recv().expect("wait for slow task release");
-                    },
-                    |_| async {},
-                )
-                .is_ok(),
-            "slow shutdown task is accepted"
-        );
-        started_rx.recv().expect("slow task started");
-
-        app.shutdown_started = Some(std::time::Instant::now());
-        let mut shutdown = app.start_async_shutdown();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
-                .await
-                .is_err(),
-            "wallet teardown waits for in-flight blocking work"
-        );
-        release_tx.send(()).expect("release slow task");
-        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut shutdown)
-            .await
-            .expect("async shutdown stays within its budget")
-            .expect("async shutdown task reports an outcome");
-        assert_eq!(outcome, ShutdownOutcome::Complete);
-        assert!(!secret_access.is_session_cached(&scope));
-
-        secret_access.remember_session(
-            &scope,
-            SecretPlaintext::HdSeed(&secret),
-            RememberPolicy::UntilAppClose,
-        );
-        app.shutdown_finished = false;
-        app.shutdown_receiver = None;
-        eframe::App::on_exit(&mut app);
-
-        assert!(
-            secret_access.is_session_cached(&scope),
-            "on_exit must not invoke wallet teardown again after any async attempt"
-        );
-        secret_access.forget_all();
-    }
-
-    #[tokio::test]
-    async fn wallet_shutdown_clears_secrets_again_after_teardown_wait() {
-        let backend = Arc::new(MockShutdownBackend {
-            forget_calls: AtomicUsize::new(0),
-            secret_cached: AtomicBool::new(true),
-            shutdown_completes: true,
-        });
-
-        let outcome = AppState::shutdown_wallet_backend_instances(
-            &[Arc::clone(&backend)],
-            Duration::from_secs(1),
-        )
-        .await;
-
-        assert_eq!(outcome, ShutdownOutcome::Complete);
-        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 2);
-        assert!(
-            !backend.secret_cached.load(Ordering::Acquire),
-            "a secret re-cached during shutdown is cleared by the final pass"
-        );
-    }
-
-    #[tokio::test]
-    async fn wallet_shutdown_clears_secrets_again_after_teardown_timeout() {
-        let backend = Arc::new(MockShutdownBackend {
-            forget_calls: AtomicUsize::new(0),
-            secret_cached: AtomicBool::new(true),
-            shutdown_completes: false,
-        });
-
-        let outcome = AppState::shutdown_wallet_backend_instances(
-            &[Arc::clone(&backend)],
-            Duration::from_millis(10),
-        )
-        .await;
-
-        assert_eq!(outcome, ShutdownOutcome::WalletBackendTimedOut);
-        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 2);
-        assert!(
-            !backend.secret_cached.load(Ordering::Acquire),
-            "the final clear still runs when backend shutdown exceeds its timeout"
-        );
-    }
-
-    #[tokio::test]
-    async fn backend_task_timeout_forgets_secrets_without_wallet_teardown() {
-        let backend = Arc::new(MockShutdownBackend {
-            forget_calls: AtomicUsize::new(0),
-            secret_cached: AtomicBool::new(true),
-            shutdown_completes: true,
-        });
-        let teardown_calls = Arc::new(AtomicUsize::new(0));
-        let calls = Arc::clone(&teardown_calls);
-
-        let outcome = AppState::finish_shutdown_after_tasks(
-            Some(TaskShutdownOutcome::BackendTasksTimedOut),
-            &[Arc::clone(&backend)],
-            async move {
-                calls.fetch_add(1, Ordering::Relaxed);
-                ShutdownOutcome::Complete
-            },
-        )
-        .await;
-
-        assert_eq!(outcome, ShutdownOutcome::BackendTasksTimedOut);
-        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
-        assert!(!backend.secret_cached.load(Ordering::Acquire));
-        assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn task_manager_failure_forgets_secrets_without_wallet_teardown() {
-        let backend = Arc::new(MockShutdownBackend {
-            forget_calls: AtomicUsize::new(0),
-            secret_cached: AtomicBool::new(true),
-            shutdown_completes: true,
-        });
-        let teardown_calls = Arc::new(AtomicUsize::new(0));
-        let calls = Arc::clone(&teardown_calls);
-
-        let outcome =
-            AppState::finish_shutdown_after_tasks(None, &[Arc::clone(&backend)], async move {
-                calls.fetch_add(1, Ordering::Relaxed);
-                ShutdownOutcome::Complete
-            })
-            .await;
-
-        assert_eq!(outcome, ShutdownOutcome::TaskManagerFailed);
-        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
-        assert!(!backend.secret_cached.load(Ordering::Acquire));
-        assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn complete_task_shutdown_forgets_secrets_and_runs_wallet_teardown_once() {
-        let backend = Arc::new(MockShutdownBackend {
-            forget_calls: AtomicUsize::new(0),
-            secret_cached: AtomicBool::new(true),
-            shutdown_completes: true,
-        });
-        let teardown_calls = Arc::new(AtomicUsize::new(0));
-        let calls = Arc::clone(&teardown_calls);
-
-        let outcome = AppState::finish_shutdown_after_tasks(
-            Some(TaskShutdownOutcome::Complete),
-            &[Arc::clone(&backend)],
-            async move {
-                calls.fetch_add(1, Ordering::Relaxed);
-                ShutdownOutcome::Complete
-            },
-        )
-        .await;
-
-        assert_eq!(outcome, ShutdownOutcome::Complete);
-        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
-        assert!(!backend.secret_cached.load(Ordering::Acquire));
-        assert_eq!(teardown_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn collect_created_context_only_keeps_network_context_results() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let context = crate::context::test_support::test_app_context(temp_dir.path());
-        let mut contexts = Vec::new();
-
-        AppState::collect_created_context(
-            &mut contexts,
-            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextRegistered {
-                network: Network::Testnet,
-                context: Arc::clone(&context),
-            }),
-        );
-        assert_eq!(contexts.len(), 1);
-        assert!(Arc::ptr_eq(&contexts[0], &context));
-
-        AppState::collect_created_context(
-            &mut contexts,
-            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextCreated {
-                network: Network::Testnet,
-                context: Arc::clone(&context),
-                spv_started: false,
-            }),
-        );
-        assert_eq!(contexts.len(), 1);
-        assert!(Arc::ptr_eq(&contexts[0], &context));
-
-        AppState::collect_created_context(
-            &mut contexts,
-            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextCreated {
-                network: Network::Testnet,
-                context: Arc::clone(&context),
-                spv_started: false,
-            }),
-        );
-        assert_eq!(contexts.len(), 1);
-
-        AppState::collect_created_context(
-            &mut contexts,
-            TaskResult::unattributed_success(BackendTaskSuccessResult::None),
-        );
-        assert_eq!(contexts.len(), 1);
-
-        AppState::collect_created_context(
-            &mut contexts,
-            TaskResult::unattributed_error(TaskError::NoIdentitiesFound),
-        );
-        assert_eq!(contexts.len(), 1);
-    }
-
-    #[test]
-    fn viewport_deadline_is_derived_from_shutdown_phase_budgets() {
-        assert_eq!(
-            shutdown_hard_deadline(),
-            TaskManager::graceful_shutdown_budget()
-                + WALLET_BACKEND_SHUTDOWN_TIMEOUT
-                + SHUTDOWN_DEADLINE_MARGIN
-        );
-    }
-}
-
-#[cfg(test)]
 mod network_chooser_routing_tests {
     use super::*;
     use crate::backend_task::system_task::SystemTask;
@@ -6199,5 +3817,10 @@ mod network_chooser_routing_tests {
         let context = BackendTaskContext::from(&task);
         assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
         assert!(network_chooser_owns_task(&context));
+        let dispatched = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+        assert!(
+            network_chooser_owns_task(&dispatched),
+            "the chooser's own dispatch is still the chooser's task"
+        );
     }
 }

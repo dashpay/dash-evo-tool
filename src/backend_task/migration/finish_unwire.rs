@@ -3955,7 +3955,7 @@ mod tests {
         use crate::wallet_backend::single_key::{
             SingleKeyView, label_for_address, single_key_namespace_id,
         };
-        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -3967,10 +3967,7 @@ mod tests {
         let mut raw = [0u8; 32];
         raw[31] = 7;
         let priv_key = PrivateKey::from_byte_array(&raw, Network::Testnet).expect("priv");
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
         let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);
         seed_legacy_row(
@@ -5719,7 +5716,7 @@ mod tests {
     /// wallet drain aborts at its first step without a wired backend, so the
     /// funds-reachability tests below cannot use [`fresh_app_context`] alone.
     async fn wire_backend(app_context: &Arc<AppContext>) {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, app_context.egui_ctx().clone());
         app_context
             .ensure_wallet_backend(sender)
@@ -6136,7 +6133,7 @@ mod tests {
     /// `app_storage_update` MCP tool does, bounded so a regression that waits
     /// for a person fails instead of hanging.
     async fn prepare_with_password(ctx: &Arc<AppContext>, password: &str) -> Result<(), TaskError> {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
         let supplied = SecretString::new(password);
         tokio::time::timeout(

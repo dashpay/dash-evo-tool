@@ -12,8 +12,8 @@ use crate::model::dpns::{
     validate_dpns_name,
 };
 use crate::model::dpns_usernames::{
-    UsernameAvailability, dpns_signing_requirement, missing_registration_wallets,
-    registration_key_status,
+    UsernameAvailability, dpns_security_levels, dpns_signing_requirement,
+    missing_registration_wallets, registration_key_status,
 };
 use crate::model::fee_estimation::{contest_fee_credits, format_credits_as_dash};
 use crate::model::identity_key_usability::SigningScope;
@@ -31,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{
     MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
 };
-use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_security_levels};
 use crate::ui::identity::username_copy::{
     self, AvailabilityRow, Tone, USERNAME_RULES, availability_line, offers_suggestions,
 };
@@ -591,33 +591,24 @@ impl RegisterDpnsNameScreen {
             egui::CollapsingHeader::new("Advanced")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let document_type = self
-                        .app_context
-                        .dpns_contract()
-                        .document_type_cloned_for_name("domain")
-                        .ok();
+                    let dpns_contract = self.app_context.dpns_contract();
+                    // The levels both registration documents accept, as the
+                    // automatic choice and the backend's check of a chosen
+                    // key use them.
+                    let levels = dpns_security_levels(dpns_signing_requirement(&dpns_contract));
                     if self.selected_key.is_none() {
-                        self.selected_key = document_type
-                            .as_ref()
-                            .and_then(|doc_type| {
-                                identity.document_signing_key(
-                                    SigningScope::ContractWide {
-                                        contract_id: self.app_context.dpns_contract().id(),
-                                    },
-                                    &doc_type.as_ref(),
-                                )
-                            })
-                            .cloned();
+                        self.selected_key =
+                            identity.username_registration_key(&dpns_contract).cloned();
                     }
-                    action |= add_key_chooser_with_doc_type(
+                    action |= add_key_chooser_with_security_levels(
                         ui,
                         &self.app_context,
                         &identity,
                         &mut self.selected_key,
-                        TransactionType::DocumentAction,
-                        document_type.as_ref(),
+                        TransactionType::UsernameRegistration,
+                        &levels,
                         SigningScope::ContractWide {
-                            contract_id: self.app_context.dpns_contract().id(),
+                            contract_id: dpns_contract.id(),
                         },
                     );
                 });
@@ -804,6 +795,14 @@ pub(crate) fn status_line(ui: &mut Ui, tone: Tone, text: &str, dark_mode: bool) 
 }
 
 impl ScreenLike for RegisterDpnsNameScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.reload_identity();
+        }
+    }
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         self.registration_error_handled = false;
         if self.registration_context.settle(context).is_none() {

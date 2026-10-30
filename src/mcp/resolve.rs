@@ -167,7 +167,7 @@ async fn hydrate_wallets(
     ctx: &Arc<AppContext>,
     wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
 ) -> Result<(), McpToolError> {
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
@@ -291,7 +291,7 @@ async fn ensure_spv_ready(
     // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
     // it, so the receiver is dropped. The `EventBridge` only does non-blocking
     // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;

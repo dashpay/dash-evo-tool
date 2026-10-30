@@ -16,7 +16,7 @@ use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::WalletArcRef;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -186,23 +186,18 @@ async fn step_add_key(
 
     let private_key_bytes: [u8; 32] = rand::rng().random();
 
-    let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-        id: 0,
-        purpose: Purpose::AUTHENTICATION,
-        security_level: SecurityLevel::HIGH,
-        contract_bounds: None,
-        key_type: KeyType::ECDSA_SECP256K1,
-        read_only: false,
-        data: {
-            use dash_sdk::dpp::dashcore::PrivateKey;
-            let secret_key =
-                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
-                    .expect("invalid secret key");
-            let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
-                .expect("valid secret key");
-            pk.public_key().to_bytes().into()
-        },
-        disabled_at: None,
+    let mut new_ipk = IdentityPublicKey::default_versioned(ctx.app_context.platform_version())
+        .expect("identity key structure");
+    new_ipk.set_purpose(Purpose::AUTHENTICATION);
+    new_ipk.set_security_level(SecurityLevel::HIGH);
+    new_ipk.set_key_type(KeyType::ECDSA_SECP256K1);
+    new_ipk.set_data({
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
+            .expect("invalid secret key");
+        let pk = PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
+            .expect("valid secret key");
+        pk.public_key().to_bytes().into()
     });
 
     let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);

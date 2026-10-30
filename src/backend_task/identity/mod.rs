@@ -18,7 +18,7 @@ mod transfer;
 mod withdraw_from_identity;
 
 use super::{BackendTaskSuccessResult, FeeResult, TaskError};
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
@@ -35,11 +35,14 @@ use dash_sdk::dpp::dashcore::{Network, OutPoint, PublicKey};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+    IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+};
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -234,20 +237,30 @@ impl IdentityKeySpecs {
         }
     }
 
-    pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
+    /// The AUTHENTICATION/MASTER key with id 0, in the identity key structure
+    /// of `platform_version`.
+    fn master_key(
+        master: &IdentityKeyEntry,
+        platform_version: &PlatformVersion,
+    ) -> Result<IdentityPublicKey, Box<ProtocolError>> {
+        let mut key = IdentityPublicKey::default_versioned(platform_version)?;
+        key.set_id(0);
+        key.set_purpose(Purpose::AUTHENTICATION);
+        key.set_security_level(SecurityLevel::MASTER);
+        key.set_key_type(master.key_type);
+        key.set_data(Self::key_data(master));
+        Ok(key)
+    }
+
+    pub fn to_key_storage(
+        &self,
+        wallet_seed_hash: WalletSeedHash,
+        platform_version: &PlatformVersion,
+    ) -> Result<KeyStorage, Box<ProtocolError>> {
         let mut key_map = BTreeMap::new();
 
         if let Some(master) = &self.master {
-            let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                id: 0,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::MASTER,
-                contract_bounds: None,
-                key_type: master.key_type,
-                read_only: false,
-                data: Self::key_data(master),
-                disabled_at: None,
-            });
+            let key = Self::master_key(master, platform_version)?;
 
             let wallet_derivation_path = WalletDerivationPath {
                 wallet_seed_hash,
@@ -266,6 +279,7 @@ impl IdentityKeySpecs {
 
         key_map.extend(self.others.iter().enumerate().map(|(i, entry)| {
             let id = (i + 1) as KeyID;
+            // A literal: the key setters cannot bind a key to a contract.
             let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id,
                 purpose: entry.purpose,
@@ -293,31 +307,40 @@ impl IdentityKeySpecs {
             )
         }));
 
-        key_map.into()
+        Ok(key_map.into())
     }
-    pub fn to_public_keys_map(&self) -> Result<BTreeMap<KeyID, IdentityPublicKey>, String> {
+
+    /// The error for a key whose purpose does not allow its security level.
+    fn level_not_allowed(id: KeyID, purpose: &Purpose, level: &SecurityLevel) -> TaskError {
+        IdentityKeySpecError::SecurityLevelNotAllowed {
+            key_id: id,
+            purpose: *purpose,
+            security_level: *level,
+        }
+        .into()
+    }
+
+    pub fn to_public_keys_map(
+        &self,
+        platform_version: &PlatformVersion,
+    ) -> Result<BTreeMap<KeyID, IdentityPublicKey>, TaskError> {
         let mut key_map = BTreeMap::new();
         if let Some(master) = &self.master {
             match master.key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(format!(
-                        "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                        other
-                    ));
+                    return Err(IdentityKeySpecError::UnsupportedKeyType {
+                        key_id: 0,
+                        key_type: other,
+                    }
+                    .into());
                 }
             }
-            let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                id: 0,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::MASTER,
-                contract_bounds: None,
-                key_type: master.key_type,
-                read_only: false,
-                data: Self::key_data(master),
-                disabled_at: None,
-            });
-
+            let key = Self::master_key(master, platform_version).map_err(|e| {
+                TaskError::IdentityKeysPreparationFailed {
+                    source: Box::new(dash_sdk::Error::Protocol(*e)),
+                }
+            })?;
             key_map.insert(0, key);
         }
         for (i, entry) in self.others.iter().enumerate() {
@@ -330,18 +353,12 @@ impl IdentityKeySpecs {
             match purpose {
                 Purpose::TRANSFER => {
                     if *security_level != SecurityLevel::CRITICAL {
-                        return Err(format!(
-                            "Key {}: TRANSFER purpose requires CRITICAL security level, got {:?}",
-                            id, security_level
-                        ));
+                        return Err(Self::level_not_allowed(id, purpose, security_level));
                     }
                 }
                 Purpose::ENCRYPTION | Purpose::DECRYPTION => {
                     if *security_level != SecurityLevel::MEDIUM {
-                        return Err(format!(
-                            "Key {}: {:?} purpose requires MEDIUM security level, got {:?}",
-                            id, purpose, security_level
-                        ));
+                        return Err(Self::level_not_allowed(id, purpose, security_level));
                     }
                 }
                 Purpose::AUTHENTICATION
@@ -349,10 +366,7 @@ impl IdentityKeySpecs {
                         && *security_level != SecurityLevel::HIGH
                         && *security_level != SecurityLevel::MEDIUM =>
                 {
-                    return Err(format!(
-                        "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
-                        id, security_level
-                    ));
+                    return Err(Self::level_not_allowed(id, purpose, security_level));
                 }
                 _ => {}
             }
@@ -360,12 +374,14 @@ impl IdentityKeySpecs {
             match key_type {
                 KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
-                    return Err(format!(
-                        "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
-                        id, other
-                    ));
+                    return Err(IdentityKeySpecError::UnsupportedKeyType {
+                        key_id: id,
+                        key_type: *other,
+                    }
+                    .into());
                 }
             }
+            // A literal: the key setters cannot bind a key to a contract.
             let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id,
                 purpose: *purpose,
@@ -741,6 +757,22 @@ pub async fn build_identity_registration(
             },
         )
         .await
+}
+
+/// Why identity key specs could not become the identity's public keys.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IdentityKeySpecError {
+    /// Only ECDSA_SECP256K1 and ECDSA_HASH160 keys can be registered.
+    #[error("Unsupported key type for key {key_id}: {key_type:?}")]
+    UnsupportedKeyType { key_id: KeyID, key_type: KeyType },
+
+    /// The key's purpose does not allow its security level.
+    #[error("Key {key_id}: {purpose:?} purpose does not allow {security_level:?} security level")]
+    SecurityLevelNotAllowed {
+        key_id: KeyID,
+        purpose: Purpose,
+        security_level: SecurityLevel,
+    },
 }
 
 /// Failure while checking that an identity carries a public key matching a
@@ -1498,9 +1530,12 @@ mod tests {
         .expect("other");
 
         let specs = IdentityKeySpecs::new(Some(master.clone()), vec![other.clone()]);
+        let platform_version = PlatformVersion::latest();
 
         // Public keys map: id 0 (master) + id 1 (other), both present.
-        let public_map = specs.to_public_keys_map().expect("public map");
+        let public_map = specs
+            .to_public_keys_map(platform_version)
+            .expect("public map");
         assert_eq!(public_map.len(), 2);
         assert!(public_map.contains_key(&0));
         assert!(public_map.contains_key(&1));
@@ -1509,7 +1544,9 @@ mod tests {
         // the same wallet seed hash the chokepoint resolves from. Resolve via
         // the seed-param path (the JIT chokepoint's resolver) with a borrowed
         // seed — the legacy parked-seed `get_resolve` is gone.
-        let storage = specs.to_key_storage(seed_hash);
+        let storage = specs
+            .to_key_storage(seed_hash, platform_version)
+            .expect("key storage");
         let stored = storage
             .get_resolve_with_seed(
                 &(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
@@ -1530,5 +1567,147 @@ mod tests {
             resolved_pub.serialize(),
             "stored path resolves to the spec's public key"
         );
+    }
+
+    /// A key whose purpose does not allow its security level fails the public
+    /// keys map with a typed source naming the key, purpose and level.
+    #[test]
+    fn a_disallowed_security_level_is_a_typed_key_spec_error() {
+        use std::error::Error as _;
+
+        let seed = [0x44u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let transfer = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            1,
+            KeyType::ECDSA_SECP256K1,
+            Purpose::TRANSFER,
+            SecurityLevel::HIGH,
+            None,
+        )
+        .expect("transfer key");
+        let specs = IdentityKeySpecs::new(None, vec![transfer]);
+
+        let error = specs
+            .to_public_keys_map(PlatformVersion::latest())
+            .expect_err("TRANSFER needs CRITICAL");
+
+        assert!(
+            matches!(error, TaskError::PublicKeyMapBuildFailed { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<IdentityKeySpecError>()),
+            Some(&IdentityKeySpecError::SecurityLevelNotAllowed {
+                key_id: 1,
+                purpose: Purpose::TRANSFER,
+                security_level: SecurityLevel::HIGH,
+            })
+        );
+    }
+
+    /// A protocol whose identity key structure this build does not know fails
+    /// the public keys map with a dedicated variant that keeps dpp's typed
+    /// version-mismatch error as its source.
+    #[test]
+    fn unknown_key_structure_keeps_the_typed_protocol_error() {
+        let seed = [0x33u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let master = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master");
+        let specs = IdentityKeySpecs::new(Some(master), Vec::new());
+        let mut platform_version = PlatformVersion::latest().clone();
+        platform_version
+            .dpp
+            .identity_versions
+            .identity_key_structure_version = u16::MAX;
+
+        let error = specs
+            .to_public_keys_map(&platform_version)
+            .expect_err("unknown key structure");
+
+        let TaskError::IdentityKeysPreparationFailed { source } = &error else {
+            panic!("expected IdentityKeysPreparationFailed, got {error:?}");
+        };
+        assert!(
+            matches!(
+                source.as_ref(),
+                dash_sdk::Error::Protocol(ProtocolError::UnknownVersionMismatch { received, .. })
+                    if *received == u16::MAX
+            ),
+            "source keeps dpp's typed error: {source:?}"
+        );
+    }
+
+    /// IDKEY-V0-001: under protocol versions 13 and 14 the spec set's keys,
+    /// in both the public keys map and the key storage, are the V0 keys the
+    /// hand-built literals produced, so the identity-create encoding is
+    /// unchanged.
+    #[test]
+    fn identity_key_specs_build_v0_keys_at_protocols_13_and_14() {
+        let seed = [0x22u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let master = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master");
+        let specs = IdentityKeySpecs::new(Some(master.clone()), Vec::new());
+        let hand_built = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::MASTER,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: IdentityKeySpecs::key_data(&master),
+            disabled_at: None,
+        });
+
+        for protocol_version in [13, 14] {
+            let platform_version = PlatformVersion::get(protocol_version).expect("version");
+            let public_map = specs
+                .to_public_keys_map(platform_version)
+                .expect("public map");
+            assert_eq!(
+                public_map.get(&0),
+                Some(&hand_built),
+                "protocol {protocol_version}"
+            );
+
+            let storage = specs
+                .to_key_storage(wallet.seed_hash(), platform_version)
+                .expect("key storage");
+            let stored = storage.find_master_key().expect("master stored");
+            assert_eq!(
+                stored.identity_public_key, hand_built,
+                "protocol {protocol_version}"
+            );
+        }
     }
 }

@@ -116,9 +116,10 @@ impl SeenMarkAttempts {
     }
 }
 
-/// Whether `key` may sign documents that require `required` security: an enabled,
-/// unexpired authentication key at least as strong as required, and never a master
-/// key. The rule for choosing a key automatically.
+/// Whether `key` may sign documents that require `required` security: a
+/// [`chosen_key_can_sign_documents`] key that is also unexpired and whose
+/// bounds are known to permit DPNS (never a contract-group bound key). The
+/// rule for choosing a key automatically.
 pub fn key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,
@@ -132,12 +133,21 @@ pub fn key_can_sign_documents(
 }
 
 /// Whether the user may sign documents that require `required` security with
-/// `key` they chose: an enabled authentication key at least as strong as
-/// required, never a master key, and not bound to another contract.
+/// `key` they chose: an enabled ECDSA ([`DPNS_SIGNING_KEY_TYPES`])
+/// authentication key at least as strong as required, never a master key, and
+/// not bound to another contract.
 ///
 /// Unlike [`key_can_sign_documents`], an expired key is allowed: the key chooser
 /// offers it with a warning, and whether it has expired is Platform's call by
-/// network time, not this device's clock.
+/// network time, not this device's clock. So is a key bound to a contract
+/// group: whether the group covers DPNS is Platform state, so only a key
+/// certainly bound elsewhere is refused here.
+///
+/// By design, the relaxation reaches only an identity that can register at
+/// all: [`registration_key_status`] applies the automatic rule
+/// ([`key_can_sign_documents`]), so an identity whose only registration-capable
+/// keys are expired or contract-group bound is told it has no suitable key and
+/// never reaches the chooser that would offer them.
 // TODO(upstream): call platform-wallet's public explicit-key validation once it
 // exists (`resolve_authentication_signing_key` is private) and route the
 // registration through `register_name_with_signer`.
@@ -145,18 +155,37 @@ pub fn chosen_key_can_sign_documents(
     key: &dash_sdk::platform::IdentityPublicKey,
     required: dash_sdk::dpp::identity::SecurityLevel,
 ) -> bool {
+    use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     key.purpose() == Purpose::AUTHENTICATION
+        && DPNS_SIGNING_KEY_TYPES.contains(&key.key_type())
         && !key.is_disabled()
         && super::identity_key_usability::bounds_permit(key.contract_bounds(), dpns_signing_scope())
-            == Some(true)
-        && key.security_level() != SecurityLevel::MASTER
-        && key.security_level() <= required
+            != Some(false)
+        && dpns_security_levels(required).contains(&key.security_level())
 }
 
+/// The key types a username registration is signed with: ECDSA keys, as
+/// upstream platform-wallet's DPNS writes require. `ECDSA_HASH160` is taken
+/// too, as for DashPay ([`super::qualified_identity::DASHPAY_SIGNING_KEY_TYPES`]):
+/// Platform accepts it and DET signed with it before, so dropping it would
+/// strand identities whose only document key is a hash160 key.
+///
+/// `BLS12_381` is left out for parity with upstream, not because Platform
+/// refuses it: Platform verifies BLS signatures
+/// ([`super::identity_key_usability::PLATFORM_SIGNING_KEY_TYPES`]) and DET can
+/// sign with a BLS key, so an identity whose only registration-capable key is
+/// a BLS key cannot register a username here. EdDSA and BIP13 keys Platform
+/// refuses outright.
+// TODO(upstream): take the key types from platform-wallet's public DPNS key
+// selector once it exists, instead of restating them here.
+pub const DPNS_SIGNING_KEY_TYPES: &[dash_sdk::dpp::identity::KeyType] = &[
+    dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1,
+    dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+];
+
 /// The scope a username registration signs in: the DPNS contract.
-fn dpns_signing_scope() -> super::identity_key_usability::SigningScope<'static> {
+pub fn dpns_signing_scope() -> super::identity_key_usability::SigningScope<'static> {
     super::identity_key_usability::SigningScope::ContractWide {
         contract_id: dash_sdk::dpp::system_data_contracts::SystemDataContract::DPNS.id(),
     }
@@ -175,6 +204,28 @@ pub fn dpns_signing_requirement(
         .map(|document_type| document_type.security_level_requirement())
         .min()
         .unwrap_or(dash_sdk::dpp::identity::SecurityLevel::HIGH)
+}
+
+/// The key security levels that may sign documents requiring `required`
+/// security in a username registration: CRITICAL up to and including
+/// `required`, since a stronger key meets a weaker requirement, and never
+/// MASTER. Empty when `required` is MASTER. The one source of the levels for
+/// the automatic choice ([`QualifiedIdentity::username_registration_key`]),
+/// the Advanced key chooser, and the check of a key the user chose
+/// ([`chosen_key_can_sign_documents`]); pass [`dpns_signing_requirement`] so
+/// both registration documents decide.
+pub fn dpns_security_levels(
+    required: dash_sdk::dpp::identity::SecurityLevel,
+) -> Vec<dash_sdk::dpp::identity::SecurityLevel> {
+    use dash_sdk::dpp::identity::SecurityLevel;
+    [
+        SecurityLevel::CRITICAL,
+        SecurityLevel::HIGH,
+        SecurityLevel::MEDIUM,
+    ]
+    .into_iter()
+    .filter(|level| *level <= required)
+    .collect()
 }
 
 /// Whether this device holds a private key that can sign username registrations
@@ -198,8 +249,10 @@ pub fn missing_registration_wallets(
         .values()
         .filter_map(move |(key, data)| match data {
             PrivateKeyData::AtWalletDerivationPath(path)
-                if key_can_sign_documents(&key.identity_public_key, required)
-                    && !identity.key_secret_is_obtainable(data) =>
+                if key_can_sign_documents(
+                    identity.live_public_key(&key.identity_public_key),
+                    required,
+                ) && !identity.key_secret_is_obtainable(data) =>
             {
                 Some(&path.wallet_seed_hash)
             }
@@ -215,6 +268,10 @@ pub enum RegistrationKeyStatus {
     /// This device holds such a key only as a reference into a wallet that is
     /// not on this device, so nothing here can produce its private half.
     KeyWalletNotOnDevice,
+    /// This device holds such a key only as saved by an early version, in a
+    /// per-key encrypted form this version cannot open; entering the key
+    /// again makes it usable.
+    KeySavedByOlderVersion,
     /// The identity has such a key, but this device does not hold it.
     KeyNotOnDevice,
     /// The identity has no key that can sign a registration.
@@ -223,7 +280,9 @@ pub enum RegistrationKeyStatus {
 
 impl RegistrationKeyStatus {
     /// Whether the identity has a key that can sign a registration, but this
-    /// device cannot use it.
+    /// device cannot use it and restoring from the previous version may bring
+    /// it back. [`Self::KeySavedByOlderVersion`] is not among them: the restore
+    /// cannot open that key either, it must be entered again.
     pub fn key_is_unusable_here(self) -> bool {
         matches!(self, Self::KeyNotOnDevice | Self::KeyWalletNotOnDevice)
     }
@@ -240,20 +299,28 @@ pub fn registration_key_status(
 ) -> RegistrationKeyStatus {
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
     let mut held_without_its_wallet = false;
+    let mut held_in_legacy_form = false;
     for (key, data) in identity.private_keys.values() {
-        if !key_can_sign_documents(&key.identity_public_key, required) {
+        // The stored copy may predate a limits update: judge the key as the
+        // identity holds it now.
+        if !key_can_sign_documents(identity.live_public_key(&key.identity_public_key), required) {
             continue;
         }
-        // TODO(legacy-encrypted-key-gate): this version cannot open the legacy
-        // per-key envelope, so such a key fails at signing; it is still reported
-        // as ready because it needs its own status and guidance first.
-        if identity.key_secret_is_obtainable(data) || matches!(data, PrivateKeyData::Encrypted(_)) {
+        if identity.key_secret_is_obtainable(data) {
             return RegistrationKeyStatus::Ready;
         }
-        held_without_its_wallet = true;
+        // Not obtainable: kept in the legacy per-key envelope this version
+        // cannot open, or a reference into a wallet not on this device.
+        if matches!(data, PrivateKeyData::Encrypted(_)) {
+            held_in_legacy_form = true;
+        } else {
+            held_without_its_wallet = true;
+        }
     }
     if held_without_its_wallet {
         RegistrationKeyStatus::KeyWalletNotOnDevice
+    } else if held_in_legacy_form {
+        RegistrationKeyStatus::KeySavedByOlderVersion
     } else if identity
         .identity
         .public_keys()
@@ -1182,6 +1249,7 @@ mod tests {
                 dash_sdk::dpp::version::PlatformVersion::latest(),
             );
             key.set_purpose(purpose);
+            key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
             key.set_security_level(level);
             key
         };
@@ -1222,6 +1290,7 @@ mod tests {
                 dash_sdk::dpp::version::PlatformVersion::latest(),
             );
             key.set_purpose(purpose);
+            key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
             key.set_security_level(level);
             key.with_limits(None, Some(1))
         };
@@ -1243,6 +1312,111 @@ mod tests {
         let mut disabled = key(Purpose::AUTHENTICATION, high);
         disabled.set_disabled_at(1);
         assert!(!chosen_key_can_sign_documents(&disabled, high));
+    }
+
+    /// Regression: a username registration was signed with any key type, so a
+    /// BLS or EdDSA key could be picked although upstream platform-wallet's
+    /// DPNS writes sign with ECDSA keys only, and Platform refuses EdDSA.
+    #[test]
+    fn a_username_is_registered_with_an_ecdsa_key() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+        let high = SecurityLevel::HIGH;
+        let typed = |key_type| {
+            let mut key = crate::context::test_support::auth_key(1, high);
+            key.set_key_type(key_type);
+            key
+        };
+        for refused in [
+            KeyType::BLS12_381,
+            KeyType::EDDSA_25519_HASH160,
+            KeyType::BIP13_SCRIPT_HASH,
+        ] {
+            assert!(
+                !key_can_sign_documents(&typed(refused), high),
+                "{refused:?}"
+            );
+            assert!(
+                !chosen_key_can_sign_documents(&typed(refused), high),
+                "{refused:?}"
+            );
+        }
+        for accepted in [KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160] {
+            assert!(
+                key_can_sign_documents(&typed(accepted), high),
+                "{accepted:?}"
+            );
+            assert!(
+                chosen_key_can_sign_documents(&typed(accepted), high),
+                "{accepted:?}"
+            );
+        }
+    }
+
+    /// Regression: a contract-group bound key the user chose was refused here,
+    /// though whether the group covers DPNS is only known to Platform. The
+    /// automatic choice still never takes one; a key bound elsewhere is
+    /// refused either way.
+    #[test]
+    fn a_chosen_contract_group_key_is_left_for_platform_to_judge() {
+        use crate::context::test_support::{auth_key, bound_to};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let high = SecurityLevel::HIGH;
+        let grouped = bound_to(
+            auth_key(1, high),
+            ContractBounds::ContractGroup { id: id(7) },
+        );
+        assert!(chosen_key_can_sign_documents(&grouped, high));
+        assert!(!key_can_sign_documents(&grouped, high));
+
+        let elsewhere = bound_to(
+            auth_key(1, high),
+            ContractBounds::SingleContract { id: id(9) },
+        );
+        assert!(!chosen_key_can_sign_documents(&elsewhere, high));
+    }
+
+    /// Regression: readiness judged the stored copy of a key, so a key whose
+    /// expiry Platform has since extended was reported unusable, and its
+    /// missing wallet was not reported as what would lift the refusal.
+    #[test]
+    fn readiness_judges_a_key_as_the_identity_holds_it_now() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference, identity_holding};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let high = SecurityLevel::HIGH;
+        let stale = auth_key(1, high).with_limits(None, Some(1));
+        let extended = stale.clone().with_limits(None, Some(u64::MAX));
+        let extend = |identity: &mut QualifiedIdentity| {
+            identity
+                .identity
+                .set_public_keys(std::collections::BTreeMap::from([(1, extended.clone())]));
+        };
+
+        // The stored copy says expired, the live key does not.
+        let mut identity = identity_holding(std::slice::from_ref(&stale));
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::NoSuitableKey,
+            "the expired key alone cannot register"
+        );
+        extend(&mut identity);
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::Ready
+        );
+
+        // The same, for a key held as a reference into a missing wallet.
+        let mut identity = identity_holding(std::slice::from_ref(&stale));
+        hold_as_wallet_reference(&mut identity, 1, [0x5A; 32]);
+        extend(&mut identity);
+        assert_eq!(
+            missing_registration_wallets(&identity, high)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![[0x5A; 32]]
+        );
     }
 
     /// A testnet identity publishing `published` keys and holding `held` of them.
@@ -1267,6 +1441,7 @@ mod tests {
                 dash_sdk::dpp::version::PlatformVersion::latest(),
             );
             key.set_id(*key_id);
+            key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
             key.set_purpose(Purpose::AUTHENTICATION);
             key.set_security_level(*level);
             identity.identity.add_public_key(key.clone());
@@ -1375,6 +1550,23 @@ mod tests {
         assert_eq!(
             registration_key_status(&identity, high),
             RegistrationKeyStatus::Ready
+        );
+    }
+
+    /// Regression: a key kept only in the per-key encrypted format of early
+    /// versions was reported as ready, though this version cannot open it, so
+    /// the username flow offered a registration that failed at signing.
+    #[test]
+    fn a_legacy_encrypted_key_cannot_register() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        let high = SecurityLevel::HIGH;
+        let mut identity = identity_with_keys(&[(1, high)], &[1]);
+        crate::context::test_support::hold_as_legacy_encrypted(&mut identity, 1);
+
+        assert!(!can_register_usernames(&identity, high));
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::KeySavedByOlderVersion
         );
     }
 

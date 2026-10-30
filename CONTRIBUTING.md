@@ -51,8 +51,11 @@ Clone the repository and build:
 ```shell
 git clone https://github.com/dashpay/dash-evo-tool.git
 cd dash-evo-tool
-cargo build --release
+cargo build
 ```
+
+A debug `cargo build` is the normal local build. `cargo build --release` is the
+distribution build (fat LTO, one codegen unit): it is slow and memory-heavy.
 
 Run the application:
 

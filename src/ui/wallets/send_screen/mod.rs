@@ -12,10 +12,9 @@ use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max
 use crate::model::fee_estimation::{
     PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
     core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
-    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
-    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
-    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
-    shield_from_balance_fee_headroom,
+    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
+    max_spendable_credits, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -2731,13 +2730,22 @@ impl WalletSendScreen {
 
         match self.advanced_source_type {
             AdvancedSourceType::Core if has_core_out && !has_platform_out => {
-                let num_inputs = self
-                    .core_inputs
+                // Paid from the pooled accounts, whichever addresses are
+                // listed: the fee is bounded over every coin they could spend.
+                let seed_hash = self.selected_wallet_seed_hash?;
+                let amount_duffs = self
+                    .advanced_outputs
                     .iter()
-                    .filter(|i| !i.amount.trim().is_empty())
-                    .count()
-                    .max(1);
-                let fee_duffs = estimate_core_l1_send_fee_duffs(num_inputs, row_output_count);
+                    .filter_map(|output| Self::parse_amount_to_duffs(&output.amount).ok())
+                    .fold(0, u64::saturating_add);
+                let quote = self
+                    .core_send_quote_fee_for(&SourceSelection::CoreWallet, Some(AddressKind::Core));
+                let fee_duffs = self.app_context.snapshot_core_several_outputs_fee_duffs(
+                    &seed_hash,
+                    row_output_count,
+                    amount_duffs,
+                    quote,
+                );
                 Some(fee_duffs.saturating_mul(CREDITS_PER_DUFF))
             }
             AdvancedSourceType::Platform if has_platform_out && !has_core_out => {
@@ -8322,5 +8330,62 @@ mod tests {
         );
         let hint = limits.hint.expect("a fee caption");
         assert!(hint.contains("deducted from the amount"), "{hint}");
+    }
+
+    /// Several Core recipients are paid from the pooled accounts, so the fee
+    /// counts every coin the build could spend, not the address rows, and the
+    /// confirmation shows that same figure.
+    #[test]
+    fn several_core_recipients_fee_counts_every_spendable_coin() {
+        use crate::model::fee_estimation::estimate_core_l1_send_fee_duffs;
+        use crate::model::spend_limit::CoreSendQuoteFee;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
+        else {
+            panic!("the form must ask for the Core quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: 190_000_000 * CREDITS_PER_DUFF,
+                core_fee: Some(CoreSendQuoteFee {
+                    fee_at_max_duffs: 15_000,
+                    spendable_input_count: 100,
+                    spendable_total_duffs: Some(200_000_000),
+                }),
+            })
+        );
+        screen.sync_route();
+        screen.sync_explicit_payment();
+
+        let fee = screen.advanced_fee_estimate_credits().expect("a fee");
+        assert!(
+            fee >= estimate_core_l1_send_fee_duffs(100, 2) * CREDITS_PER_DUFF,
+            "one address row must not hide 100 coins: {fee}"
+        );
+        let message = screen.advanced_send_confirmation_message();
+        assert!(
+            message.contains(&format!("Fee: ≈ {}", format_credits_as_dash(fee))),
+            "{message}"
+        );
     }
 }

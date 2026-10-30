@@ -1852,6 +1852,24 @@ impl AppContext {
         )
     }
 
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` in
+    /// total to `output_count` recipients, never below what the build charges.
+    /// Without a `quote`, the coins the snapshot counts stand in.
+    pub fn snapshot_core_several_outputs_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        output_count: usize,
+        amount_duffs: u64,
+        quote: Option<crate::model::spend_limit::CoreSendQuoteFee>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_several_outputs_fee_duffs(
+            output_count,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
     /// How many coins a pooled Core send of the whole balance spends, from
     /// the wallet's snapshot.
     fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {

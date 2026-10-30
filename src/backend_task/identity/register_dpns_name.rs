@@ -11,13 +11,15 @@ use crate::{
             normalize_dpns_label, validate_dpns_name,
         },
         fee_estimation::contest_fee_credits,
+        identity_balance::{BalanceProvenance, BalanceWatermark},
         qualified_identity::{DPNSNameInfo, QualifiedIdentity},
     },
 };
 use dash_sdk::{
     Error as SdkError, Sdk,
-    dpp::fee::Credits,
+    dapi_grpc::platform::v0::ResponseMetadata,
     dpp::{
+        balances::credits::Credits,
         data_contract::accessors::v0::DataContractV0Getters,
         identity::accessors::{IdentityGettersV0, IdentitySettersV0},
         version::PlatformVersion,
@@ -90,9 +92,14 @@ impl BroadcastFailure {
     }
 }
 
+/// What the SDK's registration call proves: the documents, the identity's
+/// balance after the name document (`None` before protocol version 14) and the
+/// response metadata, whose height that balance is a snapshot at.
+type ProvenRegistration = (RegisterDpnsNameResult, Option<Credits>, ResponseMetadata);
+
 /// Broadcast the two registration documents for `label` through `register`,
 /// the SDK's registration call, returning the confirmed name document and the
-/// identity's balance its proof carries (`None` before protocol version 14).
+/// identity's balance its proof carries.
 ///
 /// The SDK reports one error for both documents; it calls back between them,
 /// once the first is confirmed, which is what tells the two failures apart.
@@ -102,10 +109,10 @@ async fn broadcast_name_registration<F, Fut>(
     label: &str,
     approved_contest_fee: u64,
     register: F,
-) -> Result<(Document, Option<Credits>), BroadcastFailure>
+) -> Result<(Document, Option<BalanceWatermark>), BroadcastFailure>
 where
     F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
-    Fut: Future<Output = Result<(RegisterDpnsNameResult, Option<Credits>), SdkError>>,
+    Fut: Future<Output = Result<ProvenRegistration, SdkError>>,
 {
     // Written once by the SDK's callback, read only after its call returns.
     let preorder_confirmed = Arc::new(AtomicBool::new(false));
@@ -120,7 +127,13 @@ where
     };
     register(input)
         .await
-        .map(|(registered, owner_balance)| (registered.domain_document, owner_balance))
+        .map(|(registered, balance, metadata)| {
+            let proven = balance.map(|credits| BalanceWatermark {
+                credits,
+                height: metadata.height,
+            });
+            (registered.domain_document, proven)
+        })
         .map_err(|error| {
             BroadcastFailure::at_stage(preorder_confirmed.load(Ordering::Acquire), error)
         })
@@ -132,10 +145,8 @@ impl AppContext {
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.register_dpns_name_through(sdk, input, |registration| async move {
+        self.register_dpns_name_through(sdk, input, |registration| {
             sdk.register_dpns_name_with_owner_balance_and_metadata(registration)
-                .await
-                .map(|(registered, owner_balance, _metadata)| (registered, owner_balance))
         })
         .await
     }
@@ -150,7 +161,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError>
     where
         F: FnOnce(SdkRegistrationInput<QualifiedIdentity>) -> Fut,
-        Fut: Future<Output = Result<(RegisterDpnsNameResult, Option<Credits>), SdkError>>,
+        Fut: Future<Output = Result<ProvenRegistration, SdkError>>,
     {
         let validation = validate_dpns_name(&input.name_input);
         if validation != DpnsNameValidationResult::Valid {
@@ -225,8 +236,8 @@ impl AppContext {
         )
         .await
         {
-            Ok((domain_document, owner_balance)) => {
-                (name_acquired_at(&domain_document), owner_balance)
+            Ok((domain_document, proven_balance)) => {
+                (name_acquired_at(&domain_document), proven_balance)
             }
             // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
             // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
@@ -330,9 +341,10 @@ impl AppContext {
     /// Wrap up a registration whose documents were already broadcast and paid for.
     ///
     /// `confirmed_at` is when the network confirmed the name document; `None`
-    /// when the registration was accepted as sent without one.
-    /// `proven_balance` is the identity's balance that document's proof
-    /// carries; without it the balance is re-read from Platform.
+    /// when the registration was accepted as sent without one. `proven_balance`
+    /// is the identity's balance that document's proof carries; without it
+    /// (no confirmed document, or a proof made before protocol version 14) the
+    /// balance is read back from the network.
     ///
     /// Infallible on purpose: the user has paid, so a failed re-read or local
     /// save is logged and the registration still reports success, never inviting
@@ -351,7 +363,7 @@ impl AppContext {
         balance_before: u64,
         estimated_fee: u64,
         confirmed_at: Option<u64>,
-        proven_balance: Option<Credits>,
+        proven_balance: Option<BalanceWatermark>,
     ) -> BackendTaskSuccessResult {
         // The name request is broadcast and paid for: from here on nothing may
         // report failure, or the user would be invited to pay again.
@@ -367,21 +379,20 @@ impl AppContext {
         }
 
         let refreshed_balance = match proven_balance {
-            Some(balance) => Some(balance),
-            None => match dash_sdk::platform::Identity::fetch_by_identifier(sdk, identity_id).await
+            Some(proven) => Some(proven),
+            None => match dash_sdk::platform::Identity::fetch_with_metadata(sdk, identity_id, None)
+                .await
             {
-                Ok(Some(refreshed_identity)) => Some(refreshed_identity.balance()),
-                Ok(None) | Err(_) => {
-                    tracing::warn!(
-                        "Identity balance could not be re-read after username registration"
-                    );
-                    None
-                }
+                Ok((Some(refreshed_identity), metadata)) => Some(BalanceWatermark {
+                    credits: refreshed_identity.balance(),
+                    height: metadata.height,
+                }),
+                Ok((None, _)) | Err(_) => None,
             },
         };
         let fee_result = match refreshed_balance {
-            Some(balance) => {
-                let actual_fee = balance_before.saturating_sub(balance);
+            Some(refreshed) => {
+                let actual_fee = balance_before.saturating_sub(refreshed.credits);
                 if actual_fee != estimated_fee {
                     tracing::warn!(
                         estimated_fee,
@@ -391,10 +402,17 @@ impl AppContext {
                 }
                 FeeResult::new(estimated_fee, actual_fee)
             }
-            None => FeeResult::estimated_only(estimated_fee),
+            None => {
+                tracing::warn!("Identity balance could not be re-read after username registration");
+                FeeResult::estimated_only(estimated_fee)
+            }
         };
 
-        if let Err(error) = self.edit_local_qualified_identity(&identity_id, |fresh| {
+        let id = &identity_id;
+        let provenance = refreshed_balance.map_or(BalanceProvenance::Unobserved, |refreshed| {
+            BalanceProvenance::ObservedAt(refreshed.height)
+        });
+        if let Err(error) = self.edit_local_qualified_identity_observed(id, provenance, |fresh| {
             if outcome == DpnsRegistrationOutcome::Registered
                 && !fresh.dpns_names.iter().any(|known| known.name == name)
             {
@@ -403,8 +421,8 @@ impl AppContext {
                     acquired_at: confirmed_at.unwrap_or_else(crate::utils::time::now_ms),
                 });
             }
-            if let Some(balance) = refreshed_balance {
-                fresh.identity.set_balance(balance);
+            if let Some(refreshed) = refreshed_balance {
+                fresh.identity.set_balance(refreshed.credits);
             }
             let main_username = self.main_username(fresh);
             fresh.initialize_node_alias(None, main_username.as_deref());
@@ -635,11 +653,7 @@ mod tests {
                     },
                     |_| {
                         broadcast.store(true, Ordering::Release);
-                        async {
-                            Err::<(RegisterDpnsNameResult, Option<Credits>), _>(
-                                unproven_broadcast_failure(),
-                            )
-                        }
+                        async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
                     },
                 )
                 .await;
@@ -700,6 +714,7 @@ mod tests {
                             full_domain_name: "alice-123.dash".to_owned(),
                         },
                         Some(1),
+                        ResponseMetadata::default(),
                     ))
                 },
             )
@@ -747,7 +762,10 @@ mod tests {
                 1_000,
                 100,
                 Some(4_242),
-                Some(870),
+                Some(BalanceWatermark {
+                    credits: 870,
+                    height: 5,
+                }),
             )
             .await;
 
@@ -757,6 +775,110 @@ mod tests {
         assert_eq!(fee_result.actual_fee, Some(130));
         let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
         assert_eq!(saved.identity.balance(), 870);
+    }
+
+    /// From protocol version 14 the name document's proof carries the
+    /// identity's balance after the registration: it settles the fee and is
+    /// stored at the proof's height, with no further read of the network.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_takes_the_balance_after_it_from_the_name_documents_proof() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let mut identity = identity_with_signing_key(8);
+        let required = ctx
+            .fee_estimator()
+            .estimate_username_registration("alice-123".len(), false);
+        identity.identity.set_balance(required);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        // No identity expectation: a read-back would fail.
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        let confirmed = domain_document(id, "alice-123");
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| async move {
+                    Ok((
+                        RegisterDpnsNameResult {
+                            preorder_document: confirmed.clone(),
+                            domain_document: confirmed,
+                            full_domain_name: "alice-123.dash".to_owned(),
+                        },
+                        Some(required - 90),
+                        ResponseMetadata {
+                            height: 77,
+                            ..Default::default()
+                        },
+                    ))
+                },
+            )
+            .await
+            .expect("the registration succeeds");
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a registered name, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(90));
+        let mut saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), required - 90);
+        // Stored at the proof's height: a copy read before it cannot undo it.
+        saved.identity.set_balance(required);
+        ctx.update_local_qualified_identity(&saved).unwrap();
+        let after = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(after.identity.balance(), required - 90);
+    }
+
+    /// A proof made before protocol version 14 carries no balance, so the
+    /// registration reads it back, as it always did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_without_a_proven_balance_reads_it_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(9);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+        let mut on_network = identity.identity.clone();
+        on_network.set_balance(940);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(id, Some(on_network))
+            .await
+            .expect("identity expectation");
+
+        let result = ctx
+            .finish_username_registration(
+                &sdk,
+                identity,
+                "alice-123",
+                DpnsRegistrationOutcome::Registered,
+                None,
+                1_000,
+                100,
+                None,
+                None,
+            )
+            .await;
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a registered name, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(60));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), 940);
     }
 
     /// A registration accepted as sent after an error has no confirmed
@@ -877,10 +999,8 @@ mod tests {
             PlatformVersion::latest(),
         );
 
-        let failure = broadcast_name_registration(&identity, key, "alice-123", 0, |input| async {
+        let failure = broadcast_name_registration(&identity, key, "alice-123", 0, |input| {
             sdk.register_dpns_name_with_owner_balance_and_metadata(input)
-                .await
-                .map(|(registered, owner_balance, _metadata)| (registered, owner_balance))
         })
         .await
         .expect_err("nothing can be broadcast on a mock");

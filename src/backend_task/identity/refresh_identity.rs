@@ -1,6 +1,7 @@
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{CacheDomain, CacheUpdate, TaskResult};
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
@@ -24,8 +25,8 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let refreshed_identity_id = qualified_identity.identity.id();
         // Fetch the latest state of the identity from Platform
-        let maybe_refreshed_identity =
-            Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?;
+        let (maybe_refreshed_identity, metadata) =
+            Identity::fetch_with_metadata(sdk, refreshed_identity_id, None).await?;
 
         // Get local identities
         let mut local_qualified_identities = self.load_local_qualified_identities()?;
@@ -41,8 +42,10 @@ impl AppContext {
             local_qualified_identities.remove(outdated_identity_index);
 
         // Update the identity
+        let mut provenance = BalanceProvenance::Unobserved;
         match maybe_refreshed_identity {
             Some(refreshed_identity) => {
+                provenance = BalanceProvenance::ObservedAt(metadata.height);
                 qualified_identity_to_update.identity = refreshed_identity;
                 qualified_identity_to_update
                     .status
@@ -56,7 +59,10 @@ impl AppContext {
         }
 
         // Insert the updated identity into local state
-        self.update_local_qualified_identity(&qualified_identity_to_update)?;
+        self.update_local_qualified_identity_observed(
+            &mut qualified_identity_to_update,
+            provenance,
+        )?;
 
         // Send refresh message to refresh the Identities Screen
         sender

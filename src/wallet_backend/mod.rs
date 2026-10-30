@@ -2262,6 +2262,12 @@ impl WalletBackend {
         self.inner.secret_access.clone()
     }
 
+    /// Test seam: the frame loop this backend reports to for its life.
+    #[cfg(test)]
+    pub(crate) fn frame_loop_for_test(&self) -> SenderAsync<TaskResult> {
+        self.inner.task_result_sender.clone()
+    }
+
     /// Clear every session-cached secret in the JIT chokepoint, zeroizing
     /// them. Called on network switch and teardown (the `AppContext` drops
     /// the per-network backend on switch, but this is the explicit, eager

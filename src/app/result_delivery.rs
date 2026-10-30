@@ -1,11 +1,11 @@
 //! Screen ownership, finite domain observers and non-destructive cache delivery.
 use super::request_routing::{ResultRoute, ScreenOwner};
-use super::{AppAction, AppState, BackendTasksExecutionMode, VOTING_ROOT_SCREEN};
+use super::{AppAction, AppState, BackendTasksExecutionMode};
 #[cfg(feature = "testing")]
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult, TaskResult};
-use crate::ui::{RootScreenType, Screen, ScreenLike, components::BannerHandle};
+use crate::ui::{RootScreenType, Screen, ScreenLike};
 use std::collections::BTreeMap;
 
 /// Cache notifications coalesced within one frame, without resetting forms.
@@ -54,25 +54,14 @@ pub(crate) fn deliver_legacy_recovery_result<'a>(
     true
 }
 
-/// Deliver removal outcomes to persistent roots even while another screen is visible.
-pub(crate) fn deliver_identity_removal_result(
-    ctx: &egui::Context,
-    roots: &mut BTreeMap<RootScreenType, Screen>,
-    result: &BackendTaskSuccessResult,
-) -> Option<BannerHandle> {
-    let BackendTaskSuccessResult::RemovedIdentities { .. } = result else {
-        return None;
-    };
-    for root in [
-        RootScreenType::RootScreenIdentityHub,
-        RootScreenType::RootScreenMasternodes,
-    ] {
-        if let Some(screen) = roots.get_mut(&root) {
-            screen.display_task_result(result.clone());
-        }
-    }
-    crate::ui::identity::task_feedback::show(ctx, result)
-}
+/// The persistent roots that observe other screens' outcomes
+/// ([`ScreenLike::observe_backend_result`]): the Identity Hub, which holds the
+/// app-wide identity selection, and Masternodes, which lists identities as
+/// nodes and hosts the voting workspace.
+const OBSERVER_ROOTS: [RootScreenType; 2] = [
+    RootScreenType::RootScreenIdentityHub,
+    RootScreenType::RootScreenMasternodes,
+];
 
 impl AppState {
     /// The screen in view, as an owner of the tasks it dispatches.
@@ -331,7 +320,7 @@ impl AppState {
             return;
         }
         let visible = self.visible_owner();
-        for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
+        for root in OBSERVER_ROOTS {
             if !route.delivers_to(ScreenOwner::Root(root), visible)
                 && let Some(screen) = self.main_screens.get_mut(&root)
             {
@@ -350,12 +339,39 @@ impl AppState {
             return;
         }
         let visible = self.visible_owner();
-        for root in [RootScreenType::RootScreenIdentityHub, VOTING_ROOT_SCREEN] {
+        for root in OBSERVER_ROOTS {
             if !route.delivers_to(ScreenOwner::Root(root), visible)
                 && let Some(screen) = self.main_screens.get_mut(&root)
             {
                 screen.observe_backend_error(context, error);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pending_refresh_tests {
+    use super::PendingRefresh;
+    use crate::backend_task::{CacheDomain, CacheUpdate};
+    use dash_sdk::dpp::dashcore::Network;
+
+    /// Screens hear of a cache domain's change once per frame however many
+    /// tasks reported it; changes on another network stay apart.
+    #[test]
+    fn identical_cache_notifications_in_one_frame_collapse_into_one() {
+        let mut pending = PendingRefresh::default();
+        let identities = CacheUpdate {
+            network: Network::Testnet,
+            domain: CacheDomain::Identities,
+        };
+        pending.0.insert(identities);
+        pending.0.insert(identities);
+        pending.0.insert(CacheUpdate {
+            network: Network::Mainnet,
+            ..identities
+        });
+
+        assert_eq!(pending.0.len(), 2);
+        assert_eq!(pending.0.iter().filter(|u| **u == identities).count(), 1);
     }
 }

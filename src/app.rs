@@ -18,9 +18,7 @@ pub use reconcilers::{
 pub mod request_routing;
 mod result_delivery;
 mod task_dispatch;
-use crate::ui::identity::task_feedback::{
-    clear_profile_saving_banner_after_error, clear_profile_saving_banner_after_success,
-};
+use crate::ui::task_feedback::{Feedback, ResultDelivery};
 use result_delivery::PendingRefresh;
 
 use reconcilers::{
@@ -45,16 +43,12 @@ use crate::model::settings::AppSettings;
 use crate::model::spv_status::SpvStatus;
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
+use crate::ui::components::{
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay,
+};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
-#[cfg(test)]
-use crate::ui::dpns::copy::scheduled_vote_clear_feedback;
-#[cfg(test)]
-use crate::ui::dpns::dpns_contested_names_screen::DPNSScreen;
-use crate::ui::identity::top_up_identity_screen::{
-    finish_top_up, follow_top_ups_after_network_switch,
-};
+use crate::ui::identity::top_up_identity_screen::follow_top_ups_after_network_switch;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -65,7 +59,6 @@ use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::wallets::send_screen::closed_send_form_message;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -86,15 +79,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokiompsc;
 use tokio::sync::watch;
 
-pub(crate) use result_delivery::{deliver_identity_removal_result, deliver_legacy_recovery_result};
-
-pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
-    matches!(
-        error,
-        TaskError::ScheduledVoteSweepFailed { source, .. }
-            if matches!(source.as_ref(), TaskError::NoVotingIdentity { .. })
-    )
-}
+pub(crate) use result_delivery::deliver_legacy_recovery_result;
 
 const LEGACY_SETTINGS_IMPORT_WARNING: &str = "The app could not confirm that your network preference was restored from the previous version. Check the selected network before using the application.";
 
@@ -184,24 +169,12 @@ fn boot_auto_start_spv(
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
-/// The root screen hosting the voting workspace (Masternodes ▸ Votes).
-const VOTING_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenMasternodes;
-
 #[cfg(test)]
 mod backend_task_join_tests {
     use super::*;
     use crate::backend_task::BackendTaskContext;
     use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
-
-    fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
-        BackendTaskContext::Dispatched {
-            dispatch_id,
-            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
-                [identity_byte; 32],
-            ))),
-        }
-    }
 
     #[test]
     fn backend_task_error_retains_originating_context() {
@@ -223,146 +196,6 @@ mod backend_task_join_tests {
         assert_eq!(
             BackendTaskContext::from(&BackendTask::None),
             BackendTaskContext::Other
-        );
-    }
-
-    #[test]
-    fn profile_update_error_clears_only_its_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_id = Identifier::from([1; 32]);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &profile_update_context(1, 1));
-
-        assert!(
-            saving.elapsed().is_none(),
-            "a failed profile update must dismiss its persistent progress banner"
-        );
-    }
-
-    #[test]
-    fn profile_update_success_clears_its_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_id = Identifier::from([1; 32]);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &profile_update_context(1, 1),
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: identity_id,
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-
-        assert!(
-            saving.elapsed().is_none(),
-            "a successful profile update must dismiss its persistent progress banner"
-        );
-    }
-
-    #[test]
-    fn unrelated_error_does_not_clear_profile_saving_banner() {
-        let ctx = egui::Context::default();
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &BackendTaskContext::Other);
-
-        assert!(saving.elapsed().is_some());
-    }
-
-    #[test]
-    fn one_identity_error_does_not_clear_another_identity_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_a = profile_update_context(1, 1);
-        let identity_b = profile_update_context(2, 2);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &identity_a);
-
-        assert!(
-            saving.elapsed().is_some(),
-            "identity A's error must not dismiss identity B's progress banner"
-        );
-
-        clear_profile_saving_banner_after_error(&ctx, &identity_b);
-        assert!(
-            saving.elapsed().is_none(),
-            "identity B's error must dismiss identity B's progress banner"
-        );
-    }
-
-    #[test]
-    fn one_identity_success_does_not_clear_another_identity_saving_banner() {
-        let ctx = egui::Context::default();
-        let identity_a = profile_update_context(1, 1);
-        let identity_b = profile_update_context(2, 2);
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
-        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
-        let saving = MessageBanner::set_global(
-            &ctx,
-            crate::ui::identity::settings::PROFILE_SAVING,
-            MessageType::Info,
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &identity_a,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: Identifier::from([1; 32]),
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-
-        assert!(
-            saving.elapsed().is_some(),
-            "identity A's success must not dismiss identity B's progress banner"
-        );
-
-        clear_profile_saving_banner_after_success(
-            &ctx,
-            &identity_b,
-            &BackendTaskSuccessResult::DashPayProfileUpdated(
-                crate::model::dashpay::ProfileSnapshot {
-                    network: Network::Testnet,
-                    owner: Identifier::from([2; 32]),
-                    revision: 0,
-                    profile: None,
-                },
-            ),
-        );
-        assert!(
-            saving.elapsed().is_none(),
-            "identity B's success must dismiss identity B's progress banner"
         );
     }
 
@@ -512,39 +345,6 @@ mod backend_task_join_tests {
             } if *correlated == request_id
                 && *actual_context == context
                 && matches!(source.as_ref(), TaskError::TaskManagerShuttingDown)
-        ));
-    }
-
-    #[test]
-    fn only_missing_local_identity_sweep_errors_are_quiet() {
-        let missing_identity = TaskError::ScheduledVoteSweepFailed {
-            network: Network::Regtest,
-            source: Box::new(TaskError::NoVotingIdentity {
-                identity_id: "voter-id".to_string(),
-            }),
-        };
-        assert!(scheduled_vote_sweep_is_quiet(&missing_identity));
-
-        let unavailable_result = TaskError::ScheduledVoteSweepFailed {
-            network: Network::Regtest,
-            source: Box::new(TaskError::DpnsCurrentVoteUnavailable),
-        };
-        assert!(!scheduled_vote_sweep_is_quiet(&unavailable_result));
-
-        let nested_sweep = TaskError::ScheduledVoteSweepFailed {
-            network: Network::Regtest,
-            source: Box::new(TaskError::ScheduledVoteSweepFailed {
-                network: Network::Regtest,
-                source: Box::new(TaskError::NoVotingIdentity {
-                    identity_id: "voter-id".to_string(),
-                }),
-            }),
-        };
-        assert!(!scheduled_vote_sweep_is_quiet(&nested_sweep));
-        assert!(!scheduled_vote_sweep_is_quiet(
-            &TaskError::NoVotingIdentity {
-                identity_id: "voter-id".to_string(),
-            }
         ));
     }
 }
@@ -714,14 +514,21 @@ pub struct AppState {
     /// recorded here instead, after the frame loop has done its bookkeeping.
     #[cfg(feature = "testing")]
     captured_dispatches: Option<Vec<(BackendTask, BackendTaskContext)>>,
+    /// Actions a kittest dispatched as if a control had returned them. The
+    /// frame loop handles them with the frame's own actions.
+    #[cfg(feature = "testing")]
+    test_actions: Vec<AppAction>,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Network whose context is being created asynchronously. While `Some`,
-    /// the UI shows a progress banner and ignores further switch requests.
+    /// the app is blocked behind [`Self::network_switch_overlay`] and ignores
+    /// further switch requests and Connect.
     network_switch_pending: Option<Network>,
-    /// Progress banner displayed while a network switch is in progress.
-    network_switch_banner: Option<BannerHandle>,
+    /// Blocking progress overlay naming the destination while a network switch
+    /// builds its context. The same overlay the storage-preparation gate raises
+    /// at startup, so the outgoing network's controls are out of reach.
+    network_switch_overlay: Option<OverlayHandle>,
     /// Whether boot must remain on the network chooser until the user confirms a network.
     network_selection_required: bool,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
@@ -901,17 +708,6 @@ pub enum AppAction {
     /// Contacts gate's "Add a display name" CTA). Handled by `AppState::update`
     /// which looks up the visible `IdentityHubScreen` and calls `select_tab`.
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
-}
-
-/// Whether results of the task behind `context` belong to the network chooser (settings)
-/// screen whichever screen is visible: it tracks the task and must hear how it ended.
-fn network_chooser_owns_task(context: &BackendTaskContext) -> bool {
-    matches!(
-        context.operation(),
-        BackendTaskContext::ClearNetworkDatabase
-            | BackendTaskContext::UpdateBackupRetention
-            | BackendTaskContext::RestoreFromPreviousVersion
-    )
 }
 
 impl BitOrAssign for AppAction {
@@ -1246,6 +1042,9 @@ impl AppState {
             Arc::new(secret_prompt_host);
         for app_ctx in network_contexts.values() {
             app_ctx.install_secret_prompt(Arc::clone(&secret_prompt_host));
+            // The frame loop every report of this context goes to, installed
+            // before the MCP server below can hand the context a request.
+            app_ctx.install_frame_loop(task_result_sender.clone());
         }
 
         // Storage preparation for the active network. Everything the app needs
@@ -1320,11 +1119,13 @@ impl AppState {
             rejected_requests: Default::default(),
             #[cfg(feature = "testing")]
             captured_dispatches: None,
+            #[cfg(feature = "testing")]
+            test_actions: Vec::new(),
             chosen_network,
             connection_status,
             network_contexts,
             network_switch_pending: None,
-            network_switch_banner: None,
+            network_switch_overlay: None,
             network_selection_required,
             task_result_sender,
             task_result_receiver,
@@ -1841,12 +1642,18 @@ impl AppState {
         // The task never starts chain sync for the GUI: that decision waits
         // for `finalize_network_switch`, so a Disconnect pressed while the
         // context is still being built is honored.
+        tracing::info!(from = ?self.chosen_network, to = ?network, "Network switch started");
         self.network_switch_pending = Some(network);
-        self.network_switch_banner = Some(MessageBanner::set_global(
-            self.current_app_context().egui_ctx(),
-            format!("Connecting to {network:?}..."),
-            MessageType::Info,
-        ));
+        // Blocks the whole app until the switch lands or fails: until then
+        // every screen still belongs to the outgoing network, and a Connect
+        // there would start its chain sync instead of the destination's.
+        let label = chooser_network_label(network);
+        let ctx = self.current_app_context().egui_ctx().clone();
+        self.network_switch_overlay.raise(
+            &ctx,
+            format!("Switching to {label}…"),
+            OverlayConfig::new(),
+        );
         self.handle_backend_task(BackendTask::SwitchNetwork {
             network,
             start_spv: false,
@@ -1888,6 +1695,12 @@ impl AppState {
         // preparation and leave the gate raised over nothing to poll.
         self.boot.reset_for_switch(network);
         let auto_start_spv = self.auto_start_spv_allowed();
+        tracing::info!(
+            ?network,
+            auto_start_spv,
+            manually_disconnected = self.spv_manually_disconnected,
+            "Network switch completed"
+        );
         if self.boot.is_prepared(network) {
             if auto_start_spv {
                 self.start_spv_for(BackendInitReason::NetworkSwitch);
@@ -1995,6 +1808,14 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_set_secret_prompt_active(&mut self, active: bool) {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
+    }
+
+    /// Test seam: hand `action` to the next frame as if a control had returned
+    /// it, so a kittest can drive an action whose button the frame does not
+    /// offer, e.g. while a blocking overlay covers it.
+    #[cfg(feature = "testing")]
+    pub fn test_dispatch_action(&mut self, action: AppAction) {
+        self.test_actions.push(action);
     }
 
     /// Test seam (Task 9 / F-SPV-A): arm a user-initiated SPV-sync block episode,
@@ -2351,15 +2172,31 @@ impl App for AppState {
             }
             let owner = route.owner();
             let owner_in_view = owner.is_some_and(|owner| owner == self.visible_owner());
+            let feedback = Feedback {
+                ctx,
+                contexts: &self.network_contexts,
+                delivery: ResultDelivery {
+                    sender_in_view: owner_in_view,
+                    sender_gone: route.sender_gone(),
+                },
+            };
 
-            // Keyed on the dispatch alone and ahead of every arm below, so that
-            // none of them can leave an ended top-up in flight. A top-up whose
-            // screen is covered or closed is confirmed by a banner.
-            let tracked_top_up = match &task_result {
-                TaskResult::Success { context, .. } => {
-                    finish_top_up(ctx, context, true, owner_in_view)
+            // Each domain settles what it tracks about the task and tells the
+            // user what it needs to know, ahead of every arm below: a screen
+            // may be gone or hidden, the banners are not. A quiet failure is
+            // one the domain expects and does not report.
+            let quiet_error = match &task_result {
+                TaskResult::Success { context, result } => {
+                    pending_refresh
+                        .0
+                        .extend(crate::ui::task_feedback::on_success(
+                            &feedback, context, result,
+                        ));
+                    false
                 }
-                TaskResult::Error { context, .. } => finish_top_up(ctx, context, false, true),
+                TaskResult::Error { context, error } => {
+                    crate::ui::task_feedback::on_error(&feedback, context, error)
+                }
                 TaskResult::CacheUpdated(_) | TaskResult::Repaint => false,
             };
 
@@ -2383,85 +2220,15 @@ impl App for AppState {
                     if let BackendTaskContext::DpnsBackgroundRefresh { network } = &context {
                         self.record_dpns_refresh_completion(*network);
                     }
-                    clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_result_to_observers(route, &context, &unboxed_message);
-                    pending_refresh
-                        .0
-                        .extend(crate::ui::dpns::task_feedback::show(
-                            ctx,
-                            &self.network_contexts,
-                            &unboxed_message,
-                        ));
-                    if !matches!(
-                        unboxed_message,
-                        BackendTaskSuccessResult::RemovedIdentities { .. }
-                    ) {
-                        crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
-                    }
                     self.dpns_background.record_vote_result(&unboxed_message);
+                    // App-wide state changes and the backend's requests to the
+                    // frame loop are handled here; every other result is the
+                    // sender's, and its feedback was decided above.
                     match unboxed_message {
-                        BackendTaskSuccessResult::RemovedIdentities { .. } => {
-                            if let ResultRoute::PreviousNetwork(_) = route {
-                                // The banner alone: the identities were on the
-                                // previous network, not on this one's screens.
-                                crate::ui::identity::task_feedback::show(ctx, &unboxed_message);
-                            } else {
-                                deliver_identity_removal_result(
-                                    ctx,
-                                    &mut self.main_screens,
-                                    &unboxed_message,
-                                );
-                            }
-                        }
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::CacheUpdated(update) => {
                             pending_refresh.0.insert(update);
-                        }
-                        BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
-                            let network_label = chooser_network_label(network);
-                            MessageBanner::set_global(
-                                ctx,
-                                format!(
-                                    "Cleared {network_label} database. Restart or resync to rebuild state."
-                                ),
-                                MessageType::Success,
-                            );
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(
-                                    &context,
-                                    BackendTaskSuccessResult::NetworkDatabaseCleared { network },
-                                );
-                            }
-                        }
-                        BackendTaskSuccessResult::PreviousVersionRestored(summary) => {
-                            let message_type = if summary.has_problems() {
-                                MessageType::Warning
-                            } else {
-                                MessageType::Success
-                            };
-                            MessageBanner::set_global(ctx, summary.user_message(), message_type);
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(
-                                    &context,
-                                    BackendTaskSuccessResult::PreviousVersionRestored(summary),
-                                );
-                            }
-                        }
-                        result @ BackendTaskSuccessResult::UpdatedBackupRetention { .. } => {
-                            // The settings form waits for this answer even after the user
-                            // navigates away, so it goes to the chooser, not the visible screen.
-                            if let Some(screen) = self
-                                .main_screens
-                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                            {
-                                screen.display_backend_task_result(&context, result);
-                            }
                         }
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
@@ -2501,13 +2268,6 @@ impl App for AppState {
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.deliver_result(route, &context, unboxed_message);
                         }
-                        BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
-                            let msg = format!(
-                                "Asset lock transaction broadcast successfully. Transaction ID: {txid}"
-                            );
-                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                            self.deliver_result(route, &context, unboxed_message);
-                        }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress goes to the screen that started the task,
                             // in view or not, and to no screen once that screen is
@@ -2535,19 +2295,6 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                            network,
-                            preserve_eligibility_since_ms,
-                        } => {
-                            self.deliver_result(
-                                route,
-                                &context,
-                                BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                                    network,
-                                    preserve_eligibility_since_ms,
-                                },
-                            );
-                        }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
                             context,
@@ -2555,7 +2302,7 @@ impl App for AppState {
                         } => {
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
-                            self.network_switch_banner.take_and_clear();
+                            self.network_switch_overlay.take_and_clear();
                             self.finalize_network_switch(network);
                         }
                         BackendTaskSuccessResult::NetworkContextRegistered { network, context } => {
@@ -2570,62 +2317,28 @@ impl App for AppState {
                             self.network_context_of(&context)
                                 .apply_platform_address_push(updates);
                         }
-                        BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
-                            MessageBanner::set_global(
-                                ctx,
-                                "Token balances are already refreshing. Wait a moment before refreshing again.",
-                                MessageType::Info,
-                            );
-                            self.deliver_result(route, &context, unboxed_message);
-                        }
-                        _ => {
-                            // For all other success results, let the screen decide how to display
-                            // the outcome without showing a generic global success banner.
-                            if tracked_top_up
-                                && !owner_in_view
-                                && !matches!(route, ResultRoute::PreviousNetwork(_))
-                            {
-                                // Not this screen's top-up, but the balances it shows changed.
-                                self.visible_screen_mut().refresh();
-                            }
-                            // No refresh for any other task whose screen is closed:
-                            // `refresh()` resets some screens, such as a running
-                            // document query, and the screen in view did not send it.
-                            if route.sender_gone()
-                                && !tracked_top_up
-                                && let Some(message) = closed_send_form_message(&unboxed_message)
-                            {
-                                // The form that sent it is gone: the banner tells
-                                // the user how the send ended. A top-up has its own.
-                                MessageBanner::set_global(ctx, message, MessageType::Success);
-                            }
-                            // A top-up nobody open sent is answered by the
-                            // banner alone; the screen in view did not send it.
-                            if owner.is_some() || !tracked_top_up {
-                                self.deliver_result(route, &context, unboxed_message);
-                            }
-                        }
+                        // The sender's own result, with no global banner. No
+                        // screen is refreshed for a task whose screen is gone:
+                        // `refresh()` resets some screens, such as a running
+                        // document query. Data a task changed reaches screens
+                        // as a cache notification instead.
+                        _ => self.deliver_result(route, &context, unboxed_message),
                     }
                 }
-                TaskResult::Error {
-                    error: err @ TaskError::CoreWalletAutoDetected { .. },
-                    ..
-                } => {
-                    let msg = err.to_string();
-                    MessageBanner::set_global(ctx, &msg, MessageType::Success);
-                    self.visible_screen_mut()
-                        .display_message(&msg, MessageType::Success);
-                    self.visible_screen_mut().refresh();
-                }
+                // Any failure of the switch's own task releases the app it is
+                // blocking, including one that stopped without a result (a
+                // panic arrives as `BackendTaskFailed`, not as the typed error).
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::NetworkContextCreationFailed { .. },
-                } => {
+                    error: err,
+                } if matches!(err, TaskError::NetworkContextCreationFailed { .. })
+                    || matches!(context, BackendTaskContext::NetworkSwitch { .. }) =>
+                {
                     if !recovery_delivered {
                         self.tell_owner_its_task_failed(route, &context, &err);
                     }
                     self.network_switch_pending = None;
-                    self.network_switch_banner.take_and_clear();
+                    self.network_switch_overlay.take_and_clear();
                     let current_context = self.current_app_context().clone();
                     if let Some(screen) = self
                         .main_screens
@@ -2633,8 +2346,12 @@ impl App for AppState {
                     {
                         screen.change_context(current_context);
                     }
-                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
-                        .disable_auto_dismiss();
+                    let handle =
+                        MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                    handle.disable_auto_dismiss();
+                    // TaskError Debug output is shown to users, deliberately.
+                    // Ensure inner error types don't expose secrets.
+                    handle.with_details(&err);
                 }
                 TaskResult::Error {
                     context,
@@ -2661,58 +2378,18 @@ impl App for AppState {
                 }
                 TaskResult::Error {
                     context,
-                    error:
-                        err @ (TaskError::ScheduledVoteSweepFailed { .. }
-                        | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }),
-                } => {
-                    self.dpns_background.sweep_failed(&context, &err);
-                    self.route_error_to_observers(route, &context, &err);
-                    // A sweep of the previous network reaches no screen; the
-                    // banner alone reports it.
-                    if let Some(screen) = self.result_screen_mut(route) {
-                        screen.display_backend_task_error(&context, &err);
-                    }
-                    let handled = self
-                        .result_screen_mut(route)
-                        .is_some_and(|screen| screen.display_task_error(&err));
-                    if !handled && !scheduled_vote_sweep_is_quiet(&err) {
-                        let msg = err.to_string();
-                        let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                        handle.disable_auto_dismiss();
-                        handle.with_details(&err);
-                        if let Some(screen) = self.result_screen_mut(route) {
-                            screen.display_message(&msg, MessageType::Error);
-                        }
-                    }
-                }
-                TaskResult::Error {
-                    context,
                     error: err,
                 } => {
-                    clear_profile_saving_banner_after_error(ctx, &context);
                     self.dpns_background.sweep_failed(&context, &err);
                     self.route_error_to_observers(route, &context, &err);
-                    let chooser_owned = network_chooser_owns_task(&context);
-                    // A top-up nobody open sent, or any task whose screen is
-                    // closed, did not come from the screen in view: the banner
-                    // alone reports it.
-                    let foreign_top_up = tracked_top_up && owner.is_none();
-                    let screen_owned = !chooser_owned
-                        && !recovery_delivered
-                        && !foreign_top_up
-                        && !route.sender_gone();
+                    // A task whose screen is gone did not come from the screen
+                    // in view: the banner alone reports it.
+                    let screen_owned = !recovery_delivered && !route.sender_gone();
                     let suppress_stale_error = screen_owned
                         && self.result_screen_mut(route).is_some_and(|screen| {
                             screen.should_suppress_backend_task_error(&context, &err)
                         });
-                    if chooser_owned {
-                        if let Some(screen) = self
-                            .main_screens
-                            .get_mut(&RootScreenType::RootScreenNetworkChooser)
-                        {
-                            screen.display_backend_task_error(&context, &err);
-                        }
-                    } else if screen_owned && let Some(screen) = self.result_screen_mut(route) {
+                    if screen_owned && let Some(screen) = self.result_screen_mut(route) {
                         screen.display_backend_task_error(&context, &err);
                     }
                     // Let the screen handle specific error types first.
@@ -2729,8 +2406,10 @@ impl App for AppState {
                     // an outcome: its result, when it arrives, reports it.
                     let quiet_interim = context.interim_request().is_some()
                         && matches!(route, ResultRoute::PreviousNetwork(_));
-                    let banner_shown =
-                        !suppress_stale_error && !quiet_interim && (!handled || owner_hidden);
+                    let banner_shown = !suppress_stale_error
+                        && !quiet_error
+                        && !quiet_interim
+                        && (!handled || owner_hidden);
 
                     if banner_shown {
                         let msg = err.to_string();
@@ -2985,6 +2664,8 @@ impl App for AppState {
         }
         self.drain_overlay_actions(ctx);
 
+        #[cfg(feature = "testing")]
+        actions.extend(self.test_actions.drain(..).map(|action| (None, action)));
         for (owner, action) in actions {
             if !network_selection_allows_action(self.network_selection_required, &action) {
                 tracing::debug!("Blocked an action until the user confirms a network");
@@ -3059,6 +2740,18 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
+                    // The screens still belong to the outgoing network until a
+                    // pending switch lands, so a Connect here would start the
+                    // wrong network's chain sync and lift the user's Disconnect.
+                    if let Some(pending) = self.network_switch_pending {
+                        tracing::info!(
+                            network = ?self.chosen_network,
+                            switching_to = ?pending,
+                            "Ignored Connect while a network switch is pending"
+                        );
+                        continue;
+                    }
+                    tracing::info!(network = ?self.chosen_network, "User pressed Connect");
                     // Arm the SPV-sync block for this user-initiated Connect (a
                     // fresh episode — re-arm the escape). The block conveys the
                     // "connecting" state, so no separate Info banner is set here
@@ -3069,6 +2762,11 @@ impl App for AppState {
                     self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
+                    tracing::info!(
+                        network = ?self.chosen_network,
+                        switching_to = ?self.network_switch_pending,
+                        "User asked to disconnect"
+                    );
                     self.spv_manually_disconnected = true;
                     // Overrule every start still on its way, on any network.
                     self.spv_manual_disconnects.fetch_add(1, Ordering::SeqCst);
@@ -3678,123 +3376,5 @@ mod contact_request_routing_tests {
             );
             assert!(!ResultRoute::ClosedOwner.delivers_to(hub, visible));
         }
-    }
-}
-
-#[cfg(test)]
-mod dpns_result_routing_tests {
-    use super::*;
-
-    use crate::model::dpns_voting::{
-        DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
-        DpnsVoteOperationId,
-    };
-
-    #[test]
-    fn voting_observer_interest_matches_supported_results() {
-        for handled in [
-            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
-                network: Network::Testnet,
-                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
-            },
-            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
-                network: Network::Testnet,
-                preserve_eligibility_since_ms: None,
-            },
-            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
-            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-            BackendTaskSuccessResult::RefreshedDpnsContests {
-                network: Network::Testnet,
-            },
-        ] {
-            assert!(DPNSScreen::handles_result(&handled));
-        }
-        for unrelated in [
-            BackendTaskSuccessResult::None,
-            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                network: Network::Testnet,
-                domain: crate::backend_task::CacheDomain::Dpns,
-            }),
-            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
-        ] {
-            assert!(!DPNSScreen::handles_result(&unrelated));
-        }
-    }
-
-    #[test]
-    fn scheduled_vote_clear_feedback_reports_removed_and_retained_counts() {
-        let outcome = |name: &str, disposition| DpnsScheduledVoteClearOutcome {
-            operation_id: None,
-            key: DpnsScheduledVoteKey {
-                network: Network::Testnet,
-                voter_id: Identifier::from([name.len() as u8; 32]),
-                contested_name: name.to_owned(),
-            },
-            disposition,
-        };
-        let outcomes = vec![
-            outcome("removed", DpnsScheduledVoteClearDisposition::Cleared),
-            outcome(
-                "queued",
-                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Queued),
-            ),
-            outcome(
-                "submitting",
-                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Submitting),
-            ),
-        ];
-
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes),
-            (
-                "Scheduled votes removed: 1. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
-                MessageType::Info,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes[..1]),
-            (
-                "Scheduled votes removed: 1.".to_owned(),
-                MessageType::Success,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&outcomes[1..]),
-            (
-                "No scheduled votes were removed. Votes already in progress: 2. Wait for voting to finish before trying again.".to_owned(),
-                MessageType::Info,
-            )
-        );
-        assert_eq!(
-            scheduled_vote_clear_feedback(&[]),
-            (
-                "No scheduled votes were removed.".to_owned(),
-                MessageType::Info
-            )
-        );
-    }
-}
-
-#[cfg(test)]
-mod network_chooser_routing_tests {
-    use super::*;
-    use crate::backend_task::system_task::SystemTask;
-    use crate::model::backup_retention::BackupRetention;
-
-    /// A retention save outlives navigation: its result and error must reach the
-    /// chooser even when another screen is visible, or its form stays disabled.
-    #[test]
-    fn backup_retention_task_results_route_to_network_chooser() {
-        let task = BackendTask::SystemTask(SystemTask::UpdateBackupRetention(
-            BackupRetention::KeepForever,
-        ));
-        let context = BackendTaskContext::from(&task);
-        assert_eq!(context, BackendTaskContext::UpdateBackupRetention);
-        assert!(network_chooser_owns_task(&context));
-        let dispatched = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
-        assert!(
-            network_chooser_owns_task(&dispatched),
-            "the chooser's own dispatch is still the chooser's task"
-        );
     }
 }

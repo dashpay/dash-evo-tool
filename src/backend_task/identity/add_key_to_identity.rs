@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::derived_identity_key::{
     derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::PrivateKeyTarget::{self, PrivateKeyOnMainIdentity};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -201,9 +202,11 @@ impl AppContext {
             return Err(TaskError::MasterKeyNotFound);
         };
         let master_key_id = master_key.identity_public_key.id();
-        let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
-            .await?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let (identity, fetched) =
+            Identity::fetch_with_metadata(sdk, qualified_identity.identity.id(), None).await?;
+        let identity = identity.ok_or(TaskError::IdentityNotFoundLocally)?;
+        // The fetched balance stands until the update's proof reports a newer one.
+        let mut balance_provenance = BalanceProvenance::ObservedAt(fetched.height);
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         let assigned_key_id = qualified_identity.identity.get_public_key_max_id() + 1;
@@ -254,7 +257,9 @@ impl AppContext {
             source_error: Box::new(SdkError::Protocol(e)),
         })?;
 
-        let result = state_transition.broadcast_and_wait(sdk, None).await?;
+        let (result, proof_metadata) = state_transition
+            .broadcast_and_wait_with_metadata(sdk, None)
+            .await?;
 
         // Log and handle the proof result
         tracing::info!("AddKeyToIdentity proof result: {}", result);
@@ -298,6 +303,7 @@ impl AppContext {
                 );
             }
             qualified_identity.identity.set_balance(balance_after);
+            balance_provenance = BalanceProvenance::ObservedAt(proof_metadata.height);
             fee
         } else {
             // If we couldn't determine the balance, use the estimate
@@ -318,6 +324,7 @@ impl AppContext {
             &public_key_to_add,
             private_key.as_ref(),
             verified_password,
+            balance_provenance,
         )?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
@@ -344,6 +351,8 @@ impl AppContext {
     /// is rechecked under the guard first, and a delisted identity ends the
     /// task before anything is sealed.
     ///
+    /// `balance_provenance` says where the snapshot's balance comes from.
+    ///
     /// `private_key` is `None` for a wallet-derived key, stored as
     /// `AtWalletDerivationPath`: there is no private material to seal, even
     /// for a password-protected identity, so the seal is skipped. That key
@@ -364,6 +373,7 @@ impl AppContext {
         public_key: &QualifiedIdentityPublicKey,
         private_key: Option<&[u8; 32]>,
         verified_password: Option<VerifiedIdentityPassword>,
+        balance_provenance: BalanceProvenance,
     ) -> Result<(), TaskError> {
         let identity_id = snapshot.identity.id();
         let lock = self.identity_record_lock(identity_id);
@@ -388,6 +398,7 @@ impl AppContext {
             public_key,
             private_key,
             verified_password,
+            balance_provenance,
         )
         .map_err(not_saved)
     }
@@ -401,6 +412,7 @@ impl AppContext {
         public_key: &QualifiedIdentityPublicKey,
         private_key: Option<&[u8; 32]>,
         verified_password: Option<VerifiedIdentityPassword>,
+        balance_provenance: BalanceProvenance,
     ) -> Result<(), TaskError> {
         let identity_id = snapshot.identity.id();
         // Listed but without a blob is a torn record; the snapshot is the best
@@ -419,6 +431,7 @@ impl AppContext {
             }
         }
         record.identity = identity;
+        let pending = self.adopt_balance_observation_locked(&mut record, balance_provenance)?;
 
         // Both inserts refuse a slot another writer filled with a different
         // key meanwhile, before anything is sealed.
@@ -432,7 +445,8 @@ impl AppContext {
             record
                 .private_keys
                 .insert_wallet_derived(new_key, public_key.clone(), path)?;
-            return self.write_local_qualified_identity_locked(&record);
+            self.write_local_qualified_identity_locked(&record)?;
+            return self.seed_balance_watermark_locked(pending);
         };
         record
             .private_keys
@@ -468,7 +482,8 @@ impl AppContext {
             }
         }
 
-        self.write_local_qualified_identity_locked(&record)
+        self.write_local_qualified_identity_locked(&record)?;
+        self.seed_balance_watermark_locked(pending)
     }
 }
 
@@ -674,7 +689,14 @@ mod tests {
         let placement = (PrivateKeyOnMainIdentity, 5);
         staged
             .ctx
-            .persist_added_identity_key(&identity, placement.clone(), &key, None, None)
+            .persist_added_identity_key(
+                &identity,
+                placement.clone(),
+                &key,
+                None,
+                None,
+                BalanceProvenance::Unobserved,
+            )
             .unwrap();
         let restored = staged
             .ctx
@@ -779,19 +801,13 @@ mod tests {
     }
 
     fn derived_request(key_type: KeyType) -> QualifiedIdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        QualifiedIdentityPublicKey::from(dash_sdk::platform::IdentityPublicKey::from(
-            IdentityPublicKeyV0 {
-                id: 0,
-                key_type,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: None,
-                data: Vec::new().into(),
-            },
+        QualifiedIdentityPublicKey::from(crate::context::test_support::identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            key_type,
+            Vec::new(),
         ))
     }
 
@@ -1046,7 +1062,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_add_rejects_occupied_indices_including_a_disabled_hash160_alias() {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 
         let stage = stage_derivation(true).await;
@@ -1065,19 +1080,15 @@ mod tests {
             .unwrap()
             .pubkey_hash()
             .into();
-        identity.identity.add_public_key(
-            IdentityPublicKeyV0 {
-                id: 4,
-                key_type: KeyType::ECDSA_HASH160,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: Some(1),
-                data: hash.to_vec().into(),
-            }
-            .into(),
+        let mut disabled = crate::context::test_support::identity_public_key(
+            4,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            hash.to_vec(),
         );
+        disabled.set_disabled_at(1);
+        identity.identity.add_public_key(disabled);
         stage
             .staged
             .ctx
@@ -1332,6 +1343,7 @@ mod tests {
                 &public_key,
                 Some(&[0xCD; 32]),
                 Some(password),
+                BalanceProvenance::Unobserved,
             )
             .expect_err("an identity that is gone cannot take a new key");
         assert!(
@@ -1430,6 +1442,7 @@ mod tests {
             &public_key,
             Some(&[0xCD; 32]),
             None,
+            BalanceProvenance::Unobserved,
         )
         .expect("persist the added key");
 
@@ -1483,6 +1496,7 @@ mod tests {
                 &public_key,
                 Some(&[0xCD; 32]),
                 None,
+                BalanceProvenance::Unobserved,
             )
             .expect_err("a keyless key cannot join a protected identity");
         assert!(
@@ -1526,6 +1540,7 @@ mod tests {
                 &public_key,
                 Some(&[0xCD; 32]),
                 None,
+                BalanceProvenance::Unobserved,
             )
             .expect_err("the slot belongs to another key");
         assert!(
@@ -1782,8 +1797,15 @@ mod tests {
         save_concurrent_key_and_alias(ctx, &staged.id, CONCURRENT_KEY_ID);
 
         let placement = (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID);
-        ctx.persist_added_identity_key(&snapshot, placement.clone(), &key, None, None)
-            .expect("persist the derived key");
+        ctx.persist_added_identity_key(
+            &snapshot,
+            placement.clone(),
+            &key,
+            None,
+            None,
+            BalanceProvenance::Unobserved,
+        )
+        .expect("persist the derived key");
 
         let stored = ctx
             .get_local_qualified_identity(&staged.id)
@@ -1821,6 +1843,7 @@ mod tests {
                 &key,
                 None,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .expect_err("the slot belongs to another key");
         assert!(
@@ -1850,6 +1873,7 @@ mod tests {
                 &key,
                 None,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .expect_err("an identity that is gone cannot take a new key");
         assert!(

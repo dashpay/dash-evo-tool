@@ -3595,7 +3595,7 @@ fn seed_legacy_protected_single_key(
     alias: Option<&str>,
 ) -> String {
     use crate::model::wallet::single_key::ClosedSingleKey;
-    use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+    use dash_sdk::dpp::dashcore::{Address, PrivateKey};
 
     let path = ctx.db.db_file_path().expect("data.db path");
     let conn = rusqlite::Connection::open(&path).expect("open data.db");
@@ -3606,10 +3606,7 @@ fn seed_legacy_protected_single_key(
         nonce,
     } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
     let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
-    let pub_key = PublicKey {
-        compressed: priv_key.compressed,
-        inner: priv_key.inner.public_key(),
-    };
+    let pub_key = priv_key.public_key();
     let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
     let key_hash = ClosedSingleKey::compute_key_hash(raw_key);
     conn.execute(
@@ -7756,7 +7753,11 @@ async fn identity_creation_below_the_network_fee_is_refused_before_the_wallet_is
     // 0.002 DASH covers the base of the fee, but not the share of any key.
     let info = build_identity_registration_with_seed(&ctx, &wallet, &seed, 0, 200_000)
         .expect("registration info");
-    let key_count = info.keys.to_public_keys_map().expect("public keys").len() as u64;
+    let key_count = info
+        .keys
+        .to_public_keys_map(ctx.platform_version())
+        .expect("public keys")
+        .len() as u64;
 
     let error = ctx
         .run_identity_task(IdentityTask::RegisterIdentity(info), &ctx.sdk(), sender)

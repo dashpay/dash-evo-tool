@@ -1762,11 +1762,6 @@ pub enum TaskError {
     )]
     ConfirmationTimeout,
 
-    /// The Core wallet association was auto-detected and linked; the operation's
-    /// prerequisite is now satisfied. Callers should retry the failed operation.
-    #[error("Detected the Core wallet '{wallet_name}'. Retrying your last action now.")]
-    CoreWalletAutoDetected { wallet_name: String },
-
     /// Duplicate identity public key — this key's hash is already registered and
     /// the key is marked as unique, so it cannot be reused.
     #[error(
@@ -2317,6 +2312,22 @@ pub enum TaskError {
     IdentityCreationError {
         #[source]
         source: Box<ProtocolError>,
+    },
+
+    /// A new document could not be built for the active protocol version,
+    /// typically one this build does not know yet.
+    #[error("Could not prepare the document. Update Dash Evo Tool and try again.")]
+    DocumentPreparationFailed {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
+    /// The identity keys could not be built in the identity key structure of
+    /// the active protocol version, typically one this build does not know yet.
+    #[error("Could not prepare the identity keys. Update Dash Evo Tool and try again.")]
+    IdentityKeysPreparationFailed {
+        #[source]
+        source: Box<SdkError>,
     },
 
     /// A private key could not be parsed or is invalid.
@@ -3042,7 +3053,7 @@ pub enum TaskError {
 
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
-    PublicKeyMapBuildFailed { detail: String },
+    PublicKeyMapBuildFailed(#[from] crate::backend_task::identity::IdentityKeySpecError),
 
     /// The wallet-binding information for an identity could not be determined.
     #[error(
@@ -5573,17 +5584,6 @@ mod tests {
         let msg = TaskError::CoreWalletNotConfigured.to_string();
         assert!(msg.contains("Wallets screen"));
         assert!(msg.contains("refresh"));
-    }
-
-    #[test]
-    fn core_wallet_auto_detected_displays_wallet_name() {
-        let err = TaskError::CoreWalletAutoDetected {
-            wallet_name: "mywallet".to_string(),
-        };
-        assert_eq!(
-            err.to_string(),
-            "Detected the Core wallet 'mywallet'. Retrying your last action now."
-        );
     }
 
     #[test]

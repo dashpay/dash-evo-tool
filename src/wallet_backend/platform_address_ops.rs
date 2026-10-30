@@ -127,8 +127,8 @@ impl WalletBackend {
     }
 
     /// Top up `identity` from this wallet's Platform addresses. Returns the
-    /// identity's new balance and the address entries platform-wallet
-    /// committed.
+    /// identity's new balance, the height of the proof carrying it and the
+    /// address entries platform-wallet committed.
     ///
     /// The SDK submits the top-up; platform-wallet's public
     /// `reconcile_address_infos` then records the spent balances, pinned at
@@ -142,7 +142,7 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         identity: &dash_sdk::platform::Identity,
         inputs: BTreeMap<PlatformAddress, Credits>,
-    ) -> Result<(Credits, Vec<PlatformAddressEntry>), TaskError> {
+    ) -> Result<(Credits, u64, Vec<PlatformAddressEntry>), TaskError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
         // Resolve before the secret session so an unregistered wallet fails
@@ -168,7 +168,7 @@ impl WalletBackend {
             })
             .await?;
         let entries = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
-        Ok((new_balance, entries))
+        Ok((new_balance, proof_height, entries))
     }
 }
 

@@ -191,7 +191,7 @@ Rule: validate on blur or on a completed paste, never on every keystroke. Errors
 
 - **Locked From wallet**: the form stays usable (D-10) and balances come from the snapshot. Next to the wallet picker, the 🔒 glyph and the line "Locked. You'll be asked for the password when you send." Pressing Send opens `WalletUnlockPopup`. On a successful unlock the confirmation dialog opens. Cancel returns to the form unchanged. *Fallback if snapshot balances are unavailable while locked:* show an inline [Unlock] in the From section only; To stays usable.
 - **Locked To wallet** (My wallets): unused-address derivation should need only public keys. If it does not, the status line reads "Unlock Savings to get a receiving address." with an [Unlock] link.
-- **Password-protected identity keys** (SEC-001): the existing sign-time prompt; there are no new states.
+- **Password-protected identity keys** (IDN-013): the existing sign-time prompt; there are no new states.
 - **Sync not finished**: the status line adds "Balances are still syncing." Auto still resolves on what is known. Send follows today's rules.
 - **Network switch** while open: the form resets to the defaults with the info banner "The network changed, so the send form was cleared." Identity-bound flows keep today's "Back to identity" screen.
 - **Single-key wallet as From**: listed but greyed out in the picker with the SND-002 reason.

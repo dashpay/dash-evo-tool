@@ -20,6 +20,7 @@ use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::backend_task::TaskResult;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
@@ -1028,7 +1029,7 @@ impl AppContext {
         // The identity may belong to another wallet or to none, so the
         // backend tops it up by id and only reconciles the paying wallet's
         // addresses in platform-wallet.
-        let (new_balance, entries) = self
+        let (new_balance, height, entries) = self
             .wallet_backend()?
             .top_up_identity_from_platform_addresses(
                 &wallet_seed_hash,
@@ -1051,7 +1052,10 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)?;
+        self.update_local_qualified_identity_observed(
+            &mut updated_identity,
+            BalanceProvenance::ObservedAt(height),
+        )?;
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1081,7 +1085,7 @@ impl AppContext {
         let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
 
         // Execute the transfer - qualified_identity is consumed here as the signer
-        let (address_infos, new_balance, _height) = identity
+        let (address_infos, new_balance, height) = identity
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),
@@ -1127,7 +1131,10 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)?;
+        self.update_local_qualified_identity_observed(
+            &mut updated_identity,
+            BalanceProvenance::ObservedAt(height),
+        )?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))

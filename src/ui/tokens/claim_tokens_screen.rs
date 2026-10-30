@@ -584,7 +584,7 @@ impl ScreenLike for ClaimTokensScreen {
                         identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.identity_token_basic_info.contract_id,
                         },
                     );

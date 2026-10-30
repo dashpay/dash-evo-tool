@@ -607,7 +607,7 @@ impl RegisterDpnsNameScreen {
                         &mut self.selected_key,
                         TransactionType::UsernameRegistration,
                         &levels,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: dpns_contract.id(),
                         },
                     );

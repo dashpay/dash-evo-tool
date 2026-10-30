@@ -153,7 +153,7 @@ pub fn compute_allowed_security_levels(
         (
             TransactionType::DocumentAction | TransactionType::UsernameRegistration,
             Some(doc_type),
-        ) => crate::model::identity_key_usability::document_security_levels(doc_type.as_ref()),
+        ) => SecurityLevel::accepted_for_requirement(doc_type.security_level_requirement()),
         _ => transaction_type.allowed_security_levels(),
     }
 }
@@ -1353,7 +1353,7 @@ mod tests {
             purposes,
             security_levels: levels,
             key_types: TransactionType::ContactRequest.allowed_key_types(),
-            scope: SigningScope::Document {
+            scope: SigningScope::DocumentType {
                 contract_id: dashpay,
                 document_type_name: "contactRequest",
             },

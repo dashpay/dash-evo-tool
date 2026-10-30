@@ -12,8 +12,7 @@ use crate::model::dpns_usernames::{
     DPNS_SIGNING_KEY_TYPES, dpns_security_levels, dpns_signing_requirement,
 };
 use crate::model::identity_key_usability::{
-    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, document_security_levels, now_ms,
-    select_identity_signing_key,
+    KeyLookupOnly, KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -31,6 +30,7 @@ use dash_sdk::dpp::dashcore::{Address, Network, ScriptHash};
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::ed25519_dalek::Signer as EDDSASigner;
 use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -391,6 +391,52 @@ fn purpose_label(purpose: Purpose) -> &'static str {
 impl Display for QualifiedIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_string())
+    }
+}
+
+/// `QualifiedIdentity` as the signer upstream's key selector sees: it admits
+/// only keys whose private half this device can obtain
+/// ([`QualifiedIdentity::holds_obtainable_key`]). The identity's own
+/// [`Signer::can_sign_with`] is a cheaper per-frame check that also accepts a
+/// key filed under a wallet that is not on this device, or in the legacy
+/// encrypted form; selecting such a key would fail at signing time.
+///
+/// For key selection only: hand the identity itself to anything that signs.
+/// `sign` and `sign_create_witness` forward to the identity without
+/// re-checking [`QualifiedIdentity::holds_obtainable_key`], so a key this
+/// device cannot obtain still fails with the identity's own typed signing
+/// errors (e.g. a missing wallet seed) rather than a generic refusal.
+struct ObtainableKeys<'a>(&'a QualifiedIdentity);
+
+/// Names only the identity: the view carries no state of its own.
+impl std::fmt::Debug for ObtainableKeys<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ObtainableKeys")
+            .field(&self.0.identity.id())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl Signer<IdentityPublicKey> for ObtainableKeys<'_> {
+    async fn sign(
+        &self,
+        key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        self.0.sign(key, data).await
+    }
+
+    async fn sign_create_witness(
+        &self,
+        key: &IdentityPublicKey,
+        data: &[u8],
+    ) -> Result<dash_sdk::dpp::address_funds::AddressWitness, ProtocolError> {
+        self.0.sign_create_witness(key, data).await
+    }
+
+    fn can_sign_with(&self, key: &IdentityPublicKey) -> bool {
+        self.0.holds_obtainable_key(key)
     }
 }
 
@@ -1193,7 +1239,7 @@ impl QualifiedIdentity {
 
     /// The key to sign document transitions on `document_type` with, within
     /// `scope`: a live AUTHENTICATION key of one of `key_types`, at a level the
-    /// type accepts ([`document_security_levels`]), whose contract bounds
+    /// type accepts ([`SecurityLevel::accepted_for_requirement`]), whose contract bounds
     /// permit `scope`, in upstream platform-wallet's order (see
     /// [`Self::signing_key_now`]).
     pub fn document_signing_key(
@@ -1202,7 +1248,8 @@ impl QualifiedIdentity {
         document_type: &DocumentTypeRef,
         key_types: &[KeyType],
     ) -> Option<&IdentityPublicKey> {
-        let levels = document_security_levels(*document_type);
+        let levels =
+            SecurityLevel::accepted_for_requirement(document_type.security_level_requirement());
         self.signing_key_now(
             KeyRequirements::new(Purpose::AUTHENTICATION, &levels, scope).with_key_types(key_types),
         )
@@ -1224,7 +1271,7 @@ impl QualifiedIdentity {
             KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &levels,
-                SigningScope::ContractWide {
+                SigningScope::Contract {
                     contract_id: dpns_contract.id(),
                 },
             )
@@ -1234,7 +1281,7 @@ impl QualifiedIdentity {
 
     /// The key to sign an action on document type `document_type_name` of
     /// `contract` with: a live AUTHENTICATION key at a level the type accepts
-    /// ([`document_security_levels`]), of one of `key_types`, whose bounds
+    /// ([`SecurityLevel::accepted_for_requirement`]), of one of `key_types`, whose bounds
     /// permit that document type, in upstream platform-wallet's order (see
     /// [`Self::signing_key_now`]). `None` when the contract has no such type
     /// or no key qualifies.
@@ -1245,12 +1292,13 @@ impl QualifiedIdentity {
         key_types: &[KeyType],
     ) -> Option<&IdentityPublicKey> {
         let document_type = contract.document_type_for_name(document_type_name).ok()?;
-        let levels = document_security_levels(document_type);
+        let levels =
+            SecurityLevel::accepted_for_requirement(document_type.security_level_requirement());
         self.signing_key_now(
             KeyRequirements::new(
                 Purpose::AUTHENTICATION,
                 &levels,
-                SigningScope::Document {
+                SigningScope::DocumentType {
                     contract_id: contract.id(),
                     document_type_name,
                 },
@@ -1286,18 +1334,15 @@ impl QualifiedIdentity {
             .unwrap_or(snapshot)
     }
 
-    /// The key to sign with for `requirements` now: the automatic choice of
-    /// [`select_identity_signing_key`] among the keys whose private half this
-    /// device can obtain ([`Self::holds_obtainable_key`]), so a key filed
-    /// under a missing wallet or in the legacy encrypted form is passed over
-    /// for the next usable one. Upstream platform-wallet's order: every
-    /// qualifying unlimited key at any accepted level before any limited one,
-    /// then key id order, so a budgeted application key is spent only when no
-    /// unlimited key can sign.
+    /// The key to sign with for `requirements` now: upstream platform-wallet's
+    /// choice ([`KeyRequirements::select`]) among the keys whose private half
+    /// this device can obtain ([`ObtainableKeys`]), so a key filed under a
+    /// missing wallet or in the legacy encrypted form is passed over for the
+    /// next usable one. Every qualifying unlimited key at any accepted level
+    /// comes before any limited one, then key id order, so a budgeted
+    /// application key is spent only when no unlimited key can sign.
     pub fn signing_key_now(&self, requirements: KeyRequirements<'_>) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |key| {
-            self.holds_obtainable_key(key)
-        })
+        requirements.select(&self.identity, &ObtainableKeys(self))
     }
 
     /// The key to sign a batch of one token transfer or claim on
@@ -1308,7 +1353,7 @@ impl QualifiedIdentity {
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> Option<&IdentityPublicKey> {
-        let scope = SigningScope::ContractWide { contract_id };
+        let scope = SigningScope::Contract { contract_id };
         SINGLE_TOKEN_TRANSITION_PURPOSES
             .into_iter()
             .find_map(|purpose| {
@@ -1348,7 +1393,7 @@ impl QualifiedIdentity {
         KeyRequirements::new(
             Purpose::AUTHENTICATION,
             &[SecurityLevel::CRITICAL],
-            SigningScope::ContractWide { contract_id },
+            SigningScope::Contract { contract_id },
         )
     }
 
@@ -1400,16 +1445,16 @@ impl QualifiedIdentity {
             })
     }
 
-    /// The key [`select_identity_signing_key`] would pick for `requirements`
-    /// now, whether or not this device holds its private half. For
-    /// informational lookups only (e.g. pointing the user at a key whose
-    /// private half they should load) — never for signing; use
-    /// [`Self::signing_key_now`] for that.
+    /// The key upstream platform-wallet would pick for `requirements` now,
+    /// whether or not this device holds its private half. For informational
+    /// lookups only (e.g. pointing the user at a key whose private half they
+    /// should load) — never for signing; use [`Self::signing_key_now`] for
+    /// that.
     pub fn matching_key_now(
         &self,
         requirements: KeyRequirements<'_>,
     ) -> Option<&IdentityPublicKey> {
-        select_identity_signing_key(&self.identity, requirements, now_ms(), |_| true)
+        requirements.select(&self.identity, &KeyLookupOnly)
     }
 
     pub fn available_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -3402,21 +3447,13 @@ pub(crate) mod withdrawal_key_tests {
     }
 
     /// Keys Platform refuses for a credit transfer or withdrawal, each with id
-    /// 1: expired, bound to a contract (refused outside a batch), and of a type
-    /// Platform does not verify.
+    /// 1: expired, and of a type Platform does not verify. Contract bounds are
+    /// not among the refusals: they limit only AUTHENTICATION keys.
     fn refused_credit_keys(purpose: Purpose) -> Vec<(&'static str, IdentityPublicKey)> {
-        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
-        let mut bound = key(1, purpose);
-        if let IdentityPublicKey::V0(v0) = &mut bound {
-            v0.contract_bounds = Some(ContractBounds::SingleContract {
-                id: Identifier::new([0x09; 32]),
-            });
-        }
         let mut eddsa = key(1, purpose);
         eddsa.set_key_type(KeyType::EDDSA_25519_HASH160);
         vec![
             ("expired", key(1, purpose).with_limits(None, Some(1))),
-            ("contract bound", bound),
             ("EdDSA", eddsa),
         ]
     }
@@ -3751,6 +3788,56 @@ mod protocol_v14_compat_tests {
         }
     }
 
+    /// Review fix: a document type requiring MASTER accepted no level, as
+    /// MASTER sorts below CRITICAL. Platform accepts exactly MASTER for it,
+    /// as dpp's `SecurityLevel::accepted_for_requirement` does.
+    #[test]
+    fn a_master_document_type_is_signed_with_a_master_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::data_contract::config::DataContractConfig;
+        use dash_sdk::dpp::data_contract::document_type::DocumentType;
+        use dash_sdk::dpp::platform_value::platform_value;
+
+        let version = PlatformVersion::get(14).expect("protocol 14");
+        let config = DataContractConfig::default_for_version(version).expect("config");
+        let document_type = DocumentType::try_from_schema(
+            Identifier::new([1; 32]),
+            1,
+            config.version(),
+            "vault",
+            platform_value!({
+                "type": "object",
+                "signatureSecurityLevelRequirement": 0_u32,
+                "properties": {"value": {"type": "string", "maxLength": 20_u32, "position": 0_u32}},
+                "additionalProperties": false,
+            }),
+            None,
+            &BTreeMap::new(),
+            &config,
+            false,
+            &mut Vec::new(),
+            version,
+        )
+        .expect("a document type requiring MASTER");
+        let identity = identity_holding(&[
+            auth_key(1, SecurityLevel::CRITICAL),
+            auth_key(2, SecurityLevel::MASTER),
+        ]);
+        assert_eq!(
+            identity
+                .document_signing_key(
+                    SigningScope::DocumentType {
+                        contract_id: Identifier::new([1; 32]),
+                        document_type_name: "vault",
+                    },
+                    &document_type.as_ref(),
+                    PLATFORM_SIGNING_KEY_TYPES,
+                )
+                .map(|key| key.id()),
+            Some(2)
+        );
+    }
+
     /// Regression: the contactRequest and contactInfo key choices admitted
     /// MEDIUM keys, which the document types refuse, so an unlimited MEDIUM
     /// key beat a held limited HIGH key and the write was refused.
@@ -3936,7 +4023,7 @@ mod protocol_v14_compat_tests {
             auth_key(1, SecurityLevel::MASTER),
             auth_key(2, SecurityLevel::CRITICAL),
         ]);
-        let scope = SigningScope::ContractWide {
+        let scope = SigningScope::Contract {
             contract_id: dpns.id(),
         };
         assert_eq!(
@@ -4231,14 +4318,16 @@ mod protocol_v14_compat_tests {
     #[test]
     fn dpns_levels_match_the_explicit_key_check() {
         use crate::context::test_support::auth_key;
-        use crate::model::dpns_usernames::{chosen_key_can_sign_documents, dpns_security_levels};
+        use crate::model::dpns_usernames::{dpns_key_requirements, dpns_security_levels};
 
         for required in SecurityLevel::full_range() {
             let levels = dpns_security_levels(required);
             for level in SecurityLevel::full_range() {
                 assert_eq!(
                     levels.contains(&level),
-                    chosen_key_can_sign_documents(&auth_key(1, level), required),
+                    dpns_key_requirements(&levels)
+                        .check(&auth_key(1, level), &KeyLookupOnly)
+                        .is_ok(),
                     "required {required:?}, key {level:?}"
                 );
             }
@@ -4272,7 +4361,7 @@ mod protocol_v14_compat_tests {
         let limited = auth_key(3).with_limits(Some(1_000), None);
         let plain = auth_key(4);
         let mut qi = identity_holding(&[expired, elsewhere, limited, plain]);
-        let scope = SigningScope::ContractWide {
+        let scope = SigningScope::Contract {
             contract_id: dpns.id(),
         };
         assert_eq!(

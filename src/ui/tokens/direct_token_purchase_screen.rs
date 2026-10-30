@@ -522,7 +522,7 @@ impl ScreenLike for PurchaseTokenScreen {
                         &self.identity_token_info.identity,
                         &mut self.selected_key,
                         TransactionType::TokenAction,
-                        SigningScope::ContractWide {
+                        SigningScope::Contract {
                             contract_id: self.identity_token_info.data_contract.contract.id(),
                         },
                     );

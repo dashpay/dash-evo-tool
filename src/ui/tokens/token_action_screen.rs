@@ -562,7 +562,7 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     &self.common.identity_token_info.identity,
                     &mut self.common.selected_key,
                     TransactionType::TokenAction,
-                    SigningScope::ContractWide {
+                    SigningScope::Contract {
                         contract_id: self.common.identity_token_info.data_contract.contract.id(),
                     },
                 );

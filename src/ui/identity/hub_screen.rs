@@ -1195,7 +1195,7 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        // The Tokens tab shows its own refresh failures inline.
+        // The Tokens tab and Home's token slot show refresh failures inline.
         if self.tokens_state.take_swallowed_error() {
             return true;
         }

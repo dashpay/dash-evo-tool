@@ -745,6 +745,144 @@ fn home_asks_for_balances_on_a_fresh_launch_and_then_shows_the_card() {
     });
 }
 
+/// Every full balance refresh the hub has asked for, oldest first.
+fn balance_refreshes(hub: &HubHarness) -> Vec<BackendTaskContext> {
+    hub.state()
+        .1
+        .iter()
+        .filter_map(|action| match action {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::TokenTask(task),
+                context,
+            } if matches!(**task, TokenTask::QueryMyTokenBalances) => Some(context.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_failed_refresh_on_home_explains_itself_and_retries_once_per_click() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB6);
+        let tokens = seed_contract(
+            &app_context,
+            0xC6,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        assert_eq!(arrival.len(), 1, "one refresh per arrival");
+
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &error);
+        assert!(
+            hub.state_mut().0.display_task_error(&error),
+            "Home shows the failure inline, not as a global banner"
+        );
+        hub.run_steps(6);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+                .is_some(),
+            "the card cannot appear, so Home must say why"
+        );
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            1,
+            "a failure is not retried on its own, frame after frame"
+        );
+
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        let retried = balance_refreshes(&hub);
+        assert_eq!(retried.len(), 2, "the click sends one retry");
+        hub.get_by_label(token_copy::TRY_AGAIN_LABEL).click();
+        hub.run_steps(2);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            2,
+            "a retry still running is not sent again"
+        );
+
+        set_balance(&app_context, identity, tokens[0], 125_000);
+        hub.state_mut().0.display_backend_task_result(
+            &retried[1],
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+                .is_none(),
+            "a success clears the notice"
+        );
+        assert!(hub.query_by_label("1250 DashCoffee").is_some());
+    });
+}
+
+#[test]
+fn a_failed_refresh_on_home_can_be_dismissed() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xB7);
+        seed_contract(
+            &app_context,
+            0xC7,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &TaskError::NoIdentitiesFound);
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::DISMISS_LABEL).click();
+        hub.run_steps(4);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+                .is_none()
+        );
+        assert_eq!(balance_refreshes(&hub).len(), 1, "dismissing sends nothing");
+    });
+}
+
+/// With no token to report on, a failed check tells the user nothing useful.
+#[test]
+fn a_failed_refresh_on_home_stays_quiet_without_tokens() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xB8);
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        let arrival = balance_refreshes(&hub);
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival[0], &TaskError::NoIdentitiesFound);
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_FAILED)
+                .is_none()
+        );
+    });
+}
+
 #[test]
 fn home_holds_its_balance_refresh_until_the_masternode_list_is_synced() {
     with_isolated_data_dir(|| {

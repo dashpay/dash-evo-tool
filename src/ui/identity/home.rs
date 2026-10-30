@@ -17,7 +17,7 @@ use crate::ui::identity::token_copy::{
     ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, TOKENS_CARD_HEADING,
     can_claim_once_text, pending_claims_text,
 };
-use crate::ui::identity::tokens_tab::{RowContext, render_claim_button};
+use crate::ui::identity::tokens_tab::{RowContext, render_claim_button, render_failure};
 pub use crate::ui::state::identity_home::HomeState;
 use crate::ui::state::identity_tokens::{
     IdentityTokensState, TokenRow, home_card_shows, sort_rows,
@@ -396,7 +396,9 @@ fn render_main_column(
 
 /// The Tokens card: a glance at what the identity holds and can claim. Shown
 /// only when there is something to say. A single pending claim can be taken
-/// right here; more than one is listed on the Tokens tab.
+/// right here; more than one is listed on the Tokens tab. A failed balance
+/// refresh shows above it, as it may be why there is no card, unless the
+/// identity has no token the failure could be hiding.
 fn render_tokens_card(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -404,10 +406,14 @@ fn render_tokens_card(
     tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     let rows = tokens.rows(app_context, identity);
+    let mut action = if rows.is_empty() {
+        AppAction::None
+    } else {
+        render_failure(ui, app_context, tokens)
+    };
     if !home_card_shows(&rows) {
-        return (AppAction::None, HomeOutcome::None);
+        return (action, HomeOutcome::None);
     }
-    let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
     let dark = ui.visuals().dark_mode;
     let mut held: Vec<&TokenRow> = rows.iter().filter(|row| row.holds_some()).collect();

@@ -240,7 +240,7 @@ fn render_state_bar(ui: &mut Ui, state: &IdentityTokensState, home: &mut HomeSta
 }
 
 /// The inline error after a failed refresh; rows stay on screen.
-fn render_failure(
+pub(super) fn render_failure(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &mut IdentityTokensState,

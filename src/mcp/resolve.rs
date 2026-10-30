@@ -167,7 +167,7 @@ async fn hydrate_wallets(
     ctx: &Arc<AppContext>,
     wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
 ) -> Result<(), McpToolError> {
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
@@ -291,7 +291,7 @@ async fn ensure_spv_ready(
     // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
     // it, so the receiver is dropped. The `EventBridge` only does non-blocking
     // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;
@@ -349,7 +349,9 @@ async fn wait_for_spv_and_refresh_platform_info(
     }
 
     match protocol_refresh {
-        ProtocolRefresh::BestEffortIfUnpopulated if ctx.proven_protocol_version().is_none() => {
+        ProtocolRefresh::BestEffortIfUnpopulated
+            if ctx.protocol_version_info().verified_version.is_none() =>
+        {
             let _ = refresh_platform_protocol_version(ctx).await;
             Ok(())
         }
@@ -376,7 +378,7 @@ async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), 
     })?;
 
     tracing::trace!(
-        protocol_version = ?ctx.proven_protocol_version(),
+        protocol_version = ?ctx.protocol_version_info().verified_version,
         "Platform epoch information refreshed for headless feature gating"
     );
     Ok(())
@@ -492,7 +494,7 @@ mod tests {
             .await
             .expect("refresh platform metadata");
 
-        assert_eq!(ctx.proven_protocol_version(), None);
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
     }
 
     /// Once SPV runs, the headless sync completes and reads the protocol
@@ -510,7 +512,10 @@ mod tests {
             .await
             .expect("headless sync completion");
 
-        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION));
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            Some(LATEST_VERSION)
+        );
         assert_eq!(
             ctx.fee_multiplier_permille(),
             crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
@@ -527,7 +532,7 @@ mod tests {
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("SPV readiness survives a Platform metadata failure");
-        assert_eq!(ctx.proven_protocol_version(), None);
+        assert_eq!(ctx.protocol_version_info().verified_version, None);
 
         ctx.sdk
             .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
@@ -535,7 +540,10 @@ mod tests {
             .await
             .expect("SPV readiness retries Platform metadata");
 
-        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION));
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            Some(LATEST_VERSION)
+        );
     }
 
     /// Insert a wallet straight into the in-memory map, bypassing registration

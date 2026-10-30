@@ -347,11 +347,12 @@ fn nothing_recovered(identity_id: Identifier) -> BackendTaskSuccessResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
     use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::database::test_helpers::{LegacyIdentityFixture, create_database_at_path};
@@ -370,7 +371,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::version::PlatformVersion;
@@ -545,16 +545,13 @@ mod tests {
             .expect("derive the public half");
         TestKey {
             secret,
-            public: IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            public: identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
+                SecurityLevel::HIGH,
                 key_type,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                BinaryData::new(data),
+            ),
         }
     }
 

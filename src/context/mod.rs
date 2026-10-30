@@ -1,6 +1,8 @@
 pub mod connection_status;
+mod contact_info_writes;
 mod contested_names_db;
 mod contract_token_db;
+mod dapi_addresses;
 mod dpns_vote_attention;
 mod dpns_vote_operations;
 mod dpns_vote_preferences;
@@ -48,7 +50,6 @@ use crate::wallet_backend::{
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
-use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
@@ -60,6 +61,7 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
+use dash_sdk::{ProtocolVersionInfo, Sdk};
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
@@ -275,6 +277,8 @@ pub struct AppContext {
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    /// Shared across all contact-info writers on this network.
+    pub(crate) contact_info_writes: contact_info_writes::ContactInfoWrites,
     /// Serializes operation journal writes and target-lock acquisition.
     dpns_vote_operation_guard: Mutex<()>,
     /// Bumped under `dpns_vote_operation_guard` when a removed voter is loaded
@@ -378,6 +382,13 @@ pub struct AppContext {
     /// double-checked `ArcSwapOption` read still serves the steady state
     /// lock-free; this `Mutex` is held only across the one-time build.
     wallet_backend_build: tokio::sync::Mutex<()>,
+    /// Serialises connection rebuilds ([`Self::reinit_core_client_and_sdk`]):
+    /// two rebuilds retargeting the SDK's shared DAPI address list at once
+    /// could each remove the other's addresses and leave a mixed or empty
+    /// list. The config is read under it, so the last rebuild applies the
+    /// newest addresses. Held across the whole rebuild, which never awaits;
+    /// taken before any other lock of this context, never under one.
+    connection_rebuild: Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -618,6 +629,7 @@ impl AppContext {
             #[cfg(feature = "testing")]
             test_network_switch_gate: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
+            contact_info_writes: Default::default(),
             dpns_vote_operation_guard: Mutex::new(()),
             dpns_voter_lifecycles: Mutex::default(),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
@@ -642,6 +654,7 @@ impl AppContext {
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
+            connection_rebuild: Mutex::new(()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
@@ -1112,26 +1125,14 @@ impl AppContext {
         self.system_contracts.try_get(platform_version)
     }
 
-    /// The protocol version the current SDK has seen in a response whose
-    /// proof and quorum signature were verified, or `None` before any such
-    /// response. A rebuilt connection is a new SDK and starts from `None`.
-    /// The number may be one this build does not define; see
-    /// [`Self::proven_platform_version`].
-    pub fn proven_protocol_version(&self) -> Option<u32> {
-        match self.sdk.load().query_settings().verified_protocol_version {
-            0 => None,
-            version => Some(version),
-        }
-    }
-
-    /// The platform version the connected network has proven
-    /// ([`Self::proven_protocol_version`]), when this build defines it.
-    /// `None` before the network proves a version and for a version newer
-    /// than any this build knows, so every capability reading it fails
-    /// closed.
-    pub fn proven_platform_version(&self) -> Option<&'static PlatformVersion> {
-        self.proven_protocol_version()
-            .and_then(PlatformVersion::get_optional)
+    /// The current SDK's view of the network's protocol version
+    /// ([`dash_sdk::Sdk::protocol_version_info`]): the version proven by a
+    /// response whose proof and quorum signature were verified (`None` before
+    /// any; a rebuilt connection is a new SDK and starts from `None`), the
+    /// version transitions are built at, and whether the proven version is
+    /// newer than any this build defines.
+    pub fn protocol_version_info(&self) -> ProtocolVersionInfo {
+        self.sdk.load().protocol_version_info()
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
@@ -1176,8 +1177,22 @@ impl AppContext {
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`. The new SDK starts from
-    /// nothing learned from the old endpoints.
+    /// nothing learned from the old endpoints except the bans of addresses
+    /// that stay.
+    ///
+    /// The new SDK is built over the old SDK's address list, which is then
+    /// moved in place to the configured addresses. Every clone of the old SDK
+    /// shares that list, the wallet backend's and the upstream wallet
+    /// components' included, so they reach the new addresses too.
+    ///
+    /// All or nothing: every step that can fail runs before the list moves,
+    /// so a failed rebuild leaves the client, the SDK and the list as they
+    /// were.
     pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
+        let _rebuild = self
+            .connection_rebuild
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
             let cfg_lock = self.config.read()?;
@@ -1208,25 +1223,37 @@ impl AppContext {
             }
         };
 
+        // One address list per context: the wallet backend, and the upstream
+        // wallet components it feeds, hold clones of the SDK they were built
+        // with and are never given the new one. So the new SDK is built over
+        // the list they share with the current SDK, and that list moves to
+        // the new addresses in place, keeping the bans of addresses that stay.
+        let shared_addresses = self.sdk.load().address_list().clone();
+
+        // Everything that can fail runs before the list moves, so a failed
+        // rebuild leaves every SDK on the old addresses. The SDK is built
+        // while the list still holds them; it shares the list, so it follows
+        // the move below.
         let provider = self.spv_context_provider.read()?.clone();
         // Like a cold start: the network minimum, raised by the new
         // connection's first proven response. Nothing learned from the old
-        // endpoints is carried over.
-        let new_sdk = initialize_sdk(address_list, self.network, provider)
+        // endpoints is carried over except the bans of addresses that stay.
+        let new_sdk = initialize_sdk(shared_addresses.clone(), self.network, provider.clone())
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        let mut client_lock = self.core_client.write()?;
 
-        // 4. Swap in the new SDK and client
-        {
-            let mut client_lock = self.core_client.write()?;
-            *client_lock = new_client;
-        }
+        // 4. Nothing below can fail: move the list, swap in the new client
+        // and SDK.
+        dapi_addresses::retarget_address_list(&shared_addresses, address_list);
+        *client_lock = new_client;
+        drop(client_lock);
         self.sdk.store(Arc::new(new_sdk));
 
         // Rebind the provider to hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK.
-        self.spv_context_provider
-            .read()?
-            .bind_app_context(self.clone());
+        // bind_app_context also registers the provider with the SDK. The
+        // clone shares the provider's state, so binding it binds the one the
+        // context holds.
+        provider.bind_app_context(self.clone());
 
         Ok(())
     }
@@ -1304,11 +1331,11 @@ impl AppContext {
         sdk: &Sdk,
         contract_id: Identifier,
         proof_error: dash_sdk::Error,
-        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         persist: impl FnOnce(&Self, &DataContract),
     ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
-        use crate::app::TaskResult;
         use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::TaskResult;
         use dash_sdk::platform::Fetch;
 
         // Give the network time to propagate the block before re-fetching.
@@ -1347,7 +1374,7 @@ impl AppContext {
     /// Subsequent calls are no-ops (first writer wins).
     pub async fn ensure_wallet_backend(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         // Fast path: already wired, no lock needed.
         if self.wallet_backend.load().is_some() {
@@ -1551,19 +1578,24 @@ impl AppContext {
         self.selected_single_key_hash.lock().ok().and_then(|g| *g)
     }
 
-    /// Stored owner, falling back for legacy records to the loaded wallet that
-    /// derives one of the identity's keys, whatever the key is bound to.
+    /// Stored owner, falling back for legacy records to the wallet of the
+    /// identity's username signing key, then to the loaded wallet that derives
+    /// any of its keys, whatever the key is bound to.
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         if let Ok(Some((hash, _))) = self.stored_identity_wallet_link(&id) {
             return Some(hash);
         }
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = qi
-            .identity
-            .public_keys()
-            .values()
-            .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))?;
+        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                qi.identity
+                    .public_keys()
+                    .values()
+                    .find_map(|key| crate::ui::identity::wallet_for_signing_key(&qi, Some(key)))
+            })?;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }
@@ -1835,6 +1867,109 @@ impl AppContext {
 mod tests {
     use super::*;
 
+    /// Regression: a connection rebuild gave the app a new SDK while the
+    /// wallet backend kept the one it was built with, so wallet operations
+    /// kept sending to the old DAPI addresses. The new SDK is built over the
+    /// old SDK's address list, moved in place, so the new addresses, and any
+    /// ban, reach the wallet backend too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rebuilt_connection_moves_the_wallet_backend_to_the_new_addresses() {
+        use dash_sdk::dapi_client::Address;
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let new_addresses = ["https://10.0.0.1:443", "https://10.0.0.2:443"];
+        ctx.config.write().expect("config").dapi_addresses = Some(new_addresses.join(","));
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let expected: HashSet<String> = new_addresses
+            .iter()
+            .map(|uri| uri.parse::<Address>().expect("address").to_string())
+            .collect();
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), expected);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), expected);
+
+        let banned: Address = new_addresses[0].parse().expect("address");
+        assert!(backend.sdk().address_list().ban(&banned));
+        assert!(
+            ctx.sdk.load().address_list().is_banned(&banned),
+            "the app's SDK and the wallet's SDK share one list"
+        );
+    }
+
+    /// A rebuild that fails leaves every SDK on the old addresses: the shared
+    /// list must not move to the new addresses unless the whole rebuild is
+    /// applied, or the wallet backend would talk to endpoints the app's
+    /// connection settings were never switched to.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_rebuild_leaves_the_shared_addresses_untouched() {
+        use std::collections::HashSet;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let addresses_of = |list: &AddressList| -> HashSet<String> {
+            list.ban_info().into_iter().map(|info| info.uri).collect()
+        };
+        let sdk_before = ctx.sdk.load_full();
+        let before = addresses_of(sdk_before.address_list());
+        assert!(!before.is_empty(), "the fixture starts with addresses");
+        assert!(!before.iter().any(|uri| uri.contains("10.0.0.7")));
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.7:443".to_string());
+
+        // Fail the rebuild: a poisoned provider lock makes its read fail.
+        let poisoner = Arc::clone(&ctx);
+        std::thread::spawn(move || {
+            let _guard = poisoner.spv_context_provider.write().expect("provider");
+            panic!("poison the provider lock");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+
+        let result = Arc::clone(&ctx).reinit_core_client_and_sdk();
+
+        assert!(result.is_err(), "the rebuild must fail");
+        assert!(
+            Arc::ptr_eq(&sdk_before, &ctx.sdk.load_full()),
+            "the old SDK stays in place"
+        );
+        let backend = ctx.wallet_backend().expect("wired backend");
+        assert_eq!(addresses_of(backend.sdk().address_list()), before);
+        assert_eq!(addresses_of(ctx.sdk.load().address_list()), before);
+    }
+
+    /// Without a wallet backend, a rebuild still moves the app to the new
+    /// addresses.
+    #[test]
+    fn a_rebuilt_connection_without_a_wallet_backend_uses_the_new_addresses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.config.write().expect("config").dapi_addresses =
+            Some("https://10.0.0.9:443".to_string());
+
+        Arc::clone(&ctx)
+            .reinit_core_client_and_sdk()
+            .expect("rebuild");
+
+        let sdk = ctx.sdk.load();
+        let uris: Vec<String> = sdk
+            .address_list()
+            .ban_info()
+            .into_iter()
+            .map(|info| info.uri)
+            .collect();
+        assert_eq!(uris.len(), 1);
+        assert!(uris[0].contains("10.0.0.9"), "{uris:?}");
+    }
+
     #[test]
     fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
         use crate::wallet_backend::DetScope;
@@ -1939,28 +2074,25 @@ mod tests {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(temp_dir.path());
-        assert_eq!(ctx.proven_protocol_version(), None, "boot");
-        assert!(ctx.proven_platform_version().is_none(), "boot");
+        assert_eq!(ctx.protocol_version_info().verified_version, None, "boot");
 
         prove_protocol_version(&ctx, 13);
-        assert_eq!(ctx.proven_protocol_version(), Some(13));
-        assert_eq!(
-            ctx.proven_platform_version().map(|v| v.protocol_version),
-            Some(13)
-        );
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(13));
+        assert!(!info.newer_protocol_available);
 
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
-        assert_eq!(ctx.proven_protocol_version(), None, "rebuilt connection");
-        assert!(
-            ctx.proven_platform_version().is_none(),
+        assert_eq!(
+            ctx.protocol_version_info().verified_version,
+            None,
             "rebuilt connection"
         );
     }
 
-    /// A proven version this build does not define is reported as proven, but
-    /// no platform version is derived from it: nothing here knows its rules.
+    /// A proven version this build does not define is reported as proven and
+    /// flagged as newer than this build: nothing here knows its rules.
     #[test]
-    fn an_unknown_proven_version_has_no_platform_version() {
+    fn an_unknown_proven_version_is_flagged_as_newer() {
         use crate::context::test_support::{prove_protocol_version, test_app_context};
         use dash_sdk::dpp::version::LATEST_VERSION;
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1968,8 +2100,10 @@ mod tests {
 
         prove_protocol_version(&ctx, LATEST_VERSION + 1);
 
-        assert_eq!(ctx.proven_protocol_version(), Some(LATEST_VERSION + 1));
-        assert!(ctx.proven_platform_version().is_none());
+        let info = ctx.protocol_version_info();
+        assert_eq!(info.verified_version, Some(LATEST_VERSION + 1));
+        assert_eq!(info.maximum_supported_version, LATEST_VERSION);
+        assert!(info.newer_protocol_available);
     }
 
     /// Contest windows stay consistent as the SDK ratchets upward from each
@@ -2033,8 +2167,8 @@ mod tests {
     /// store is a real, writable DB the accessors read from. Returns the temp
     /// dir (kept alive by the caller) alongside the context.
     async fn offline_ctx() -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -2500,5 +2634,41 @@ mod tests {
             ctx.owning_wallet_hash(identity.identity.id()),
             Some(seed_hash)
         );
+    }
+
+    /// Regression: an unlinked identity whose keys come from two wallets was
+    /// owned by the wallet of its lowest key id, no longer by the wallet of
+    /// its DPNS signing key as before, so Add Identity could preselect the
+    /// other wallet. The signing-key wallet comes first again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlinked_identity_is_owned_by_its_signing_key_wallet_first() {
+        use crate::context::test_support::{auth_key, hold_as_wallet_reference};
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        // Key 1, bound to DashPay, from wallet A; key 2, the DPNS signing
+        // key, from wallet B.
+        let (mut identity, wallet_a) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let wallet_b = crate::model::wallet::test_support::open_wallet_on([7; 64]);
+        let hash_a = wallet_a.read().expect("wallet").seed_hash();
+        let hash_b = wallet_b.seed_hash();
+        assert_ne!(hash_a, hash_b);
+        let mut keys = identity.identity.public_keys().clone();
+        keys.insert(2, auth_key(2, SecurityLevel::HIGH));
+        identity.identity.set_public_keys(keys);
+        hold_as_wallet_reference(&mut identity, 2, hash_b);
+        ctx.wallet_context().insert_test_wallet(hash_a, wallet_a);
+        ctx.wallet_context()
+            .insert_test_wallet(hash_b, Arc::new(std::sync::RwLock::new(wallet_b)));
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        assert_eq!(ctx.owning_wallet_hash(identity.identity.id()), Some(hash_b));
     }
 }

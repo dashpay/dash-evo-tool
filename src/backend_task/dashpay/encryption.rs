@@ -4,9 +4,49 @@ use cbc;
 use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+use dash_sdk::dpp::secp256k1::{self, PublicKey};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+/// A secp256k1 secret key erased when dropped, for the ECDH below.
+///
+/// `secp256k1::SecretKey` is `Copy` with no `Drop`, so a plain one would
+/// outlive the exchange in freed memory. Everywhere else DET uses the
+/// self-erasing `EcdsaSecretKey`, which has no ECDH; this keeps the raw
+/// secp256k1 ECDH (unchanged output) and overwrites the key once it is done.
+///
+/// The erase is best effort: it uses secp256k1's volatile `non_secure_erase`,
+/// and the compiler may still have moved the bytes elsewhere before. Not
+/// `Clone`/`Copy` on purpose, so the only copy is the one that gets erased.
+struct EcdhSecretKey(secp256k1::SecretKey);
+
+impl EcdhSecretKey {
+    /// Build a secret key from a 32-byte scalar, refusing zero and values not
+    /// below the curve order.
+    fn from_secret_bytes(scalar: &[u8; 32]) -> Result<Self, secp256k1::Error> {
+        let mut source = secp256k1::SecretKey::from_secret_bytes(*scalar)?;
+        let key = Self(source);
+        // `SecretKey` is `Copy`, so wrapping it copies the scalar; erase the
+        // local copy as well so only the wrapped one remains.
+        source.non_secure_erase();
+        Ok(key)
+    }
+}
+
+impl Zeroize for EcdhSecretKey {
+    /// Overwrite the held key through secp256k1's volatile erase.
+    fn zeroize(&mut self) {
+        self.0.non_secure_erase();
+    }
+}
+
+impl ZeroizeOnDrop for EcdhSecretKey {}
+
+impl Drop for EcdhSecretKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
 
 /// Generate ECDH shared key according to DashPay DIP-15
 /// Uses libsecp256k1_ecdh method: SHA256((y[31]&0x1|0x2) || x)
@@ -19,10 +59,8 @@ pub fn generate_ecdh_shared_key(
     public_key: &IdentityPublicKey,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
     // Parse the private key
-    let secret_key = SecretKey::from_secret_bytes(
-        private_key
-            .try_into()
-            .map_err(|_| "Invalid private key length".to_string())?,
+    let secret_key = EcdhSecretKey::from_secret_bytes(
+        <&[u8; 32]>::try_from(private_key).map_err(|_| "Invalid private key length".to_string())?,
     )
     .map_err(|e| format!("Invalid private key: {}", e))?;
 
@@ -36,10 +74,7 @@ pub fn generate_ecdh_shared_key(
             // Perform ECDH to get shared secret. The 64-byte point is secret;
             // hold it in `Zeroizing` so it is wiped once the key is hashed out.
             let shared_secret = Zeroizing::new(
-                dash_sdk::dpp::secp256k1::ecdh::shared_secret_point(
-                    &public_key,
-                    &secret_key,
-                ),
+                secp256k1::ecdh::shared_secret_point(&public_key, &secret_key.0),
             );
 
             // Extract x and y coordinates (64 bytes total: 32 + 32)
@@ -296,8 +331,30 @@ pub fn decrypt_account_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use bip39::rand::{self, RngCore};
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+
+    /// The zeroize that `Drop` runs leaves none of the original key bytes
+    /// behind. Checked through `zeroize` itself, because reading a value after
+    /// its drop has run is not allowed.
+    #[test]
+    fn ecdh_secret_key_zeroize_overwrites_the_key() {
+        let scalar = [0x5a; 32];
+        let mut key = EcdhSecretKey::from_secret_bytes(&scalar).expect("valid scalar");
+        assert_eq!(key.0.to_secret_bytes(), scalar);
+
+        key.zeroize();
+
+        assert_ne!(key.0.to_secret_bytes(), scalar);
+    }
+
+    /// The ECDH key refuses the same invalid scalars secp256k1 does.
+    #[test]
+    fn ecdh_secret_key_rejects_invalid_scalar() {
+        assert!(EcdhSecretKey::from_secret_bytes(&[0; 32]).is_err());
+        assert!(EcdhSecretKey::from_secret_bytes(&[0xff; 32]).is_err());
+    }
 
     fn generate_test_shared_key() -> [u8; 32] {
         let mut shared_key = [0u8; 32];
@@ -319,18 +376,14 @@ mod tests {
     /// Build an `IdentityPublicKey` carrying a raw ECDSA_SECP256K1 public key
     /// in its `data` field — the shape `generate_ecdh_shared_key` expects.
     fn ecdsa_identity_public_key(public_key: &PublicKey) -> IdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::ENCRYPTION,
-            security_level: SecurityLevel::MEDIUM,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: public_key.serialize().to_vec().into(),
-            disabled_at: None,
-        })
+        identity_public_key(
+            0,
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM,
+            KeyType::ECDSA_SECP256K1,
+            public_key.serialize().to_vec(),
+        )
     }
 
     /// DIP-15 CBC known-answer key/IV. The blobs below were generated

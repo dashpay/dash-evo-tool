@@ -11,8 +11,8 @@ This file provides guidance to AI coding agents (Claude Code, Codex, and others)
 ## Build Commands
 
 ```bash
-cargo build                    # Debug build
-cargo build --release          # Release build
+cargo build                    # Debug build (the normal local build)
+cargo build --release          # Distribution build: fat LTO, one codegen unit; slow and memory-heavy
 cargo run                      # Run application
 cargo fmt --all                # Format code
 cargo clippy --all-features --all-targets -- -D warnings  # Lint (warnings as errors)
@@ -42,7 +42,7 @@ Test locations:
 
 Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
 
-Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.98), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
+Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.99), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
 
 ### Local vs CI — avoid duplicate test runs
 
@@ -261,7 +261,7 @@ What each verifies:
 - `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
-- Rust edition 2024, minimum rust-version 1.98
+- Rust edition 2024, minimum rust-version 1.99
 
 ### Configuration
 
@@ -278,7 +278,7 @@ The UI and async backend communicate through the action/channel pattern describe
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
-**Result routing**: A screen that waits on its own task dispatches it with `AppAction::BackendTaskWithContext` and a `BackendTaskContext::for_dispatch[_on]` context, kept in a `ui::state::PendingRequest`. `AppState` records the dispatching screen (`app/request_routing.rs`) and delivers that task's result or error to it even while it is hidden. When the dispatching screen has been closed, no screen receives the result: an error raises the global banner, and a finished send raises a success banner. Results of undispatched tasks, and dispatched results that arrive after a network switch (which forgets every sender), go to the visible screen.
+**Result routing**: Screen-originated single and batch tasks have per-item dispatch identities and owners (`app/request_routing.rs`); explicit `PendingRequest` contexts are retained. Completions reach the originating open screen, never a replacement for a closed form. Independent persistent domain observers receive relevant outcomes once, with the full route retained for duplicate prevention. `backend_task::TaskResult::CacheUpdated` carries network and cache domain: interested screens re-read cached data without resetting inputs or pending operations. User-requested `AppAction::Refresh` remains a screen reset. Background/system tasks have no screen owner. Each owner is recorded with the network its task was dispatched on: a result arriving after a switch to another network reaches no screen or observer of the new one (the sending root screen's wait ends with `TaskError::NetworkSwitchedBeforeResult`), and banners report it as for a closed sender. Execution and panic settlement share `app/task_dispatch.rs`; a sequential panic prevents later items from starting, and no automatic paid retry is performed.
 
 **Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a dedicated `TaskError` variant rather than converting to `String`.
 

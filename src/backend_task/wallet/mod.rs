@@ -18,7 +18,7 @@ use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::dashcore::ecdsa::EcdsaRecSignature;
+use dash_sdk::dpp::dashcore::ecdsa::{EcdsaRecSignature, EcdsaSecretKey};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
@@ -26,7 +26,6 @@ use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::secp256k1::{Message, SecretKey};
 use dash_sdk::platform::Identifier;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -37,30 +36,30 @@ use std::sync::Arc;
 /// a verifier can recover the signer's public key from the signature alone.
 /// Shared by the wallet-key and identity-key message-signing tasks.
 ///
+/// The recoverable signature is plain RFC 6979 (no low-R grinding), so the
+/// envelope bytes match every earlier build. [`EcdsaSecretKey`] marks every
+/// key compressed, so the envelope is rebuilt with the caller's flag.
+///
 /// # Errors
 ///
 /// [`TaskError::WalletMessageSigningFailed`] if the signature cannot be put
 /// in the envelope; the detail is logged.
 pub(crate) fn dash_signed_message(
     message: &str,
-    secret_key: &SecretKey,
+    secret_key: &EcdsaSecretKey,
     compressed: bool,
 ) -> Result<String, TaskError> {
     let message_hash = signed_msg_hash(message);
-    let digest = Message::from_digest(*message_hash.as_byte_array());
-    let recoverable = dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
-        digest, secret_key,
-    );
-    let (recovery_id, _) = recoverable.serialize_compact();
-    let envelope = EcdsaRecSignature::from_parts(
-        recoverable.to_standard().into(),
-        recovery_id.to_u8(),
-        compressed,
-    )
-    .map_err(|detail| {
-        tracing::warn!(error = %detail, "Sign-message envelope construction failed");
-        TaskError::WalletMessageSigningFailed
-    })?;
+    let recoverable = secret_key.sign_recoverable(message_hash.as_byte_array());
+    let envelope = recoverable
+        .signature()
+        .and_then(|signature| {
+            EcdsaRecSignature::from_parts(signature, recoverable.recovery_id()?, compressed)
+        })
+        .map_err(|detail| {
+            tracing::warn!(error = %detail, "Sign-message envelope construction failed");
+            TaskError::WalletMessageSigningFailed
+        })?;
     Ok(sign_message::to_base64(envelope))
 }
 
@@ -118,10 +117,10 @@ impl AppContext {
     }
 
     /// Resolve the vault-backed identity key at `(identity_id, target,
-    /// key_id)` through the JIT chokepoint and hand its `SecretKey` to `f`.
-    /// The raw key zeroizes when the closure returns — only `f`'s result
-    /// crosses back to the caller. Shared by the identity-key sign and
-    /// display tasks.
+    /// key_id)` through the JIT chokepoint and lend it to `f` as an
+    /// [`EcdsaSecretKey`]. The raw key and the parsed key are both wiped when
+    /// the closure returns — only `f`'s result crosses back to the caller.
+    /// Shared by the identity-key sign and display tasks.
     ///
     /// The placement is the caller's word, and it addresses the vault label
     /// directly, so the bytes are matched against the public key the stored
@@ -150,7 +149,7 @@ impl AppContext {
         identity_id: Identifier,
         target: PrivateKeyTarget,
         key_id: KeyID,
-        f: impl FnOnce(SecretKey) -> Result<T, TaskError>,
+        f: impl FnOnce(&EcdsaSecretKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
         let identity = self
             .get_local_qualified_identity(&identity_id)?
@@ -200,7 +199,7 @@ impl AppContext {
                     .ok_or(TaskError::IdentityKeyMissing)?;
                 // Present-but-malformed key bytes are distinct from a
                 // genuinely absent key and from a signing/derivation failure.
-                let secret_key = SecretKey::from_secret_bytes(*key).map_err(|detail| {
+                let secret_key = EcdsaSecretKey::from_bytes(key).map_err(|detail| {
                     tracing::warn!(error = %detail, "Identity-key secret construction failed");
                     TaskError::IdentityKeyMalformed
                 })?;
@@ -216,7 +215,7 @@ impl AppContext {
                     );
                     return Err(TaskError::IdentityKeyMismatch);
                 }
-                f(secret_key)
+                f(&secret_key)
             })
             .await
     }
@@ -379,9 +378,10 @@ pub enum WalletTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -394,13 +394,11 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
     use dash_sdk::dpp::platform_value::BinaryData;
-    use dash_sdk::dpp::secp256k1::PublicKey;
+    use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::Receiver;
 
@@ -523,8 +521,10 @@ mod tests {
     /// hardcoded recovery header would fail ~50% of the time here. Both the
     /// wallet-key and identity-key signers call this one helper.
     fn assert_recovers(compressed: bool) {
-        let secret_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
-        let expected_pubkey = PublicKey::from_secret_key(&secret_key);
+        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
+        let expected_pubkey = PublicKey::from_secret_key(
+            &SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret"),
+        );
         let message = "Bilby was here";
 
         let base64 = dash_signed_message(message, &secret_key, compressed).expect("signs");
@@ -539,16 +539,20 @@ mod tests {
 
     /// The envelope keeps the layout the previous encoder produced: a header
     /// byte `27 + recovery id` (`+ 4` when compressed), then the compact
-    /// `r || s` of the same deterministic signature.
+    /// `r || s` of the same deterministic signature. The reference signs with
+    /// the raw secp256k1 primitive, so this also proves the signature bytes
+    /// did not change when signing moved to `EcdsaSecretKey`.
     #[test]
     fn the_envelope_keeps_its_byte_layout() {
         use dash_sdk::dpp::secp256k1::Message;
         use dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature;
         let message = "Bilby was here";
-        let secret_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
+        let reference_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
+        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
         let digest = Message::from_digest(*signed_msg_hash(message).as_byte_array());
         let (recovery_id, compact) =
-            RecoverableSignature::sign_ecdsa_recoverable(digest, &secret_key).serialize_compact();
+            RecoverableSignature::sign_ecdsa_recoverable(digest, &reference_key)
+                .serialize_compact();
         for compressed in [false, true] {
             let mut expected = [0u8; 65];
             expected[0] = 27 + recovery_id.to_u8() + if compressed { 4 } else { 0 };
@@ -584,20 +588,17 @@ mod tests {
         secret: [u8; 32],
     ) -> Identifier {
         let platform_version = PlatformVersion::latest();
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: key_id,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let public_key = identity_public_key(
+            key_id,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         let mut private_keys = KeyStorage::default();
         private_keys.insert_at(
             (MAIN, key_id),
@@ -642,7 +643,7 @@ mod tests {
 
         let bytes = fixture
             .ctx
-            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.to_secret_bytes()))
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(*key.to_bytes()))
             .await
             .expect("a key that matches its record must resolve");
 
@@ -725,20 +726,17 @@ mod tests {
     async fn a_dead_placeholder_at_the_named_placement_falls_through_to_a_live_sibling() {
         let fixture = wallet_fixture().await;
         let secret = [0x27; 32];
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 7,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let public_key = identity_public_key(
+            7,
+            Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         // One key, filed `InVault` under both stores — the dual-filed shape a
         // blob written under two conventions carries.
         let mut private_keys = KeyStorage::default();
@@ -785,7 +783,7 @@ mod tests {
 
         let bytes = fixture
             .ctx
-            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.to_secret_bytes()))
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(*key.to_bytes()))
             .await
             .expect("the sibling placement's live bytes must be served");
 

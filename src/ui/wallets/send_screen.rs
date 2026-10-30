@@ -6,7 +6,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::address::{AddressKind, ValidatedAddress};
+use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipient};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{
     AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
@@ -39,7 +39,7 @@ use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
 use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
@@ -362,6 +362,8 @@ pub struct WalletSendScreen {
 
 /// Refusal of a top-up while another top-up of the same identity runs.
 const TOP_UP_ALREADY_RUNNING: &str = "Funds are already being added to this identity. Wait for that transfer to finish, then try again.";
+/// Refusal of Core or Platform funds paying someone else's private address.
+const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into your own private balance. To pay this private address, choose Shielded Balance as the source.";
 
 /// Merge the confirmation dialog's action into the frame action. The dialog
 /// consumes the click and clears itself, so a confirmed send is one-shot: it
@@ -1023,6 +1025,48 @@ impl WalletSendScreen {
             .unwrap_or_default()
     }
 
+    /// Whether the shielded destination is the paying wallet's own private
+    /// balance — the only one Core and Platform funds can shield into.
+    ///
+    /// The empty address is the Shield flow's own-pool marker. A typed address
+    /// counts only when it decodes to the same bytes as the wallet's private
+    /// address; while that address is still unknown, nothing typed matches.
+    /// DET shows only the default address of Orchard account 0, so another
+    /// diversified address of the same wallet is treated as someone else's.
+    fn shielded_destination_is_own_pool(&self) -> bool {
+        let Some(ValidatedAddress::Shielded(address)) = &self.validated_destination else {
+            return false;
+        };
+        if address.is_empty() {
+            return true;
+        }
+        let Some(typed) = parse_shielded_recipient(address) else {
+            return false;
+        };
+        self.selected_wallet_seed_hash
+            .and_then(|seed_hash| self.app_context.shielded_receive_address(&seed_hash))
+            .and_then(|own| parse_shielded_recipient(&own))
+            .is_some_and(|own| own == typed)
+    }
+
+    /// Why the selected source cannot pay the typed private address, if it
+    /// cannot. Core and Platform can only shield into the paying wallet's own
+    /// private balance: the shield tasks carry no recipient and always deposit
+    /// into the wallet's own pool. Letting someone else's private address
+    /// through would keep the money while reporting success.
+    fn shielded_destination_refusal(&self) -> Option<&'static str> {
+        let shields_into_own_pool = matches!(
+            self.selected_source,
+            Some(SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_))
+        );
+        let private_destination = self
+            .validated_destination
+            .as_ref()
+            .is_some_and(|destination| destination.kind() == AddressKind::Shielded);
+        (shields_into_own_pool && private_destination && !self.shielded_destination_is_own_pool())
+            .then_some(SHIELDED_NOT_OWN_POOL)
+    }
+
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
         if !self.identity_constraint_holds() {
             return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
@@ -1056,6 +1100,10 @@ impl WalletSendScreen {
             .ok_or_else(|| "Please enter an amount".to_string())?;
         if amount.value() == 0 {
             return Err("Amount must be greater than 0".to_string());
+        }
+
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            return Err(refusal.to_string());
         }
 
         match (source, destination.kind()) {
@@ -1658,6 +1706,7 @@ impl WalletSendScreen {
             self.keep_identity_constraint();
         } else {
             self.render_destination_input(ui);
+            self.render_shielded_destination_refusal(ui);
         }
 
         ui.add_space(10.0);
@@ -1927,7 +1976,6 @@ impl WalletSendScreen {
         let recipient_bytes = crate::model::address::parse_shielded_recipient(&recipient)
             .ok_or_else(|| "Invalid shielded address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
@@ -1956,7 +2004,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_platform().copied())
             .ok_or_else(|| "Invalid platform address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
@@ -2253,7 +2300,9 @@ impl WalletSendScreen {
         // withdrawal no key can sign before the confirmation.
         qualified_identity
             .resolve_withdrawal_signing_key(None)
-            .map_err(|_| TaskError::NoUsableWithdrawalKey.to_string())?;
+            .map_err(|_| {
+                TaskError::no_usable_withdrawal_key(qualified_identity.identity_type).to_string()
+            })?;
 
         let core_address = self
             .validated_destination
@@ -2909,6 +2958,14 @@ impl WalletSendScreen {
             .expect("invariant: address_input set to Some immediately above")
             .show(ui);
         resp.inner.update(&mut self.validated_destination);
+    }
+
+    /// The route refusal a source and private destination already imply,
+    /// shown under the destination before anything is clicked.
+    fn render_shielded_destination_refusal(&self, ui: &mut Ui) {
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            ui.colored_label(DashColors::VALIDATION_WARNING, refusal);
+        }
     }
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
@@ -3757,7 +3814,15 @@ impl WalletSendScreen {
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
         let source_ready =
             matches!(self.selected_source, Some(SourceSelection::Identity(_))) || wallet_open;
-        let can_send = source_ready && !is_sending && has_destination && has_amount && has_source;
+        // Refused before the click, so the button never offers a send the
+        // route check will turn down.
+        let refusal = self.shielded_destination_refusal();
+        let can_send = source_ready
+            && !is_sending
+            && has_destination
+            && has_amount
+            && has_source
+            && refusal.is_none();
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -3772,7 +3837,13 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
+            let send_button =
+                ComponentStyles::add_primary_button_enabled(ui, can_send, button_text);
+            let send_button = match refusal {
+                Some(refusal) => send_button.disabled_tooltip(refusal),
+                None => send_button,
+            };
+            if send_button.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         let message = self.simple_send_confirmation_message();
@@ -3856,6 +3927,20 @@ impl WalletSendScreen {
     /// Renders the production simple-send button in a headless harness.
     pub fn render_simple_send_button_for_test(&mut self, ui: &mut Ui) -> AppAction {
         self.render_send_button(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Renders the production send confirmation in a headless harness.
+    pub fn render_send_confirmation_for_test(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_send_confirmation(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether a send confirmation is waiting for an answer.
+    pub fn has_send_confirmation_for_test(&self) -> bool {
+        self.send_confirmation.is_some()
     }
 
     /// Render the advanced send UI with multiple inputs/outputs
@@ -7708,6 +7793,226 @@ mod tests {
                 .send_core_to_shielded(seed_hash)
                 .is_err(),
             "one duff more needs a funding above the ceiling and must be refused"
+        );
+    }
+
+    /// A valid testnet private (Orchard) address derived from `seed_byte`.
+    fn testnet_shielded_address(seed_byte: u8) -> String {
+        let keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+            &[seed_byte; 64],
+            Network::Testnet,
+            0,
+        )
+        .expect("ZIP-32 derivation from a valid test seed");
+        crate::model::address::encode_shielded_address(
+            &keys.address_at(0).to_raw_address_bytes(),
+            Network::Testnet,
+        )
+        .expect("valid Orchard payload encodes")
+    }
+
+    /// A send screen whose wallet has `own_address` as its private address.
+    fn send_screen_with_own_shielded_address(
+        own_address: &str,
+    ) -> (WalletSendScreen, tempfile::TempDir) {
+        let (mut screen, temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen
+            .app_context
+            .shielded_addresses
+            .lock()
+            .expect("shielded address cache")
+            .insert(seed_hash, own_address.to_string());
+        screen.amount = Some(Amount::new_dash(0.01));
+        (screen, temp_dir)
+    }
+
+    fn non_shielded_sources() -> [SourceSelection; 2] {
+        [
+            SourceSelection::CoreWallet,
+            SourceSelection::PlatformAddresses(Vec::new()),
+        ]
+    }
+
+    /// Core and Platform funds can only be shielded into the paying wallet's
+    /// own pool: the backend ignores the typed address. Someone else's private
+    /// address must be refused before any task is built, or the sender would
+    /// keep the money while the app reports success.
+    #[test]
+    fn core_and_platform_refuse_someone_elses_private_address() {
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        for source in non_shielded_sources() {
+            screen.selected_source = Some(source.clone());
+            assert_eq!(
+                screen.validated_send_route().err().as_deref(),
+                Some(SHIELDED_NOT_OWN_POOL),
+                "{source:?} must not pay someone else's private address"
+            );
+            assert_eq!(
+                screen.validate_and_send().err().as_deref(),
+                Some(SHIELDED_NOT_OWN_POOL),
+                "{source:?} must not build a task for someone else's private address"
+            );
+        }
+    }
+
+    /// Before the wallet's private address is known, a typed private address
+    /// cannot be proven to be its own, so it is refused as well. The Shield
+    /// flow's own-pool marker needs no address and keeps working.
+    #[test]
+    fn core_refuses_a_private_address_while_its_own_is_unknown() {
+        let (mut screen, _dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        assert_eq!(
+            screen.app_context.shielded_receive_address(&seed_hash),
+            None,
+            "sanity: the wallet's private address is not known yet"
+        );
+        screen.amount = Some(Amount::new_dash(0.01));
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        assert_eq!(
+            screen.validated_send_route().err().as_deref(),
+            Some(SHIELDED_NOT_OWN_POOL)
+        );
+
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        assert!(
+            matches!(
+                screen.validated_send_route(),
+                Ok(ValidatedSendRoute::CoreToShielded)
+            ),
+            "the Shield flow must not depend on the wallet's private address"
+        );
+    }
+
+    /// Shielding into the wallet's own pool keeps working, whether the Shield
+    /// flow's own-pool marker or the wallet's own address (in any accepted
+    /// spelling) is the destination.
+    #[test]
+    fn core_and_platform_still_shield_into_the_own_pool() {
+        let own = testnet_shielded_address(7);
+        let own_raw = parse_shielded_recipient(&own).expect("own parses");
+        let (mut screen, _dir) = send_screen_with_own_shielded_address(&own);
+
+        for destination in [
+            String::new(),
+            own.clone(),
+            own.to_uppercase(),
+            hex::encode(own_raw),
+        ] {
+            screen.validated_destination = Some(ValidatedAddress::Shielded(destination.clone()));
+            screen.selected_source = Some(SourceSelection::CoreWallet);
+            assert!(
+                matches!(
+                    screen.validated_send_route(),
+                    Ok(ValidatedSendRoute::CoreToShielded)
+                ),
+                "Core must shield into the own pool via {destination:?}"
+            );
+            screen.selected_source = Some(SourceSelection::PlatformAddresses(Vec::new()));
+            assert!(
+                matches!(
+                    screen.validated_send_route(),
+                    Ok(ValidatedSendRoute::PlatformToShielded(_))
+                ),
+                "Platform must shield into the own pool via {destination:?}"
+            );
+        }
+    }
+
+    /// The private balance can still pay someone else's private address.
+    #[test]
+    fn private_balance_still_pays_someone_elses_private_address() {
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen.selected_source = Some(SourceSelection::Shielded(seed_hash, 1_000_000_000));
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+
+        assert!(matches!(
+            screen.validated_send_route(),
+            Ok(ValidatedSendRoute::ShieldedToShielded(sh)) if sh == seed_hash
+        ));
+    }
+
+    /// Renders the refusal line and the Send button of `screen`.
+    fn route_refusal_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 400.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    screen.render_shielded_destination_refusal(ui);
+                    let _ = screen.render_send_button(ui);
+                    let _ = screen.render_send_confirmation(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// Someone else's private address with Core as the source is refused
+    /// before the click: Shield DASH is turned off and the reason is shown
+    /// under the address, so the form never offers a send it will refuse.
+    #[test]
+    fn someone_elses_private_address_turns_core_shielding_off_before_the_click() {
+        use egui_kittest::kittest::NodeT;
+
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+        let mut harness = route_refusal_harness(screen);
+
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_some(),
+            "the refusal must be visible before any click"
+        );
+        // A turned-off primary button keeps its look but stops sensing clicks.
+        let clickable = |harness: &Harness<'static, WalletSendScreen>| {
+            harness
+                .get_by_label("Shield DASH")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        };
+        assert!(
+            !clickable(&harness),
+            "Shield DASH must be turned off for someone else's private address"
+        );
+        harness.get_by_label("Shield DASH").click();
+        harness.run();
+        assert!(harness.state().send_confirmation.is_none());
+        assert!(
+            !matches!(harness.state().send_status, SendStatus::Error),
+            "nothing is refused on click: the button never offered the send"
+        );
+
+        harness.state_mut().validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(7)));
+        harness.run();
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_none(),
+            "the wallet's own private address needs no refusal"
+        );
+        assert!(
+            clickable(&harness),
+            "shielding into the own pool stays available"
         );
     }
 }

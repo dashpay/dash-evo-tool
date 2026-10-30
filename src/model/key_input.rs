@@ -10,6 +10,7 @@
 use crate::model::secret::Secret;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// Why a raw private-key input failed format validation.
 ///
@@ -42,6 +43,9 @@ pub enum KeyInputError {
 /// are decoded as hex, 51 or 52 chars as WIF. An empty input yields `Ok(None)`,
 /// signalling the key was not supplied.
 ///
+/// The bytes are decoded straight into [`Zeroizing`], so this copy of the key
+/// is wiped when the caller drops it.
+///
 /// # Errors
 ///
 /// Returns a [`KeyInputError`] naming `key_name` when the input has a hex/WIF
@@ -49,18 +53,19 @@ pub enum KeyInputError {
 pub fn verify_key_input(
     untrimmed_private_key: Secret,
     key_name: &str,
-) -> Result<Option<[u8; 32]>, KeyInputError> {
+) -> Result<Option<Zeroizing<[u8; 32]>>, KeyInputError> {
     let private_key = untrimmed_private_key.expose_secret().trim();
     match private_key.len() {
-        64 => hex::decode(private_key)
-            .ok()
-            .and_then(|decoded| decoded.try_into().ok())
-            .map(Some)
-            .ok_or_else(|| KeyInputError::NotHex {
-                key_name: key_name.to_owned(),
-            }),
+        64 => {
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            hex::decode_to_slice(private_key, bytes.as_mut_slice())
+                .map(|()| Some(bytes))
+                .map_err(|_| KeyInputError::NotHex {
+                    key_name: key_name.to_owned(),
+                })
+        }
         51 | 52 => PrivateKey::from_wif(private_key)
-            .map(|key| Some(*key.inner.to_bytes()))
+            .map(|key| Some(key.inner.to_bytes()))
             .map_err(|_| KeyInputError::BadWif {
                 key_name: key_name.to_owned(),
             }),
@@ -71,10 +76,55 @@ pub fn verify_key_input(
     }
 }
 
+/// Decode hex-encoded secret bytes into memory that is wiped on drop.
+///
+/// Accepts and rejects exactly the inputs [`hex::decode`] does, with the same
+/// error, but decodes straight into a [`Zeroizing`] buffer of the final size,
+/// so the decoded bytes, partly decoded ones included, leave no plain copy
+/// behind.
+///
+/// # Errors
+///
+/// Returns the [`hex::FromHexError`] `hex::decode` would: `OddLength` for an
+/// odd number of characters, otherwise `InvalidHexCharacter` for the first
+/// character that is not a hex digit.
+pub fn decode_hex_secret(input: &str) -> Result<Zeroizing<Vec<u8>>, hex::FromHexError> {
+    // Sized to `len / 2`, so `decode_to_slice` never reports a length
+    // mismatch: it checks for an odd length first, as `hex::decode` does.
+    let mut bytes = Zeroizing::new(vec![0u8; input.len() / 2]);
+    hex::decode_to_slice(input, bytes.as_mut_slice())?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dashcore_rpc::dashcore::Network;
+
+    /// `decode_hex_secret` accepts and rejects exactly what `hex::decode`
+    /// does, with the same bytes and the same error, so callers that switch
+    /// to it keep their behaviour and messages.
+    #[test]
+    fn decode_hex_secret_matches_hex_decode() {
+        for input in [
+            "",
+            "00",
+            "0aFf",
+            &"ab".repeat(32),
+            &"cd".repeat(33),
+            "abc",
+            "zz",
+            "0g",
+            &format!("{}x1", "a".repeat(62)),
+            "not hex at all",
+        ] {
+            assert_eq!(
+                decode_hex_secret(input).map(|bytes| bytes.to_vec()),
+                hex::decode(input),
+                "input {input:?}"
+            );
+        }
+    }
 
     #[test]
     fn empty_input_is_not_supplied() {
@@ -88,9 +138,20 @@ mod tests {
         let bytes = [7u8; 32];
         let hex_str = hex::encode(bytes);
         assert_eq!(
-            verify_key_input(Secret::new(hex_str), "User Key").unwrap(),
-            Some(bytes)
+            verify_key_input(Secret::new(hex_str), "User Key")
+                .unwrap()
+                .as_deref(),
+            Some(&bytes)
         );
+    }
+
+    /// The decoded key is handed out in `Zeroizing`, so the caller's copy is
+    /// wiped when it is dropped.
+    #[test]
+    fn decoded_key_is_returned_zeroizing() {
+        let key: Option<Zeroizing<[u8; 32]>> =
+            verify_key_input(Secret::new(hex::encode([5u8; 32])), "Owner").unwrap();
+        assert_eq!(key.as_deref(), Some(&[5u8; 32]));
     }
 
     #[test]
@@ -119,8 +180,10 @@ mod tests {
             wif.len()
         );
         assert_eq!(
-            verify_key_input(Secret::new(wif), "Owner").unwrap(),
-            Some(bytes)
+            verify_key_input(Secret::new(wif), "Owner")
+                .unwrap()
+                .as_deref(),
+            Some(&bytes)
         );
     }
 
@@ -156,8 +219,10 @@ mod tests {
         let bytes = [3u8; 32];
         let padded = format!("  {}\n", hex::encode(bytes));
         assert_eq!(
-            verify_key_input(Secret::new(padded), "User Key").unwrap(),
-            Some(bytes)
+            verify_key_input(Secret::new(padded), "User Key")
+                .unwrap()
+                .as_deref(),
+            Some(&bytes)
         );
     }
 }

@@ -8,6 +8,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use dash_sdk::dpp::platform_serialization::PLATFORM_BINCODE_CONFIG;
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use eframe::egui::{self, ScrollArea, TextEdit, Ui};
 use egui::Color32;
@@ -55,11 +56,11 @@ impl ProofVisualizerScreen {
 
         match decoded_bytes {
             Ok(bytes) => {
-                let config = bincode::config::standard()
-                    .with_big_endian()
-                    .with_no_limit();
+                // Pasted bytes are untrusted: decode them as upstream's
+                // `prettify_proof` does, in Platform's shared configuration.
                 let grovedb_proof: Result<GroveDBProof, _> =
-                    bincode::decode_from_slice(&bytes, config).map(|(a, _)| a);
+                    bincode::decode_from_slice_untrusted(&bytes, PLATFORM_BINCODE_CONFIG)
+                        .map(|(a, _)| a);
                 // Try to deserialize into a StateTransition
                 match grovedb_proof {
                     Ok(proof) => {
@@ -168,5 +169,54 @@ impl ScreenLike for ProofVisualizerScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::drive::grovedb::operations::proof::{
+        GroveDBProofV0, MerkOnlyLayerProof, ProveOptions,
+    };
+
+    fn screen_with_input(ctx: &Arc<AppContext>, input: String) -> ProofVisualizerScreen {
+        let mut screen = ProofVisualizerScreen::new(ctx);
+        screen.input_data = input;
+        screen.parse_input();
+        screen
+    }
+
+    /// A proof encoded the way Platform encodes it is shown.
+    #[test]
+    fn a_platform_encoded_proof_is_shown() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let proof = GroveDBProof::V0(GroveDBProofV0 {
+            root_layer: MerkOnlyLayerProof {
+                merk_proof: Vec::new(),
+                lower_layers: Default::default(),
+            },
+            prove_options: ProveOptions::default(),
+        });
+        let bytes = bincode::encode_to_vec(&proof, PLATFORM_BINCODE_CONFIG).expect("encode");
+
+        let screen = screen_with_input(&ctx, hex::encode(bytes));
+
+        assert_eq!(screen.error, None);
+        assert!(screen.proof_string.is_some());
+    }
+
+    /// Pasted bytes are untrusted: a length prefix far beyond the input is
+    /// refused as an error instead of being allocated.
+    #[test]
+    fn an_oversized_length_prefix_is_refused() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+
+        // `GroveDBProof::V0`, then a merk proof claiming 2^63 - 1 bytes.
+        let screen = screen_with_input(&ctx, "00fd7fffffffffffffff".to_string());
+
+        assert!(screen.proof_string.is_none());
+        assert!(screen.error.is_some());
     }
 }

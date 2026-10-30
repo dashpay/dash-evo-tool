@@ -14,6 +14,7 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+use dash_sdk::dpp::data_contract::document_type::action_fees::ContractFeePot;
 use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::group_action::GroupAction;
@@ -36,6 +37,15 @@ pub enum ContractTask {
     RegisterDataContract(DataContract, String, QualifiedIdentity, IdentityPublicKey), // contract, alias, identity, signing_key
     UpdateDataContract(DataContract, QualifiedIdentity, IdentityPublicKey), // contract, identity, signing_key
     SaveDataContract(DataContract, Option<String>, InsertTokensToo),
+    /// Read both fee pots of a contract (protocol version 14). Read-only.
+    FetchContractFeePots(Identifier),
+    /// Pay out one fee pot of a contract, claimed by `identity`: the owner
+    /// pot by the contract owner, the moderators pot by a team member.
+    ClaimContractFees {
+        contract_id: Identifier,
+        pot: ContractFeePot,
+        identity: Box<QualifiedIdentity>,
+    },
 }
 
 impl AppContext {
@@ -46,6 +56,17 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         match task {
+            ContractTask::FetchContractFeePots(contract_id) => {
+                self.fetch_contract_fee_pots(sdk, contract_id).await
+            }
+            ContractTask::ClaimContractFees {
+                contract_id,
+                pot,
+                identity,
+            } => {
+                self.claim_contract_fees(sdk, contract_id, pot, *identity)
+                    .await
+            }
             ContractTask::FetchContracts(identifiers) => {
                 match DataContract::fetch_many(sdk, identifiers).await {
                     Ok(data_contracts) => {

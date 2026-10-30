@@ -1,6 +1,8 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
-use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+use dash_sdk::dpp::version::feature_initial_protocol_versions::{
+    CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION, SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+};
 use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
 /// Shielded state transitions activate at upstream rs-platform-version's
@@ -37,6 +39,9 @@ pub enum Capability {
     /// transitions (shield, shielded transfer, unshield, shield from asset
     /// lock, shielded withdrawal).
     ShieldedProtocol,
+    /// The connected platform keeps contract fee pots (filled by document
+    /// action fees) and accepts the transition that pays them out.
+    ContractFeePots,
     /// The connected platform accepts tokens with a once-per-identity
     /// distribution.
     OncePerIdentityDistribution,
@@ -70,6 +75,9 @@ impl Capability {
                 // default — the capability is per-network.
                 Some(activation) => known_protocol_version_at_least(ctx, activation),
             },
+            Capability::ContractFeePots => {
+                known_protocol_version_at_least(ctx, CONTRACT_FEE_CLAIM_INITIAL_PROTOCOL_VERSION)
+            }
             Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
                 ctx,
                 ONCE_PER_IDENTITY_DISTRIBUTION_ACTIVATION_PROTOCOL_VERSION,
@@ -173,6 +181,9 @@ pub enum FeatureGate {
     /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
     /// developer-mode flag, which conflated this tier with Power-role disclosure.
     DeveloperTools,
+    /// Viewing and claiming the fee pots of a contract. Offered only where
+    /// the connected network keeps them.
+    ContractFeePots,
     /// Creating a token with a once-per-identity distribution. Offered only
     /// where the connected network accepts it; claiming from an existing one
     /// needs no gate, since such a token can only exist on such a network.
@@ -196,6 +207,7 @@ impl FeatureGate {
             FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
+            FeatureGate::ContractFeePots => &[Check::Capability(Capability::ContractFeePots)],
             FeatureGate::TokenOncePerIdentityDistribution => {
                 &[Check::Capability(Capability::OncePerIdentityDistribution)]
             }
@@ -481,6 +493,7 @@ mod tests {
     fn protocol_v14_gates_follow_the_connected_version() {
         // One entry per protocol version 14 gate this build offers.
         let gates = [
+            FeatureGate::ContractFeePots,
             FeatureGate::TokenOncePerIdentityDistribution,
             FeatureGate::NonTransferableTokens,
         ];
@@ -506,6 +519,7 @@ mod tests {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
         let capabilities = [
             Capability::ShieldedProtocol,
+            Capability::ContractFeePots,
             Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
         ];

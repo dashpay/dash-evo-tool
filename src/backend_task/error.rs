@@ -5,6 +5,7 @@
 
 use crate::model::asset_lock::validate_asset_lock_minimum;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
+use crate::model::qualified_identity::IdentityType;
 use crate::wallet_backend::platform_compatibility::StorageFailure;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
@@ -1475,6 +1476,20 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A private contact note exceeds the application's byte limit.
+    #[error("This note is too long. Shorten it to save it.")]
+    DashPayContactNoteTooLong {
+        #[from]
+        source: crate::model::dashpay::ContactNoteTooLong,
+    },
+
+    /// Contact details could not be encoded within the document size limit.
+    #[error("Contact info is too large to save. Try shortening your nickname or note.")]
+    DashPayContactInfoEncoding {
+        #[source]
+        source: Box<platform_wallet::PlatformWalletError>,
+    },
+
     /// An existing contact's encrypted details could not be read safely.
     #[error(
         "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
@@ -1608,9 +1623,26 @@ pub enum TaskError {
         source: BackendTaskJoinError,
     },
 
+    /// A caught task panic. The payload is kept out of this error, whose
+    /// `Debug` reaches the banner's details panel. The process panic hook in
+    /// `logging.rs` still logs the payload, as it does for every panic, so a
+    /// panic message must never contain secrets.
+    #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
+    BackendTaskPanicked,
+
+    /// Later sequential work is not started after an uncertain task outcome.
+    #[error("This action was not started because an earlier action stopped. Check the earlier action before trying again.")]
+    BackendTaskBatchAborted,
+
     /// A backend task reached the app after the shutdown admission barrier closed.
     #[error("This action could not start because the app is closing. Reopen the app and try again.")]
     TaskManagerShuttingDown,
+
+    /// A screen's task was dispatched on a network the user has since switched
+    /// away from. Ends that screen's wait without delivering the previous
+    /// network's result; the original outcome is reported separately.
+    #[error("The network changed before this action finished. Run it again on this network.")]
+    NetworkSwitchedBeforeResult,
 
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
@@ -1718,6 +1750,16 @@ pub enum TaskError {
         "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
     )]
     NoUsableWithdrawalKey,
+
+    /// No active key this app can sign with was available for a masternode or
+    /// evonode withdrawal, which may be signed with the payout (transfer) key
+    /// or, failing that, the owner key — the chosen key may have been disabled,
+    /// or neither is loaded for this identity. See
+    /// [`TaskError::no_usable_withdrawal_key`].
+    #[error(
+        "This withdrawal can't be signed because no active payout or owner key for this identity is available in this app. Load an active payout or owner key for this identity and try again."
+    )]
+    NoUsableNodeWithdrawalKey,
 
     /// No active key this app can sign with was available for the transfer —
     /// the chosen key may have been disabled, or no transfer key is loaded for
@@ -2290,6 +2332,22 @@ pub enum TaskError {
         source: Box<ProtocolError>,
     },
 
+    /// A new document could not be built for the active protocol version,
+    /// typically one this build does not know yet.
+    #[error("Could not prepare the document. Update Dash Evo Tool and try again.")]
+    DocumentPreparationFailed {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
+    /// The identity keys could not be built in the identity key structure of
+    /// the active protocol version, typically one this build does not know yet.
+    #[error("Could not prepare the identity keys. Update Dash Evo Tool and try again.")]
+    IdentityKeysPreparationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,
@@ -2754,6 +2812,17 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A once-per-identity distribution amount is zero or above the maximum.
+    #[error(
+        "The amount each identity can claim must be between 1 and {max_amount}. Enter an amount in that range, then try again."
+    )]
+    InvalidOncePerIdentityDistributionAmount {
+        amount: u64,
+        max_amount: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The pre-programmed distributions of one time add up to more than the
     /// maximum.
     #[error(
@@ -2774,6 +2843,38 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// A token with a once-per-identity distribution was requested on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
+    )]
+    TokenOncePerIdentityNotSupported,
+
+    /// A once-per-identity token claim succeeded, but this device could not
+    /// record that it was made. Without the record, the claim may be offered
+    /// again, and Platform refuses (and charges for) a second claim.
+    #[error(
+        "The tokens were claimed, but this device could not save that this identity has claimed them. Do not claim this token again with this identity, because the claim would be refused."
+    )]
+    TokensClaimedButClaimNotRecorded {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// The identity already took its single claim of a token's
+    /// once-per-identity distribution, so Platform refused another one.
+    #[error(
+        "This identity has already claimed its share of this token. Each identity can claim it only once, so there is nothing more to claim."
+    )]
+    TokenOncePerIdentityAlreadyClaimed {
+        token_id: Identifier,
+        identity_id: Identifier,
+        /// Block time of the claim that was paid, in milliseconds.
+        claimed_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The token creator asked for a token that cannot be transferred, on a
     /// network that does not accept one yet.
@@ -3061,7 +3162,7 @@ pub enum TaskError {
 
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
-    PublicKeyMapBuildFailed { detail: String },
+    PublicKeyMapBuildFailed(#[from] crate::backend_task::identity::IdentityKeySpecError),
 
     /// The wallet-binding information for an identity could not be determined.
     #[error(
@@ -4219,6 +4320,20 @@ impl From<dashcore_rpc::Error> for TaskError {
 }
 
 impl TaskError {
+    /// The error for a withdrawal from an identity of `identity_type` that no
+    /// usable key can sign. A masternode or evonode may sign with its owner key
+    /// as well as its payout key, so it gets
+    /// [`TaskError::NoUsableNodeWithdrawalKey`], which names both; a user
+    /// identity gets [`TaskError::NoUsableWithdrawalKey`].
+    pub fn no_usable_withdrawal_key(identity_type: IdentityType) -> Self {
+        match identity_type {
+            IdentityType::User => TaskError::NoUsableWithdrawalKey,
+            IdentityType::Masternode | IdentityType::Evonode => {
+                TaskError::NoUsableNodeWithdrawalKey
+            }
+        }
+    }
+
     /// The error for a token operation the wallet runtime reported as failed
     /// (`PlatformWalletError::TokenOperationFailed`).
     ///
@@ -4543,6 +4658,20 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(
+                        StateError::TokenOncePerIdentityDistributionAlreadyClaimedError(e),
+                    ) => {
+                        let (token_id, identity_id, claimed_at_ms) =
+                            (e.token_id(), e.identity_id(), e.claimed_at_ms());
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                                token_id,
+                                identity_id,
+                                claimed_at_ms,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
@@ -4723,6 +4852,18 @@ impl From<SdkError> for TaskError {
                     ) => Some(Box::new(|source_error| {
                         TaskError::DocumentActionFeesWithoutModeration { source_error }
                     })),
+                    ConsensusError::BasicError(
+                        BasicError::InvalidTokenOncePerIdentityDistributionAmountError(e),
+                    ) => {
+                        let (amount, max_amount) = (e.amount(), e.max_amount());
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidOncePerIdentityDistributionAmount {
+                                amount,
+                                max_amount,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::BasicError(
                         BasicError::PreProgrammedDistributionAmountOverLimitError(e),
                     ) => {
@@ -7161,6 +7302,7 @@ mod tests {
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
+        use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
         use dash_sdk::dpp::consensus::signature::{
             ContractBoundedKeyNonBatchError, ContractBoundedKeyOutOfBoundsError,
             PublicKeyBudgetExhaustedError, PublicKeyExpiredError,
@@ -7285,6 +7427,19 @@ mod tests {
             (
                 DocumentActionFeesWithoutModerationError::new("note".to_string()).into(),
                 |e| matches!(e, TaskError::DocumentActionFeesWithoutModeration { .. }),
+            ),
+            (
+                InvalidTokenOncePerIdentityDistributionAmountError::new(0, 100).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::InvalidOncePerIdentityDistributionAmount {
+                            amount: 0,
+                            max_amount: 100,
+                            ..
+                        }
+                    )
+                },
             ),
             (
                 PreProgrammedDistributionAmountOverLimitError::new(1, 1_758_140_722_000).into(),
@@ -7492,6 +7647,41 @@ mod tests {
             assert!(!message.contains("evil"), "{message}");
             let source = std::error::Error::source(&error).expect("typed source");
             assert!(format!("{source:?}").contains("evil"), "kept in the source");
+        }
+    }
+
+    /// A second claim of a once-per-identity distribution maps to its own
+    /// variant carrying the ids, so the claim flow can remember the claim.
+    #[test]
+    fn once_per_identity_already_claimed_maps_to_its_variant() {
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let (token_id, identity_id) = (Identifier::random(), Identifier::random());
+        let consensus =
+            ConsensusError::from(TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                token_id,
+                identity_id,
+                1_758_140_722_000,
+            ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        match TaskError::from(sdk_err) {
+            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                token_id: t,
+                identity_id: i,
+                claimed_at_ms,
+                ..
+            } => {
+                assert_eq!(
+                    (t, i, claimed_at_ms),
+                    (token_id, identity_id, 1_758_140_722_000)
+                );
+            }
+            other => panic!("got {other:?}"),
         }
     }
 
@@ -8208,6 +8398,29 @@ mod tests {
             assert!(
                 !msg.contains(jargon),
                 "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
+        }
+    }
+
+    /// A masternode or evonode withdrawal may also be signed with the owner
+    /// key, so its "no usable key" message must name both remedies; a user
+    /// identity, which can only use a transfer key, keeps its own message.
+    #[test]
+    fn no_usable_withdrawal_key_names_the_purposes_the_identity_type_allows() {
+        assert!(matches!(
+            TaskError::no_usable_withdrawal_key(IdentityType::User),
+            TaskError::NoUsableWithdrawalKey
+        ));
+        for node in [IdentityType::Masternode, IdentityType::Evonode] {
+            let error = TaskError::no_usable_withdrawal_key(node);
+            assert!(
+                matches!(error, TaskError::NoUsableNodeWithdrawalKey),
+                "{node:?} must get the node message, got {error:?}"
+            );
+            let msg = error.to_string();
+            assert!(
+                msg.contains("payout") && msg.contains("owner"),
+                "the node message must name both usable keys, got: {msg}"
             );
         }
     }

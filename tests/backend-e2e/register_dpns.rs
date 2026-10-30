@@ -77,7 +77,7 @@ async fn unused_identity_registration(
                 .expect("Failed to build identity registration");
         let key_hashes: Vec<[u8; 20]> = registration
             .keys
-            .to_public_keys_map()
+            .to_public_keys_map(app_context.platform_version())
             .expect("identity keys should convert to public keys")
             .values()
             .map(|key| key.public_key_hash().expect("identity key hash"))
@@ -227,7 +227,7 @@ pub(crate) async fn platform_funded_identity(
     let identity_index = reg_info.wallet_identity_index;
     let key_count = reg_info
         .keys
-        .to_public_keys_map()
+        .to_public_keys_map(app_context.platform_version())
         .expect("identity keys should convert to public keys")
         .len();
 

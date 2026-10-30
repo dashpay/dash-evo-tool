@@ -460,6 +460,44 @@ fn home_profile_avatar_requests_its_image() {
 }
 
 #[test]
+fn home_header_long_usernames_stay_above_balance_at_narrow_widths() {
+    with_isolated_data_dir(|| {
+        let (_runtime, ctx) = fresh_app_context();
+        let name = "a".repeat(63);
+        super::identity_usernames::seed_username_identity(
+            &ctx,
+            0xB4,
+            "Alex",
+            &[&name, &"b".repeat(63), &"c".repeat(63)],
+            0,
+            true,
+        );
+        let mut harness = mount_home(ctx);
+        for width in [360.0, 520.0, 800.0] {
+            harness.set_size(egui::vec2(width, 900.0));
+            harness.run();
+            let names = harness.get_by_label_contains(&format!("@{name}")).rect();
+            let add = harness.get_by_label("Add username").rect();
+            let balance = harness.get_by_label("Identity balance").rect();
+            if width < 640.0 {
+                assert!(
+                    names.bottom() <= balance.top(),
+                    "names {names:?} overlap balance {balance:?}"
+                );
+                assert!(
+                    add.bottom() <= balance.top(),
+                    "add {add:?} overlaps balance {balance:?}"
+                );
+            } else {
+                assert!(!names.intersects(balance), "names overlap balance");
+                assert!(!add.intersects(balance), "add overlaps balance");
+            }
+            assert!(names.right() <= width, "names exceed viewport: {names:?}");
+        }
+    });
+}
+
+#[test]
 fn home_username_summary_limits_to_three_and_routes_add_and_overflow() {
     with_isolated_data_dir(|| {
         let (_runtime, ctx) = fresh_app_context();
@@ -778,6 +816,7 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
                 nickname: Some("Bao".into()),
                 note: None,
                 is_hidden: false,
+                details_unreadable: false,
                 account_reference: 0,
                 username: None,
                 display_name: None,
@@ -797,10 +836,10 @@ fn home_contacts_follow_an_identity_selected_outside_the_hub() {
             &mut harness,
             "the newly selected identity's contact load",
             |action| match action {
-                AppAction::BackendTasks(tasks, _) => Some(
+                AppAction::BackendTasksWithContexts(tasks, _) => Some(
                     tasks
                         .iter()
-                        .filter_map(|task| match task {
+                        .filter_map(|(task, _)| match task {
                             BackendTask::DashPayTask(task) => match &**task {
                                 DashPayTask::LoadContacts { identity }
                                 | DashPayTask::LoadContactRequests { identity } => {
@@ -864,6 +903,7 @@ fn contact(byte: u8, name: &str) -> dash_evo_tool::backend_task::dashpay::Contac
         nickname: Some(name.into()),
         note: None,
         is_hidden: false,
+        details_unreadable: false,
         account_reference: 0,
         username: None,
         display_name: None,
@@ -974,6 +1014,7 @@ fn home_contact_preview_shows_the_first_six_contacts() {
                     nickname: Some((*name).into()),
                     note: None,
                     is_hidden: false,
+                    details_unreadable: false,
                     account_reference: 0,
                     username: None,
                     display_name: None,

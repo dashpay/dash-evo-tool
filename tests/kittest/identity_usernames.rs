@@ -54,6 +54,15 @@ pub(crate) fn seed_username_identity(
     key.set_id(1);
     key.set_purpose(Purpose::AUTHENTICATION);
     key.set_security_level(SecurityLevel::HIGH);
+    // Usernames are registered with ECDSA keys only; `random_key` may pick
+    // any key type.
+    key.set_key_type(dash_sdk::dpp::identity::KeyType::ECDSA_SECP256K1);
+    key.set_data(
+        std::iter::once(2)
+            .chain(std::iter::repeat_n(byte, 32))
+            .collect::<Vec<u8>>()
+            .into(),
+    );
     let mut identity = Identity::new_with_id_and_keys(
         Identifier::from([byte; 32]),
         BTreeMap::from([(key.id(), key.clone())]),

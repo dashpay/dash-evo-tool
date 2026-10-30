@@ -71,7 +71,7 @@ impl AppContext {
 
         // Sign the state transition
         let state_transition = builder
-            .sign(sdk, signing_key, &identity, self.platform_version())
+            .sign(sdk, signing_key, &identity, sdk.version())
             .await
             .map_err(TaskError::from)?;
 

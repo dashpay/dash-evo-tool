@@ -22,9 +22,7 @@ use crate::register_dpns::{
 };
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::fee_estimation::contest_fee_credits;
-use dash_evo_tool::model::identity_key_usability::SigningScope;
 use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::platform::dpns_usernames::{
@@ -162,16 +160,8 @@ async fn register_and_log(
     let dpns =
         load_system_data_contract(SystemDataContract::DPNS, app_context.sdk_platform_version())
             .expect("the DPNS contract should load");
-    let preorder = dpns
-        .document_type_for_name("preorder")
-        .expect("the DPNS contract should define preorder");
     let signing_key = identity
-        .document_signing_key(
-            SigningScope::ContractWide {
-                contract_id: dpns.id(),
-            },
-            &preorder,
-        )
+        .username_registration_key(&dpns)
         .cloned()
         .expect("the identity should hold a key that signs name documents");
 

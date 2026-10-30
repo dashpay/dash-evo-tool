@@ -1,5 +1,5 @@
 use super::BackendTaskSuccessResult;
-use crate::app::TaskResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::DPNSNameInfo;
@@ -23,7 +23,10 @@ impl AppContext {
             .await;
 
         sender
-            .send(TaskResult::Refresh)
+            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network: self.network,
+                domain: crate::backend_task::CacheDomain::Identities,
+            }))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
 

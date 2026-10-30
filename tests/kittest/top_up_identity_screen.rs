@@ -11,7 +11,7 @@ use dash_evo_tool::app::{AppAction, AppState, BootPhase, TaskResult};
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{
-    BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult,
+    BackendTask, BackendTaskContext, BackendTaskSuccessResult, CacheDomain, CacheUpdate, FeeResult,
 };
 use dash_evo_tool::model::address::ValidatedAddress;
 use dash_evo_tool::model::amount::Amount;
@@ -144,6 +144,14 @@ fn deliver(harness: &mut App, result: TaskResult) {
         "the task result channel accepts the result"
     );
     harness.run_steps(3);
+}
+
+/// The notification the backend sends once a top-up changed an identity.
+fn identities_changed(network: Network) -> TaskResult {
+    TaskResult::CacheUpdated(CacheUpdate {
+        network,
+        domain: CacheDomain::Identities,
+    })
 }
 
 fn topped_up(context: BackendTaskContext, identity: &QualifiedIdentity) -> TaskResult {
@@ -328,14 +336,15 @@ fn reopened_add_funds_shows_the_balance_its_top_up_left() {
         assert_eq!(count(&harness, FORM_PAUSED), 1);
         assert_eq!(count(&harness, "0.0000 DASH"), 1);
 
-        // The backend stores the new balance before it reports the result.
+        // The backend stores the new balance and says identities changed
+        // before it reports the result.
         let mut topped_up_identity = identity.clone();
         topped_up_identity.identity.set_balance(200_000_000_000);
-        harness
-            .state()
-            .current_app_context()
+        let app_context = harness.state().current_app_context().clone();
+        app_context
             .insert_local_qualified_identity(&topped_up_identity, &None)
             .expect("store the topped-up identity");
+        deliver(&mut harness, identities_changed(app_context.network()));
         deliver(&mut harness, topped_up(dispatch, &topped_up_identity));
 
         assert_eq!(count(&harness, FORM), 1);
@@ -345,6 +354,48 @@ fn reopened_add_funds_shows_the_balance_its_top_up_left() {
             "the form comes back with the balance the top-up left"
         );
     });
+}
+
+/// A top-up whose Add Funds screen was closed ends while a document query
+/// runs on the screen in view. The query is not the top-up's to reset: it
+/// keeps waiting for its own answer. The balances that changed reach screens
+/// as a cache notification, never as a screen refresh.
+#[test]
+fn a_top_up_ending_elsewhere_leaves_a_running_query_alone() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenDocumentQuery);
+        let identity = test_identity(harness.state().current_app_context().network());
+        open_add_funds(&mut harness, &identity);
+        let dispatch = begin_top_up(&mut harness);
+        continue_in_background(&mut harness);
+        harness.state_mut().screen_stack.clear();
+        harness.run_steps(3);
+
+        let query = documents(&mut harness)
+            .begin_fetch_for_test()
+            .expect("the query is the screen's dispatch");
+        harness.state_mut().test_record_visible_dispatch(&query);
+
+        deliver(&mut harness, topped_up(dispatch, &identity));
+        assert_eq!(count(&harness, DONE_BANNER), 1, "the top-up is confirmed");
+        assert!(
+            documents(&mut harness).fetch_pending_for_test(),
+            "the query still waits for its own answer"
+        );
+    });
+}
+
+fn documents(
+    harness: &mut App,
+) -> &mut dash_evo_tool::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenDocumentQuery)
+    {
+        Some(Screen::DocumentQueryScreen(screen)) => screen,
+        _ => panic!("the Documents screen is open"),
+    }
 }
 
 /// A failed background top-up must not hand Wallet Send its form back while
@@ -660,6 +711,11 @@ fn a_top_up_that_succeeds_after_its_form_was_left_is_confirmed() {
             count(&harness, DONE_BANNER),
             1,
             "the top-up the user walked away from is confirmed"
+        );
+        assert_eq!(
+            count(&harness, WALLET_SEND_COMPLETE),
+            0,
+            "the closed form's own completion text does not repeat the confirmation"
         );
         assert_eq!(count(&harness, BACKGROUND_BANNER), 0);
         assert_eq!(count(&harness, WALLET_SEND_PROGRESS), 0);

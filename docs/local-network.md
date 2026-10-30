@@ -90,7 +90,7 @@ dashmate config get core.zmq.port --config=local_seed
 - Internally, the local network maps to `Network::Regtest` from the Dash SDK.
 - Configuration is loaded via `envy::prefixed("LOCAL_")` in `src/config.rs`.
 - The `AppContext` for the local network is created at startup in `src/app.rs` and stored as `local_app_context: Option<Arc<AppContext>>`. If configuration is missing or invalid, this is `None` and the "Local" option is hidden.
-- The password-update flow in the Network Chooser (`src/ui/network_chooser_screen.rs`) updates the in-memory `AppContext` config, persists to `.env`, and re-initializes the Core RPC client and SDK without requiring an app restart.
+- The password-update flow in the Network Chooser (`src/ui/network_chooser_screen/mod.rs`) updates the in-memory `AppContext` config, persists to `.env`, and re-initializes the Core RPC client and SDK without requiring an app restart.
 - DAPI addresses use **HTTP** (not HTTPS) since TLS certificates are not provisioned on local networks.
 
 ## Differences from other networks

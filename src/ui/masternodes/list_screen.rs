@@ -702,6 +702,10 @@ impl ScreenLike for MasternodesScreen {
             self.votes
                 .display_backend_task_result(context, result.clone());
         }
+        // A node removed from another screen may be the one open here.
+        if let BackendTaskSuccessResult::RemovedIdentities { .. } = result {
+            self.apply_node_result(result.clone());
+        }
     }
     fn observe_backend_error(
         &mut self,
@@ -1002,6 +1006,7 @@ mod tests {
     use super::*;
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::BackendTaskContext;
     use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
     use crate::context::test_support::identity_public_key;
@@ -1388,10 +1393,11 @@ mod tests {
                 cleanup_deferred: flags & 2 != 0,
                 local_data_cleanup_failed: flags & 4 != 0,
             };
-            // The app's delivery path has no dependency on root selection or its child stack.
-            let banner =
-                crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
-                    .unwrap();
+            // Hidden roots observe the removal; the identity feedback owns the banner.
+            for root in roots.values_mut() {
+                root.observe_backend_result(&BackendTaskContext::Unknown, &result);
+            }
+            let banner = crate::ui::identity::task_feedback::show(ctx.egui_ctx(), &result).unwrap();
             let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
             else {
                 unreachable!()
@@ -1444,9 +1450,10 @@ mod tests {
             local_data_cleanup_failed: true,
             cleanup_deferred: true,
         };
-        let banner =
-            crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
-                .unwrap();
+        for root in roots.values_mut() {
+            root.observe_backend_result(&BackendTaskContext::Unknown, &result);
+        }
+        let banner = crate::ui::identity::task_feedback::show(ctx.egui_ctx(), &result).unwrap();
         assert!(banner.text().unwrap().contains("Mainnet"));
         let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
         else {

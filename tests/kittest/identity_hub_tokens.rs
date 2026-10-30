@@ -1235,6 +1235,140 @@ fn a_full_refresh_elsewhere_counts_as_one() {
     });
 }
 
+type RoutedApp = Harness<'static, dash_evo_tool::app::AppState>;
+
+fn routed_hub(harness: &mut RoutedApp) -> &mut IdentityHubScreen {
+    match harness
+        .state_mut()
+        .main_screens
+        .get_mut(&RootScreenType::RootScreenIdentityHub)
+    {
+        Some(Screen::IdentityHubScreen(hub)) => hub,
+        _ => panic!("the hub is open"),
+    }
+}
+
+fn deliver_to_app(harness: &mut RoutedApp, result: dash_evo_tool::app::TaskResult) {
+    assert!(harness.state().task_result_sender.try_send(result).is_ok());
+    harness.run_steps(3);
+}
+
+fn routed_balance_refreshes(harness: &RoutedApp) -> Vec<BackendTaskContext> {
+    harness
+        .state()
+        .test_captured_dispatches()
+        .iter()
+        .filter(|(task, _)| {
+            matches!(task, BackendTask::TokenTask(task)
+                if matches!(**task, TokenTask::QueryMyTokenBalances))
+        })
+        .map(|(_, context)| context.clone())
+        .collect()
+}
+
+/// On the real `AppState`: the hub's own refresh failed, then My Tokens came
+/// into view and `task` finished there. Returns the app back on the hub, with
+/// how many refreshes were asked for after that arrival began.
+fn return_to_the_hub_after_my_tokens_ran(
+    runtime: &tokio::runtime::Runtime,
+    task: BackendTask,
+) -> (RoutedApp, usize) {
+    let _guard = runtime.enter();
+    let mut harness = crate::support::mount_app(RootScreenType::RootScreenIdentityHub);
+    let app_context = harness.state().current_app_context().clone();
+    app_context.connection_status().set_masternodes_ready(true);
+    let identity = seed_signing_identity(&app_context, 0xD8);
+    seed_three_tokens(&app_context, identity);
+    harness.state_mut().test_capture_dispatches();
+    *routed_hub(&mut harness) = IdentityHubScreen::new(&app_context);
+    routed_hub(&mut harness).select_tab(IdentityHubTab::Tokens);
+    harness.run_steps(4);
+
+    let arrival = routed_balance_refreshes(&harness)
+        .pop()
+        .expect("the hub's arrival refresh");
+    let source = runtime
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>()).await
+        })
+        .expect_err("elapsed");
+    deliver_to_app(
+        &mut harness,
+        dash_evo_tool::app::TaskResult::Error {
+            context: arrival,
+            error: TaskError::TokenBalanceRefreshTimeout { source },
+        },
+    );
+    assert!(
+        harness
+            .query_by_label(token_copy::ERROR_REFRESH_SLOW)
+            .is_some(),
+        "the hub shows its failed refresh"
+    );
+
+    harness.state_mut().selected_main_screen = RootScreenType::RootScreenMyTokenBalances;
+    harness.run_steps(3);
+    let context = BackendTaskContext::for_dispatch_for_test(&task);
+    harness.state_mut().test_record_visible_dispatch(&context);
+    deliver_to_app(
+        &mut harness,
+        dash_evo_tool::app::TaskResult::Success {
+            context,
+            result: Box::new(
+                dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+            ),
+        },
+    );
+
+    let before = routed_balance_refreshes(&harness).len();
+    harness.state_mut().selected_main_screen = RootScreenType::RootScreenIdentityHub;
+    routed_hub(&mut harness).refresh_on_arrival();
+    harness.run_steps(3);
+    let asked = routed_balance_refreshes(&harness).len() - before;
+    (harness, asked)
+}
+
+/// A full refresh on My Tokens reaches the hidden hub through its observer,
+/// so coming back shows no stale failure and asks the network nothing.
+#[test]
+fn a_full_refresh_on_my_tokens_settles_the_hidden_hub() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let (harness, asked) = return_to_the_hub_after_my_tokens_ran(&runtime, task);
+        assert!(
+            harness
+                .query_by_label(token_copy::ERROR_REFRESH_SLOW)
+                .is_none(),
+            "the full refresh ended the hub's failure"
+        );
+        assert_eq!(asked, 0, "the balances are fresh, so no refresh starts");
+    });
+}
+
+/// A pair check on My Tokens reaches the hidden hub too, but read one pair:
+/// the failure stays and the arrival still asks for every balance.
+#[test]
+fn a_pair_check_on_my_tokens_leaves_the_hidden_hubs_failure() {
+    with_isolated_data_dir(|| {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(
+            IdentityTokenIdentifier {
+                identity_id: Identifier::from([0x01; 32]),
+                token_id: Identifier::from([0x02; 32]),
+            },
+        )));
+        let (harness, asked) = return_to_the_hub_after_my_tokens_ran(&runtime, task);
+        assert!(
+            harness
+                .query_by_label(token_copy::ERROR_REFRESH_SLOW)
+                .is_some(),
+            "one pair's answer says nothing about the failed refresh"
+        );
+        assert_eq!(asked, 1, "the arrival still asks for every balance");
+    });
+}
+
 #[test]
 fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;

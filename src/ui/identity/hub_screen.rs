@@ -582,7 +582,10 @@ impl ScreenLike for IdentityHubScreen {
             | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
             // An identity removed from another screen may be the one the hub
             // shows, in view or not.
-            | BackendTaskSuccessResult::RemovedIdentities { .. } => true,
+            | BackendTaskSuccessResult::RemovedIdentities { .. }
+            // The completion decides from the context whether this was a full
+            // refresh, which settles a failure the hub still shows.
+            | BackendTaskSuccessResult::FetchedTokenBalances => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };

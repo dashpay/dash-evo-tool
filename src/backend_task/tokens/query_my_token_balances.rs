@@ -28,12 +28,25 @@ use crate::backend_task::TaskResult;
 
 const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
 
+/// What a refresh spends outside the sync budget under the outer timeout: it
+/// registers the watch lists before the budget starts and republishes balances
+/// after it ends.
+const TOKEN_BALANCE_SYNC_HEADROOM: Duration = Duration::from_secs(15);
+
 /// The one deadline for upstream's sync pass, waiting and retries included.
-/// It must end before the refresh guard's lease expires, or a second refresh
-/// could start while this one still runs.
-const TOKEN_BALANCE_SYNC_BUDGET: Duration = NETWORK_REQUEST_TIMEOUT;
+/// It must end before the outer [`NETWORK_REQUEST_TIMEOUT`], which starts
+/// first: otherwise that timer always wins and the user never sees why the sync
+/// stopped. The lease outlives both, so no second refresh can start while this
+/// one still runs.
+const TOKEN_BALANCE_SYNC_BUDGET: Duration =
+    NETWORK_REQUEST_TIMEOUT.saturating_sub(TOKEN_BALANCE_SYNC_HEADROOM);
+const _: () = assert!(
+    TOKEN_BALANCE_SYNC_BUDGET.as_millis() > 0
+        && TOKEN_BALANCE_SYNC_BUDGET.as_millis() + TOKEN_BALANCE_SYNC_HEADROOM.as_millis()
+            <= NETWORK_REQUEST_TIMEOUT.as_millis()
+);
 const _: () =
-    assert!(TOKEN_BALANCE_SYNC_BUDGET.as_millis() < TOKEN_BALANCE_REFRESH_MAX_LIFETIME.as_millis());
+    assert!(NETWORK_REQUEST_TIMEOUT.as_millis() < TOKEN_BALANCE_REFRESH_MAX_LIFETIME.as_millis());
 
 struct TokenBalanceRefreshLease {
     context: Arc<AppContext>,
@@ -295,15 +308,15 @@ impl AppContext {
         backend
             .sync_token_balances_now(TOKEN_BALANCE_SYNC_BUDGET, &self.subtasks.cancellation_token)
             .await
-            .map_err(|error| match error {
-                TokenBalanceSyncError::OtherPassStillRunning => {
-                    TaskError::TokenBalanceSyncStillRunning
-                }
-                TokenBalanceSyncError::TimedOut(source) => {
-                    TaskError::TokenBalanceRefreshTimeout { source }
-                }
-                TokenBalanceSyncError::Cancelled => TaskError::TaskManagerShuttingDown,
-            })
+            .map_err(token_balance_sync_task_error)
+    }
+}
+
+fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
+    match error {
+        TokenBalanceSyncError::OtherPassStillRunning => TaskError::TokenBalanceSyncStillRunning,
+        TokenBalanceSyncError::TimedOut(source) => TaskError::TokenBalanceRefreshTimeout { source },
+        TokenBalanceSyncError::Cancelled => TaskError::TaskManagerShuttingDown,
     }
 }
 
@@ -419,6 +432,42 @@ mod tests {
 
         drop(first_refresh);
         assert!(f.ctx.begin_token_balance_refresh().is_ok());
+    }
+
+    /// The real budget and outer timeout, scaled down, in the order a refresh
+    /// starts them: the outer timer first. The sync budget must end first, or
+    /// the outer timer always wins and the sync's own error never reaches the
+    /// user.
+    #[tokio::test]
+    async fn a_pass_holding_the_slot_reports_the_sync_error_not_the_outer_timeout() {
+        const SCALE: u32 = 100;
+        let f = fixture().await;
+        let budget = TOKEN_BALANCE_SYNC_BUDGET / SCALE;
+        let cancel = f.ctx.subtasks.cancellation_token.clone();
+
+        let result = await_managed_network_request_with_timeout(
+            f.ctx.subtasks.clone(),
+            "token_balance_budget_order_test",
+            NETWORK_REQUEST_TIMEOUT / SCALE,
+            async move {
+                crate::wallet_backend::run_fresh_token_balance_sync(
+                    || true,
+                    || std::future::ready(()),
+                    std::time::Duration::from_millis(1),
+                    budget,
+                    &cancel,
+                )
+                .await
+                .map_err(token_balance_sync_task_error)
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(Err(TaskError::TokenBalanceSyncStillRunning))),
+            "got {result:?}"
+        );
     }
 
     #[tokio::test]

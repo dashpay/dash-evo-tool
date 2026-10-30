@@ -184,7 +184,7 @@ pub(crate) enum TokenBalanceSyncError {
 /// Waiting, retries and our own pass share ONE deadline `budget` from now, so
 /// the request never outlives the caller's refresh guard; `cancel` ends it at
 /// once on shutdown.
-async fn run_fresh_token_balance_sync<IsSyncing, SyncNow, SyncFuture>(
+pub(crate) async fn run_fresh_token_balance_sync<IsSyncing, SyncNow, SyncFuture>(
     is_syncing: IsSyncing,
     mut sync_now: SyncNow,
     poll: std::time::Duration,

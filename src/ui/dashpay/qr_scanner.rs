@@ -54,6 +54,10 @@ impl QRScannerScreen {
             })
             .unwrap_or_default();
 
+        let selected_wallet = selected_identity
+            .as_ref()
+            .and_then(|identity| signing_key_wallet(&app_context, identity));
+
         Self {
             app_context,
             selected_identity,
@@ -61,7 +65,7 @@ impl QRScannerScreen {
             qr_data_input: String::new(),
             parsed_qr_data: None,
             sending: false,
-            selected_wallet: None,
+            selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
         }
@@ -194,15 +198,10 @@ impl QRScannerScreen {
                 // Update wallet if identity changed
                 let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
                 if prev_identity_id != new_identity_id {
-                    if let Some(identity) = &self.selected_identity {
-                        let key = identity.dashpay_signing_key(
-                            &self.app_context.dashpay_contract(),
-                            "contactRequest",
-                        );
-                        self.selected_wallet = wallet_for_signing_key(identity, key);
-                    } else {
-                        self.selected_wallet = None;
-                    }
+                    self.selected_wallet = self
+                        .selected_identity
+                        .as_ref()
+                        .and_then(|identity| signing_key_wallet(&self.app_context, identity));
                     self.wallet_open_attempted = false;
                 }
             });
@@ -388,4 +387,47 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default()
+}
+
+/// The wallet holding the key a contact request from `identity` is signed
+/// with (the key [`QRScannerScreen::send_contact_request_with_proof`] takes),
+/// for the unlock prompt.
+fn signing_key_wallet(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let key = identity.dashpay_signing_key(&app_context.dashpay_contract(), "contactRequest");
+    wallet_for_signing_key(identity, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the screen preselected an identity but no wallet, and
+    /// picked the wallet only when the identity changed, so the default path
+    /// never checked whether the wallet holding the DashPay signing key was
+    /// locked before offering to send.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_preselected_identity_brings_its_signing_key_wallet() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let (identity, wallet) = crate::context::test_support::identity_with_bound_wallet_key(
+            ContractBounds::SingleContract {
+                id: ctx.dashpay_contract().id(),
+            },
+        );
+        let seed_hash = wallet.read().expect("wallet").seed_hash();
+        ctx.wallet_context().insert_test_wallet(seed_hash, wallet);
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("store identity");
+
+        let screen = QRScannerScreen::new(ctx);
+        let selected = screen
+            .selected_wallet
+            .expect("the wallet holding the DashPay signing key");
+        assert_eq!(selected.read().expect("wallet").seed_hash(), seed_hash);
+    }
 }

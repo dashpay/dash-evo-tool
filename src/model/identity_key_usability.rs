@@ -25,6 +25,18 @@ use dash_sdk::dpp::{ProtocolError, address_funds::AddressWitness};
 use dash_sdk::platform::Identifier;
 pub use platform_wallet::{SigningScope, check_signing_key, usable_signing_key};
 
+/// The key types Platform verifies an identity-signed state transition's
+/// signature with (drive-abci's `SUPPORTED_KEY_TYPES`), all of which DET's
+/// signer signs with. Platform refuses `EDDSA_25519_HASH160` and
+/// `BIP13_SCRIPT_HASH` keys, whatever the transition.
+// TODO(upstream): take the set from dpp once it exposes one; drive-abci's
+// is private.
+pub const PLATFORM_SIGNING_KEY_TYPES: &[KeyType] = &[
+    KeyType::ECDSA_SECP256K1,
+    KeyType::ECDSA_HASH160,
+    KeyType::BLS12_381,
+];
+
 /// Why a key cannot sign in a [`SigningScope`], or what the user should know
 /// before choosing it. Ordered by severity: the first applicable one is shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,13 +113,27 @@ pub fn key_caveats(
 pub struct KeyRequirements<'a> {
     pub purpose: Purpose,
     pub security_levels: &'a [SecurityLevel],
-    /// `None` accepts every key type.
+    /// `None` accepts every key type. [`Self::new`] sets
+    /// [`PLATFORM_SIGNING_KEY_TYPES`].
     pub key_types: Option<&'a [KeyType]>,
     pub scope: SigningScope<'a>,
 }
 
+impl KeyRequirements<'_> {
+    /// Whether `key` has the purpose, security level and key type asked for,
+    /// whether or not it can sign now.
+    pub(crate) fn matches(&self, key: &IdentityPublicKey) -> bool {
+        key.purpose() == self.purpose
+            && self.security_levels.contains(&key.security_level())
+            && self
+                .key_types
+                .is_none_or(|types| types.contains(&key.key_type()))
+    }
+}
+
 impl<'a> KeyRequirements<'a> {
-    /// Requirements accepting every key type.
+    /// Requirements accepting the key types Platform verifies signatures
+    /// with, [`PLATFORM_SIGNING_KEY_TYPES`].
     pub const fn new(
         purpose: Purpose,
         security_levels: &'a [SecurityLevel],
@@ -116,12 +142,12 @@ impl<'a> KeyRequirements<'a> {
         Self {
             purpose,
             security_levels,
-            key_types: None,
+            key_types: Some(PLATFORM_SIGNING_KEY_TYPES),
             scope,
         }
     }
 
-    /// Restricts the accepted key types.
+    /// Accepts only `key_types` instead of the default.
     pub const fn with_key_types(mut self, key_types: &'a [KeyType]) -> Self {
         self.key_types = Some(key_types);
         self
@@ -259,6 +285,39 @@ mod tests {
         assert_eq!(
             key_caveats(&k, SigningScope::NonBatch, NOW),
             vec![KeyCaveat::OutOfBounds]
+        );
+    }
+
+    /// Regression: requirements accepted every key type unless a caller
+    /// narrowed them, so a caller that did not picked an EdDSA or BIP13 key,
+    /// which Platform refuses for every identity-signed transition.
+    #[test]
+    fn requirements_take_only_keys_platform_verifies_by_default() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let typed = |key_type: KeyType| {
+            let mut k = key(0, None);
+            k.set_key_type(key_type);
+            k
+        };
+        let defaults =
+            KeyRequirements::new(Purpose::AUTHENTICATION, &[SecurityLevel::HIGH], doc_scope());
+        for refused in [KeyType::EDDSA_25519_HASH160, KeyType::BIP13_SCRIPT_HASH] {
+            assert!(
+                defaults.check(&typed(refused), &KeyLookupOnly).is_err(),
+                "{refused:?}"
+            );
+        }
+        assert!(
+            defaults
+                .check(&typed(KeyType::BLS12_381), &KeyLookupOnly)
+                .is_ok()
+        );
+        assert!(
+            defaults
+                .with_key_types(&[KeyType::EDDSA_25519_HASH160])
+                .check(&typed(KeyType::EDDSA_25519_HASH160), &KeyLookupOnly)
+                .is_ok(),
+            "an explicit key type list overrides the default"
         );
     }
 

@@ -1,4 +1,4 @@
-use crate::model::identity_key_usability::{KeyLookupOnly, SigningScope};
+use crate::model::identity_key_usability::KeyLookupOnly;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -185,7 +185,7 @@ impl AppContext {
 
         let qualified_identity = input.qualified_identity;
 
-        let preorder_document_type = dpns_contract
+        dpns_contract
             .document_type_for_name("preorder")
             .map_err(|_| TaskError::DataContractNotFound)?;
         let domain_document_type = dpns_contract
@@ -221,12 +221,7 @@ impl AppContext {
                 dpns_signing_requirement(&dpns_contract),
             )?,
             None => qualified_identity
-                .document_signing_key(
-                    SigningScope::Contract {
-                        contract_id: dpns_contract.id(),
-                    },
-                    &preorder_document_type,
-                )
+                .username_registration_key(&dpns_contract)
                 .cloned()
                 .ok_or(TaskError::NoDocumentSigningKey)?,
         };
@@ -444,7 +439,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::context::test_support::identity_public_key;
     use crate::model::dpns_usernames::UsernameAvailability;
     use dash_sdk::dpp::block::block_info::BlockInfo;
     use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
@@ -605,22 +600,16 @@ mod tests {
     /// An identity with a key allowed to sign name documents. Nothing signs
     /// with it while the SDK's registration call is stood in for.
     fn identity_with_signing_key(byte: u8) -> QualifiedIdentity {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
         let mut identity = bare_identity(byte);
-        identity
-            .identity
-            .add_public_keys([IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                id: 1,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: vec![2; 33].into(),
-                disabled_at: None,
-            })]);
+        identity.identity.add_public_keys([identity_public_key(
+            1,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            vec![2; 33],
+        )]);
         identity
     }
 

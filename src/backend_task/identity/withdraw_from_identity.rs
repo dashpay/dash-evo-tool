@@ -59,7 +59,7 @@ impl AppContext {
         // fall back to an OWNER key and bypass the owner-address policy.
         let signing_key_id = qualified_identity
             .resolve_withdrawal_signing_key(id)
-            .map_err(|_| TaskError::NoUsableWithdrawalKey)?;
+            .map_err(|_| TaskError::no_usable_withdrawal_key(qualified_identity.identity_type))?;
         let signing_key = qualified_identity
             .identity
             .get_public_key_by_id(signing_key_id);

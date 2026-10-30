@@ -5,8 +5,8 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
-use crate::model::user_role::UserRole;
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
@@ -172,13 +172,7 @@ impl SetTokenPriceScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
-            .signing_key_now(KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::CRITICAL],
-                SigningScope::Contract {
-                    contract_id: identity_token_info.data_contract.contract.id(),
-                },
-            ));
+            .token_action_key(identity_token_info.data_contract.contract.id());
 
         let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
@@ -835,6 +829,14 @@ impl SetTokenPriceScreen {
 }
 
 impl ScreenLike for SetTokenPriceScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
@@ -913,29 +915,17 @@ impl ScreenLike for SetTokenPriceScreen {
             ui.heading("Set Token Pricing Schedule");
             ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self
-                    .identity_token_info
-                    .identity
-                    .identity
-                    .public_keys()
-                    .is_empty()
-            } else {
-                !self
-                    .identity_token_info
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
+            // Open the form only when the action's key choice picks a key.
+            let key_status = super::token_action_key_status(
+                &self.app_context,
+                &self.identity_token_info.identity,
+                self.identity_token_info.data_contract.contract.id(),
+            );
 
-            if !has_keys {
+            if key_status != SigningKeyStatus::Usable {
                 ui.colored_label(
                     Color32::DARK_RED,
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity_token_info.identity.identity_type,
-                    ),
+                    super::token_action_key_message(key_status, &self.identity_token_info.identity),
                 );
                 ui.add_space(10.0);
 

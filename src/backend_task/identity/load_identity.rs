@@ -258,29 +258,21 @@ impl AppContext {
         // A node key left blank may be held by one of this device's wallets:
         // reference it at its derivation path instead of asking for it. A
         // merge never swaps a key the node already stores for a reference, but
-        // a stored node key the network has since disabled or replaced does not
-        // count: after a rotation the new key is looked up.
+        // a stored owner or payout key the network has since disabled or replaced
+        // does not count: after a rotation the new key is looked up.
         let (node_key_hashes, wallet_keys) = if identity_type != IdentityType::User {
-            let already_stored = |target: PrivateKeyTarget, purpose: Purpose| {
-                load_mode == IdentityLoadMode::MergeIntoExisting
-                    && existing_stored.as_ref().is_some_and(|existing| {
-                        stores_current_node_key(
-                            existing,
-                            &identity,
-                            target,
-                            purpose,
-                            current_voting_hash,
-                        )
-                    })
+            let merging_into = existing_stored
+                .as_ref()
+                .filter(|_| load_mode == IdentityLoadMode::MergeIntoExisting);
+            let already_stored = |purpose: Purpose| {
+                merging_into
+                    .is_some_and(|existing| stores_current_node_key(existing, &identity, purpose))
             };
             self.find_node_keys_in_wallets(
                 &identity,
-                owner_private_key_bytes.is_none()
-                    && !already_stored(PrivateKeyOnMainIdentity, Purpose::OWNER),
-                payout_address_private_key_bytes.is_none()
-                    && !already_stored(PrivateKeyOnMainIdentity, Purpose::TRANSFER),
-                current_voting_hash
-                    .filter(|_| !already_stored(PrivateKeyOnVoterIdentity, Purpose::VOTING)),
+                owner_private_key_bytes.is_none() && !already_stored(Purpose::OWNER),
+                payout_address_private_key_bytes.is_none() && !already_stored(Purpose::TRANSFER),
+                wallet_voting_key_to_find(current_voting_hash, merging_into),
             )
             .await
         } else {
@@ -1147,40 +1139,51 @@ impl AppContext {
     }
 }
 
-/// Whether `existing` already stores the current `purpose` node key at
-/// `target`, so a merge leaves it in place rather than looking the key up in
-/// a wallet. A stored key that a rotation replaced does not count: a main
-/// identity key must still be active on the freshly fetched `identity`, and a
-/// voting key must hash to `current_voting_hash`, the voting key the
-/// masternode list records. When that list cannot be read or is not current
-/// (`None`) there is nothing to look up, so a stored voting key counts.
+/// Whether `existing` already stores the current `purpose` key on the main
+/// identity, so a merge leaves it in place rather than looking the key up in a
+/// wallet. A stored key that a rotation replaced does not count: it must still
+/// be active on the freshly fetched `identity`.
 fn stores_current_node_key(
     existing: &QualifiedIdentity,
     identity: &Identity,
-    target: PrivateKeyTarget,
     purpose: Purpose,
-    current_voting_hash: Option<[u8; 20]>,
 ) -> bool {
-    use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
     existing
         .private_keys
         .identity_public_keys()
         .iter()
-        .any(|(t, key)| {
+        .any(|(target, key)| {
             let stored = &key.identity_public_key;
-            if **t != target || stored.purpose() != purpose {
-                return false;
-            }
-            match &target {
-                PrivateKeyOnMainIdentity => identity
+            **target == PrivateKeyOnMainIdentity
+                && stored.purpose() == purpose
+                && identity
                     .get_public_key_by_id(stored.id())
-                    .is_some_and(|current| current.purpose() == purpose && !current.is_disabled()),
-                PrivateKeyOnVoterIdentity => current_voting_hash.is_none_or(|current| {
-                    stored.public_key_hash().is_ok_and(|hash| hash == current)
-                }),
-                PrivateKeyTarget::PrivateKeyOnOperatorIdentity => true,
-            }
+                    .is_some_and(|current| current.purpose() == purpose && !current.is_disabled())
         })
+}
+
+/// The voting key hash to look for in this device's wallets on a load whose
+/// typed voting key is blank, given the list's `current` hash and the node a
+/// merge will carry keys over from.
+///
+/// `None` while the node stores a voting key, even one the list no longer
+/// names. Voter identities number their key 0, so a key found in a wallet would
+/// take the stored key's placement and lose it, and the list can lag the chain,
+/// so the stored key may be the current one. The node's page offers to remove
+/// an old key; the next load then finds the current key.
+fn wallet_voting_key_to_find(
+    current: Option<[u8; 20]>,
+    merging_into: Option<&QualifiedIdentity>,
+) -> Option<[u8; 20]> {
+    current.filter(|_| {
+        !merging_into.is_some_and(|existing| {
+            existing
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .any(|(target, _)| **target == PrivateKeyOnVoterIdentity)
+        })
+    })
 }
 
 /// The key-storage entry for the active `purpose` key of `identity` whose
@@ -2754,42 +2757,76 @@ mod tests {
         assert!(!stores_current_node_key(
             &existing,
             &fetched.identity,
-            M,
             Purpose::OWNER,
-            None
         ));
         assert!(stores_current_node_key(
             &existing,
             &existing.identity,
-            M,
             Purpose::OWNER,
-            None
         ));
+    }
 
-        let mut voter = existing.clone();
-        let voting = node_key(0, Purpose::VOTING, false);
-        let stored_hash: [u8; 20] = voting.data().as_slice().try_into().unwrap();
-        voter.private_keys.insert_at(
-            (V, voting.id()),
+    /// A wallet reference for rotated-to key B lands on the same placement as
+    /// stored key A, because every voter identity numbers its key 0. The merge
+    /// then keeps B and loses A, so B must never be looked up while A is stored:
+    /// the list can lag the chain, and A may be the current key. The node's page
+    /// offers A's removal; the next load then finds B.
+    #[test]
+    fn a_wallet_voting_key_never_displaces_a_stored_one() {
+        let (mut node, _) = masternode_shaped_qi();
+        node.private_keys = KeyStorage::default();
+        let rotated_to: [u8; 20] = rand::random();
+        assert_eq!(
+            wallet_voting_key_to_find(Some(rotated_to), Some(&node)),
+            Some(rotated_to),
+            "a node with no stored voting key looks for the current one"
+        );
+
+        let stored = node_key(0, Purpose::VOTING, false);
+        node.private_keys.insert_at(
+            (V, stored.id()),
             (
-                QualifiedIdentityPublicKey::from(voting),
+                QualifiedIdentityPublicKey::from(stored),
+                PrivateKeyData::InVault,
+            ),
+        );
+        assert_eq!(
+            wallet_voting_key_to_find(Some(rotated_to), Some(&node)),
+            None,
+            "a stored voting key stays until the user removes it"
+        );
+        assert_eq!(
+            wallet_voting_key_to_find(Some(rotated_to), None),
+            Some(rotated_to),
+            "a load that does not merge has nothing to displace"
+        );
+    }
+
+    /// The collision that rule prevents: a new entry on a stored placement wins.
+    #[test]
+    fn a_new_entry_on_a_stored_voter_placement_replaces_it_in_a_merge() {
+        let (mut existing, _) = masternode_shaped_qi();
+        existing.private_keys = KeyStorage::default();
+        let mut merged = existing.clone();
+        let old = node_key(0, Purpose::VOTING, false);
+        let new = node_key(0, Purpose::VOTING, false);
+        existing.private_keys.insert_at(
+            (V, 0),
+            (
+                QualifiedIdentityPublicKey::from(old),
+                PrivateKeyData::InVault,
+            ),
+        );
+        merged.private_keys.insert_at(
+            (V, 0),
+            (
+                QualifiedIdentityPublicKey::from(new.clone()),
                 PrivateKeyData::Clear(rand::random()),
             ),
         );
-        let current =
-            |hash| stores_current_node_key(&voter, &voter.identity, V, Purpose::VOTING, hash);
-        assert!(
-            current(Some(stored_hash)),
-            "the recorded voting key is kept"
-        );
-        assert!(
-            !current(Some(rand::random())),
-            "a rotated voting key is looked up again",
-        );
-        assert!(
-            current(None),
-            "without the masternode list, the stored key stays"
-        );
+        merge_existing_keys_into(&mut merged, existing);
+        let (kept, _) = merged.private_keys.entry_at(&(V, 0)).unwrap();
+        assert_eq!(kept.identity_public_key.data(), new.data());
     }
 
     /// §10.8 — the testable core of the "Add voting key" in-place

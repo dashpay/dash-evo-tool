@@ -4,6 +4,7 @@ use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
+use crate::model::index_only_document::is_index_only;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -296,6 +297,14 @@ impl DocumentQueryScreen {
         let mut action = AppAction::None;
         ui.separator();
         ui.add_space(10.0);
+
+        if let Some(notice) = index_only_results_notice(&self.selected_document_type) {
+            ui.label(
+                egui::RichText::new(notice)
+                    .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+            );
+            ui.add_space(10.0);
+        }
 
         // Controls section
         if !self.matching_documents.is_empty() {
@@ -850,6 +859,14 @@ impl ScreenLike for DocumentQueryScreen {
     }
 }
 
+/// The notice shown above the results of an indexOnly document type, whose
+/// rows are rebuilt from the network's indexes.
+fn index_only_results_notice(document_type: &DocumentType) -> Option<&'static str> {
+    is_index_only(document_type.as_ref()).then_some(
+        "Entries of this document type are rebuilt from the network's indexes. They are read-only: they can be deleted, but not edited, replaced or transferred. Their IDs are computed from the entry and do not identify a stored document.",
+    )
+}
+
 /// Convert a `Document` to a `serde_json::Value`, then filter out unselected fields,
 /// then serialize the result to JSON/YAML.
 fn doc_to_filtered_string(
@@ -896,6 +913,21 @@ mod tests {
         let mut query = DocumentQuery::new(Arc::new(contract), "domain").expect("domain query");
         query.limit = limit;
         query
+    }
+
+    #[test]
+    fn index_only_results_are_labelled_read_only() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        let contract = crate::model::index_only_document::test_fixtures::index_only_contract();
+        let owned = |name: &str| {
+            contract
+                .document_type_for_name(name)
+                .expect("document type")
+                .to_owned_document_type()
+        };
+        let notice = index_only_results_notice(&owned("like")).expect("a notice");
+        assert!(notice.contains("read-only"));
+        assert!(index_only_results_notice(&owned("note")).is_none());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 
@@ -43,6 +44,9 @@ pub enum Capability {
     /// The connected platform accepts version 1 token configurations, which
     /// can make a token non-transferable.
     NonTransferableTokens,
+    /// The connected platform accepts the transition that deletes an
+    /// indexOnly document by its values.
+    IndexOnlyDocumentDelete,
 }
 
 /// Whether the protocol version the connected network has proven is one this
@@ -78,6 +82,17 @@ impl Capability {
                 ctx,
                 NON_TRANSFERABLE_TOKENS_ACTIVATION_PROTOCOL_VERSION,
             ),
+            // Upstream names no feature constant; the transition's
+            // serialization bounds exist exactly from the version that
+            // accepts it. Fails closed like every other capability.
+            Capability::IndexOnlyDocumentDelete => {
+                let info = ctx.protocol_version_info();
+                !info.newer_protocol_available
+                    && info
+                        .verified_version
+                        .and_then(PlatformVersion::get_optional)
+                        .is_some_and(crate::model::index_only_document::index_only_delete_supported)
+            }
         }
     }
 }
@@ -180,6 +195,9 @@ pub enum FeatureGate {
     /// Creating a token that holders cannot transfer. Offered only where the
     /// connected network accepts one.
     NonTransferableTokens,
+    /// Deleting an indexOnly document by its values. Offered only where the
+    /// connected network accepts the transition.
+    IndexOnlyDocumentDelete,
 }
 
 impl FeatureGate {
@@ -201,6 +219,9 @@ impl FeatureGate {
             }
             FeatureGate::NonTransferableTokens => {
                 &[Check::Capability(Capability::NonTransferableTokens)]
+            }
+            FeatureGate::IndexOnlyDocumentDelete => {
+                &[Check::Capability(Capability::IndexOnlyDocumentDelete)]
             }
         }
     }
@@ -483,6 +504,7 @@ mod tests {
         let gates = [
             FeatureGate::TokenOncePerIdentityDistribution,
             FeatureGate::NonTransferableTokens,
+            FeatureGate::IndexOnlyDocumentDelete,
         ];
         for role in ROLES {
             for gate in gates {
@@ -508,6 +530,7 @@ mod tests {
             Capability::ShieldedProtocol,
             Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
+            Capability::IndexOnlyDocumentDelete,
         ];
 
         prove_protocol_version(&ctx, LATEST_VERSION);

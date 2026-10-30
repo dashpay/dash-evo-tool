@@ -19,6 +19,7 @@ pub mod identity_discovery;
 pub mod identity_key_protection;
 pub mod identity_key_usability;
 pub mod identity_name;
+pub mod index_only_document;
 pub mod key_input;
 pub mod legacy_recovery;
 pub mod legacy_restore;

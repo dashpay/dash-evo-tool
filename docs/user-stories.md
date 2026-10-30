@@ -1431,6 +1431,16 @@ As a developer, I want to set a price on a document and allow others to purchase
 
 ---
 
+### DOC-010: Agree to a contract's fee for a document action [Implemented]
+**Persona:** Alex, Priya
+
+As a user acting on a document whose contract charges a fee, I want to see that fee and agree to it before anything is sent, so that I am never charged more than I accepted.
+
+- The estimated-fee panel shows the contract fee next to the network fee, split between the contract owner and its moderators.
+- Sending asks for confirmation naming the fee and, for a fee that follows network fees, the most that can be charged ("up to N DASH") and the tolerated increase.
+- If network fees rise past that tolerance, the network refuses the action; the app updates the fee, and trying again shows the new amount to confirm.
+- If the contract changes its fee after confirmation, nothing is sent, and the user is told to remove the contract on the Contracts screen and load it again to see and confirm its current fee.
+
 ### DOC-011: Skip an optional token cost [Implemented]
 **Persona:** Alex, Priya
 
@@ -1438,6 +1448,17 @@ As a user, when a document action's token cost is optional, I want to choose not
 
 - A "Pay the token cost" option appears only when the token cost is optional.
 - Without it, the action carries no token payment and its network fee is paid from the identity's credits.
+
+### DOC-013: Delete an entry of an indexOnly document type [Implemented]
+**Persona:** Jordan
+
+As a developer working with a contract whose document type keeps only index entries (`indexOnly`, protocol version 14), I want to see that its entries are read-only and delete one by the values it was created with, so that I can clean up test data without paying for actions the network will refuse.
+
+- Query results for such a type say that its entries are rebuilt from the network's indexes, read-only, and carry computed IDs.
+- Replace, transfer, purchase and set price are not offered for such a type.
+- Delete fetches the identity's entries; selecting one prefills its values as editable JSON, checked before sending (missing, unknown or malformed values are refused with a reason).
+- The confirmation warns that the delete fails, and the fee is still charged, if any value differs from the original entry.
+- Offered only on networks that accept the delete (protocol version 14 and later).
 
 ## Developer and Power Tools (DEV)
 

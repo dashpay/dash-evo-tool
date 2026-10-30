@@ -67,7 +67,8 @@ The fee strategy is not part of this panel. It lives in Summary › Fee options 
 
 - The checklist shows only addresses with a balance. Everything is unticked when first opened. The amount still comes from the single Amount field (D-11).
 - Max = everything in the ticked addresses minus the fee.
-- Platform: at most `MAX_PLATFORM_INPUTS` ticked. Further boxes are disabled with the tooltip "One payment can use at most {max} Platform addresses."
+- Platform: at most the active protocol version's input limit ticked (`max_platform_inputs`). Further boxes are disabled with the tooltip "One payment can use at most {max} Platform addresses."
+- Platform into a private balance is refused, because a shield's planner picks its own input addresses and ticks could not decide who pays. Send stays disabled and the form says: "A payment into your private balance can't use only the addresses you tick. Choose Auto or Platform under Pay from." The Shielded option under Receive into is disabled with the same text, and the panel's line about spreading the payment is hidden.
 - The panel replaces the Platform "Source breakdown" box. Without Advanced, the breakdown lives in Summary › Details.
 
 ### 3.4 Several recipients (Expert/Developer view)
@@ -275,7 +276,7 @@ The form scrolls in the existing `ScrollArea`. The status lines wrap and are nev
 | Balance changes mid-form (incoming tx) | Auto re-resolves; Max (intent) follows the new maximum |
 | Identity dropdown: the app-selected identity is not in the From wallet | Default to the highest-balance identity of that wallet |
 | Top up: source wallet holds the target identity | The target is excluded from Pay from › Identity (today's rule) |
-| More than `MAX_PLATFORM_INPUTS` Platform addresses needed | Auto treats Platform's max as the top-N sum (today's rule). The Summary note reads "Limited to the {max} largest Platform addresses. Send the rest in another payment." |
+| More than the protocol's input limit (`max_platform_inputs`) of Platform addresses needed | Auto treats Platform's max as the top-N sum (today's rule). The Summary note reads "Limited to the {max} largest Platform addresses. Send the rest in another payment." |
 | Shielded To kind, shielded gate off | The typed shielded address is refused inline: "Private addresses aren't available in this view. Switch to Expert view to use them." |
 
 ## 16. Implementation notes (non-binding)

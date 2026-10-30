@@ -578,6 +578,7 @@ As a user, I want a single summary of the route, fee and total before I press Se
 As a power user, I want to pick the addresses a payment spends from, or pay several recipients at once, from the same Send form, so that I do not have to switch to a separate advanced screen.
 
 - In Expert or Developer view, Pay from offers Advanced: a checklist of Core or Platform addresses with balances. Each ticked address can take its own amount; with none entered, the payment is spread over the ticked addresses.
+- Ticked Platform addresses cannot pay into a private balance. The form says why and points to Auto or Platform, which can.
 - When Platform is involved, a collapsed "Fee options" row in the Summary offers the same four fee strategies as today (deduct from first/last input, reduce first/last output), with the same default.
 - "+ Add another recipient" under the recipient field turns it into address-and-amount rows. All recipients in one payment are the same kind.
 - Replaces the separate "Advanced Options" form; everything it could do stays available.

@@ -443,8 +443,10 @@ pub enum TaskError {
     AssetLockTooManyInputs { count: usize, max: usize },
 
     /// The wallet's available amount is not quoted while another operation
-    /// that can take or release its Core inputs is in progress: until it
-    /// reserves them, no quote can see what it will take.
+    /// that moves the funds it is quoted from is in progress: one that can
+    /// take or release its Core inputs (until it reserves them, no quote can
+    /// see what it will take), or a shield from its Platform balance (until a
+    /// sync pass reads the spend back, the balances still show it).
     #[error("{}", crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)]
     SpendInProgress,
 
@@ -1533,6 +1535,20 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A private contact note exceeds the application's byte limit.
+    #[error("This note is too long. Shorten it to save it.")]
+    DashPayContactNoteTooLong {
+        #[from]
+        source: crate::model::dashpay::ContactNoteTooLong,
+    },
+
+    /// Contact details could not be encoded within the document size limit.
+    #[error("Contact info is too large to save. Try shortening your nickname or note.")]
+    DashPayContactInfoEncoding {
+        #[source]
+        source: Box<platform_wallet::PlatformWalletError>,
+    },
+
     /// An existing contact's encrypted details could not be read safely.
     #[error(
         "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
@@ -1666,9 +1682,26 @@ pub enum TaskError {
         source: BackendTaskJoinError,
     },
 
+    /// A caught task panic. The payload is kept out of this error, whose
+    /// `Debug` reaches the banner's details panel. The process panic hook in
+    /// `logging.rs` still logs the payload, as it does for every panic, so a
+    /// panic message must never contain secrets.
+    #[error("The requested action stopped unexpectedly. Check its outcome before trying again.")]
+    BackendTaskPanicked,
+
+    /// Later sequential work is not started after an uncertain task outcome.
+    #[error("This action was not started because an earlier action stopped. Check the earlier action before trying again.")]
+    BackendTaskBatchAborted,
+
     /// A backend task reached the app after the shutdown admission barrier closed.
     #[error("This action could not start because the app is closing. Reopen the app and try again.")]
     TaskManagerShuttingDown,
+
+    /// A screen's task was dispatched on a network the user has since switched
+    /// away from. Ends that screen's wait without delivering the previous
+    /// network's result; the original outcome is reported separately.
+    #[error("The network changed before this action finished. Run it again on this network.")]
+    NetworkSwitchedBeforeResult,
 
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
@@ -2348,6 +2381,22 @@ pub enum TaskError {
         source: Box<ProtocolError>,
     },
 
+    /// A new document could not be built for the active protocol version,
+    /// typically one this build does not know yet.
+    #[error("Could not prepare the document. Update Dash Evo Tool and try again.")]
+    DocumentPreparationFailed {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
+    /// The identity keys could not be built in the identity key structure of
+    /// the active protocol version, typically one this build does not know yet.
+    #[error("Could not prepare the identity keys. Update Dash Evo Tool and try again.")]
+    IdentityKeysPreparationFailed {
+        #[source]
+        source: Box<SdkError>,
+    },
+
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
     InvalidPrivateKey,
@@ -2728,6 +2777,17 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A once-per-identity distribution amount is zero or above the maximum.
+    #[error(
+        "The amount each identity can claim must be between 1 and {max_amount}. Enter an amount in that range, then try again."
+    )]
+    InvalidOncePerIdentityDistributionAmount {
+        amount: u64,
+        max_amount: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The pre-programmed distributions of one time add up to more than the
     /// maximum.
     #[error(
@@ -2748,6 +2808,38 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// A token with a once-per-identity distribution was requested on a
+    /// network that does not accept one yet.
+    #[error(
+        "The connected network does not accept once-per-identity token distributions yet. Create the token without it, or try again after the network upgrades."
+    )]
+    TokenOncePerIdentityNotSupported,
+
+    /// A once-per-identity token claim succeeded, but this device could not
+    /// record that it was made. Without the record, the claim may be offered
+    /// again, and Platform refuses (and charges for) a second claim.
+    #[error(
+        "The tokens were claimed, but this device could not save that this identity has claimed them. Do not claim this token again with this identity, because the claim would be refused."
+    )]
+    TokensClaimedButClaimNotRecorded {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// The identity already took its single claim of a token's
+    /// once-per-identity distribution, so Platform refused another one.
+    #[error(
+        "This identity has already claimed its share of this token. Each identity can claim it only once, so there is nothing more to claim."
+    )]
+    TokenOncePerIdentityAlreadyClaimed {
+        token_id: Identifier,
+        identity_id: Identifier,
+        /// Block time of the claim that was paid, in milliseconds.
+        claimed_at_ms: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// The token creator asked for a token that cannot be transferred, on a
     /// network that does not accept one yet.
@@ -3038,7 +3130,7 @@ pub enum TaskError {
 
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
-    PublicKeyMapBuildFailed { detail: String },
+    PublicKeyMapBuildFailed(#[from] crate::backend_task::identity::IdentityKeySpecError),
 
     /// The wallet-binding information for an identity could not be determined.
     #[error(
@@ -4520,6 +4612,20 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(
+                        StateError::TokenOncePerIdentityDistributionAlreadyClaimedError(e),
+                    ) => {
+                        let (token_id, identity_id, claimed_at_ms) =
+                            (e.token_id(), e.identity_id(), e.claimed_at_ms());
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                                token_id,
+                                identity_id,
+                                claimed_at_ms,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
                         Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
                             source_error,
@@ -4645,6 +4751,18 @@ impl From<SdkError> for TaskError {
                     ) => Some(Box::new(|source_error| {
                         TaskError::DocumentActionFeesWithoutModeration { source_error }
                     })),
+                    ConsensusError::BasicError(
+                        BasicError::InvalidTokenOncePerIdentityDistributionAmountError(e),
+                    ) => {
+                        let (amount, max_amount) = (e.amount(), e.max_amount());
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidOncePerIdentityDistributionAmount {
+                                amount,
+                                max_amount,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::BasicError(
                         BasicError::PreProgrammedDistributionAmountOverLimitError(e),
                     ) => {
@@ -7119,6 +7237,7 @@ mod tests {
     fn protocol_v14_consensus_errors_map_to_their_variants() {
         use dash_sdk::dpp::consensus::basic::contract_moderation::DocumentActionFeesWithoutModerationError;
         use dash_sdk::dpp::consensus::basic::data_contract::PreProgrammedDistributionAmountOverLimitError;
+        use dash_sdk::dpp::consensus::basic::token::InvalidTokenOncePerIdentityDistributionAmountError;
         use dash_sdk::dpp::consensus::state::contract_moderation::{
             ContractUserBannedError, ContractUserSuspendedError,
         };
@@ -7199,6 +7318,19 @@ mod tests {
             (
                 DocumentActionFeesWithoutModerationError::new("note".to_string()).into(),
                 |e| matches!(e, TaskError::DocumentActionFeesWithoutModeration { .. }),
+            ),
+            (
+                InvalidTokenOncePerIdentityDistributionAmountError::new(0, 100).into(),
+                |e| {
+                    matches!(
+                        e,
+                        TaskError::InvalidOncePerIdentityDistributionAmount {
+                            amount: 0,
+                            max_amount: 100,
+                            ..
+                        }
+                    )
+                },
             ),
             (
                 PreProgrammedDistributionAmountOverLimitError::new(1, 1_758_140_722_000).into(),
@@ -7393,6 +7525,41 @@ mod tests {
             assert!(!message.contains("evil"), "{message}");
             let source = std::error::Error::source(&error).expect("typed source");
             assert!(format!("{source:?}").contains("evil"), "kept in the source");
+        }
+    }
+
+    /// A second claim of a once-per-identity distribution maps to its own
+    /// variant carrying the ids, so the claim flow can remember the claim.
+    #[test]
+    fn once_per_identity_already_claimed_maps_to_its_variant() {
+        use dash_sdk::dpp::consensus::state::token::TokenOncePerIdentityDistributionAlreadyClaimedError;
+        let (token_id, identity_id) = (Identifier::random(), Identifier::random());
+        let consensus =
+            ConsensusError::from(TokenOncePerIdentityDistributionAlreadyClaimedError::new(
+                token_id,
+                identity_id,
+                1_758_140_722_000,
+            ));
+        let sdk_err = SdkError::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40722,
+                message: "already claimed".to_string(),
+                cause: Some(consensus),
+            },
+        );
+        match TaskError::from(sdk_err) {
+            TaskError::TokenOncePerIdentityAlreadyClaimed {
+                token_id: t,
+                identity_id: i,
+                claimed_at_ms,
+                ..
+            } => {
+                assert_eq!(
+                    (t, i, claimed_at_ms),
+                    (token_id, identity_id, 1_758_140_722_000)
+                );
+            }
+            other => panic!("got {other:?}"),
         }
     }
 

@@ -270,9 +270,9 @@ pub fn asset_lock_amount_refusal(
             maximum_amount_duffs,
         } => maximum_amount_duffs,
     };
+    let maximum = format_duffs_as_dash(maximum_amount_duffs);
     Some(format!(
-        "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-        format_duffs_as_dash(maximum_amount_duffs)
+        "You can use up to {maximum} from this wallet right now. Choose a smaller amount or wait for more funds."
     ))
 }
 
@@ -506,6 +506,29 @@ pub fn actionable_asset_locks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::asset_lock::asset_lock_user_max_amount;
+
+    /// The refusal is shared by adding funds to a Platform address, creating
+    /// and topping up an identity, and moving funds to a private balance, so it
+    /// names no single operation, only the amount this wallet can use.
+    #[test]
+    fn asset_lock_limit_refusal_is_operation_neutral() {
+        let ceiling_duffs = 1_000_000;
+        let reserve_duffs = 10_000;
+        let maximum_duffs = asset_lock_user_max_amount(ceiling_duffs, reserve_duffs);
+
+        let message =
+            asset_lock_amount_refusal(ceiling_duffs, Some(ceiling_duffs), reserve_duffs, None)
+                .expect("an amount above the ceiling is refused");
+
+        assert_eq!(
+            message,
+            format!(
+                "You can use up to {} from this wallet right now. Choose a smaller amount or wait for more funds.",
+                format_duffs_as_dash(maximum_duffs)
+            )
+        );
+    }
 
     #[test]
     fn status_label_is_user_facing_for_every_variant() {

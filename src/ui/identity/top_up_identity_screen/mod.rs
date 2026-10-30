@@ -1029,6 +1029,14 @@ impl TopUpIdentityScreen {
 }
 
 impl ScreenLike for TopUpIdentityScreen {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.reload_identity();
+        }
+    }
     fn refresh_on_arrival(&mut self) {
         self.asset_lock_balance.invalidate();
     }

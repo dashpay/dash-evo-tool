@@ -8,7 +8,7 @@
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
-use crate::model::spend_limit::{CoreSendShortfall, SpendLimitKind};
+use crate::model::spend_limit::{CoreSendQuoteFee, CoreSendShortfall, SpendLimitKind};
 use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ enum Phase {
     },
     Loaded {
         max_credits: u64,
+        core_fee: Option<CoreSendQuoteFee>,
     },
     Failed,
     /// Another transaction from the wallet is in progress; no limit is
@@ -100,8 +101,25 @@ impl SpendLimitCache {
         match self.states.get(&(*seed_hash, kind)) {
             Some(State {
                 revision: loaded_for,
-                phase: Phase::Loaded { max_credits },
+                phase: Phase::Loaded { max_credits, .. },
             }) if *loaded_for == revision => Some(*max_credits),
+            _ => None,
+        }
+    }
+
+    /// For a Core send, what the loaded Max for `revision` was proven
+    /// against.
+    pub fn core_fee(
+        &self,
+        seed_hash: &WalletSeedHash,
+        kind: SpendLimitKind,
+        revision: u64,
+    ) -> Option<CoreSendQuoteFee> {
+        match self.states.get(&(*seed_hash, kind)) {
+            Some(State {
+                revision: loaded_for,
+                phase: Phase::Loaded { core_fee, .. },
+            }) if *loaded_for == revision => *core_fee,
             _ => None,
         }
     }
@@ -130,8 +148,17 @@ impl SpendLimitCache {
         kind: SpendLimitKind,
         request_id: u64,
         max_credits: u64,
+        core_fee: Option<CoreSendQuoteFee>,
     ) {
-        self.settle(seed_hash, kind, request_id, Phase::Loaded { max_credits });
+        self.settle(
+            seed_hash,
+            kind,
+            request_id,
+            Phase::Loaded {
+                max_credits,
+                core_fee,
+            },
+        );
     }
 
     /// Whether the wallet reported another transaction in progress for
@@ -240,7 +267,7 @@ mod tests {
             "an in-flight request is not repeated"
         );
 
-        cache.store(SEED, kind, id, 5_000);
+        cache.store(SEED, kind, id, 5_000, None);
         assert_eq!(cache.get(&SEED, kind, 1), Some(5_000));
         assert!(cache.ensure_requested(SEED, kind, 1).is_none());
 
@@ -259,11 +286,11 @@ mod tests {
         let stale = request_id(cache.ensure_requested(SEED, kind, 1));
         let current = request_id(cache.ensure_requested(SEED, kind, 2));
 
-        cache.store(SEED, kind, stale, 1);
+        cache.store(SEED, kind, stale, 1, None);
         assert_eq!(cache.get(&SEED, kind, 2), None);
         assert_eq!(cache.get(&SEED, kind, 1), None);
 
-        cache.store(SEED, kind, current, 2);
+        cache.store(SEED, kind, current, 2, None);
         assert_eq!(cache.get(&SEED, kind, 2), Some(2));
     }
 
@@ -334,6 +361,7 @@ mod tests {
             },
             core,
             9,
+            None,
         );
         assert_eq!(
             cache.get(

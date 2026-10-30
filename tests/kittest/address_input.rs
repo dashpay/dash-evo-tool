@@ -302,3 +302,49 @@ fn suggestions_open_while_typing_and_close_on_select_or_click_elsewhere() {
     harness.run();
     assert_eq!(popup_rows(&harness), 0, "choosing a suggestion closes them");
 }
+
+/// A blocking dialog over the form closes the address suggestions: the popup
+/// must not draw above the dialog and its dimmed backdrop.
+#[test]
+fn suggestions_do_not_draw_over_a_blocking_dialog() {
+    use dash_evo_tool::ui::components::confirmation_dialog::ConfirmationDialog;
+
+    let input = identity_input("dora").with_wallets(&[wallet(1, "main")]);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(480.0, 400.0))
+        .build_ui_state(
+            |ui, (input, dialog): &mut (AddressInput, Option<ConfirmationDialog>)| {
+                let _ = input.show(ui);
+                if let Some(dialog) = dialog {
+                    let _ = dialog.show(ui);
+                }
+            },
+            (input, None),
+        );
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" ");
+    harness.run();
+    harness.run();
+    assert!(
+        harness.query_by_label_contains("(dora)").is_some(),
+        "precondition: the suggestions are open"
+    );
+
+    harness.state_mut().1 =
+        Some(ConfirmationDialog::new("Confirm this send.", "Send 1 DASH?").blocks_input(true));
+    harness.run_steps(4);
+    assert!(
+        harness.query_by_label("Confirm this send.").is_some(),
+        "precondition: the dialog is open"
+    );
+    assert!(
+        harness.query_by_label_contains("(dora)").is_none(),
+        "the suggestions must not draw over a blocking dialog"
+    );
+}

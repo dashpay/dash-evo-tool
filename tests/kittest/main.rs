@@ -9,6 +9,7 @@ mod global_nav_switcher;
 mod identity_home;
 mod identity_hub;
 mod identity_hub_activity;
+mod identity_hub_contact_detail;
 mod identity_hub_contacts;
 mod identity_hub_layout;
 mod identity_hub_onboarding;

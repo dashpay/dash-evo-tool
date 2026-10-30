@@ -138,9 +138,11 @@ impl WalletSendScreen {
             SourceSelection::CoreWallet => {
                 let seed_hash = self.selected_wallet_seed_hash;
                 let mut max = seed_hash.and_then(|seed_hash| {
+                    // Only an asset-lock route starts from the builder ceiling:
+                    // the same current-composition accessor validation uses, so
+                    // Max can never offer a stale ceiling. A Core send takes the
+                    // backend quote below.
                     let max_duffs = if Self::funds_asset_lock(source, dest_kind) {
-                        // Same current-composition accessor validation uses,
-                        // so Max can never offer a stale ceiling.
                         let max = self.asset_lock_max_amount(&seed_hash).ok();
                         if max.is_none() {
                             quote = if self.asset_lock_balance.is_failed(&seed_hash) {
@@ -153,7 +155,7 @@ impl WalletSendScreen {
                         }
                         max
                     } else {
-                        Some(self.get_core_balance())
+                        None
                     };
                     max_duffs.map(|amount| amount.saturating_mul(CREDITS_PER_DUFF))
                 });
@@ -168,10 +170,7 @@ impl WalletSendScreen {
                                 max = max.map(|amount| amount.saturating_sub(estimated_fee));
                                 let fee = format_credits_as_dash(estimated_fee);
                                 let minimum = format_duffs_as_dash(
-                                    fee_estimator.address_funding_min_amount_duffs(
-                                        true,
-                                        self.app_context.sdk_platform_version(),
-                                    ),
+                                    fee_estimator.address_funding_min_amount_duffs(true),
                                 );
                                 Some(format!(
                                     "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
@@ -220,9 +219,10 @@ impl WalletSendScreen {
                             },
                         )
                     }
-                    Some(AddressKind::Core) => {
+                    Some(AddressKind::Core) | None => {
                         // Core-to-Core "Max": the backend's quote of the largest
-                        // payment the pooled build accepts, net of its fee.
+                        // payment the pooled build accepts, net of its fee;
+                        // with no destination yet, the P2PKH quote.
                         // Nothing is offered until it arrives.
                         match self.spend_limit_for(source, dest_kind, self.core_send_limit_kind()) {
                             // The backend states a zero as its reason; this
@@ -233,14 +233,10 @@ impl WalletSendScreen {
                             }
                             Some(max_credits) => {
                                 max = Some(max_credits);
-                                let utxo_count = self
-                                    .selected_wallet_seed_hash
-                                    .map(|seed_hash| {
-                                        self.app_context.snapshot_utxo_count(&seed_hash)
-                                    })
-                                    .unwrap_or(0);
-                                let fee_duffs =
-                                    estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                                let fee_duffs = self
+                                    .core_send_quote_fee_for(source, dest_kind)
+                                    .map(|quote| core_send_fee_at_max_duffs(&quote))
+                                    .unwrap_or_default();
                                 let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
                                 Some(format!(
                                     "A network fee of approximately {fee} is reserved from your balance."
@@ -253,7 +249,6 @@ impl WalletSendScreen {
                             }
                         }
                     }
-                    None => None,
                 };
                 (max, hint)
             }
@@ -271,7 +266,7 @@ impl WalletSendScreen {
                     Some(0) => (
                         None,
                         Some(format!(
-                            "None of your Platform addresses can cover the shielding fee of approximately {fee}, so nothing can be shielded right now."
+                            "None of your Platform addresses can keep back {fee} to pay the shielding fee, so nothing can be shielded right now."
                         )),
                     ),
                     max => {
@@ -281,7 +276,7 @@ impl WalletSendScreen {
                         (
                             max,
                             Some(format!(
-                                "A shielding fee of approximately {fee} is reserved from your balance."
+                                "Up to {fee} is kept back from your balance to pay the shielding fee. What the fee does not use stays on your Platform address."
                             )),
                         )
                     }
@@ -314,10 +309,12 @@ impl WalletSendScreen {
                     .collect();
                 sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
-                // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
+                // Sum balances from top addresses, limited by the protocol's
+                // input limit.
+                let max_inputs = fee_estimator.max_platform_inputs();
                 let total: u64 = sorted_addresses
                     .iter()
-                    .take(MAX_PLATFORM_INPUTS)
+                    .take(max_inputs)
                     .map(|(_, _, balance)| *balance)
                     .sum();
                 let max_fee = self.estimate_max_fee_for_platform_send(
@@ -326,9 +323,9 @@ impl WalletSendScreen {
                     &recipients,
                 );
                 let fee = format_credits_as_dash(max_fee);
-                let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
+                let hint = if sorted_addresses.len() > max_inputs {
                     format!(
-                        "This transaction is limited to {MAX_PLATFORM_INPUTS} input addresses, and fees of approximately {fee} are reserved from your balance."
+                        "This transaction is limited to {max_inputs} input addresses, and fees of approximately {fee} are reserved from your balance."
                     )
                 } else {
                     format!("Fees of approximately {fee} are reserved from your balance.")

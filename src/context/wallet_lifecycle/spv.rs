@@ -172,7 +172,7 @@ impl AppContext {
     /// the indicator flip, which is what this method owns.
     pub async fn ensure_wallet_backend_and_start_spv(
         self: &Arc<Self>,
-        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         self.start_spv_while(sender, || true).await.map(|_| ())
     }
@@ -185,7 +185,7 @@ impl AppContext {
     /// overruled and stood down.
     pub async fn start_spv_while(
         self: &Arc<Self>,
-        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         still_wanted: impl Fn() -> bool + Send + Sync,
     ) -> Result<bool, TaskError> {
         if let Err(e) = self.prepare_storage(sender).await {
@@ -237,12 +237,11 @@ impl AppContext {
     /// slot and restarts on the re-armed latch, so a reconnect cannot hit
     /// `WalletStorageError::AlreadyOpen` — impossible by construction, no release
     /// barrier needed. Full teardown ([`WalletBackend::shutdown`], which quiesces
-    /// the coordinators so the persister can drop) never runs on a GUI path: a
-    /// GUI network switch keeps the outgoing per-network context cached (only its
-    /// secrets are forgotten), and GUI app-close aborts the subtasks and exits.
-    /// `shutdown` runs only on the MCP network-switch tool (draining the outgoing
-    /// context before the swap) and the headless / MCP-server close — all on a
-    /// different persister path than any live one, so none can race a reopen.
+    /// the coordinators so the persister can drop) is reserved for context
+    /// retirement or application exit. A GUI network switch keeps the outgoing
+    /// context cached and forgets its secrets. GUI app-close first drains tracked
+    /// tasks, then shuts down all retained backends; if tasks time out, it forgets
+    /// secrets without racing those tasks with destructive wallet teardown.
     ///
     /// Idempotent: a call with no wired backend still settles the indicator on
     /// `Stopped`/`Disconnected`. The teardown is async (upstream `stop_in_place`

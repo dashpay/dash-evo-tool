@@ -45,6 +45,8 @@ use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
 use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
+use dash_sdk::dpp::key_wallet::wallet::Wallet;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::{
     SelectionError, SelectionStrategy,
 };
@@ -55,7 +57,9 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
-use super::payments::{AssetLockFundingPool, ProbeDeadline};
+use super::payments::{
+    AssetLockFundingPool, ProbeDeadline, pooled_send_input_count, pooled_send_utxos,
+};
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
@@ -154,6 +158,10 @@ pub struct WalletSnapshot {
     /// [`core_send_inputs_key`]); unlike `generation`, unchanged by events
     /// that leave them as they were.
     pub(super) core_send_inputs_key: u64,
+    /// How many of those coins a pooled send of the whole balance spends;
+    /// prices the Core fee shown beside the Max (see
+    /// [`pooled_send_input_count`]).
+    pub(super) core_send_input_count: usize,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -227,6 +235,7 @@ struct SnapshotState {
     balance: DetWalletBalance,
     asset_lock_inputs: AssetLockInputState,
     core_send_inputs_key: u64,
+    core_send_input_count: usize,
     utxos: Vec<DetUtxo>,
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
@@ -582,11 +591,23 @@ fn core_send_inputs_key(coins: impl IntoIterator<Item = (OutPoint, u64, bool)>) 
     hasher.finish()
 }
 
+/// [`core_send_inputs_key`] over the coins of the accounts a pooled Core send
+/// draws on, at the wallet's height. A coin in any other account (CoinJoin)
+/// cannot move the Core Max, so it must not invalidate the cached quote.
+fn pooled_send_inputs_key(wallet: &Wallet, info: &ManagedWalletInfo) -> u64 {
+    let height = info.last_processed_height();
+    core_send_inputs_key(
+        pooled_send_utxos(wallet, info)
+            .map(|u| (u.outpoint, u.txout.value, u.is_spendable(height))),
+    )
+}
+
 fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
     SnapshotState {
         balance: prior.balance,
         asset_lock_inputs: prior.asset_lock_inputs.clone(),
         core_send_inputs_key: prior.core_send_inputs_key,
+        core_send_input_count: prior.core_send_input_count,
         utxos: prior.utxos.clone(),
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
@@ -717,6 +738,15 @@ impl SnapshotStore {
             .load()
             .get(seed_hash)
             .map_or(0, |snapshot| snapshot.utxos.len())
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, per the
+    /// published snapshot; 0 before the first publish.
+    pub(super) fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.core_send_input_count)
     }
 
     /// The key naming the coins a pooled Core send can draw on; 0 before
@@ -976,13 +1006,10 @@ impl SnapshotStore {
                         self.snapshot(&seed_hash).asset_lock_inputs.clone()
                     }
                 };
-                let height = state.core_wallet.last_processed_height();
-                let core_send_inputs_key = core_send_inputs_key(
-                    state
-                        .utxos()
-                        .into_iter()
-                        .map(|u| (u.outpoint, u.txout.value, u.is_spendable(height))),
-                );
+                let core_send_inputs_key =
+                    pooled_send_inputs_key(state.wallet(), &state.core_wallet);
+                let core_send_input_count =
+                    pooled_send_input_count(state.wallet(), &state.core_wallet);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -998,6 +1025,7 @@ impl SnapshotStore {
                     balance,
                     asset_lock_inputs,
                     core_send_inputs_key,
+                    core_send_input_count,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
@@ -1049,6 +1077,7 @@ impl SnapshotStore {
             asset_lock_inputs: state.asset_lock_inputs,
             asset_lock_input_revision,
             core_send_inputs_key: state.core_send_inputs_key,
+            core_send_input_count: state.core_send_input_count,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -1133,6 +1162,7 @@ mod tests {
             &wid,
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1177,6 +1207,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos,
@@ -1214,6 +1245,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 0,
                     unconfirmed: 1_000,
@@ -1236,6 +1268,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1268,6 +1301,7 @@ mod tests {
             &wid(3),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1330,6 +1364,7 @@ mod tests {
             &wid(9),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: USABLE_DUFFS,
                     unconfirmed: NOT_YET_USABLE_DUFFS,
@@ -1372,6 +1407,7 @@ mod tests {
             &wid(9),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1619,6 +1655,7 @@ mod tests {
             &wid(0x51),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: before,
                 utxos: Vec::new(),
@@ -1661,6 +1698,7 @@ mod tests {
             &wid(0x51),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: after,
                 utxos: Vec::new(),
@@ -1676,6 +1714,76 @@ mod tests {
         if let Some(token) = reservation {
             managed_account.release_reservation_if_owner(&reserved_tx, token);
         }
+    }
+
+    /// The Core Max cache key names only the coins a pooled send draws on: a
+    /// coin arriving in an account outside `SEND_FUNDING_SOURCES` (CoinJoin)
+    /// leaves it, and one arriving in a pooled account (BIP44, BIP32) changes it.
+    #[test]
+    fn core_send_inputs_key_covers_only_the_pooled_send_accounts() {
+        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("upstream wallet");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let address = {
+            let account = wallet.get_bip44_account(0).expect("BIP44 account");
+            info.accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed BIP44 account")
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("receive address")
+        };
+        let coin = |n: u8| {
+            let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value: 100_000 + u64::from(n),
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            (outpoint, utxo)
+        };
+        let insert = |accounts: &mut BTreeMap<u32, ManagedCoreFundsAccount>, n: u8| {
+            let (outpoint, utxo) = coin(n);
+            accounts
+                .get_mut(&0)
+                .expect("managed account")
+                .utxos
+                .insert(outpoint, utxo);
+        };
+
+        insert(&mut info.accounts.standard_bip44_accounts, 1);
+        let pooled_only = pooled_send_inputs_key(&wallet, &info);
+
+        insert(&mut info.accounts.coinjoin_accounts, 2);
+        assert_eq!(
+            pooled_send_inputs_key(&wallet, &info),
+            pooled_only,
+            "a CoinJoin coin is no input of a pooled send, so it must not change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip32_accounts, 3);
+        let with_bip32 = pooled_send_inputs_key(&wallet, &info);
+        assert_ne!(
+            with_bip32, pooled_only,
+            "a BIP32 coin is pooled, so it must change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip44_accounts, 4);
+        assert_ne!(
+            pooled_send_inputs_key(&wallet, &info),
+            with_bip32,
+            "a BIP44 coin is pooled, so it must change the key"
+        );
     }
 
     #[test]
@@ -1812,7 +1920,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn contended_asset_lock_observation_keeps_the_fresh_balance_and_utxos() {
-        use crate::app::TaskResult;
+        use crate::backend_task::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;
         use std::time::Duration;
@@ -2219,6 +2327,7 @@ mod tests {
         address_paths.insert(b.clone(), DerivationPath::from(Vec::new()));
         WalletSnapshot {
             core_send_inputs_key: 0,
+            core_send_input_count: 0,
             generation: 1,
             asset_lock_inputs: AssetLockInputState::from_inputs([(
                 OutPoint::new(Txid::from_byte_array([1; 32]), 0),
@@ -2543,6 +2652,7 @@ mod tests {
             &wid(20),
             SnapshotState {
                 core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: total,
                     unconfirmed: 0,

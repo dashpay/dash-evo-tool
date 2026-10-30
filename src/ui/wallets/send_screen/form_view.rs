@@ -607,6 +607,7 @@ impl WalletSendScreen {
                 }
                 let platform = self.form.advanced_type() == AdvancedSourceType::Platform;
                 let ticked_count = self.form.ticked_advanced().len();
+                let max_inputs = max_platform_inputs(self.app_context.platform_version());
                 let mut selected_total = 0u64;
                 for (address, balance) in &rows {
                     let row = self.form.advanced_row(address);
@@ -615,12 +616,12 @@ impl WalletSendScreen {
                     }
                     ui.horizontal(|ui| {
                         let limit_reached =
-                            platform && !row.ticked && ticked_count >= MAX_PLATFORM_INPUTS;
+                            platform && !row.ticked && ticked_count >= max_inputs;
                         let mut ticked = row.ticked;
                         let checkbox = ui
                             .add_enabled(!limit_reached, egui::Checkbox::new(&mut ticked, ""))
                             .disabled_tooltip(format!(
-                                "One payment can use at most {MAX_PLATFORM_INPUTS} Platform addresses."
+                                "One payment can use at most {max_inputs} Platform addresses."
                             ));
                         if checkbox.changed() {
                             self.form.set_advanced_ticked(address, ticked);
@@ -1550,8 +1551,10 @@ impl WalletSendScreen {
             .validated_destination
             .as_ref()
             .and_then(|v| v.as_platform().copied());
+        let fee_estimator = self.app_context.fee_estimator();
+        let max_inputs = fee_estimator.max_platform_inputs();
         let allocation = allocate_platform_addresses(
-            &self.app_context.fee_estimator(),
+            &fee_estimator,
             addresses,
             amount_credits,
             destination.as_ref(),
@@ -1577,11 +1580,11 @@ impl WalletSendScreen {
                             ui.end_row();
                         }
                     });
-                if allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS {
+                if allocation.sorted_addresses.len() > max_inputs {
                     status_line(
                         ui,
                         format!(
-                            "Limited to the {MAX_PLATFORM_INPUTS} largest Platform addresses. Send the rest in another payment."
+                            "Limited to the {max_inputs} largest Platform addresses. Send the rest in another payment."
                         ),
                     );
                 }

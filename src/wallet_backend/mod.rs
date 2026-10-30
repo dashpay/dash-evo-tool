@@ -203,8 +203,8 @@ use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
-use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::{TaskError, WalletTransactionHistoryError};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
@@ -507,8 +507,11 @@ struct Inner {
     /// A cheap owned clone of the same sender the `EventBridge` holds.
     task_result_sender: SenderAsync<TaskResult>,
     /// Operations that can take or release Core input reservations; keys the
-    /// Max quotes. See [`spend_activity`].
+    /// Core send and asset-lock Max quotes. See [`spend_activity`].
     spend_activity: Arc<spend_activity::SpendActivity>,
+    /// Shields from Platform in flight; keys the shield-from-Platform Max
+    /// quote. See [`spend_activity`].
+    platform_shield_activity: Arc<spend_activity::SpendActivity>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -733,6 +736,7 @@ impl WalletBackend {
                 coordinator_gate,
                 task_result_sender,
                 spend_activity: Arc::default(),
+                platform_shield_activity: Arc::default(),
             }),
         };
 
@@ -2922,17 +2926,44 @@ impl WalletBackend {
     /// [`TaskError::SpendInProgress`] while an operation that can reserve its
     /// Core inputs is open.
     fn spend_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
-        let state = self.inner.spend_activity.quote_state(seed_hash);
-        if state.busy {
-            return Err(TaskError::SpendInProgress);
-        }
-        Ok(state.key)
+        self.inner.spend_activity.idle_quote_key(seed_hash)
+    }
+
+    /// The key a shield-from-Platform Max quote made now for `seed_hash` is
+    /// valid under, or [`TaskError::SpendInProgress`] while a shield from its
+    /// Platform balance is in flight.
+    fn platform_shield_quote_key(&self, seed_hash: &WalletSeedHash) -> Result<u64, TaskError> {
+        self.inner
+            .platform_shield_activity
+            .idle_quote_key(seed_hash)
     }
 
     /// Mark an operation that can take or release Core input reservations
     /// on `seed_hash` for as long as the returned guard lives.
     fn begin_core_spend(&self, seed_hash: &WalletSeedHash) -> spend_activity::SpendGuard {
         self.inner.spend_activity.begin(seed_hash)
+    }
+
+    /// The shield-in-flight part of the key a shield-from-Platform Max quote
+    /// is made against. The live Platform balances form the rest; they keep
+    /// showing a shield's spent credits until a sync pass reads them back, so
+    /// this moves when a shield opens and when it settles.
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.inner
+            .platform_shield_activity
+            .quote_state(seed_hash)
+            .key
+    }
+
+    /// Mark a shield from `seed_hash`'s Platform balance in flight for as
+    /// long as the returned guard lives: through the shield and the sync pass
+    /// that reads its spend back, for as long as that pass is waited on (see
+    /// `AppContext::shield_from_platform_then_sync`).
+    pub(crate) fn begin_platform_shield(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> spend_activity::SpendGuard {
+        self.inner.platform_shield_activity.begin(seed_hash)
     }
 
     /// Full transaction history for the wallet (event-sourced).
@@ -2984,6 +3015,13 @@ impl WalletBackend {
     /// them. DISPLAY-ONLY, like [`Self::utxos`].
     pub fn utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.inner.snapshots.utxo_count(seed_hash)
+    }
+
+    /// How many coins a pooled Core send of the wallet's whole balance
+    /// spends, per the display snapshot. DISPLAY-ONLY: it prices the Core fee
+    /// shown beside the Max; the Max itself comes from the backend quote.
+    pub fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.inner.snapshots.core_send_input_count(seed_hash)
     }
 
     /// UTXO-derived per-address balances for the wallet.

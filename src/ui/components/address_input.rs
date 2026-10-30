@@ -1088,13 +1088,19 @@ impl AddressInput {
 
             // Autocomplete popup: it opens while the user types (a
             // selection-only field opens on focus, as typing is not its use) and
-            // closes on a choice, Escape, or when the focus moves elsewhere.
+            // closes on a choice, Escape, or when the focus moves elsewhere. A
+            // modal that blocks this field closes it too: the popup's foreground
+            // layer would otherwise draw over the modal and its dimmed backdrop,
+            // and keep taking arrow keys and Enter.
+            let behind_modal = !ui
+                .ctx()
+                .memory(|memory| memory.is_above_modal_layer(ui.layer_id()));
             let mut selected_entry: Option<AddressEntry> = None;
             if (has_focus && text_changed) || (self.selection_only && text_response.gained_focus())
             {
                 self.autocomplete_open = true;
             }
-            if self.autocomplete_open {
+            if !behind_modal && self.autocomplete_open {
                 // Collect filtered entries into an owned snapshot to release the
                 // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();

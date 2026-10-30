@@ -2869,7 +2869,7 @@ mod tests {
         // The unprotected envelope stores the raw plaintext.
         assert_eq!(wallet.encrypted_seed_slice(), seed.as_slice());
 
-        let needle = hex::encode(seed);
+        let leaked_forms = crate::test_support::keys::rendered_forms(&seed);
         let closed = ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -2890,15 +2890,12 @@ mod tests {
             ("WalletSeed", format!("{wallet_seed:?}")),
             ("Wallet", format!("{wallet:?}")),
         ] {
-            assert!(
-                !rendered.contains(&needle),
-                "{label} Debug leaked hex seed bytes: {rendered}"
-            );
-            // Also catch the raw comma-separated `Vec<u8>` rendering.
-            assert!(
-                !rendered.contains("0, 1, 2, 3, 4, 5"),
-                "{label} Debug leaked raw seed byte sequence: {rendered}"
-            );
+            for form in &leaked_forms {
+                assert!(
+                    !rendered.contains(form),
+                    "{label} Debug leaked seed bytes: {rendered}"
+                );
+            }
             assert!(
                 rendered.contains("[redacted]"),
                 "{label} Debug should mark the seed redacted: {rendered}"

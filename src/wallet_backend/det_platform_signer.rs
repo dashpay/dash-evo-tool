@@ -367,6 +367,8 @@ mod tests {
         let det = DetPlatformSigner::from_held(&seed, network, &index);
         let dbg = format!("{det:?}");
         assert!(dbg.contains("Testnet"), "network present: {dbg}");
-        assert!(!dbg.contains("90, 90, 90"), "seed bytes leaked: {dbg}");
+        for form in crate::test_support::keys::rendered_forms(&*seed) {
+            assert!(!dbg.contains(&form), "seed bytes leaked: {dbg}");
+        }
     }
 }

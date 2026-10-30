@@ -99,6 +99,18 @@ pub fn labelled_wif(domain: &str, index: u64, network: Network) -> String {
         .to_wif()
 }
 
+/// The text a rendering shows if it leaks `secret`: the hex and the
+/// comma-separated `{:?}` form of its leading bytes. A redaction test derives
+/// these from the secret it uses, because a literal stops guarding anything once
+/// that secret is random.
+pub fn rendered_forms(secret: &[u8]) -> [String; 2] {
+    let head = &secret[..secret.len().min(8)];
+    [
+        hex::encode(head),
+        format!("{head:?}").trim_matches(['[', ']']).to_owned(),
+    ]
+}
+
 /// SHA-256(salt ‖ kind ‖ len(domain) ‖ domain ‖ index ‖ counter).
 fn derive(kind: &str, domain: &str, index: u64, counter: u32) -> [u8; 32] {
     let mut input = Vec::with_capacity(64 + kind.len() + domain.len());
@@ -160,6 +172,14 @@ mod tests {
         assert_ne!(labelled_secret("a", 7), labelled_secret("a", 8));
         assert_ne!(labelled_secret("a", 7), labelled_secret("b", 7));
         assert_ne!(labelled_secret("a", 7)[..], labelled_seed("a", 7)[..32]);
+    }
+
+    #[test]
+    fn rendered_forms_match_what_a_leak_prints() {
+        let secret = seed();
+        let [hex_form, debug_form] = rendered_forms(&secret);
+        assert!(hex::encode(secret).starts_with(&hex_form));
+        assert!(format!("{secret:?}").contains(&debug_form));
     }
 
     #[test]

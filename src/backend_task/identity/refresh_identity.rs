@@ -238,18 +238,12 @@ mod tests {
         .expect("store the observed balance");
     }
 
-    /// A read of the payer's balance made at `height`.
-    fn read_at(
-        balance: u64,
-        height: u64,
-    ) -> impl Future<Output = Result<(Option<IdentityBalance>, ResponseMetadata), SdkError>> {
-        std::future::ready(Ok((
-            Some(balance),
-            ResponseMetadata {
-                height,
-                ..Default::default()
-            },
-        )))
+    /// The metadata of a response made at `height`.
+    fn response_at(height: u64) -> ResponseMetadata {
+        ResponseMetadata {
+            height,
+            ..Default::default()
+        }
     }
 
     /// A read answered by a node behind the block of a balance already stored
@@ -260,7 +254,8 @@ mod tests {
         let (ctx, id) = context_with_payer(dir.path(), 1_000);
         observe_balance(&ctx, &id, 700, 100);
 
-        ctx.store_identity_balance_read(id, read_at(900, 99)).await;
+        ctx.store_identity_balance_read(id, async { Ok((Some(900), response_at(99))) })
+            .await;
 
         assert_eq!(stored_balance(&ctx, &id), 700);
     }
@@ -273,7 +268,10 @@ mod tests {
         let (ctx, id) = context_with_payer(dir.path(), 1_000);
         observe_balance(&ctx, &id, 700, 100);
 
-        assert!(ctx.store_identity_balance_read(id, read_at(600, 101)).await);
+        assert!(
+            ctx.store_identity_balance_read(id, async { Ok((Some(600), response_at(101))) })
+                .await
+        );
 
         assert_eq!(stored_balance(&ctx, &id), 600);
     }

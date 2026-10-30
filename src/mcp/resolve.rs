@@ -167,8 +167,10 @@ async fn hydrate_wallets(
     ctx: &Arc<AppContext>,
     wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
 ) -> Result<(), McpToolError> {
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: this call may be the one that wires the
+    // wallet backend, which keeps the sender for good. Mirrors
+    // `ensure_spv_ready` and `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     ctx.prepare_storage_with_wallet_password(sender, wallet_password)
         .await
         .map_err(McpToolError::TaskFailed)?;
@@ -288,11 +290,11 @@ async fn ensure_spv_ready(
     ctx: &Arc<AppContext>,
     protocol_refresh: ProtocolRefresh,
 ) -> Result<(), McpToolError> {
-    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
-    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
-    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
-    let (tx, _) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
-    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    // The context's own frame loop: the GUI's when the server is embedded,
+    // a sink in a headless process. The backend wired here keeps the sender
+    // for good, so it is never one made for this call. Mirrors
+    // `dispatch::dispatch_task`.
+    let sender = ctx.frame_loop_sender();
     // Prepare storage, THEN start chain sync — both inside the chokepoint, in
     // that order. This call used to start SPV before the legacy drain had run;
     // the drain is now part of `prepare_storage`, which the chokepoint awaits
@@ -627,5 +629,33 @@ mod tests {
             }) => assert!(Arc::ptr_eq(&actual, &source)),
             other => panic!("expected the typed migration failure, got {other:?}"),
         }
+    }
+
+    /// With the server embedded in the GUI, hydrating wallets may be the first
+    /// call to wire the wallet backend. The backend keeps its sender for good,
+    /// so it must be the GUI's frame loop, never one made for the call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydration_wires_the_backend_on_the_installed_frame_loop() {
+        use crate::backend_task::TaskResult;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        ctx.install_frame_loop(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ));
+
+        ensure_wallets_hydrated(&ctx)
+            .await
+            .expect("hydrate wallets offline");
+
+        let backend = ctx.wallet_backend().expect("hydration wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the installed frame loop");
+        assert!(matches!(frame_loop.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
     }
 }

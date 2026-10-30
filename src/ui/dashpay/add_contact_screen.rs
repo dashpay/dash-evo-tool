@@ -20,7 +20,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identity::wallet_for_signing_key;
+use crate::ui::identity::{follow_signing_key_wallet, wallet_for_signing_key};
 use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -341,6 +341,12 @@ impl ScreenLike for AddContactScreen {
                                 contract_id: self.app_context.dashpay_contract().id(),
                                 document_type_name: "contactRequest",
                             },
+                        );
+                        follow_signing_key_wallet(
+                            identity,
+                            self.selected_key.as_ref(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
                         );
                         if !matches!(key_action, AppAction::None) {
                             inner_action = key_action;

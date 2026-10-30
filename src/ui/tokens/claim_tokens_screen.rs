@@ -39,8 +39,8 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::identity::get_selected_wallet;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate};
+use crate::ui::identity::{follow_signing_key_wallet, get_selected_wallet};
 use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use super::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenIdentifier};
@@ -537,34 +537,6 @@ impl ScreenLike for ClaimTokensScreen {
                     )));
                 }
             } else {
-                // Possibly handle locked wallet scenario
-                if let Some(wallet) = &self.selected_wallet {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            let handle = MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Unable to open wallet. Please unlock it and try again.",
-                                MessageType::Error,
-                            );
-                            handle.with_details(e);
-                            handle.disable_auto_dismiss();
-                        }
-                        self.wallet_open_attempted = true;
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                        return;
-                    }
-                }
-
                 // Header with Advanced Options checkbox
                 ui.horizontal(|ui| {
                     ui.heading("Claim Tokens");
@@ -588,7 +560,22 @@ impl ScreenLike for ClaimTokensScreen {
                             contract_id: self.identity_token_basic_info.contract_id,
                         },
                     );
+                    follow_signing_key_wallet(
+                        identity,
+                        self.selected_key.as_ref(),
+                        &mut self.selected_wallet,
+                        &mut self.wallet_open_attempted,
+                    );
                     ui.add_space(10.0);
+                }
+                if show_wallet_lock_gate(
+                    ui,
+                    &self.app_context,
+                    self.selected_wallet.as_ref(),
+                    &mut self.wallet_open_attempted,
+                    &mut self.wallet_unlock_popup,
+                ) {
+                    return;
                 }
 
                 self.render_token_distribution_type_selector(ui);

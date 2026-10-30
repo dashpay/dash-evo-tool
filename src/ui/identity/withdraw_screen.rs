@@ -14,7 +14,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+    WalletUnlockPopup, WalletUnlockResult, show_wallet_lock_gate,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
@@ -33,9 +33,9 @@ use egui::{Color32, RichText};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
-use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
 use super::keys::key_info_screen::KeyInfoScreen;
+use super::{follow_signing_key_wallet, get_selected_wallet};
 
 #[derive(PartialEq)]
 pub enum WithdrawFromIdentityStatus {
@@ -103,14 +103,21 @@ impl WithdrawalScreen {
     }
 
     fn render_key_selection(&mut self, ui: &mut Ui) -> AppAction {
-        add_key_chooser(
+        let action = add_key_chooser(
             ui,
             &self.app_context,
             &self.identity,
             &mut self.selected_key,
             TransactionType::Withdraw,
             SigningScope::NonBatch,
-        )
+        );
+        follow_signing_key_wallet(
+            &self.identity,
+            self.selected_key.as_ref(),
+            &mut self.selected_wallet,
+            &mut self.wallet_open_attempted,
+        );
+        action
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -498,53 +505,7 @@ impl ScreenLike for WithdrawalScreen {
                     )));
                 }
             } else {
-                // Render wallet unlock component if needed
-                if let Some(selected_key) = self.selected_key.as_ref() {
-                    // If there is an associated wallet then render the wallet unlock component for it if its locked
-                    if let Some(wallet_derivation_path) =
-                        self.identity.private_keys.wallet_derived_at(selected_key)
-                    {
-                        let new_wallet = self
-                            .identity
-                            .associated_wallets
-                            .get(&wallet_derivation_path.wallet_seed_hash)
-                            .cloned();
-                        // Reset guard when wallet changes (different Arc pointer)
-                        let wallet_changed = match (&self.selected_wallet, &new_wallet) {
-                            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                            (None, None) => false,
-                            _ => true,
-                        };
-                        if wallet_changed {
-                            self.wallet_open_attempted = false;
-                        }
-                        self.selected_wallet = new_wallet;
-
-                        if let Some(wallet) = &self.selected_wallet {
-                            if !self.wallet_open_attempted {
-                                if let Err(e) =
-                                    try_open_wallet_no_password(&self.app_context, wallet)
-                                {
-                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                        .disable_auto_dismiss();
-                                }
-                                self.wallet_open_attempted = true;
-                            }
-                            if wallet_needs_unlock(wallet) {
-                                ui.add_space(10.0);
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(200, 150, 50),
-                                    "Wallet is locked. Please unlock to continue.",
-                                );
-                                ui.add_space(8.0);
-                                if ui.button("Unlock Wallet").clicked() {
-                                    self.wallet_unlock_popup.open();
-                                }
-                                return inner_action;
-                            }
-                        }
-                    }
-                } else {
+                if self.selected_key.is_none() {
                     return inner_action;
                 }
 
@@ -585,6 +546,15 @@ impl ScreenLike for WithdrawalScreen {
 
                     ui.heading("3. Select the key to sign with");
                     inner_action |= self.render_key_selection(ui);
+                }
+                if show_wallet_lock_gate(
+                    ui,
+                    &self.app_context,
+                    self.selected_wallet.as_ref(),
+                    &mut self.wallet_open_attempted,
+                    &mut self.wallet_unlock_popup,
+                ) {
+                    return inner_action;
                 }
 
                 ui.add_space(10.0);

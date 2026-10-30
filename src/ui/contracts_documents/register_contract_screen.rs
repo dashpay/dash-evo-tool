@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identity::wallet_for_signing_key;
+use crate::ui::identity::{follow_signing_key_wallet, wallet_for_signing_key};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
@@ -492,6 +492,12 @@ impl ScreenLike for RegisterDataContractScreen {
                             TransactionType::RegisterContract,
                             SigningScope::NonBatch,
                         );
+                        follow_signing_key_wallet(
+                            identity,
+                            self.selected_key.as_ref(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
+                        );
                     }
                 }
 
@@ -570,5 +576,44 @@ impl ScreenLike for RegisterDataContractScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{identity_across_two_wallets, test_app_context};
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use egui_kittest::Harness;
+
+    /// Regression: the wallet to unlock was fixed when the identity was
+    /// chosen, so a key picked under Advanced from another wallet still
+    /// prompted for the first wallet.
+    #[test]
+    fn a_key_chosen_from_another_wallet_brings_its_wallet_to_unlock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(dir.path());
+        let (identity, wallet_a, wallet_b) = identity_across_two_wallets();
+        let mut screen = RegisterDataContractScreen::new(&ctx);
+        screen.selected_key = Some(identity.identity.public_keys()[&2].clone());
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_wallet = Some(wallet_a);
+        screen.show_advanced_options = true;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+        drop(harness);
+
+        assert!(
+            screen
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|wallet| Arc::ptr_eq(wallet, &wallet_b))
+        );
     }
 }

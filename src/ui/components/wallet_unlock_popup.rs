@@ -338,6 +338,49 @@ pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
     wallet_guard.requires_password_unlock()
 }
 
+/// The lock gate of a signing screen, drawn after its key chooser so that a
+/// locked wallet never hides the choice of a key held elsewhere.
+///
+/// Tries the no-password open of `wallet` once per wallet (`open_attempted`).
+/// While the wallet still needs its password, shows the lock notice with an
+/// Unlock button that opens `popup`, and returns `true`: the caller then stops
+/// drawing the rest of the form.
+pub fn show_wallet_lock_gate(
+    ui: &mut egui::Ui,
+    app_context: &Arc<AppContext>,
+    wallet: Option<&Arc<RwLock<Wallet>>>,
+    open_attempted: &mut bool,
+    popup: &mut WalletUnlockPopup,
+) -> bool {
+    let Some(wallet) = wallet else {
+        return false;
+    };
+    if !*open_attempted {
+        if let Err(e) = try_open_wallet_no_password(app_context, wallet) {
+            crate::ui::components::MessageBanner::set_global(
+                ui.ctx(),
+                &e,
+                crate::ui::MessageType::Error,
+            )
+            .disable_auto_dismiss();
+        }
+        *open_attempted = true;
+    }
+    if !wallet_needs_unlock(wallet) {
+        return false;
+    }
+    ui.add_space(10.0);
+    ui.colored_label(
+        egui::Color32::from_rgb(200, 150, 50),
+        "Wallet is locked. Please unlock to continue.",
+    );
+    ui.add_space(8.0);
+    if ui.button("Unlock Wallet").clicked() {
+        popup.open();
+    }
+    true
+}
+
 /// Open a no-password wallet for display.
 ///
 /// Flips the in-memory seed to `Open`. Signing pulls the seed just-in-time from

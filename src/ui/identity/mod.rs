@@ -177,6 +177,29 @@ pub fn wallet_for_signing_key(
         .flatten()
 }
 
+/// Keeps `wallet`, the wallet a screen offers to unlock, on the wallet that
+/// derives `key`, the key the screen will sign with, whether the key was
+/// chosen automatically or under Advanced. Clears `open_attempted` only when
+/// the wallet changes, so the no-password open is tried once for the new
+/// wallet. Cheap enough to call every frame, after the key chooser.
+pub fn follow_signing_key_wallet(
+    qualified_identity: &QualifiedIdentity,
+    key: Option<&IdentityPublicKey>,
+    wallet: &mut Option<Arc<RwLock<Wallet>>>,
+    open_attempted: &mut bool,
+) {
+    let chosen = wallet_for_signing_key(qualified_identity, key);
+    let changed = match (wallet.as_ref(), chosen.as_ref()) {
+        (Some(current), Some(chosen)) => !Arc::ptr_eq(current, chosen),
+        (None, None) => false,
+        _ => true,
+    };
+    if changed {
+        *wallet = chosen;
+        *open_attempted = false;
+    }
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -256,6 +279,31 @@ mod tests {
 
     use super::*;
     use crate::ui::MessageType;
+
+    /// Regression: screens fixed the wallet to unlock when the identity was
+    /// chosen, so a key picked under Advanced from another wallet still
+    /// prompted for the first wallet. The wallet follows the chosen key.
+    #[test]
+    fn the_wallet_to_unlock_follows_the_chosen_key() {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let (identity, wallet_a, wallet_b) =
+            crate::context::test_support::identity_across_two_wallets();
+        let key = |id| identity.identity.public_keys()[&id].clone();
+        let mut wallet = Some(Arc::clone(&wallet_a));
+        let mut open_attempted = true;
+
+        follow_signing_key_wallet(&identity, Some(&key(2)), &mut wallet, &mut open_attempted);
+        assert!(wallet.as_ref().is_some_and(|w| Arc::ptr_eq(w, &wallet_b)));
+        assert!(!open_attempted, "the new wallet gets its no-password open");
+
+        open_attempted = true;
+        follow_signing_key_wallet(&identity, Some(&key(2)), &mut wallet, &mut open_attempted);
+        assert!(wallet.as_ref().is_some_and(|w| Arc::ptr_eq(w, &wallet_b)));
+        assert!(open_attempted, "the same wallet is not opened again");
+
+        follow_signing_key_wallet(&identity, None, &mut wallet, &mut open_attempted);
+        assert!(wallet.is_none(), "no key, no wallet to unlock");
+    }
 
     /// The one case a naive if/else-if chain gets wrong: when the associated
     /// voter identity's cleanup failed *and* the primary or voter's own

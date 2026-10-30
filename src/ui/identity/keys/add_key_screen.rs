@@ -7,7 +7,8 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::identity_key_limits::{
-    KeyLimitsError, key_with_limits, limits_allowed, new_key_limits, parse_key_validity_days,
+    KeyLimitsError, contract_bounds_allowed, key_with_limits, limits_allowed, new_key_limits,
+    parse_key_validity_days,
 };
 use crate::model::identity_key_usability::now_ms;
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
@@ -484,7 +485,7 @@ impl AddKeyScreen {
     }
 
     fn limits_offered(&self) -> bool {
-        !self.enable_contract_bounds && limits_allowed(self.purpose, self.security_level)
+        limits_allowed(self.purpose, self.security_level)
     }
 
     fn requested_limits(&self) -> Result<(Option<Credits>, Option<u64>), KeyLimitsError> {
@@ -1085,6 +1086,8 @@ impl ScreenLike for AddKeyScreen {
                 }
             }
 
+            let bound_authentication_supported =
+                FeatureGate::ContractBoundAuthenticationKeys.is_available(&self.app_context);
             egui::Grid::new("add_key_grid")
                 .num_columns(2)
                 .spacing([10.0, 10.0])
@@ -1097,7 +1100,15 @@ impl ScreenLike for AddKeyScreen {
                         .selected_text(format!("{purpose:?}", purpose = self.purpose))
                         .show_ui(ui, |ui| {
                             if self.enable_contract_bounds {
-                                // When contract bounds are enabled, only allow ENCRYPTION and DECRYPTION
+                                // A bound key is an ENCRYPTION or DECRYPTION key, or,
+                                // where the network admits it, an AUTHENTICATION key.
+                                if bound_authentication_supported {
+                                    ui.selectable_value(
+                                        &mut self.purpose,
+                                        Purpose::AUTHENTICATION,
+                                        "AUTHENTICATION",
+                                    );
+                                }
                                 ui.selectable_value(
                                     &mut self.purpose,
                                     Purpose::ENCRYPTION,
@@ -1167,8 +1178,10 @@ impl ScreenLike for AddKeyScreen {
                                 security_level = self.security_level
                             ))
                             .show_ui(ui, |ui| {
-                                if self.enable_contract_bounds {
-                                    // When contract bounds are enabled, only allow MEDIUM
+                                if self.enable_contract_bounds
+                                    && self.purpose != Purpose::AUTHENTICATION
+                                {
+                                    // A bound ENCRYPTION or DECRYPTION key is MEDIUM
                                     ui.selectable_value(
                                         &mut self.security_level,
                                         SecurityLevel::MEDIUM,
@@ -1269,8 +1282,16 @@ impl ScreenLike for AddKeyScreen {
                     let prev_contract_bounds = self.enable_contract_bounds;
                     ui.checkbox(&mut self.enable_contract_bounds, "");
 
-                    // If contract bounds was just enabled, set required values
-                    if self.enable_contract_bounds && !prev_contract_bounds {
+                    // If contract bounds was just enabled, keep the key only if it
+                    // may be bound; otherwise switch to a bound ENCRYPTION key.
+                    if self.enable_contract_bounds
+                        && !prev_contract_bounds
+                        && !contract_bounds_allowed(
+                            self.purpose,
+                            self.security_level,
+                            bound_authentication_supported,
+                        )
+                    {
                         self.purpose = Purpose::ENCRYPTION;
                         self.security_level = SecurityLevel::MEDIUM;
                     }

@@ -14,6 +14,11 @@ use dash_sdk::dpp::version::v14::PROTOCOL_VERSION_14;
 const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
     Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
+/// The contract bounds validation version (upstream
+/// `validate_identity_public_key_contract_bounds`) from which AUTHENTICATION
+/// keys below MASTER may be bound to a contract or a document type.
+const CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION: u16 = 2;
+
 /// Authentication keys with a budget or an expiry, and the
 /// `IdentityKeyLimitsUpdate` transition that raises them, activate together at
 /// upstream's [`IDENTITY_KEY_LIMITS_UPDATE_INITIAL_PROTOCOL_VERSION`].
@@ -47,6 +52,9 @@ pub enum Capability {
     /// The connected platform accepts authentication keys with a budget or an
     /// expiry, and the transition that raises them.
     IdentityKeyLimits,
+    /// The connected platform accepts AUTHENTICATION keys below MASTER bound
+    /// to a contract or a document type (contract bounds validation v2).
+    ContractBoundAuthenticationKeys,
     /// The connected platform accepts tokens with a once-per-identity
     /// distribution.
     OncePerIdentityDistribution,
@@ -82,6 +90,24 @@ impl Capability {
             },
             Capability::IdentityKeyLimits => {
                 known_protocol_version_at_least(ctx, KEY_LIMITS_ACTIVATION_PROTOCOL_VERSION)
+            }
+            // Upstream names no feature constant; the validation version that
+            // admits bound authentication keys is the source of truth.
+            Capability::ContractBoundAuthenticationKeys => {
+                let info = ctx.protocol_version_info();
+                !info.newer_protocol_available
+                    && info
+                        .verified_version
+                        .and_then(dash_sdk::dpp::version::PlatformVersion::get_optional)
+                        .is_some_and(|version| {
+                            version
+                                .drive_abci
+                                .validation_and_processing
+                                .state_transitions
+                                .common_validation_methods
+                                .validate_identity_public_key_contract_bounds
+                                >= CONTRACT_BOUND_AUTHENTICATION_KEYS_VALIDATION_VERSION
+                        })
             }
             Capability::OncePerIdentityDistribution => known_protocol_version_at_least(
                 ctx,
@@ -189,6 +215,9 @@ pub enum FeatureGate {
     /// Adding a key with a budget or an expiry, and raising those limits.
     /// Offered only where the connected network accepts them.
     IdentityKeyLimits,
+    /// Adding an AUTHENTICATION key bound to a contract or a document type.
+    /// Offered only where the connected network accepts one.
+    ContractBoundAuthenticationKeys,
     /// Creating a token with a once-per-identity distribution. Offered only
     /// where the connected network accepts it; claiming from an existing one
     /// needs no gate, since such a token can only exist on such a network.
@@ -213,6 +242,9 @@ impl FeatureGate {
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
             FeatureGate::IdentityKeyLimits => &[Check::Capability(Capability::IdentityKeyLimits)],
+            FeatureGate::ContractBoundAuthenticationKeys => &[Check::Capability(
+                Capability::ContractBoundAuthenticationKeys,
+            )],
             FeatureGate::TokenOncePerIdentityDistribution => {
                 &[Check::Capability(Capability::OncePerIdentityDistribution)]
             }
@@ -499,6 +531,7 @@ mod tests {
         // One entry per protocol version 14 gate this build offers.
         let gates = [
             FeatureGate::IdentityKeyLimits,
+            FeatureGate::ContractBoundAuthenticationKeys,
             FeatureGate::TokenOncePerIdentityDistribution,
             FeatureGate::NonTransferableTokens,
         ];
@@ -525,6 +558,7 @@ mod tests {
         let capabilities = [
             Capability::ShieldedProtocol,
             Capability::IdentityKeyLimits,
+            Capability::ContractBoundAuthenticationKeys,
             Capability::OncePerIdentityDistribution,
             Capability::NonTransferableTokens,
         ];

@@ -857,6 +857,7 @@ As a user handing a key to an app or a helper, I want to cap how much that key c
 
 - The Add Key screen offers "Spending Limit" and "Expires After (days)" for authentication keys below the master level.
 - On a network that does not support key limits yet, both options are shown disabled with an explanation.
+- Where the network allows it, an authentication key can also be limited to one contract or document type, with or without a spending limit and expiry.
 - A zero limit, zero days, or an expiry too far in the future is refused before anything is sent.
 - The Key Info screen shows the limit with how much is left of it, and the expiry date; an expired or used-up key is marked.
 

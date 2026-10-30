@@ -816,7 +816,7 @@ impl WalletSendScreen {
             AddressKind::Platform => Some(
                 self.app_context
                     .fee_estimator()
-                    .address_funding_min_amount_duffs(true),
+                    .address_funding_min_amount_duffs(!self.funding_fee_on_top()),
             ),
             _ => None,
         }
@@ -2846,6 +2846,13 @@ impl WalletSendScreen {
         self.form.has_several_recipients() || self.advanced_amounts_entered()
     }
 
+    /// Whether a Core-to-Platform payment adds the Platform fee on top of the
+    /// amount. Only an explicit payment reads the fee strategy; every other
+    /// one takes the fee from the amount.
+    pub(super) fn funding_fee_on_top(&self) -> bool {
+        self.uses_explicit_payment() && !self.form.fee_strategy().reduces_output()
+    }
+
     /// Whether an Advanced source names an amount for any ticked address.
     fn advanced_amounts_entered(&self) -> bool {
         self.form.pay_from() == PayFrom::Advanced
@@ -3332,7 +3339,7 @@ impl WalletSendScreen {
         self.wallet_unlock_popup.is_open()
     }
 
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     #[doc(hidden)]
     /// Seeds the completed asset-lock maximum lookup for headless integration tests.
     pub fn seed_asset_lock_max_amount_for_test(
@@ -8255,5 +8262,65 @@ mod tests {
             "shielding into the own pool stays available: {:?}",
             harness.state().missing_step()
         );
+    }
+
+    /// An explicit Core-to-Platform payment with the fee on top locks the
+    /// amount plus what the backend adds, so Max leaves exactly that room below
+    /// the asset-lock ceiling. A strategy that reduces the output keeps the
+    /// simple route's figures.
+    #[test]
+    fn explicit_core_to_platform_max_reserves_what_dispatch_adds() {
+        const CEILING_DUFFS: u64 = 100_000_000;
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen.seed_asset_lock_max_amount_for_test(seed_hash, CEILING_DUFFS);
+        let core = testnet_core_address(9).to_string();
+        screen.form.choose_pay_from(
+            PayFrom::Advanced,
+            crate::model::send_route::PayFromKind::Core,
+        );
+        screen.form.choose_advanced_type(AdvancedSourceType::Core);
+        screen.form.set_advanced_ticked(&core, true);
+        screen.form.set_advanced_amount(&core, "0.5".to_string());
+        let destination = platform_destination();
+        let estimator = screen.app_context.fee_estimator();
+
+        let limits = screen.amount_limits_for(&SourceSelection::CoreWallet, Some(&destination));
+        let added_duffs = estimator.estimate_address_funding_from_asset_lock_duffs(2);
+        assert_eq!(
+            limits.max_credits,
+            Some((CEILING_DUFFS - added_duffs) * CREDITS_PER_DUFF),
+            "the amount plus what dispatch adds must fit the ceiling"
+        );
+        assert_eq!(
+            limits.min_credits,
+            Some(estimator.address_funding_min_amount_duffs(false) * CREDITS_PER_DUFF)
+        );
+        let hint = limits.hint.expect("a fee caption");
+        assert!(hint.contains("on top of the amount"), "{hint}");
+
+        screen
+            .form
+            .choose_fee_strategy(PlatformFeeStrategy::ReduceFirstOutput);
+        let limits = screen.amount_limits_for(&SourceSelection::CoreWallet, Some(&destination));
+        let ValidatedAddress::Platform { address, .. } = destination else {
+            unreachable!("a Platform destination");
+        };
+        let reserved = estimate_address_funding_fee_from_transition(
+            screen.app_context.platform_version(),
+            &address,
+        );
+        assert_eq!(
+            limits.max_credits,
+            Some(CEILING_DUFFS * CREDITS_PER_DUFF - reserved)
+        );
+        assert_eq!(
+            limits.min_credits,
+            Some(estimator.address_funding_min_amount_duffs(true) * CREDITS_PER_DUFF)
+        );
+        let hint = limits.hint.expect("a fee caption");
+        assert!(hint.contains("deducted from the amount"), "{hint}");
     }
 }

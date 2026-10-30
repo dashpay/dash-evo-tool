@@ -163,18 +163,33 @@ impl WalletSendScreen {
                     Some(AddressKind::Platform) => {
                         match destination.and_then(|v| v.as_platform().copied()) {
                             Some(destination) => {
-                                let estimated_fee = estimate_address_funding_fee_from_transition(
-                                    self.app_context.platform_version(),
-                                    &destination,
-                                );
+                                // With the fee on top, dispatch locks the amount
+                                // plus this figure, so Max leaves room for it.
+                                let on_top = self.funding_fee_on_top();
+                                let estimated_fee = if on_top {
+                                    fee_estimator
+                                        .estimate_address_funding_from_asset_lock_duffs(2)
+                                        .saturating_mul(CREDITS_PER_DUFF)
+                                } else {
+                                    estimate_address_funding_fee_from_transition(
+                                        self.app_context.platform_version(),
+                                        &destination,
+                                    )
+                                };
                                 max = max.map(|amount| amount.saturating_sub(estimated_fee));
                                 let fee = format_credits_as_dash(estimated_fee);
                                 let minimum = format_duffs_as_dash(
-                                    fee_estimator.address_funding_min_amount_duffs(true),
+                                    fee_estimator.address_funding_min_amount_duffs(!on_top),
                                 );
-                                Some(format!(
-                                    "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
-                                ))
+                                Some(if on_top {
+                                    format!(
+                                        "A Platform fee of approximately {fee} is paid from your balance on top of the amount, so the amount must be at least {minimum}."
+                                    )
+                                } else {
+                                    format!(
+                                        "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
+                                    )
+                                })
                             }
                             None => None,
                         }

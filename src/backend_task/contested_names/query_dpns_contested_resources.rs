@@ -212,13 +212,8 @@ impl AppContext {
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Dpns,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
 
             if contested_resources_len < 100 {
                 break;
@@ -248,18 +243,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender
-                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                                network: self_ref.network,
-                                domain: crate::backend_task::CacheDomain::Dpns,
-                            }))
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to send refresh after dpns end times query: {}",
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -301,19 +287,9 @@ impl AppContext {
                     .await
                 {
                     Ok(_) => {
-                        if let Err(e) = sender
-                            .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                                network: self_ref.network,
-                                domain: crate::backend_task::CacheDomain::Dpns,
-                            }))
-                            .await
-                        {
-                            tracing::warn!(
-                                "Failed to send refresh after vote contenders query for {}: {}",
-                                name,
-                                e
-                            );
-                        }
+                        self_ref
+                            .notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                            .await;
                         true
                     }
                     Err(e) if quiet => {
@@ -355,13 +331,8 @@ impl AppContext {
             contests_refreshed &= every_contest_query_succeeded(std::mem::take(&mut handles)).await;
             self.prove_current_votes(sdk).await;
             self.recompute_dpns_vote_attention();
-            sender
-                .send(TaskResult::CacheUpdated(crate::backend_task::CacheUpdate {
-                    network: self.network,
-                    domain: crate::backend_task::CacheDomain::Dpns,
-                }))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
+            self.notify_cache_changed(crate::backend_task::CacheDomain::Dpns, &sender)
+                .await;
         }
         handles.extend(
             start_in_order(
@@ -735,6 +706,30 @@ mod tests {
                 })
             )),
             "a pass must still report that contest data changed: {sent:?}"
+        );
+    }
+
+    /// A pass reports each change only after storing it. A frame loop gone
+    /// at shutdown or after a network switch loses those reports, but the
+    /// pass still reads every contest instead of stopping at the first lost
+    /// report.
+    #[tokio::test]
+    async fn a_pass_with_no_frame_loop_still_reads_every_contest() {
+        let names = contest_names(1);
+        let (_dir, context, mut sdk) = context_listing(&names).await;
+        answer_contenders(&context, &mut sdk, &names[0], None).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        drop(rx);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+
+        // Only the pass's own result, sent last, has nobody to take it.
+        let result = context
+            .query_dpns_contested_resources(&sdk, sender, true)
+            .await;
+
+        assert!(
+            was_read(&context, &names[0]),
+            "the contest was not read once a cache report was lost: {result:?}"
         );
     }
 

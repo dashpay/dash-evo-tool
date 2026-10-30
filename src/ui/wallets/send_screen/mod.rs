@@ -10,11 +10,12 @@ use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipi
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
 use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
-    core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
-    max_spendable_credits, shield_from_balance_fee_headroom,
+    AddressAllocationResult, PlatformFeeEstimator, allocate_platform_addresses,
+    allocate_platform_addresses_with_fee, core_send_fee_at_max_duffs,
+    estimate_address_funding_fee_from_transition, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -2752,6 +2753,12 @@ impl WalletSendScreen {
                 let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)
                     .ok()
                     .filter(|outputs| !outputs.is_empty())?;
+                if let Some(addresses) = self.platform_addresses_paying_many() {
+                    return Some(
+                        self.allocate_platform_to_many(addresses, &outputs)
+                            .estimated_fee,
+                    );
+                }
                 let num_inputs = self
                     .platform_inputs
                     .iter()
@@ -2975,16 +2982,8 @@ impl WalletSendScreen {
             let platform_outputs = kinds
                 .iter()
                 .all(|kind| *kind == Some(AddressKind::Platform));
-            let platform_source = matches!(
-                self.selected_source,
-                Some(SourceSelection::PlatformAddresses(_))
-            );
-            if platform_outputs && platform_source && !self.advanced_amounts_entered() {
-                let Some(SourceSelection::PlatformAddresses(addresses)) =
-                    self.selected_source.clone()
-                else {
-                    unreachable!("checked above");
-                };
+            if platform_outputs && let Some(addresses) = self.platform_addresses_paying_many() {
+                let addresses = addresses.to_vec();
                 let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)
                     .map_err(|error| error.to_string())?;
                 let seed_hash = self.open_wallet_seed_hash()?;
@@ -3070,6 +3069,44 @@ impl WalletSendScreen {
         Ok(())
     }
 
+    /// The Platform addresses to choose from when several recipients are paid
+    /// without per-address amounts.
+    fn platform_addresses_paying_many(&self) -> Option<&[(PlatformAddress, Address, u64)]> {
+        match &self.selected_source {
+            Some(SourceSelection::PlatformAddresses(addresses))
+                if self.form.has_several_recipients() && !self.advanced_amounts_entered() =>
+            {
+                Some(addresses)
+            }
+            _ => None,
+        }
+    }
+
+    /// The inputs that pay `outputs`, chosen from `addresses`; none of the
+    /// recipients pays. The payment and the fee shown for it both read this.
+    fn allocate_platform_to_many(
+        &self,
+        addresses: &[(PlatformAddress, Address, u64)],
+        outputs: &BTreeMap<PlatformAddress, Credits>,
+    ) -> AddressAllocationResult {
+        let total = outputs
+            .values()
+            .fold(0u64, |total, amount| total.saturating_add(*amount));
+        let candidates: Vec<_> = addresses
+            .iter()
+            .filter(|(address, _, _)| !outputs.contains_key(address))
+            .cloned()
+            .collect();
+        let fee_estimator = self.app_context.fee_estimator();
+        allocate_platform_addresses_with_fee(
+            &candidates,
+            total,
+            None,
+            fee_estimator.max_platform_inputs(),
+            |inputs| estimate_platform_fee(&fee_estimator, inputs.len().max(1), outputs.len()),
+        )
+    }
+
     /// Pay several Platform recipients from Platform addresses chosen for
     /// them (none of the recipients pays).
     fn send_platform_to_many(
@@ -3085,19 +3122,7 @@ impl WalletSendScreen {
             .values()
             .try_fold(0u64, |total, amount| total.checked_add(*amount))
             .ok_or_else(|| TaskError::AdvancedPlatformOutputsOverflow.to_string())?;
-        let candidates: Vec<_> = addresses
-            .into_iter()
-            .filter(|(address, _, _)| !outputs.contains_key(address))
-            .collect();
-        let fee_estimator = self.app_context.fee_estimator();
-        let output_count = outputs.len();
-        let allocation = allocate_platform_addresses_with_fee(
-            &candidates,
-            total,
-            None,
-            fee_estimator.max_platform_inputs(),
-            |inputs| estimate_platform_fee(&fee_estimator, inputs.len().max(1), output_count),
-        );
+        let allocation = self.allocate_platform_to_many(&addresses, &outputs);
         if allocation.inputs.is_empty() {
             return Err("Every Platform address that could pay is also a recipient. Choose other recipients.".to_string());
         }
@@ -8383,6 +8408,55 @@ mod tests {
             "one address row must not hide 100 coins: {fee}"
         );
         let message = screen.advanced_send_confirmation_message();
+        assert!(
+            message.contains(&format!("Fee: ≈ {}", format_credits_as_dash(fee))),
+            "{message}"
+        );
+    }
+
+    /// Several Platform recipients without per-address amounts: the summary
+    /// and the confirmation show the fee of the inputs the payment allocates,
+    /// not a one-input guess.
+    #[test]
+    fn several_platform_recipients_show_the_fee_of_the_inputs_they_use() {
+        const ONE_DASH_CREDITS: u64 = 100_000_000 * CREDITS_PER_DUFF;
+        let (mut screen, _temp_dir) = send_screen();
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: Vec::new(),
+            platform: (31..=33u8)
+                .map(|seed| {
+                    let core = testnet_core_address(seed);
+                    let platform = PlatformAddress::try_from(core.clone()).expect("platform");
+                    (core, platform, ONE_DASH_CREDITS)
+                })
+                .collect(),
+            shielded_credits: 0,
+        });
+        screen.form.choose_pay_from(
+            PayFrom::Platform,
+            crate::model::send_route::PayFromKind::Platform,
+        );
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(21), "1.25".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(22),
+            amount: "1.25".to_string(),
+        };
+        screen.sync_route();
+
+        let (action, message) = screen.prepare_send().expect("the payment builds");
+        let AppAction::BackendTask(BackendTask::WalletTask(WalletTask::TransferPlatformCredits {
+            inputs,
+            ..
+        })) = action
+        else {
+            panic!("a Platform transfer");
+        };
+        assert_eq!(inputs.len(), 3, "2.5 DASH needs all three addresses");
+        let fee = estimate_platform_fee(&screen.app_context.fee_estimator(), 3, 2);
+        assert_eq!(screen.advanced_fee_estimate_credits(), Some(fee));
         assert!(
             message.contains(&format!("Fee: ≈ {}", format_credits_as_dash(fee))),
             "{message}"

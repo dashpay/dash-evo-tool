@@ -282,48 +282,6 @@ pub struct IdentityTokenAvailableActions {
 }
 
 impl IdentityTokenAvailableActions {
-    /// How many action buttons My Tokens renders for these actions.
-    pub fn shown_buttons(&self) -> usize {
-        let mut count = 0;
-
-        if self.can_claim {
-            count += 1;
-        }
-        if self.can_estimate {
-            count += 1;
-        }
-        if self.can_mint {
-            count += 1;
-        }
-        if self.can_burn {
-            count += 1;
-        }
-        if self.can_freeze {
-            count += 1;
-        }
-        if self.can_unfreeze {
-            count += 1;
-        }
-        if self.can_destroy {
-            count += 1;
-        }
-        if self.can_do_emergency_action {
-            count += 2;
-        } // counts twice
-        if self.can_maybe_purchase {
-            count += 1;
-        }
-        if self.can_set_price {
-            count += 1;
-        }
-        // self.can_transfer is intentionally excluded
-        if self.can_update_config {
-            count += 1;
-        }
-
-        count
-    }
-
     /// Whether any administrative action (mint, burn, freeze, unfreeze,
     /// destroy frozen funds, emergency action, set price, update config) is
     /// available. Answers the real permission question only for actions

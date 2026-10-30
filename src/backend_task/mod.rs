@@ -1204,7 +1204,12 @@ pub enum BackendTaskSuccessResult {
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
-    RefreshedDpnsContests,
+    /// A contest refresh on `network` stored fresh contests and vote states.
+    /// Sent mid-task, without the dispatch context, so the network is the
+    /// only record of where it belongs.
+    RefreshedDpnsContests {
+        network: Network,
+    },
     RefreshedOwnedDpnsNames,
 
     // Identity username results (Stream U)
@@ -1291,6 +1296,16 @@ pub enum BackendTaskSuccessResult {
 }
 
 impl BackendTaskSuccessResult {
+    /// The network a contest refresh ran on, or `None` for every other
+    /// result. The refresh sends this result mid-task, without its dispatch
+    /// context, so it is how the app tells a previous network's refresh apart.
+    pub(crate) fn dpns_contests_refresh_network(&self) -> Option<Network> {
+        match self {
+            Self::RefreshedDpnsContests { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     fn contains_dapi_reachability_failure(&self) -> bool {
         match self {
             Self::RefreshedWallet { warning } => warning

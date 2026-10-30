@@ -1709,7 +1709,7 @@ mod tests {
         assert!(
             std::iter::from_fn(|| rx.try_recv().ok()).any(|result| matches!(
                 result, TaskResult::Success { result, .. }
-                    if matches!(*result, BackendTaskSuccessResult::RefreshedDpnsContests)
+                    if matches!(*result, BackendTaskSuccessResult::RefreshedDpnsContests { .. })
             ))
         );
         assert!(
@@ -2380,7 +2380,7 @@ mod tests {
         assert!(
             sent.iter().any(|sent| matches!(
                 sent, TaskResult::Success { result, .. }
-                    if matches!(**result, BackendTaskSuccessResult::RefreshedDpnsContests)
+                    if matches!(**result, BackendTaskSuccessResult::RefreshedDpnsContests { .. })
             )),
             "what the pass did refresh is still published"
         );

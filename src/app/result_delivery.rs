@@ -127,8 +127,9 @@ impl AppState {
     /// Where the result behind `task_result` goes. The sender of a dispatch is
     /// taken off the record: each dispatch reports once.
     pub(super) fn take_result_route(&mut self, task_result: &TaskResult) -> ResultRoute {
-        let context = match task_result {
-            TaskResult::Success { context, .. } | TaskResult::Error { context, .. } => context,
+        let (context, result) = match task_result {
+            TaskResult::Success { context, result } => (context, Some(result.as_ref())),
+            TaskResult::Error { context, .. } => (context, None),
             TaskResult::CacheUpdated(_) | TaskResult::Repaint => {
                 return ResultRoute::Visible;
             }
@@ -140,9 +141,12 @@ impl AppState {
             }
             Some((owner, _)) if self.has_screen(owner) => ResultRoute::Owner(owner),
             Some(_) => ResultRoute::ClosedOwner,
-            // The app's own sweep names its network: a late one is the
-            // previous network's, like a late dispatch.
-            None => match context.scheduled_vote_sweep_network() {
+            // The app's own sweep names its network in its context, and a
+            // contest refresh names it in the result it sends mid-task: a
+            // late one is the previous network's, like a late dispatch.
+            None => match context.scheduled_vote_sweep_network().or_else(|| {
+                result.and_then(BackendTaskSuccessResult::dpns_contests_refresh_network)
+            }) {
                 Some(network) if network != active_network => ResultRoute::PreviousNetwork(None),
                 _ => ResultRoute::Visible,
             },

@@ -2312,7 +2312,7 @@ pub(crate) mod test_staging {
         /// its record. `None` unless the fixture staged a voter twin.
         pub(crate) voter_id: Option<Identifier>,
         _dir: tempfile::TempDir,
-        _events: tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+        _events: tokio::sync::mpsc::Receiver<crate::backend_task::TaskResult>,
     }
 
     /// The two vault placements [`qi_with_plaintext_and_derived_at`] leaves
@@ -2328,7 +2328,7 @@ pub(crate) mod test_staging {
         Arc<AppContext>,
         Arc<platform_wallet_storage::secrets::SecretStore>,
         tempfile::TempDir,
-        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+        tokio::sync::mpsc::Receiver<crate::backend_task::TaskResult>,
     ) {
         staged_context_on(Network::Testnet).await
     }
@@ -2339,7 +2339,7 @@ pub(crate) mod test_staging {
         Arc<AppContext>,
         Arc<platform_wallet_storage::secrets::SecretStore>,
         tempfile::TempDir,
-        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+        tokio::sync::mpsc::Receiver<crate::backend_task::TaskResult>,
     ) {
         staged_context_with_prompt(network, None).await
     }
@@ -2356,13 +2356,13 @@ pub(crate) mod test_staging {
         Arc<AppContext>,
         Arc<platform_wallet_storage::secrets::SecretStore>,
         tempfile::TempDir,
-        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+        tokio::sync::mpsc::Receiver<crate::backend_task::TaskResult>,
     ) {
         let (ctx, store, dir) = ctx_with_vault_on(network).await;
         if let Some(prompt) = prompt {
             ctx.install_secret_prompt(prompt);
         }
-        let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, events) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
             tx,
             ctx.egui_ctx().clone(),
@@ -3366,8 +3366,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_reads_are_pure_and_storage_preparation_migrates_legacy_keys() {
-        use crate::app::TaskResult;
         use crate::app_dir::ensure_env_file;
+        use crate::backend_task::TaskResult;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::utils::egui_mpsc::SenderAsync;
@@ -4266,7 +4266,7 @@ mod tests {
             .expect("persist the manifest");
         index_remove_identity(&kv, &id_buf).expect("remove from the roster");
 
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
         staged
             .ctx
@@ -4334,7 +4334,7 @@ mod tests {
             )
             .expect("write a too-old legacy database version");
 
-        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::backend_task::TaskResult>(32);
         let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
         let outcome = staged.ctx.prepare_storage(sender).await;
         assert!(

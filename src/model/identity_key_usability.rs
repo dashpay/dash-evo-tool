@@ -24,6 +24,18 @@ use dash_sdk::dpp::identity::{
 };
 use dash_sdk::platform::Identifier;
 
+/// The key types Platform verifies an identity-signed state transition's
+/// signature with (drive-abci's `SUPPORTED_KEY_TYPES`), all of which DET's
+/// signer signs with. Platform refuses `EDDSA_25519_HASH160` and
+/// `BIP13_SCRIPT_HASH` keys, whatever the transition.
+// TODO(upstream): take the set from dpp once it exposes one; drive-abci's
+// is private.
+pub const PLATFORM_SIGNING_KEY_TYPES: &[KeyType] = &[
+    KeyType::ECDSA_SECP256K1,
+    KeyType::ECDSA_HASH160,
+    KeyType::BLS12_381,
+];
+
 /// What a signature authorizes, as far as contract bounds are concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningScope<'a> {
@@ -188,13 +200,14 @@ pub fn document_security_levels(document_type: DocumentTypeRef<'_>) -> Vec<Secur
 pub struct KeyRequirements<'a> {
     pub purpose: Purpose,
     pub security_levels: &'a [SecurityLevel],
-    /// `None` accepts every key type.
+    /// `None` accepts every key type. [`Self::new`] sets
+    /// [`PLATFORM_SIGNING_KEY_TYPES`].
     pub key_types: Option<&'a [KeyType]>,
     pub scope: SigningScope<'a>,
 }
 
 impl KeyRequirements<'_> {
-    fn matches(&self, key: &IdentityPublicKey) -> bool {
+    pub(crate) fn matches(&self, key: &IdentityPublicKey) -> bool {
         key.purpose() == self.purpose
             && self.security_levels.contains(&key.security_level())
             && self
@@ -235,7 +248,8 @@ pub fn select_signing_key<'k>(
 }
 
 impl<'a> KeyRequirements<'a> {
-    /// Requirements accepting every key type.
+    /// Requirements accepting the key types Platform verifies signatures
+    /// with, [`PLATFORM_SIGNING_KEY_TYPES`].
     pub const fn new(
         purpose: Purpose,
         security_levels: &'a [SecurityLevel],
@@ -244,12 +258,12 @@ impl<'a> KeyRequirements<'a> {
         Self {
             purpose,
             security_levels,
-            key_types: None,
+            key_types: Some(PLATFORM_SIGNING_KEY_TYPES),
             scope,
         }
     }
 
-    /// Restricts the accepted key types.
+    /// Accepts only `key_types` instead of the default.
     pub const fn with_key_types(mut self, key_types: &'a [KeyType]) -> Self {
         self.key_types = Some(key_types);
         self
@@ -281,10 +295,11 @@ pub fn now_ms() -> TimestampMillis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::platform_value::BinaryData;
 
-    /// Review fix: a document type requiring MASTER accepted no level, as
+    /// Regression: a document type requiring MASTER accepted no level, as
     /// MASTER sorts below CRITICAL. Platform accepts exactly MASTER for it,
     /// as upstream platform-wallet's `allowed_signing_security_levels` does.
     #[test]
@@ -461,6 +476,42 @@ mod tests {
         assert_eq!(
             bounds_permit(Some(&bounds), SigningScope::NonBatch),
             Some(false)
+        );
+    }
+
+    /// Regression: requirements accepted every key type unless a caller
+    /// narrowed them, so a caller that did not picked an EdDSA or BIP13 key,
+    /// which Platform refuses for every identity-signed transition.
+    #[test]
+    fn requirements_take_only_keys_platform_verifies_by_default() {
+        let typed = |id: u32, key_type: KeyType| {
+            let mut k = key(id, None);
+            k.set_key_type(key_type);
+            k
+        };
+        let eddsa = typed(0, KeyType::EDDSA_25519_HASH160);
+        let bip13 = typed(1, KeyType::BIP13_SCRIPT_HASH);
+        let bls = typed(2, KeyType::BLS12_381);
+        let defaults =
+            KeyRequirements::new(Purpose::AUTHENTICATION, &[SecurityLevel::HIGH], doc_scope());
+        assert_eq!(
+            select_signing_key([&eddsa, &bip13], defaults, NOW, |_| true),
+            None
+        );
+        assert_eq!(
+            select_signing_key([&eddsa, &bip13, &bls], defaults, NOW, |_| true).map(|k| k.id()),
+            Some(2)
+        );
+        assert_eq!(
+            select_signing_key(
+                [&eddsa],
+                defaults.with_key_types(&[KeyType::EDDSA_25519_HASH160]),
+                NOW,
+                |_| true
+            )
+            .map(|k| k.id()),
+            Some(0),
+            "an explicit key type list overrides the default"
         );
     }
 

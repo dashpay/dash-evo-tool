@@ -2327,7 +2327,11 @@ pub(crate) mod test_support {
     /// A minimal open wallet on [`TEST_SEED`], with its BIP44 master public key
     /// derived and every optional field left empty.
     pub(crate) fn open_wallet() -> Wallet {
-        let seed = TEST_SEED;
+        open_wallet_on(TEST_SEED)
+    }
+
+    /// [`open_wallet`] on `seed`, for a test that needs two distinct wallets.
+    pub(crate) fn open_wallet_on(seed: [u8; 64]) -> Wallet {
         let network = Network::Testnet;
 
         // Derive master private key from seed

@@ -77,7 +77,7 @@ impl AppContext {
     /// than left stuck mid-step; the caller owns the user-facing surface.
     pub async fn prepare_storage(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
     ) -> Result<(), TaskError> {
         self.prepare_storage_with_wallet_password(task_result_sender, None)
             .await
@@ -101,7 +101,7 @@ impl AppContext {
     /// open every locked wallet.
     pub async fn prepare_storage_with_wallet_password(
         self: &Arc<Self>,
-        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::backend_task::TaskResult>,
         wallet_password: Option<&platform_wallet_storage::secrets::SecretString>,
     ) -> Result<(), TaskError> {
         let gate = self.lock_prepare_gate().await;

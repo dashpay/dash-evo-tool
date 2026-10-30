@@ -1,8 +1,11 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskContext;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
+use crate::model::document::new_document_for_creation;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::fee_estimation::{
     ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT, DocumentActionFeeQuote,
@@ -28,6 +31,7 @@ use crate::ui::helpers::{
     show_success_screen_with_info,
 };
 use crate::ui::identity::wallet_for_signing_key;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -41,10 +45,9 @@ use dash_sdk::dpp::data_contract::document_type::accessors::{
     DocumentTypeV0Getters, DocumentTypeV1Getters,
 };
 use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
-use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeBasicMethods;
 use dash_sdk::dpp::data_contract::document_type::{DocumentPropertyType, DocumentType};
 use dash_sdk::dpp::document::property_names::PRICE;
-use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters};
+use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
@@ -113,6 +116,30 @@ const UNEDITABLE_FIELD_NOTICE: &str = "The app cannot edit this field type yet."
 /// Why a document with a field type the editor cannot edit is not sent.
 const UNEDITABLE_DOCUMENT_MESSAGE: &str = "This document has a field type the app cannot edit yet, so it cannot be created or changed here.";
 
+/// Why a document type left over from another contract is not built.
+const FOREIGN_DOCUMENT_TYPE_MESSAGE: &str = "This document type belongs to another contract. Select a document type from the selected contract and try again.";
+
+/// Why a new document was not built.
+#[derive(Debug, PartialEq)]
+enum DocumentBuildError {
+    /// The selected document type belongs to another contract.
+    ForeignDocumentType,
+    /// A selection or field is missing or invalid; the text is for details.
+    Invalid(String),
+}
+
+impl From<String> for DocumentBuildError {
+    fn from(detail: String) -> Self {
+        Self::Invalid(detail)
+    }
+}
+
+impl From<&str> for DocumentBuildError {
+    fn from(detail: &str) -> Self {
+        Self::Invalid(detail.to_string())
+    }
+}
+
 pub struct DocumentActionScreen {
     pub app_context: Arc<AppContext>,
     pub action_type: DocumentActionType,
@@ -164,6 +191,12 @@ pub struct DocumentActionScreen {
     action_fee_confirmation: Option<PendingActionFeeConfirmation>,
     /// The action fee agreement the next built action carries.
     agreed_action_fee: Option<DocumentActionFeeAgreement>,
+    // The document fetch whose result the form waits for
+    pending_fetch: PendingRequest,
+
+    // The document action broadcast whose result or error alone ends
+    // `BroadcastStatus::Broadcasting`
+    pending_broadcast: PendingRequest,
 }
 
 /// Shown when the selected identity holds no key this device can sign the
@@ -234,7 +267,18 @@ impl DocumentActionScreen {
             refresh_banner: None,
             action_fee_confirmation: None,
             agreed_action_fee: None,
+            pending_fetch: PendingRequest::default(),
+            pending_broadcast: PendingRequest::default(),
         }
+    }
+
+    /// A fetch button, disabled while a broadcast runs: the fetch result would
+    /// clear the broadcast's progress or replace its success.
+    fn fetch_button(&self, ui: &mut Ui, label: &str) -> egui::Response {
+        ui.add_enabled(
+            self.broadcast_status != BroadcastStatus::Broadcasting,
+            egui::Button::new(label),
+        )
     }
 
     fn set_fetching_banner(&mut self, ctx: &egui::Context, text: &str) {
@@ -242,6 +286,87 @@ impl DocumentActionScreen {
         let handle = MessageBanner::set_global(ctx, text, crate::ui::MessageType::Info);
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
+    }
+
+    /// Fetch documents for the current selection and wait on that fetch
+    /// alone; a result from any earlier fetch is then ignored, and nothing
+    /// fetched before it can be sent while it runs or after it fails.
+    fn dispatch_fetch(&mut self, query: DocumentQuery) -> AppAction {
+        self.clear_fetched_document_state();
+        self.broadcast_status = BroadcastStatus::Fetching;
+        let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(query)));
+        self.pending_fetch.dispatch_with(task, ())
+    }
+
+    /// Send the document action and wait on that broadcast alone: only its
+    /// own result or error ends it, so no other task can reopen the form for
+    /// a second, paid send while it runs.
+    fn start_broadcast(&mut self, ctx: &egui::Context, task: BackendTask) -> AppAction {
+        self.broadcast_status = BroadcastStatus::Broadcasting;
+        self.set_fetching_banner(ctx, "Broadcasting...");
+        self.pending_broadcast.dispatch(task)
+    }
+
+    /// Stop waiting on an outstanding document fetch, so its result or error
+    /// cannot reach the form. A broadcast started meanwhile owns the progress
+    /// banner, so the banner goes only while the fetch is still shown.
+    fn abandon_pending_fetch(&mut self) {
+        self.pending_fetch.clear();
+        if self.broadcast_status == BroadcastStatus::Fetching {
+            self.refresh_banner.take_and_clear();
+            self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        }
+    }
+
+    /// Drop the single document fetched for Purchase or Replace: its price,
+    /// its content and the fields filled in from it. A running broadcast
+    /// keeps its status; it was built before this call.
+    fn clear_fetched_document_state(&mut self) {
+        if self.broadcast_status == BroadcastStatus::Fetched {
+            self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        }
+        self.original_doc = None;
+        self.field_inputs.clear();
+        self.fetched_price = None;
+    }
+
+    /// The document ID was edited: the document fetched for the old ID, and
+    /// any fetch still running for it, no longer match the form.
+    fn document_id_changed(&mut self) {
+        self.abandon_pending_fetch();
+        self.clear_fetched_document_state();
+    }
+
+    /// The document ID input of Purchase and Replace, where the fetched
+    /// document belongs to the ID shown.
+    fn fetched_document_id_input(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        if ui
+            .add(styled_text_edit_singleline(
+                &mut self.document_id_input,
+                dark_mode,
+            ))
+            .changed()
+        {
+            self.document_id_changed();
+        }
+    }
+
+    /// Drop everything fetched or entered for the previous contract and
+    /// document type, so no action can use it with the new selection.
+    fn clear_selection_state(&mut self) {
+        self.abandon_pending_fetch();
+        self.clear_fetched_document_state();
+        self.no_documents_found = false;
+        self.fetched_documents.clear();
+    }
+
+    /// Start the form over on `app_context`'s network. Nothing selected,
+    /// fetched or sent on the previous network stays, and no fetch or broadcast
+    /// from it is still awaited.
+    pub fn reset_for_network_switch(&mut self, app_context: Arc<AppContext>) {
+        self.refresh_banner.take_and_clear();
+        *self = Self::new(app_context, None, self.action_type.clone());
     }
 
     fn reset_screen(&mut self) {
@@ -267,6 +392,8 @@ impl DocumentActionScreen {
         self.price_input.clear();
         self.recipient_id_input.clear();
         self.fetched_documents.clear();
+        self.pending_fetch.clear();
+        self.pending_broadcast.clear();
     }
 
     fn render_contract_and_type_selection(&mut self, ui: &mut Ui) {
@@ -312,8 +439,7 @@ impl DocumentActionScreen {
     /// one no longer applies, and the key is picked again for the new scope
     /// (a key bound to the old contract or type cannot sign in the new one).
     fn signing_scope_changed(&mut self) {
-        self.no_documents_found = false;
-        self.fetched_documents.clear();
+        self.clear_selection_state();
         if let Some(identity) = &self.selected_identity {
             self.selected_key = auto_selected_document_key(
                 identity,
@@ -351,6 +477,7 @@ impl DocumentActionScreen {
 
         // Handle identity change - auto-select key and update wallet
         if response.changed() {
+            self.abandon_pending_fetch();
             self.no_documents_found = false;
             self.fetched_documents.clear();
             if let Some(identity) = &self.selected_identity {
@@ -473,12 +600,9 @@ impl DocumentActionScreen {
                     });
                     ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
                     ui.add_space(10.0);
-                    if ui.button("Fetch Owned Documents").clicked() {
-                        self.broadcast_status = BroadcastStatus::Fetching;
+                    if self.fetch_button(ui, "Fetch Owned Documents").clicked() {
                         self.set_fetching_banner(ui.ctx(), "Fetching owned documents...");
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
-                            DocumentTask::FetchDocuments(query),
-                        )));
+                        action = self.dispatch_fetch(query);
                     }
                 } else {
                     ui.label("(Cannot use the Fetch Owned Documents feature as this document type does not have an index on $ownerId)");
@@ -569,16 +693,14 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ));
+            self.fetched_document_id_input(ui);
         });
 
         // Add fetch button
         ui.add_space(10.0);
-        if ui.button("Fetch Document Price").clicked() && !self.document_id_input.is_empty() {
+        if self.fetch_button(ui, "Fetch Document Price").clicked()
+            && !self.document_id_input.is_empty()
+        {
             if let Ok(doc_id) = Identifier::from_string(&self.document_id_input, Encoding::Base58) {
                 if let (Some(contract), Some(doc_type)) =
                     (&self.selected_contract, &self.selected_document_type)
@@ -587,11 +709,8 @@ impl DocumentActionScreen {
                         .expect("Failed to create document query");
                     query = query.with_document_id(&doc_id);
 
-                    self.broadcast_status = BroadcastStatus::Fetching;
                     self.set_fetching_banner(ui.ctx(), "Fetching document price...");
-                    action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
-                        DocumentTask::FetchDocuments(query),
-                    )));
+                    action = self.dispatch_fetch(query);
                 }
             } else {
                 MessageBanner::set_global(
@@ -629,13 +748,9 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ));
+            self.fetched_document_id_input(ui);
 
-            if ui.button("Fetch").clicked() && !self.document_id_input.is_empty() {
+            if self.fetch_button(ui, "Fetch").clicked() && !self.document_id_input.is_empty() {
                 if let Ok(doc_id) =
                     Identifier::from_string(&self.document_id_input, Encoding::Base58)
                 {
@@ -647,11 +762,8 @@ impl DocumentActionScreen {
                                 .expect("Failed to create document query");
                         query = query.with_document_id(&doc_id);
 
-                        self.broadcast_status = BroadcastStatus::Fetching;
                         self.set_fetching_banner(ui.ctx(), "Fetching document...");
-                        action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
-                            DocumentTask::FetchDocuments(query),
-                        )));
+                        action = self.dispatch_fetch(query);
                     }
                 } else {
                     MessageBanner::set_global(
@@ -1017,7 +1129,11 @@ impl DocumentActionScreen {
             DocumentActionType::Transfer => "Transfer document",
         };
 
-        if ComponentStyles::add_primary_button(ui, button_text).clicked() && self.can_broadcast() {
+        // A second click while the first action is being sent would pay for it twice.
+        let idle = self.broadcast_status != BroadcastStatus::Broadcasting;
+        if ComponentStyles::add_primary_button_enabled(ui, idle, button_text).clicked()
+            && self.can_broadcast()
+        {
             match action_fee {
                 // A contract fee is paid only with the user's explicit
                 // agreement to the amount shown.
@@ -1097,9 +1213,7 @@ impl DocumentActionScreen {
         if task == BackendTask::None {
             return AppAction::None;
         }
-        self.broadcast_status = BroadcastStatus::Broadcasting;
-        self.set_fetching_banner(ctx, "Broadcasting...");
-        AppAction::BackendTask(task)
+        self.start_broadcast(ctx, task)
     }
 
     /// Resolve the four selections every document action needs — document
@@ -1181,13 +1295,21 @@ impl DocumentActionScreen {
                     identity_key: key.clone(),
                 }))
             }
-            Err(error) => {
+            Err(DocumentBuildError::ForeignDocumentType) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    FOREIGN_DOCUMENT_TYPE_MESSAGE,
+                    crate::ui::MessageType::Error,
+                );
+                BackendTask::None
+            }
+            Err(DocumentBuildError::Invalid(detail)) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "The document could not be built. Check its fields and try again.",
                     crate::ui::MessageType::Error,
                 )
-                .with_details(error);
+                .with_details(detail);
                 BackendTask::None
             }
         }
@@ -1400,7 +1522,7 @@ impl DocumentActionScreen {
         }))
     }
 
-    fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
+    fn try_build_document(&self) -> Result<(Document, [u8; 32]), DocumentBuildError> {
         let contract = self
             .selected_contract
             .as_ref()
@@ -1409,19 +1531,24 @@ impl DocumentActionScreen {
             .selected_document_type
             .as_ref()
             .ok_or("No document-type selected")?;
+        // The chooser keeps the type when the contract changes, and the
+        // document id commits to the type's contract, not the selected one.
+        if doc_type.data_contract_id() != contract.contract.id() {
+            return Err(DocumentBuildError::ForeignDocumentType);
+        }
         let qi = self
             .selected_identity
             .as_ref()
             .ok_or("No identity selected")?;
 
         if !Self::supports_field_editor(doc_type) {
-            return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
+            return Err(UNEDITABLE_DOCUMENT_MESSAGE.into());
         }
 
         for (prop, schema) in doc_type.properties() {
             let entry = self.field_inputs.get(prop).map(|s| s.trim());
             if schema.required && entry.unwrap_or("").is_empty() {
-                return Err(format!("Field \"{}\" is required", prop));
+                return Err(format!("Field \"{}\" is required", prop).into());
             }
         }
 
@@ -1538,19 +1665,19 @@ impl DocumentActionScreen {
                 DocumentPropertyType::TypedArray(_) => {
                     // Unreachable while `supports_field_editor` refuses the
                     // document first; kept so a typed array is never encoded.
-                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.to_string());
+                    return Err(UNEDITABLE_DOCUMENT_MESSAGE.into());
                 }
                 DocumentPropertyType::Object(_) => {
                     return Err(format!(
                         "Object field {} must be supplied via JSON textarea",
                         name
-                    ));
+                    )
+                    .into());
                 }
                 DocumentPropertyType::Array(_) | DocumentPropertyType::VariableTypeArray(_) => {
-                    return Err(format!(
-                        "Array field {} must be supplied via JSON textarea",
-                        name
-                    ));
+                    return Err(
+                        format!("Array field {} must be supplied via JSON textarea", name).into(),
+                    );
                 }
             };
 
@@ -1560,46 +1687,16 @@ impl DocumentActionScreen {
         let mut rng = StdRng::from_entropy();
         let entropy: [u8; 32] = rng.r#gen();
 
-        let owner_id = qi.identity.id();
-        // Before protocol version 14 this entropy-only id is the document's id,
-        // which Platform recomputes from the entropy. From protocol version 14
-        // (`Document::document_id_depends_on_nonce`) the id also commits to the
-        // identity contract nonce, so this one is only a placeholder that building
-        // the create transition replaces. Read the id from the confirmed document.
-        let id = Document::generate_document_id_v0(
-            &contract.contract.id(),
-            &owner_id,
-            doc_type.name(),
-            entropy.as_slice(),
-        );
-
-        let revision = if doc_type.requires_revision() {
-            Some(1)
-        } else {
-            None
-        };
-
-        let raw_doc = DocumentV0 {
-            id,
+        let document = new_document_for_creation(
+            doc_type.as_ref(),
+            qi.identity.id(),
             properties,
-            owner_id,
-            creator_id: None,
-            moderated_at: None,
-            moderated_by: None,
-            revision,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        };
+            &entropy,
+            self.app_context.platform_version(),
+        )
+        .map_err(|e| e.to_string())?;
 
-        Ok((raw_doc.into(), entropy))
+        Ok((document, entropy))
     }
 
     fn try_build_document_from_original(&self) -> Result<(Document, [u8; 32]), String> {
@@ -1761,27 +1858,23 @@ impl DocumentActionScreen {
             Some(1)
         };
 
-        let updated_doc = DocumentV0 {
-            id: original_doc.id(),
-            properties,
-            owner_id: original_doc.owner_id(),
-            creator_id: original_doc.creator_id(),
-            moderated_at: original_doc.moderated_at(),
-            moderated_by: original_doc.moderated_by(),
-            revision: new_revision,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        };
+        // The replacement keeps the original's id, owner, creator and
+        // moderation, and drops the timestamps and heights Platform sets.
+        let mut updated_doc = original_doc.clone();
+        updated_doc.set_properties(properties);
+        updated_doc.set_revision(new_revision);
+        updated_doc.set_created_at(None);
+        updated_doc.set_updated_at(None);
+        updated_doc.set_transferred_at(None);
+        updated_doc.set_created_at_block_height(None);
+        updated_doc.set_updated_at_block_height(None);
+        updated_doc.set_transferred_at_block_height(None);
+        updated_doc.set_created_at_core_block_height(None);
+        updated_doc.set_updated_at_core_block_height(None);
+        updated_doc.set_transferred_at_core_block_height(None);
+        updated_doc.set_contract_version(None);
 
-        Ok((updated_doc.into(), entropy))
+        Ok((updated_doc, entropy))
     }
 
     fn supports_field_editor(
@@ -1794,6 +1887,12 @@ impl DocumentActionScreen {
     }
 
     fn can_broadcast(&self) -> bool {
+        // A running fetch's result would overwrite the broadcast's progress or
+        // success, and a running broadcast would be paid for twice.
+        if self.pending_fetch.is_pending() || self.broadcast_status == BroadcastStatus::Broadcasting
+        {
+            return false;
+        }
         if matches!(
             self.action_type,
             DocumentActionType::Create | DocumentActionType::Replace
@@ -1890,18 +1989,48 @@ impl ScreenLike for DocumentActionScreen {
     }
 
     fn refresh(&mut self) {
-        // Backend messages are handled via display_message
+        // Task outcomes arrive in display_backend_task_result/_error.
     }
 
-    fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
-        if matches!(
-            message_type,
-            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
-        ) {
-            self.refresh_banner.take_and_clear();
+    // No `display_message` override: a message may come from any task, such
+    // as a background scheduled-vote sweep, so it must not end a fetch or a
+    // broadcast. Their own errors arrive in `display_backend_task_error`.
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        // Only the fetch and the broadcast this screen waits on change the
+        // form: fetched documents belong to the selection that requested
+        // them, and another task's result must not end a running broadcast.
+        let own = if matches!(result, BackendTaskSuccessResult::Documents(_)) {
+            self.pending_fetch.settle(context).is_some()
+        } else {
+            self.pending_broadcast.settle(context).is_some()
+        };
+        if own {
+            self.display_task_result(result);
         }
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        self.broadcast_status = BroadcastStatus::NotBroadcasted;
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        let own_fetch = self.pending_fetch.settle(context).is_some()
+            && self.broadcast_status == BroadcastStatus::Fetching;
+        let own_broadcast = self.pending_broadcast.settle(context).is_some()
+            && self.broadcast_status == BroadcastStatus::Broadcasting;
+        if own_fetch || own_broadcast {
+            self.refresh_banner.take_and_clear();
+            self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        }
+    }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.dispatched_document_fetch() && !self.pending_fetch.owns(context)
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
@@ -2373,6 +2502,77 @@ mod tests {
         );
     }
 
+    /// The chooser keeps the document type when the contract changes. A type
+    /// from another contract must not be built: the document id would commit
+    /// to that contract while the transition targets the selected one.
+    #[test]
+    fn creating_refuses_a_document_type_from_another_contract() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let network = context.network;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        let dpns = load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+            .expect("dpns contract");
+        screen.selected_contract = Some(QualifiedContract {
+            contract: dpns,
+            alias: None,
+        });
+        // A type of contract [1; 32], not of the selected DPNS contract.
+        screen.selected_document_type = Some(editor_document_type(false));
+        screen.selected_identity = Some(
+            crate::context::test_support::user_identity_with_signing_key(
+                Identifier::new([9; 32]),
+                network,
+                false,
+            ),
+        );
+        screen.field_inputs.insert("value".into(), "text".into());
+
+        assert_eq!(
+            screen.try_build_document().unwrap_err(),
+            DocumentBuildError::ForeignDocumentType
+        );
+    }
+
+    /// The create banner names the leftover document type as the problem,
+    /// not the fields.
+    #[test]
+    fn the_create_banner_explains_a_document_type_from_another_contract() {
+        use crate::ui::components::message_banner::global_banner_texts;
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let network = context.network;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+        screen.selected_contract = Some(QualifiedContract {
+            contract: load_system_data_contract(
+                SystemDataContract::DPNS,
+                PlatformVersion::latest(),
+            )
+            .expect("dpns contract"),
+            alias: None,
+        });
+        screen.selected_document_type = Some(editor_document_type(false));
+        screen.selected_identity = Some(
+            crate::context::test_support::user_identity_with_signing_key(
+                Identifier::new([9; 32]),
+                network,
+                false,
+            ),
+        );
+
+        assert!(matches!(screen.create_document_task(), BackendTask::None));
+        assert_eq!(
+            global_banner_texts(screen.app_context.egui_ctx()),
+            vec![FOREIGN_DOCUMENT_TYPE_MESSAGE.to_string()]
+        );
+    }
+
     #[test]
     fn replacing_an_optional_typed_array_does_not_drop_its_contents() {
         let dir = tempfile::tempdir().unwrap();
@@ -2393,6 +2593,638 @@ mod tests {
         assert!(!screen.can_broadcast());
         assert!(screen.try_build_document_from_original().is_err());
         assert!(matches!(screen.create_replace_task(), BackendTask::None));
+    }
+
+    fn fetch_query() -> DocumentQuery {
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let contract =
+            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+                .expect("token history contract");
+        DocumentQuery::new(Arc::new(contract), "claim").expect("claim query")
+    }
+
+    fn fetched(price: Credits) -> BackendTaskSuccessResult {
+        let document: Document = DocumentV0 {
+            id: Identifier::new([9; 32]),
+            properties: BTreeMap::from([(PRICE.to_string(), Value::U64(price))]),
+            ..Default::default()
+        }
+        .into();
+        BackendTaskSuccessResult::Documents(IndexMap::from([(document.id(), Some(document))]))
+    }
+
+    fn dispatched_context(action: AppAction) -> BackendTaskContext {
+        let AppAction::BackendTaskWithContext { context, .. } = action else {
+            panic!("fetch must be dispatched with its own context");
+        };
+        context
+    }
+
+    /// Changing the contract or document type drops everything fetched for
+    /// the previous selection, so nothing from it can be sent.
+    #[test]
+    fn a_selection_change_discards_fetched_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Purchase);
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+        screen.fetched_price = Some(5);
+        screen.original_doc = Some(DocumentV0::default().into());
+        screen.field_inputs.insert("value".into(), "old".into());
+        screen
+            .fetched_documents
+            .insert(Identifier::new([9; 32]), None);
+        screen.no_documents_found = true;
+        screen.broadcast_status = BroadcastStatus::Fetched;
+        assert!(screen.can_broadcast());
+
+        screen.clear_selection_state();
+
+        assert_eq!(screen.fetched_price, None);
+        assert!(screen.original_doc.is_none());
+        assert!(screen.field_inputs.is_empty());
+        assert!(screen.fetched_documents.is_empty());
+        assert!(!screen.no_documents_found);
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(!screen.can_broadcast());
+    }
+
+    /// A fetch result that this screen is not waiting for never fills in
+    /// the form.
+    #[test]
+    fn an_uncorrelated_fetch_result_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Purchase);
+
+        screen.display_backend_task_result(&BackendTaskContext::Unknown, fetched(7));
+
+        assert_eq!(screen.fetched_price, None);
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+    }
+
+    /// A fetch that finishes after the selection changed is dropped; the
+    /// fetch for the current selection is applied.
+    #[test]
+    fn a_late_fetch_result_for_an_old_selection_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Purchase);
+
+        let old = dispatched_context(screen.dispatch_fetch(fetch_query()));
+        assert!(screen.broadcast_status == BroadcastStatus::Fetching);
+        screen.clear_selection_state();
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        let current = dispatched_context(screen.dispatch_fetch(fetch_query()));
+
+        screen.display_backend_task_result(&old, fetched(7));
+        assert_eq!(screen.fetched_price, None);
+        assert!(screen.broadcast_status == BroadcastStatus::Fetching);
+
+        screen.display_backend_task_result(&current, fetched(11));
+        assert_eq!(screen.fetched_price, Some(11));
+        assert!(screen.broadcast_status == BroadcastStatus::Fetched);
+    }
+
+    /// An error from a fetch the screen gave up on stays off the banner; the
+    /// current fetch's error still shows and ends the wait.
+    #[test]
+    fn only_the_current_fetch_error_reaches_the_banner() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        let error = TaskError::WalletStorageNotReady;
+
+        let old = dispatched_context(screen.dispatch_fetch(fetch_query()));
+        screen.clear_selection_state();
+        let current = dispatched_context(screen.dispatch_fetch(fetch_query()));
+
+        assert!(screen.should_suppress_backend_task_error(&old, &error));
+        assert!(!screen.should_suppress_backend_task_error(&current, &error));
+
+        screen.display_backend_task_error(&current, &error);
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(!screen.pending_fetch.is_pending());
+    }
+
+    /// A broadcast started while a fetch was still running keeps its status
+    /// and its progress banner when the selection changes.
+    #[test]
+    fn a_selection_change_leaves_a_running_broadcast_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Create);
+
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.set_fetching_banner(&ctx, "Broadcasting...");
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+
+        screen.clear_selection_state();
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+        assert!(screen.refresh_banner.is_some());
+        assert!(!screen.pending_fetch.is_pending());
+    }
+
+    /// Nothing is sent while a fetch is running, so its result cannot
+    /// overwrite a broadcast's progress or success; once it lands, the action
+    /// can be sent.
+    #[test]
+    fn a_running_fetch_blocks_broadcast() {
+        for action_type in [
+            DocumentActionType::Delete,
+            DocumentActionType::SetPrice,
+            DocumentActionType::Transfer,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+            screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+            screen.price_input = "1".into();
+            screen.recipient_id_input = Identifier::new([8; 32]).to_string(Encoding::Base58);
+            assert!(screen.can_broadcast(), "{action_type:?} is ready to send");
+
+            let fetch = dispatched_context(screen.dispatch_fetch(fetch_query()));
+            assert!(
+                !screen.can_broadcast(),
+                "{action_type:?} waits for the fetch"
+            );
+
+            screen.display_backend_task_result(&fetch, fetched(7));
+            assert!(
+                screen.can_broadcast(),
+                "{action_type:?} can be sent after the fetch"
+            );
+        }
+    }
+
+    /// Nothing more is sent while a broadcast is running, so one click cannot
+    /// pay for the same document action twice.
+    #[test]
+    fn a_running_broadcast_blocks_another_broadcast() {
+        for action_type in [
+            DocumentActionType::Create,
+            DocumentActionType::Delete,
+            DocumentActionType::SetPrice,
+            DocumentActionType::Transfer,
+            DocumentActionType::Purchase,
+            DocumentActionType::Replace,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+            screen.field_inputs.insert("value".into(), "text".into());
+            screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+            screen.price_input = "1".into();
+            screen.recipient_id_input = Identifier::new([8; 32]).to_string(Encoding::Base58);
+            screen.fetched_price = Some(7);
+            screen.original_doc = Some(DocumentV0::default().into());
+            assert!(screen.can_broadcast(), "{action_type:?} is ready to send");
+
+            screen.broadcast_status = BroadcastStatus::Broadcasting;
+            assert!(
+                !screen.can_broadcast(),
+                "{action_type:?} waits for the running broadcast"
+            );
+        }
+    }
+
+    fn deleted() -> BackendTaskSuccessResult {
+        BackendTaskSuccessResult::DeletedDocument(
+            Identifier::new([9; 32]),
+            FeeResult {
+                estimated_fee: 1,
+                actual_fee: Some(1),
+            },
+        )
+    }
+
+    /// A Delete form ready to send, with its broadcast running; returns the
+    /// screen and the broadcast's own dispatch context.
+    fn screen_broadcasting(dir: &std::path::Path) -> (DocumentActionScreen, BackendTaskContext) {
+        let context = crate::context::test_support::test_app_context(dir);
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+        assert!(screen.can_broadcast());
+        let own = dispatched_context(screen.start_broadcast(&ctx, BackendTask::None));
+        assert!(!screen.can_broadcast());
+        (screen, own)
+    }
+
+    /// Another task's error or message, such as a background scheduled-vote
+    /// failure, leaves a running broadcast in place, so the paid action cannot
+    /// be sent again; only the broadcast's own error ends it.
+    #[test]
+    fn only_its_own_error_ends_a_running_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, own) = screen_broadcasting(dir.path());
+        let foreign = BackendTaskContext::for_dispatch(&BackendTask::None);
+        let error = TaskError::WalletStorageNotReady;
+
+        screen.display_backend_task_error(&foreign, &error);
+        screen.display_backend_task_error(&BackendTaskContext::Unknown, &error);
+        screen.display_message("A scheduled vote failed.", crate::ui::MessageType::Error);
+        screen.display_message("Theme updated.", crate::ui::MessageType::Success);
+        screen.display_backend_task_result(&foreign, deleted());
+        screen.display_backend_task_result(&BackendTaskContext::Unknown, deleted());
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasting);
+        assert!(screen.refresh_banner.is_some(), "progress stays shown");
+        assert!(screen.completed_fee_result.is_none());
+        assert!(!screen.can_broadcast(), "the running broadcast blocks");
+
+        screen.display_backend_task_error(&own, &error);
+
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.can_broadcast(), "a failed broadcast can be retried");
+    }
+
+    /// The broadcast's own result ends it as sent; a later error of the same
+    /// dispatch, or another task's message, does not reopen the form.
+    #[test]
+    fn its_own_result_ends_a_running_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, own) = screen_broadcasting(dir.path());
+
+        screen.display_backend_task_result(&own, deleted());
+
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.completed_fee_result.is_some());
+
+        screen.display_backend_task_error(&own, &TaskError::WalletStorageNotReady);
+        screen.display_message("A scheduled vote failed.", crate::ui::MessageType::Error);
+        assert!(screen.broadcast_status == BroadcastStatus::Broadcasted);
+    }
+
+    /// A new fetch drops the document fetched before it. When the new fetch
+    /// fails, the previous document's price or content cannot be sent.
+    #[test]
+    fn a_new_fetch_drops_the_previously_fetched_document() {
+        for action_type in [DocumentActionType::Purchase, DocumentActionType::Replace] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+            screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+            let first = dispatched_context(screen.dispatch_fetch(fetch_query()));
+            screen.display_backend_task_result(&first, fetched(7));
+            assert!(screen.can_broadcast(), "{action_type:?} sends the fetch");
+
+            screen.document_id_input = Identifier::new([10; 32]).to_string(Encoding::Base58);
+            let second = dispatched_context(screen.dispatch_fetch(fetch_query()));
+            assert_eq!(screen.fetched_price, None, "{action_type:?}");
+            assert!(screen.original_doc.is_none(), "{action_type:?}");
+            assert!(screen.field_inputs.is_empty(), "{action_type:?}");
+
+            screen.display_backend_task_error(&second, &TaskError::WalletStorageNotReady);
+            screen.display_message("failed", crate::ui::MessageType::Error);
+            assert!(
+                !screen.can_broadcast(),
+                "{action_type:?} cannot send the previous document"
+            );
+        }
+    }
+
+    /// Editing the document ID drops the document fetched for the old ID and
+    /// any fetch still running for it, so the old document's price or content
+    /// cannot be sent under the new ID.
+    #[test]
+    fn editing_the_document_id_drops_the_fetched_document() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let withdrawals =
+            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+                .expect("withdrawals contract");
+        let fetched_id = Identifier::new([9; 32]).to_string(Encoding::Base58);
+        for action_type in [DocumentActionType::Purchase, DocumentActionType::Replace] {
+            for fetch_running in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let context = crate::context::test_support::test_app_context(dir.path());
+                let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+                screen.selected_document_type =
+                    withdrawals.document_type_cloned_for_name("withdrawal").ok();
+                screen.selected_contract = Some(QualifiedContract {
+                    contract: withdrawals.clone(),
+                    alias: None,
+                });
+                screen.selected_identity = Some(named_identity(1, "alice"));
+                screen.document_id_input = fetched_id.clone();
+                screen.fetched_price = Some(7);
+                screen.original_doc = Some(DocumentV0::default().into());
+                screen.field_inputs.insert("amount".into(), "5".into());
+                screen.broadcast_status = BroadcastStatus::Fetched;
+                if fetch_running {
+                    let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(
+                        fetch_query(),
+                    )));
+                    let _ = screen.pending_fetch.dispatch_with(task, ());
+                    screen.broadcast_status = BroadcastStatus::Fetching;
+                }
+
+                let mut harness = Harness::builder()
+                    .with_size(egui::vec2(1200.0, 800.0))
+                    .build_ui_state(
+                        |ui, screen: &mut DocumentActionScreen| {
+                            let _ = screen.render_action_specific_inputs(ui);
+                        },
+                        screen,
+                    );
+                // A running fetch shows a spinner, which repaints forever.
+                harness.run_steps(3);
+                let id = fetched_id.clone();
+                let id_input = move |node: &egui_kittest::kittest::AccessKitNode<'_>| {
+                    node.role() == egui::accesskit::Role::TextInput
+                        && node.value().as_deref() == Some(id.as_str())
+                };
+                harness.get_by(id_input.clone()).focus();
+                harness.run_steps(3);
+                harness.get_by(id_input).type_text("x");
+                harness.run_steps(3);
+
+                let screen = harness.state();
+                let case = format!("{action_type:?}, fetch running: {fetch_running}");
+                assert_eq!(screen.document_id_input, format!("{fetched_id}x"), "{case}");
+                assert_eq!(screen.fetched_price, None, "{case}");
+                assert!(screen.original_doc.is_none(), "{case}");
+                assert!(screen.field_inputs.is_empty(), "{case}");
+                assert!(!screen.pending_fetch.is_pending(), "{case}");
+                assert!(
+                    screen.broadcast_status == BroadcastStatus::NotBroadcasted,
+                    "{case}"
+                );
+                assert!(!screen.can_broadcast(), "{case}");
+            }
+        }
+    }
+
+    /// No fetch can start while a broadcast is running, so a fetch result
+    /// cannot clear the broadcast's progress or replace its success.
+    #[test]
+    fn a_running_broadcast_disables_fetching() {
+        use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+        use dash_sdk::dpp::version::PlatformVersion;
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+
+        // Its "withdrawal" type has an index on $ownerId, which Delete needs.
+        let withdrawals =
+            load_system_data_contract(SystemDataContract::Withdrawals, PlatformVersion::latest())
+                .expect("withdrawals contract");
+        for (action_type, label) in [
+            (DocumentActionType::Delete, "Fetch Owned Documents"),
+            (DocumentActionType::Purchase, "Fetch Document Price"),
+            (DocumentActionType::Replace, "Fetch"),
+        ] {
+            for (status, disabled) in [
+                (BroadcastStatus::NotBroadcasted, false),
+                (BroadcastStatus::Broadcasting, true),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let context = crate::context::test_support::test_app_context(dir.path());
+                let mut screen = DocumentActionScreen::new(context, None, action_type.clone());
+                screen.selected_document_type =
+                    withdrawals.document_type_cloned_for_name("withdrawal").ok();
+                screen.selected_contract = Some(QualifiedContract {
+                    contract: withdrawals.clone(),
+                    alias: None,
+                });
+                screen.selected_identity = Some(named_identity(1, "alice"));
+                screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+                screen.broadcast_status = status;
+
+                let mut harness = Harness::builder()
+                    .with_size(egui::vec2(1200.0, 800.0))
+                    .build_ui_state(
+                        |ui, screen: &mut DocumentActionScreen| {
+                            let _ = screen.render_action_specific_inputs(ui);
+                        },
+                        screen,
+                    );
+                // A running broadcast shows a spinner, which repaints forever.
+                harness.run_steps(3);
+
+                assert_eq!(
+                    harness.get_by_label(label).accesskit_node().is_disabled(),
+                    disabled,
+                    "{action_type:?}: \"{label}\" disabled while broadcasting"
+                );
+            }
+        }
+    }
+
+    /// A network switch starts the form over on the new network: no fetch or
+    /// broadcast from the old one is still awaited, so neither stays disabled.
+    #[test]
+    fn a_network_switch_drops_fetches_and_broadcasts_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let ctx = context.egui_ctx().clone();
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.set_fetching_banner(&ctx, "Broadcasting...");
+        screen.broadcast_status = BroadcastStatus::Broadcasting;
+        screen.document_id_input = Identifier::new([9; 32]).to_string(Encoding::Base58);
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = crate::context::test_support::test_app_context_for_network(
+            other_dir.path(),
+            dash_sdk::dpp::dashcore::Network::Devnet,
+        );
+        let mut wrapped = crate::ui::Screen::DocumentActionScreen(screen);
+        wrapped.change_context(other.clone());
+        let crate::ui::Screen::DocumentActionScreen(screen) = wrapped else {
+            unreachable!("change_context keeps the screen variant");
+        };
+
+        assert!(Arc::ptr_eq(&screen.app_context, &other));
+        assert!(screen.action_type == DocumentActionType::Delete);
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+        assert!(screen.refresh_banner.is_none());
+        assert!(screen.document_id_input.is_empty());
+    }
+
+    fn named_identity(byte: u8, name: &str) -> QualifiedIdentity {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::new([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![crate::model::qualified_identity::DPNSNameInfo {
+                name: name.to_string(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    /// Picking another document type in the chooser drops the running fetch
+    /// and everything fetched for the old type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn picking_another_document_type_abandons_the_fetch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        // The contract list needs the wallet backend.
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        let dpns = screen
+            .selected_contract
+            .clone()
+            .expect("DPNS is listed first");
+        screen.selected_document_type = dpns.contract.document_type_cloned_for_name("domain").ok();
+        let _ = screen.dispatch_fetch(fetch_query());
+        screen.original_doc = Some(DocumentV0::default().into());
+        screen.field_inputs.insert("label".into(), "old".into());
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    screen.render_contract_and_type_selection(ui)
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.state().pending_fetch.is_pending());
+
+        harness.get_by_value("domain").click();
+        harness.run();
+        harness.get_by_label("preorder").click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(
+            screen
+                .selected_document_type
+                .as_ref()
+                .map(|t| t.name().as_str()),
+            Some("preorder")
+        );
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.original_doc.is_none());
+        assert!(screen.field_inputs.is_empty());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+    }
+
+    /// Picking another identity drops the running fetch, so the previous
+    /// identity's owned documents cannot fill in the list.
+    #[test]
+    fn picking_another_identity_abandons_the_fetch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        let alice = named_identity(1, "alice");
+        let bob = named_identity(2, "bob");
+        screen.identities_map =
+            HashMap::from([(alice.identity.id(), alice), (bob.identity.id(), bob)]);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .build_ui_state(
+                |ui, screen: &mut DocumentActionScreen| {
+                    screen.render_identity_and_key_selection(ui)
+                },
+                screen,
+            );
+        harness.run();
+        let alice_id = Identifier::new([1; 32]);
+        let bob_id = Identifier::new([2; 32]);
+        let (current, other, other_id) = match harness.state().selected_identity.as_ref() {
+            Some(selected) if selected.identity.id() == alice_id => ("alice", "bob", bob_id),
+            Some(_) => ("bob", "alice", alice_id),
+            None => panic!("the selector picks an identity on the first frame"),
+        };
+        let _ = harness.state_mut().dispatch_fetch(fetch_query());
+        assert!(harness.state().pending_fetch.is_pending());
+
+        harness.get_by_value(current).click();
+        harness.run();
+        harness.get_by_label_contains(other).click();
+        harness.run();
+
+        let screen = harness.state();
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(other_id)
+        );
+        assert!(!screen.pending_fetch.is_pending());
+        assert!(screen.broadcast_status == BroadcastStatus::NotBroadcasted);
+    }
+
+    /// DOC-REPLACE-001: the replacement keeps the original's id, owner,
+    /// creator and moderation, takes the edited fields and the next revision,
+    /// and drops every timestamp, height and the contract version.
+    #[test]
+    fn replacing_document_keeps_identity_and_drops_platform_set_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Replace);
+        screen.selected_document_type = Some(editor_document_type(false));
+        let original = DocumentV0 {
+            id: Identifier::new([1; 32]),
+            owner_id: Identifier::new([2; 32]),
+            creator_id: Some(Identifier::new([3; 32])),
+            properties: BTreeMap::from([("value".to_string(), Value::Text("old".into()))]),
+            revision: Some(4),
+            created_at: Some(10),
+            updated_at: Some(11),
+            transferred_at: Some(12),
+            created_at_block_height: Some(13),
+            updated_at_block_height: Some(14),
+            transferred_at_block_height: Some(15),
+            created_at_core_block_height: Some(16),
+            updated_at_core_block_height: Some(17),
+            transferred_at_core_block_height: Some(18),
+            contract_version: Some(2),
+            moderated_at: Some(19),
+            moderated_by: Some(Identifier::new([5; 32])),
+        };
+        screen.original_doc = Some(original.clone().into());
+        screen.field_inputs.insert("value".into(), "changed".into());
+
+        let (document, _) = screen.try_build_document_from_original().unwrap();
+
+        let expected: Document = DocumentV0 {
+            id: original.id,
+            owner_id: original.owner_id,
+            creator_id: original.creator_id,
+            properties: BTreeMap::from([("value".to_string(), Value::Text("changed".into()))]),
+            revision: Some(5),
+            moderated_at: original.moderated_at,
+            moderated_by: original.moderated_by,
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(document, expected);
     }
 
     #[test]
@@ -2502,7 +3334,11 @@ mod tests {
         screen.document_id_input = Identifier::new([0x22; 32]).to_string(Encoding::Base58);
 
         let sent = screen.confirm_action_fee(&egui::Context::default());
-        let AppAction::BackendTask(BackendTask::DocumentTask(task)) = sent else {
+        let AppAction::BackendTaskWithContext {
+            task: BackendTask::DocumentTask(task),
+            ..
+        } = sent
+        else {
             panic!("the confirmed action is sent, got {sent:?}");
         };
         let DocumentTask::DeleteDocument {

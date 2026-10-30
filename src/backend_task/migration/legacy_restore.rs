@@ -424,7 +424,7 @@ mod tests {
         let seam = SecretSeam::new(backend.secret_store());
         let mut addresses = Vec::new();
         for byte in [0x41, 0x42] {
-            let raw = [byte; 32];
+            let raw = crate::test_support::keys::labelled_secret("legacy_restore", byte);
             let private = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
             let (meta, _) = ctx
                 .import_single_key_wif(

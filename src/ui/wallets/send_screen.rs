@@ -7801,7 +7801,7 @@ mod tests {
     /// A valid testnet private (Orchard) address derived from `seed_byte`.
     fn testnet_shielded_address(seed_byte: u8) -> String {
         let keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
-            &[seed_byte; 64],
+            &crate::test_support::keys::labelled_seed("send_screen", u64::from(seed_byte)),
             Network::Testnet,
             0,
         )

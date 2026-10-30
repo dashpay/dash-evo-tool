@@ -5842,7 +5842,7 @@ mod tests {
         let backend = ctx.wallet_backend().unwrap();
         let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
         for byte in [0x31, 0x32] {
-            let raw = [byte; 32];
+            let raw = crate::test_support::keys::labelled_secret("finish_unwire", u64::from(byte));
             let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
             let mut imported = backend
                 .single_key()

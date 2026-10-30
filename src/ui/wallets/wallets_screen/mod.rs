@@ -3457,7 +3457,7 @@ mod tests {
 
         fn seed_hd(ctx: &Arc<AppContext>, seed_byte: u8) -> (WalletSeedHash, Arc<RwLock<Wallet>>) {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("wallets_screen", u64::from(seed_byte)),
                 Network::Testnet,
                 Some(format!("hd-{seed_byte}")),
                 None,

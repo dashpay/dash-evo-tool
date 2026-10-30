@@ -550,7 +550,7 @@ mod tests {
     /// — the shape legacy data takes when two wallets already share an alias.
     fn insert_wallet_with_alias(ctx: &AppContext, seed_byte: u8, alias: &str) -> WalletSeedHash {
         let wallet = crate::model::wallet::Wallet::new_from_seed(
-            [seed_byte; 64],
+            crate::test_support::keys::labelled_seed("mcp_resolve", u64::from(seed_byte)),
             ctx.network(),
             Some(alias.to_owned()),
             None,

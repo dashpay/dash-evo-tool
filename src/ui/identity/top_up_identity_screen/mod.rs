@@ -1884,7 +1884,7 @@ mod tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x61, "Alpha"), (0x62, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("top_up_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,

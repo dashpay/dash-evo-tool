@@ -131,8 +131,8 @@ fn find_wallet_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
     use dash_sdk::dpp::platform_value::BinaryData;
@@ -152,16 +152,13 @@ mod tests {
     /// An identity public key of `key_type` carrying `data`. `id`/`purpose`/
     /// `security_level` are immaterial to address resolution.
     fn identity_key(key_type: KeyType, data: Vec<u8>) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
+        identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
             key_type,
-            read_only: false,
-            data: BinaryData::new(data),
-            disabled_at: None,
-        })
+            BinaryData::new(data),
+        )
     }
 
     /// A wallet holding exactly `entries` in `known_addresses`, plus the fresh

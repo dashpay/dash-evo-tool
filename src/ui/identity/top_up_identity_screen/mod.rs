@@ -2204,6 +2204,59 @@ mod tests {
         assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
     }
 
+    /// A top-up sent from elsewhere changes the balance this screen shows:
+    /// the identity cache notification brings it in without touching the
+    /// form. Other domains and other networks leave it alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_cache_notification_reloads_the_identity_shown() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::wired_test_app_context;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = wired_test_app_context(temp_dir.path()).await;
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        screen.funding_amount_exact = Some(100_000);
+        let identity_id = screen.identity.identity.id();
+        let mut topped_up = screen.identity.clone();
+        topped_up.identity.set_balance(200_000_000_000);
+        screen
+            .app_context
+            .insert_local_qualified_identity(&topped_up, &None)
+            .expect("store the topped-up identity");
+        let network = screen.app_context.network;
+        let other_network = if network == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+
+        for ignored in [
+            CacheUpdate {
+                network: other_network,
+                domain: CacheDomain::Identities,
+            },
+            CacheUpdate {
+                network,
+                domain: CacheDomain::Tokens,
+            },
+        ] {
+            screen.cached_data_changed(ignored);
+            assert_eq!(screen.identity.identity.balance(), 0, "{ignored:?}");
+        }
+
+        screen.cached_data_changed(CacheUpdate {
+            network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(screen.identity.identity.id(), identity_id);
+        assert_eq!(screen.identity.identity.balance(), 200_000_000_000);
+        assert_eq!(
+            screen.funding_amount_exact,
+            Some(100_000),
+            "the form keeps what the user entered"
+        );
+    }
+
     /// Wallet Send can add funds to the same identity without blocking the
     /// app, so its success may arrive while this screen waits on its own.
     #[test]

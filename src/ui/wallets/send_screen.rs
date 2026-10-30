@@ -39,7 +39,7 @@ use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
 use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
     MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
@@ -1049,6 +1049,24 @@ impl WalletSendScreen {
             .is_some_and(|own| own == typed)
     }
 
+    /// Why the selected source cannot pay the typed private address, if it
+    /// cannot. Core and Platform can only shield into the paying wallet's own
+    /// private balance: the shield tasks carry no recipient and always deposit
+    /// into the wallet's own pool. Letting someone else's private address
+    /// through would keep the money while reporting success.
+    fn shielded_destination_refusal(&self) -> Option<&'static str> {
+        let shields_into_own_pool = matches!(
+            self.selected_source,
+            Some(SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_))
+        );
+        let private_destination = self
+            .validated_destination
+            .as_ref()
+            .is_some_and(|destination| destination.kind() == AddressKind::Shielded);
+        (shields_into_own_pool && private_destination && !self.shielded_destination_is_own_pool())
+            .then_some(SHIELDED_NOT_OWN_POOL)
+    }
+
     fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
         if !self.identity_constraint_holds() {
             return Err("This form no longer matches the selected identity or network. Return to the identity and open it again.".into());
@@ -1084,17 +1102,8 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Core and Platform can only shield into the paying wallet's own
-        // private balance: the shield tasks carry no recipient and always
-        // deposit into the wallet's own pool. Letting someone else's private
-        // address through would keep the money while reporting success.
-        if matches!(
-            source,
-            SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_)
-        ) && destination.kind() == AddressKind::Shielded
-            && !self.shielded_destination_is_own_pool()
-        {
-            return Err(SHIELDED_NOT_OWN_POOL.to_string());
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            return Err(refusal.to_string());
         }
 
         match (source, destination.kind()) {
@@ -1697,6 +1706,7 @@ impl WalletSendScreen {
             self.keep_identity_constraint();
         } else {
             self.render_destination_input(ui);
+            self.render_shielded_destination_refusal(ui);
         }
 
         ui.add_space(10.0);
@@ -1966,7 +1976,6 @@ impl WalletSendScreen {
         let recipient_bytes = crate::model::address::parse_shielded_recipient(&recipient)
             .ok_or_else(|| "Invalid shielded address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
@@ -1995,7 +2004,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_platform().copied())
             .ok_or_else(|| "Invalid platform address".to_string())?;
 
-        self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
@@ -2950,6 +2958,14 @@ impl WalletSendScreen {
         resp.inner.update(&mut self.validated_destination);
     }
 
+    /// The route refusal a source and private destination already imply,
+    /// shown under the destination before anything is clicked.
+    fn render_shielded_destination_refusal(&self, ui: &mut Ui) {
+        if let Some(refusal) = self.shielded_destination_refusal() {
+            ui.colored_label(DashColors::VALIDATION_WARNING, refusal);
+        }
+    }
+
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let kinds = self.general_destination_kinds();
         self.render_destination_input_with_kinds(ui, &kinds);
@@ -3796,7 +3812,15 @@ impl WalletSendScreen {
         let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
         let source_ready =
             matches!(self.selected_source, Some(SourceSelection::Identity(_))) || wallet_open;
-        let can_send = source_ready && !is_sending && has_destination && has_amount && has_source;
+        // Refused before the click, so the button never offers a send the
+        // route check will turn down.
+        let refusal = self.shielded_destination_refusal();
+        let can_send = source_ready
+            && !is_sending
+            && has_destination
+            && has_amount
+            && has_source
+            && refusal.is_none();
 
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
@@ -3811,7 +3835,13 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
+            let send_button =
+                ComponentStyles::add_primary_button_enabled(ui, can_send, button_text);
+            let send_button = match refusal {
+                Some(refusal) => send_button.disabled_tooltip(refusal),
+                None => send_button,
+            };
+            if send_button.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         let message = self.simple_send_confirmation_message();
@@ -3895,6 +3925,20 @@ impl WalletSendScreen {
     /// Renders the production simple-send button in a headless harness.
     pub fn render_simple_send_button_for_test(&mut self, ui: &mut Ui) -> AppAction {
         self.render_send_button(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Renders the production send confirmation in a headless harness.
+    pub fn render_send_confirmation_for_test(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_send_confirmation(ui)
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Whether a send confirmation is waiting for an answer.
+    pub fn has_send_confirmation_for_test(&self) -> bool {
+        self.send_confirmation.is_some()
     }
 
     /// Render the advanced send UI with multiple inputs/outputs
@@ -5145,6 +5189,15 @@ impl ScreenLike for WalletSendScreen {
         self.asset_lock_balance.invalidate();
     }
 
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network()
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh_bound_identity();
+        }
+    }
+
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
@@ -5453,6 +5506,56 @@ mod tests {
             panic!("expected a wallet-funded top-up");
         };
         assert_eq!(index, 3, "indexes 0 and 2 already hold earlier top-ups");
+    }
+
+    /// A top-up that ended elsewhere changes the balance of the identity the
+    /// form is bound to: the identity cache notification brings it in and
+    /// leaves the amount entered alone. Other domains and networks are ignored.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_cache_notification_rebinds_the_identity_without_touching_the_form() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let identity = bound_identity();
+        let mut topped_up = identity.clone();
+        topped_up.identity.set_balance(300_000_000_000);
+        ctx.insert_local_qualified_identity(&topped_up, &None)
+            .expect("store the topped-up identity");
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::TopUp);
+        screen.amount = Some(Amount::dash_from_duffs(100_000));
+        let balance = |screen: &WalletSendScreen| {
+            screen
+                .identity_flow()
+                .map(|(identity, _)| identity.identity.balance())
+        };
+
+        for ignored in [
+            CacheUpdate {
+                network: Network::Mainnet,
+                domain: CacheDomain::Identities,
+            },
+            CacheUpdate {
+                network: Network::Testnet,
+                domain: CacheDomain::Tokens,
+            },
+        ] {
+            screen.cached_data_changed(ignored);
+            assert_eq!(balance(&screen), Some(100_000_000_000), "{ignored:?}");
+        }
+
+        screen.cached_data_changed(CacheUpdate {
+            network: Network::Testnet,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(balance(&screen), Some(300_000_000_000));
+        assert_eq!(screen.amount, Some(Amount::dash_from_duffs(100_000)));
     }
 
     /// A top-up is refused while another top-up of the same identity runs,
@@ -7901,5 +8004,72 @@ mod tests {
             screen.validated_send_route(),
             Ok(ValidatedSendRoute::ShieldedToShielded(sh)) if sh == seed_hash
         ));
+    }
+
+    /// Renders the refusal line and the Send button of `screen`.
+    fn route_refusal_harness(screen: WalletSendScreen) -> Harness<'static, WalletSendScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 400.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    screen.render_shielded_destination_refusal(ui);
+                    let _ = screen.render_send_button(ui);
+                    let _ = screen.render_send_confirmation(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    /// Someone else's private address with Core as the source is refused
+    /// before the click: Shield DASH is turned off and the reason is shown
+    /// under the address, so the form never offers a send it will refuse.
+    #[test]
+    fn someone_elses_private_address_turns_core_shielding_off_before_the_click() {
+        use egui_kittest::kittest::NodeT;
+
+        let (mut screen, _dir) =
+            send_screen_with_own_shielded_address(&testnet_shielded_address(7));
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(9)));
+        let mut harness = route_refusal_harness(screen);
+
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_some(),
+            "the refusal must be visible before any click"
+        );
+        // A turned-off primary button keeps its look but stops sensing clicks.
+        let clickable = |harness: &Harness<'static, WalletSendScreen>| {
+            harness
+                .get_by_label("Shield DASH")
+                .accesskit_node()
+                .data()
+                .supports_action(egui::accesskit::Action::Click)
+        };
+        assert!(
+            !clickable(&harness),
+            "Shield DASH must be turned off for someone else's private address"
+        );
+        harness.get_by_label("Shield DASH").click();
+        harness.run();
+        assert!(harness.state().send_confirmation.is_none());
+        assert!(
+            !matches!(harness.state().send_status, SendStatus::Error),
+            "nothing is refused on click: the button never offered the send"
+        );
+
+        harness.state_mut().validated_destination =
+            Some(ValidatedAddress::Shielded(testnet_shielded_address(7)));
+        harness.run();
+        assert!(
+            harness.query_by_label(SHIELDED_NOT_OWN_POOL).is_none(),
+            "the wallet's own private address needs no refusal"
+        );
+        assert!(
+            clickable(&harness),
+            "shielding into the own pool stays available"
+        );
     }
 }

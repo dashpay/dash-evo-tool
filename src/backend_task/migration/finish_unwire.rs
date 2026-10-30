@@ -1728,6 +1728,7 @@ fn migrate_identities(
                 &mut qi,
                 wallet,
                 crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
             )
         },
     )?;
@@ -3955,7 +3956,7 @@ mod tests {
         use crate::wallet_backend::single_key::{
             SingleKeyView, label_for_address, single_key_namespace_id,
         };
-        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("data.db");
@@ -3967,10 +3968,7 @@ mod tests {
         let mut raw = [0u8; 32];
         raw[31] = 7;
         let priv_key = PrivateKey::from_byte_array(&raw, Network::Testnet).expect("priv");
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
         let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);
         seed_legacy_row(
@@ -5377,6 +5375,7 @@ mod tests {
                     &mut qi,
                     wallet,
                     crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved,
                 )
                 .map_err(|_| TaskError::WalletNotFound)
             },

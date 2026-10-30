@@ -39,3 +39,6 @@ explorer.log
 
 # QA scenario screenshots — archived to /data/artifacts, not tracked in git
 docs/ai-design/*/scenarios/screenshots/
+
+# Python policy and administrator-tool tests.
+__pycache__/

@@ -1,11 +1,12 @@
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::platform::transition::transfer::TransferToIdentity;
+use dash_sdk::platform::transition::transfer::TransferToIdentityWithMetadata;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 use super::BackendTaskSuccessResult;
@@ -41,10 +42,10 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_credit_transfer();
 
-        let (sender_balance, receiver_balance) = qualified_identity
+        let ((sender_balance, receiver_balance), metadata) = qualified_identity
             .identity
             .clone()
-            .transfer_credits(
+            .transfer_credits_with_metadata(
                 &sdk,
                 to_identifier,
                 credits,
@@ -72,6 +73,7 @@ impl AppContext {
             );
         }
 
+        let observed = BalanceProvenance::ObservedAt(metadata.height);
         qualified_identity.identity.set_balance(sender_balance);
 
         if let Some(receiver) = self
@@ -81,13 +83,13 @@ impl AppContext {
         {
             receiver.identity.set_balance(receiver_balance);
             // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-            self.update_local_qualified_identity(receiver)?;
+            self.update_local_qualified_identity_observed(receiver, observed)?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-        self.update_local_qualified_identity(&qualified_identity)
+        self.update_local_qualified_identity_observed(&mut qualified_identity, observed)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 }

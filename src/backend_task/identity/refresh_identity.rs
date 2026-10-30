@@ -1,6 +1,7 @@
 use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -17,14 +18,21 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let refreshed_identity_id = qualified_identity.identity.id();
         // Fetch the latest state of the identity from Platform
-        let maybe_refreshed_identity =
-            Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?;
+        let (maybe_refreshed_identity, metadata) =
+            Identity::fetch_with_metadata(sdk, refreshed_identity_id, None).await?;
 
         // Apply only what was fetched, to the record as stored now: a stale
         // snapshot written back would undo whatever changed while the fetch
         // ran, such as a removed key whose vault secret is already gone.
-        let qualified_identity_to_update =
-            self.edit_local_qualified_identity(&refreshed_identity_id, |stored| {
+        let provenance = if maybe_refreshed_identity.is_some() {
+            BalanceProvenance::ObservedAt(metadata.height)
+        } else {
+            BalanceProvenance::Unobserved
+        };
+        let qualified_identity_to_update = self.edit_local_qualified_identity_observed(
+            &refreshed_identity_id,
+            provenance,
+            |stored| {
                 // Refresh only a loaded identity; never re-list one.
                 if !self.is_identity_listed(&refreshed_identity_id)? {
                     return Err(TaskError::IdentityNotFoundLocally);
@@ -37,7 +45,8 @@ impl AppContext {
                     None => stored.status.update(IdentityStatus::NotFound),
                 }
                 Ok(())
-            })?;
+            },
+        )?;
 
         // Send refresh message to refresh the Identities Screen
         sender

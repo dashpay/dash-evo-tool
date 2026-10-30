@@ -4,6 +4,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::model::derived_identity_key::recovery_scan_bound;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::masternode_input::decode_identity_id;
@@ -209,21 +210,21 @@ impl AppContext {
         };
 
         // Fetch the identity using the SDK
-        let identity = match await_network_request_with_timeout(
+        let (identity, fetched) = match await_network_request_with_timeout(
             NETWORK_REQUEST_TIMEOUT,
-            Identity::fetch_by_identifier(sdk, identity_id),
+            Identity::fetch_with_metadata(sdk, identity_id, None),
             |source| TaskError::IdentityLoadTimeout { source },
         )
         .await?
         {
-            Ok(Some(identity)) => identity,
+            Ok((Some(identity), metadata)) => (identity, metadata),
             // For masternode/evonode loads the input is a ProTxHash, so surface a
             // node-specific message instead of the generic identity-not-found copy
             // (which talks about an "ID or name" the user never entered here).
-            Ok(None) if identity_type != IdentityType::User => {
+            Ok((None, _)) if identity_type != IdentityType::User => {
                 return Err(TaskError::MasternodeNotFound { identity_id });
             }
-            Ok(None) => return Err(TaskError::IdentityNotFound),
+            Ok((None, _)) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
 
@@ -542,6 +543,7 @@ impl AppContext {
             merge_seal_password.as_ref(),
             &load_guard,
             encryption_password.as_ref(),
+            BalanceProvenance::ObservedAt(fetched.height),
         )?;
 
         // A merge keeps the stored alias; this caller named a new one.
@@ -575,6 +577,9 @@ impl AppContext {
     /// longer names: the list can lag behind the chain, so it cannot prove a
     /// key retired. The node's page flags the mismatch and lets the user
     /// remove the old key (`IdentityTask::RemoveRetiredVotingKey`).
+    ///
+    /// The fetched balance, from `balance_provenance`, is reconciled first
+    /// against a stored record's newer one.
     fn finish_identity_load_storage(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -582,6 +587,7 @@ impl AppContext {
         merge_password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
         load_guard: &crate::context::identity_load_registry::IdentityLoadGuard,
         encryption_password: Option<&crate::model::secret::Secret>,
+        balance_provenance: BalanceProvenance,
     ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
         if let Some(password) = encryption_password {
             validate_protection_password(password)?;
@@ -592,15 +598,19 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         load_guard.ensure_current()?;
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
         if load_mode != IdentityLoadMode::MergeIntoExisting {
             let existing = self.get_local_qualified_identity(&identity_id)?;
-            return self.persist_loaded_identity_locked(
+            let stored = self.persist_loaded_identity_locked(
                 qualified_identity,
                 existing,
                 encryption_password,
                 load_mode,
                 IdentityRecordWrite::Import,
-            );
+            )?;
+            self.seed_balance_watermark_locked(pending)?;
+            return Ok(stored);
         }
         // A scoped merge is a key fix-up of a listed identity; it must never
         // restore an identity removed while the network requests were in flight.
@@ -633,7 +643,7 @@ impl AppContext {
         qualified_identity.wallet_index = existing.wallet_index;
         qualified_identity.top_ups = existing.top_ups.clone();
         qualified_identity.status = existing.status;
-        match encryption_password {
+        let stored = match encryption_password {
             None => self.persist_merged_identity_locked(
                 qualified_identity,
                 Some(existing),
@@ -647,7 +657,9 @@ impl AppContext {
                 load_mode,
                 IdentityRecordWrite::UpdateListed,
             ),
-        }
+        }?;
+        self.seed_balance_watermark_locked(pending)?;
+        Ok(stored)
     }
 
     /// Merge `qi` into its stored record, taking the record lock itself.
@@ -1417,6 +1429,7 @@ mod tests {
             None,
             &claim,
             None,
+            BalanceProvenance::Unobserved,
         );
         assert!(result.is_err(), "a scoped merge must not undo a removal");
         assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
@@ -1456,7 +1469,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -1502,7 +1516,8 @@ mod tests {
                         mode,
                         None,
                         &old_claim,
-                        None
+                        None,
+                        BalanceProvenance::Unobserved,
                     ),
                     Err(TaskError::IdentityLoadSuperseded { .. })
                 ),
@@ -1519,6 +1534,7 @@ mod tests {
                 None,
                 &fresh_claim,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .unwrap();
         fresh_claim.loaded();
@@ -1559,6 +1575,7 @@ mod tests {
                 None,
                 &claim,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .unwrap();
         let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
@@ -1592,7 +1609,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -3044,7 +3062,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 Some(&password),
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -3061,6 +3080,7 @@ mod tests {
             Some(&password),
             &claim,
             None,
+            BalanceProvenance::Unobserved,
         )
         .expect("seal and persist a merged key under the current password");
 

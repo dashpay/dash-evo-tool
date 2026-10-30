@@ -32,18 +32,18 @@ inside each section.
 | Gates | The unlock gate hides the whole form until the wallet is unlocked |
 | Routes | 14 supported; Identity→Shielded and Shielded→Identity are refused at Send time |
 
-Problems found (`UX-NNN`, severity per the `severity` skill):
+Problems found (`P-NN`, severity per the `severity` skill):
 
 | ID | Sev | Finding |
 |---|---|---|
-| UX-001 | High | Changing the source clears the typed destination (`address_input = None`, `validated_destination = None` on every source click). A pasted address is silently lost. |
-| UX-002 | High | Users must pick an account kind before the recipient. That kind limits which addresses are accepted, so an address can be "invalid" only because of an unrelated earlier choice. |
-| UX-003 | Medium | Two separate forms (Simple and Advanced) with different layouts, validation, fee summaries and button labels. Switching loses state and doubles what users must learn. |
-| UX-004 | Medium | Fee information is spread over four places: the amount caption, the "Transaction type" hint, the source-breakdown box and the fee summary. |
-| UX-005 | Medium | Paying into your own other wallet or account means finding and copying your own address (or knowing the `wallet:` search tag). |
-| UX-006 | Low | The Send button label changes between about 10 verbs as inputs change. It repeats the "Transaction type" hint. |
-| UX-007 | Low | The unlock gate hides the whole form. Users cannot see what they are about to do before unlocking. |
-| UX-008 | Low | The Identity source card shows in Expert view even when the wallet has no identities, which leaves an empty option. |
+| P-01 | High | Changing the source clears the typed destination (`address_input = None`, `validated_destination = None` on every source click). A pasted address is silently lost. |
+| P-02 | High | Users must pick an account kind before the recipient. That kind limits which addresses are accepted, so an address can be "invalid" only because of an unrelated earlier choice. |
+| P-03 | Medium | Two separate forms (Simple and Advanced) with different layouts, validation, fee summaries and button labels. Switching loses state and doubles what users must learn. |
+| P-04 | Medium | Fee information is spread over four places: the amount caption, the "Transaction type" hint, the source-breakdown box and the fee summary. |
+| P-05 | Medium | Paying into your own other wallet or account means finding and copying your own address (or knowing the `wallet:` search tag). |
+| P-06 | Low | The Send button label changes between about 10 verbs as inputs change. It repeats the "Transaction type" hint. |
+| P-07 | Low | The unlock gate hides the whole form. Users cannot see what they are about to do before unlocking. |
+| P-08 | Low | The Identity source card shows in Expert view even when the wallet has no identities, which leaves an empty option. |
 
 ## 3. Actors
 
@@ -95,7 +95,7 @@ Problems found (`UX-NNN`, severity per the `severity` skill):
 - **SR-15** When no source can cover amount + fee, an inline error under Amount names the largest amount that one payment can send and offers it in one click.
 
 ### Safety and state
-- **SR-16** Changing any From option never clears the To value, and the reverse. Incompatible combinations show an inline reason (fixes UX-001).
+- **SR-16** Changing any From option never clears the To value, and the reverse. Incompatible combinations show an inline reason (fixes P-01).
 - **SR-17** The Send button label is always **Send**. The confirmation dialog states route, source, destination, amount, fee and total (D-09).
 - **SR-18** A locked wallet does not hide the form. Balances stay visible, and **Send** asks to unlock, then continues to the confirmation (D-10).
 - **SR-19** The presets (Shield, Send (Private), Unshield, identity Send / Top up / Move to wallet) open this same form pre-filled. The fields the preset fixes are shown read-only.
@@ -120,16 +120,16 @@ Problems found (`UX-NNN`, severity per the `severity` skill):
 
 | ID | Requirement | Deviation | Rationale |
 |---|---|---|---|
-| D-01 | U2 "Advanced renders the hidden sources" | Advanced is a source option *inside* the one form, not a separate form | Removes the second UI (UX-003); the state is kept |
+| D-01 | U2 "Advanced renders the hidden sources" | Advanced is a source option *inside* the one form, not a separate form | Removes the second UI (P-03); the state is kept |
 | D-02 | U3 "pick a wallet, then options + a manual field" | **Someone else / My wallets** switch; the manual field is its own mode | One active destination at a time. Without the switch, a wallet+option choice and a typed address compete, and nothing shows which one wins |
 | D-03 | U3 "same options as source" (incl. Advanced) | No Advanced chip under To; multi-recipient = "+ Add another recipient" under the address field | Several recipients are external payees, so they belong to *Someone else*. A To-side Advanced chip would hide the address field |
 | D-04 | U4 states "only one side" | Rule: last-touched wins and the other side is pinned to its resolved value; it is not disabled | A disabled Auto creates "why can't I click this?" moments. Pinning keeps what the user saw and can be undone |
 | D-05 | U5 "fall back to Platform" | Full order per destination (SR-06); Core is the final fallback; Identity is never spent automatically; Shielded only for shielded destinations | Identity credits pay for usernames and Platform fees, so spending them silently would surprise users. Unshielding silently breaks privacy |
 | D-06 | (gap) | Auto never splits one payment across two sources | A split is two transactions that can partly fail. "No single balance covers this" is honest and fixable with one click (SR-15) |
 | D-07 | U10 default destination = current wallet + Core/Platform | Default To = **Someone else**. U10 applies when the user picks *My wallets*; for the same wallet it is adapted to "the other kind" | With U10 as written plus U5, the default is a send to yourself (Core→Core in the same wallet) that pays only a fee, and Send is enabled as soon as an amount is typed. Alex's main task is paying someone (SND-001) |
-| D-08 | (gap) | One Summary card replaces four fee/route read-outs | UX-004 |
-| D-09 | (gap) | The button always says "Send"; the route verb moves to the summary and confirmation | UX-006. With Auto, a label that changes as you type is unsettling |
-| D-10 | (gap) | Unlock when Send is pressed, not up front | UX-007. Matches the sign-time unlock pattern already used elsewhere |
+| D-08 | (gap) | One Summary card replaces four fee/route read-outs | P-04 |
+| D-09 | (gap) | The button always says "Send"; the route verb moves to the summary and confirmation | P-06. With Auto, a label that changes as you type is unsettling |
+| D-10 | (gap) | Unlock when Send is pressed, not up front | P-07. Matches the sign-time unlock pattern already used elsewhere |
 | D-11 | U2 Advanced = today's hidden contents | Per-address amounts are dropped. The user ticks the addresses to spend from; the amount comes from the one Amount field | Per-address amounts are the most error-prone part of the screen. Coin control means "which addresses", not "how much from each" |
 | D-12 | (today) 4 fee strategies in the Advanced form | **All 4 kept**, moved into a collapsed "Fee options ▸" row in the Summary card (Expert view, Advanced/several recipients, Platform involved). The default is unchanged | The Advanced form no longer exists, so the choice needs a new home. Fees belong next to the fee read-out, and collapsing keeps every other view free of it. *User decision: keep all 4.* |
 | D-13 | U2 lists Advanced for everyone | Advanced and "+ Add another recipient" show only in Expert/Developer view | Progressive disclosure: used by fewer than 20% of users |

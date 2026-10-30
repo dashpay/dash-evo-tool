@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+mod balance_watermark;
 mod import_keys;
 mod migration;
 #[cfg(test)]
@@ -499,7 +500,36 @@ fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), Ta
     let scope = DetScope::Identity(id);
     kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
     kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
+    kv.delete(scope, balance_watermark::BALANCE_WATERMARK_KEY)
+        .map_err(identity_err)?;
     Ok(())
+}
+
+/// `qualified_identity` as its record write may store it: carrying the newer
+/// stored balance when its own is only a copy read earlier (see
+/// [`balance_watermark`]). A write that observed a balance adopts it first,
+/// through [`AppContext::adopt_balance_observation_locked`].
+fn with_reconciled_balance<'a>(
+    kv: &DetKv,
+    id: &[u8; 32],
+    record_exists: bool,
+    qualified_identity: &'a QualifiedIdentity,
+) -> std::result::Result<std::borrow::Cow<'a, QualifiedIdentity>, TaskError> {
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    let carried = qualified_identity.identity.balance();
+    let kept = balance_watermark::reconcile_stored_balance(
+        kv,
+        id,
+        record_exists,
+        carried,
+        crate::model::identity_balance::BalanceProvenance::Unobserved,
+    )?;
+    if kept == carried {
+        return Ok(std::borrow::Cow::Borrowed(qualified_identity));
+    }
+    let mut pinned = qualified_identity.clone();
+    pinned.identity.set_balance(kept);
+    Ok(std::borrow::Cow::Owned(pinned))
 }
 
 #[cfg(feature = "testing")]
@@ -760,6 +790,11 @@ impl AppContext {
                 }
             }
         }
+        let record_exists = kv
+            .contains(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?;
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, record_exists, qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
@@ -872,6 +907,11 @@ impl AppContext {
     /// writer's read-modify-write. A caller that must keep its own read and
     /// this write atomic holds that guard itself and calls
     /// [`Self::write_local_qualified_identity_locked`] instead.
+    ///
+    /// The write carries no block height, so a balance other than the newest
+    /// one observed is replaced by that one (see `balance_watermark`). A
+    /// write that changes the balance uses
+    /// `update_local_qualified_identity_observed`.
     ///
     /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
     /// caller that read the record before a concurrent change (for example a
@@ -992,6 +1032,8 @@ impl AppContext {
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
             .unwrap_or((None, None));
+        let qualified_identity =
+            &with_reconciled_balance(&kv, &id, existing.is_some(), qualified_identity)?;
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
         let qi_bytes = encode_identity_blob_vault_first(
@@ -1985,6 +2027,7 @@ impl AppContext {
         qualified_identity: &mut QualifiedIdentity,
         wallet: &Option<(WalletSeedHash, u32)>,
         intent: DiscoveryIntent,
+        balance_provenance: crate::model::identity_balance::BalanceProvenance,
     ) -> std::result::Result<bool, TaskError> {
         let identity_id = qualified_identity.identity.id();
         let lock = self.identity_record_lock(identity_id);
@@ -2015,6 +2058,8 @@ impl AppContext {
             );
             self.clear_identity_unloaded(&kv, &id)?;
         }
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
 
         let existing: Option<StoredQualifiedIdentity> = kv
             .get(DetScope::Identity(&id), IDENTITY_KEY)
@@ -2048,6 +2093,7 @@ impl AppContext {
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
         }
+        self.seed_balance_watermark_locked(pending)?;
         Ok(true)
     }
 
@@ -4673,7 +4719,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4720,7 +4771,12 @@ mod tests {
 
         let stored = staged
             .ctx
-            .store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("a refusal is not an error");
 
         assert!(
@@ -4761,7 +4817,12 @@ mod tests {
         let ctx = Arc::clone(&staged.ctx);
         let discovery = std::thread::spawn(move || {
             let _attached = discovery_probe.attach();
-            ctx.store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            ctx.store_discovered_identity(
+                &mut in_flight,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
         });
 
         // Unbounded on purpose: the discovery thread cannot acquire a lock this
@@ -4838,7 +4899,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut reloaded, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut reloaded,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "with the marker retired, discovery must keep the identity refreshed again",
         );
@@ -4874,7 +4940,12 @@ mod tests {
         assert!(
             !staged
                 .ctx
-                .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rediscovered,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("a refusal is not an error"),
             "discovery must not restore what the wipe cleared",
         );
@@ -4901,7 +4972,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut found, &None, DiscoveryIntent::UserRequested)
+                .store_discovered_identity(
+                    &mut found,
+                    &None,
+                    DiscoveryIntent::UserRequested,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
             "a search the user started must load the identity back",
         );
@@ -4978,7 +5054,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("first refresh");
         let after_first = staged
             .ctx
@@ -4995,7 +5076,12 @@ mod tests {
 
         staged
             .ctx
-            .store_discovered_identity(&mut rebuild(), &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rebuild(),
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect("second refresh");
         let after_second = staged
             .ctx
@@ -5067,7 +5153,12 @@ mod tests {
 
         let err = staged
             .ctx
-            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .store_discovered_identity(
+                &mut rediscovered,
+                &None,
+                DiscoveryIntent::Automatic,
+                crate::model::identity_balance::BalanceProvenance::Unobserved,
+            )
             .expect_err("a mixed-protection merge must fail closed");
 
         assert!(
@@ -5194,7 +5285,12 @@ mod tests {
         assert!(
             staged
                 .ctx
-                .store_discovered_identity(&mut rebuilt, &None, DiscoveryIntent::Automatic)
+                .store_discovered_identity(
+                    &mut rebuilt,
+                    &None,
+                    DiscoveryIntent::Automatic,
+                    crate::model::identity_balance::BalanceProvenance::Unobserved
+                )
                 .expect("store"),
         );
 

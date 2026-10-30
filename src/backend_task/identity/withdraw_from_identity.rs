@@ -1,6 +1,7 @@
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::MasternodeWithdrawal;
 use dash_sdk::dpp::dashcore::Address;
@@ -9,7 +10,7 @@ use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
+use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentityWithMetadata;
 use dash_sdk::platform::{Fetch, Identity};
 
 use super::BackendTaskSuccessResult;
@@ -97,12 +98,13 @@ impl AppContext {
         // that wallet's masternode withdrawal, which re-checks the key against
         // the node and enforces the payout-address rule itself. Keys entered
         // by hand keep the identity's own signer.
-        let remaining_balance = match qualified_identity
+        let (remaining_balance, provenance) = match qualified_identity
             .wallet_masternode_withdrawal(signing_key_id)
         {
             Some(route) => {
                 tracing::info!(role = ?route.role, "Withdrawing through the wallet that holds the masternode key");
-                self.wallet_backend()?
+                let remaining = self
+                    .wallet_backend()?
                     .masternode_withdraw(
                         &route.wallet_seed_hash,
                         MasternodeWithdrawal {
@@ -114,13 +116,15 @@ impl AppContext {
                             owner_key_index_hint: route.owner_key_index_hint,
                         },
                     )
-                    .await?
+                    .await?;
+                // Upstream returns only the credits, without a height.
+                (remaining, BalanceProvenance::ConfirmedUnordered)
             }
             None => {
-                qualified_identity
+                let (remaining, metadata) = qualified_identity
                     .identity
                     .clone()
-                    .withdraw(
+                    .withdraw_with_metadata(
                         &sdk,
                         to_address,
                         credits,
@@ -129,7 +133,8 @@ impl AppContext {
                         qualified_identity.clone(),
                         None,
                     )
-                    .await?
+                    .await?;
+                (remaining, BalanceProvenance::ObservedAt(metadata.height))
             }
         };
 
@@ -156,7 +161,7 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-        self.update_local_qualified_identity(&qualified_identity)
+        self.update_local_qualified_identity_observed(&mut qualified_identity, provenance)
             .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
     }
 }

@@ -5189,6 +5189,15 @@ impl ScreenLike for WalletSendScreen {
         self.asset_lock_balance.invalidate();
     }
 
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.app_context.network()
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh_bound_identity();
+        }
+    }
+
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
@@ -5497,6 +5506,56 @@ mod tests {
             panic!("expected a wallet-funded top-up");
         };
         assert_eq!(index, 3, "indexes 0 and 2 already hold earlier top-ups");
+    }
+
+    /// A top-up that ended elsewhere changes the balance of the identity the
+    /// form is bound to: the identity cache notification brings it in and
+    /// leaves the amount entered alone. Other domains and networks are ignored.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_cache_notification_rebinds_the_identity_without_touching_the_form() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let (ctx, _dir) = offline_ctx();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            sender,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wallet backend");
+        let identity = bound_identity();
+        let mut topped_up = identity.clone();
+        topped_up.identity.set_balance(300_000_000_000);
+        ctx.insert_local_qualified_identity(&topped_up, &None)
+            .expect("store the topped-up identity");
+        let mut screen = WalletSendScreen::for_identity(&ctx, identity, IdentitySendMode::TopUp);
+        screen.amount = Some(Amount::dash_from_duffs(100_000));
+        let balance = |screen: &WalletSendScreen| {
+            screen
+                .identity_flow()
+                .map(|(identity, _)| identity.identity.balance())
+        };
+
+        for ignored in [
+            CacheUpdate {
+                network: Network::Mainnet,
+                domain: CacheDomain::Identities,
+            },
+            CacheUpdate {
+                network: Network::Testnet,
+                domain: CacheDomain::Tokens,
+            },
+        ] {
+            screen.cached_data_changed(ignored);
+            assert_eq!(balance(&screen), Some(100_000_000_000), "{ignored:?}");
+        }
+
+        screen.cached_data_changed(CacheUpdate {
+            network: Network::Testnet,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(balance(&screen), Some(300_000_000_000));
+        assert_eq!(screen.amount, Some(Amount::dash_from_duffs(100_000)));
     }
 
     /// A top-up is refused while another top-up of the same identity runs,

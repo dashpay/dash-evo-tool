@@ -934,15 +934,22 @@ impl AppContext {
                 .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
                 .await?),
             IdentityTask::TopUpIdentity(top_up_info) => {
-                Ok(self.top_up_identity(sdk, top_up_info).await?)
+                let result = self.top_up_identity(sdk, top_up_info).await?;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
+                Ok(result)
             }
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
                 wallet_seed_hash,
             } => {
-                self.top_up_identity_from_platform_addresses(identity, inputs, wallet_seed_hash)
-                    .await
+                let result = self
+                    .top_up_identity_from_platform_addresses(identity, inputs, wallet_seed_hash)
+                    .await?;
+                self.notify_cache_changed(crate::backend_task::CacheDomain::Identities, &sender)
+                    .await;
+                Ok(result)
             }
             IdentityTask::TransferToAddresses {
                 identity,

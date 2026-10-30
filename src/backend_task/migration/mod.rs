@@ -67,6 +67,9 @@ impl AppContext {
         task: MigrationTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
+            // Finishing the unwire makes this network's storage readable, so
+            // every cached domain is re-read. Acknowledging a warning retires
+            // the warning alone: no cached data changes.
             MigrationTask::FinishUnwire => {
                 finish_unwire::run(self).await?;
                 Ok(BackendTaskSuccessResult::CacheUpdated(
@@ -78,31 +81,16 @@ impl AppContext {
             }
             MigrationTask::AcknowledgeUnreadableAppData => {
                 finish_unwire::acknowledge_unreadable_app_data(self)?;
-                Ok(BackendTaskSuccessResult::CacheUpdated(
-                    crate::backend_task::CacheUpdate {
-                        network: self.network,
-                        domain: crate::backend_task::CacheDomain::All,
-                    },
-                ))
+                Ok(BackendTaskSuccessResult::None)
             }
             MigrationTask::AcknowledgeUnreadableIdentities => {
                 finish_unwire::acknowledge_unreadable_identities(self)?;
-                Ok(BackendTaskSuccessResult::CacheUpdated(
-                    crate::backend_task::CacheUpdate {
-                        network: self.network,
-                        domain: crate::backend_task::CacheDomain::All,
-                    },
-                ))
+                Ok(BackendTaskSuccessResult::None)
             }
             MigrationTask::AcknowledgeUnreadableData => {
                 finish_unwire::acknowledge_unreadable_app_data(self)?;
                 finish_unwire::acknowledge_unreadable_identities(self)?;
-                Ok(BackendTaskSuccessResult::CacheUpdated(
-                    crate::backend_task::CacheUpdate {
-                        network: self.network,
-                        domain: crate::backend_task::CacheDomain::All,
-                    },
-                ))
+                Ok(BackendTaskSuccessResult::None)
             }
             MigrationTask::RestoreFromPreviousVersion => legacy_restore::run_task(self).await,
         }
@@ -120,5 +108,36 @@ pub(crate) fn migration_task_error(source: Arc<MigrationError>) -> TaskError {
         MigrationError::LegacyDataTooOld { .. } => TaskError::SavedDataTooOld { source },
         MigrationError::LegacyDataTooNew { .. } => TaskError::SavedDataTooNew { source },
         _ => TaskError::MigrationFailed { source },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::migration_status::MigrationState;
+
+    /// Acknowledging a warning about data the storage update could not read
+    /// changes no data a screen caches: it retires the warning and leaves the
+    /// state ready, so it reports no cache change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acknowledging_unreadable_data_reports_no_cache_change() {
+        for task in [
+            MigrationTask::AcknowledgeUnreadableAppData,
+            MigrationTask::AcknowledgeUnreadableIdentities,
+            MigrationTask::AcknowledgeUnreadableData,
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let context = crate::context::test_support::test_app_context(temp_dir.path());
+            let result = context.run_migration_task(task.clone()).await;
+            assert!(
+                matches!(result, Ok(BackendTaskSuccessResult::None)),
+                "{task:?}: {result:?}"
+            );
+            assert_eq!(
+                *context.migration_status().state(),
+                MigrationState::Ready,
+                "{task:?}"
+            );
+        }
     }
 }

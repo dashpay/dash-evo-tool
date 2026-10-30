@@ -150,6 +150,15 @@ fn mount_hub_on(
     // The hub holds its proof-verifying reads until the masternode list is
     // synced; these tests start on a synced network.
     app_context.connection_status().set_masternodes_ready(true);
+    mount_hub_as_is(app_context, size, tab)
+}
+
+/// Mounts the hub on whatever sync state the network is in.
+fn mount_hub_as_is(
+    app_context: &Arc<AppContext>,
+    size: egui::Vec2,
+    tab: IdentityHubTab,
+) -> HubHarness {
     let mut hub = Harness::builder().with_size(size).build_ui_state(
         |ui, state: &mut (IdentityHubScreen, Vec<AppAction>)| {
             let action = state.0.ui(ui);
@@ -665,6 +674,99 @@ fn the_home_card_shows_only_with_a_balance_or_a_claim() {
             hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
                 .is_none(),
             "an empty card would only advertise a feature"
+        );
+    });
+}
+
+/// Whether the hub asked for the full token balance refresh.
+fn asked_for_balances(hub: &HubHarness) -> bool {
+    hub.state().1.iter().any(|action| {
+        matches!(
+            action,
+            AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), .. }
+                if matches!(**task, TokenTask::QueryMyTokenBalances)
+        )
+    })
+}
+
+/// On a fresh launch nothing has registered the identity with the balance
+/// sync, so the Home card has no balance to show until Home itself asks.
+#[test]
+fn home_asks_for_balances_on_a_fresh_launch_and_then_shows_the_card() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB4);
+        let tokens = seed_contract(
+            &app_context,
+            0xC4,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("DashCoffee", false)],
+        );
+        let mut hub = mount_hub_on(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        hub.run_steps(4);
+        assert_eq!(
+            hub.state().0.selected_tab(),
+            IdentityHubTab::Home,
+            "the check runs without leaving Home"
+        );
+        let refresh = hub
+            .state()
+            .1
+            .iter()
+            .filter_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    context,
+                } if matches!(**task, TokenTask::QueryMyTokenBalances) => Some(context.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refresh.len(), 1, "one refresh per arrival");
+        assert!(
+            hub.query_by_label(token_copy::SEE_ALL_TOKENS_LABEL)
+                .is_none(),
+            "no balance known yet: no card"
+        );
+
+        set_balance(&app_context, identity, tokens[0], 125_000);
+        hub.state_mut().0.display_backend_task_result(
+            &refresh[0],
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label("1250 DashCoffee").is_some(),
+            "the card appears once the refresh brought a balance"
+        );
+    });
+}
+
+#[test]
+fn home_holds_its_balance_refresh_until_the_masternode_list_is_synced() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xB5);
+        seed_three_tokens(&app_context, identity);
+        app_context.connection_status().set_masternodes_ready(false);
+        let mut hub = mount_hub_as_is(
+            &app_context,
+            egui::vec2(1280.0, 900.0),
+            IdentityHubTab::Home,
+        );
+        assert!(
+            !asked_for_balances(&hub),
+            "a proof-verifying balance read went out before the masternode list synced"
+        );
+
+        app_context.connection_status().set_masternodes_ready(true);
+        hub.run_steps(6);
+        assert!(
+            asked_for_balances(&hub),
+            "the arrival stays owed until the network can answer"
         );
     });
 }

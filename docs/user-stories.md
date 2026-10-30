@@ -427,7 +427,7 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 
 As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
 
-- Pay from Core and choose My wallets › Shielded, or open Shield from the Shielded tab. The funds go to the same wallet's private balance; someone else's private address can be paid only from a private balance.
+- Pay from Core and choose My wallets › Shielded, or open Shield from the Shielded tab. The funds go to the same wallet's private balance; someone else's private address can be paid only from a private balance (see SND-016). Your own address is also refused until the app knows it, and only the default private address counts as your own.
 - System creates an asset lock, waits for proof, and shields the credits.
 - The amount entered is the amount shielded: the fee the network takes is paid on top, shown before sending, and reserved by Max. When the wallet cannot cover that fee, the form says so instead of offering an amount.
 - Progress banner shows multi-step operation status.
@@ -448,7 +448,7 @@ As a user, I want to top up an identity directly from the Send screen so that I 
 
 As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
 
-- Select Platform Addresses as source and enter a shielded address as destination.
+- Select Platform Addresses as source and enter a shielded address as destination. Platform funds can only shield into your own private balance; sending to someone else's private address is refused with a message to choose Shielded Balance as the source (see SND-016). Your own address is also refused until the app knows it, and only your default private address counts as your own.
 - System auto-selects the highest-balance Platform address.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
@@ -457,7 +457,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
-- Select Shielded Pool as source and enter a Core address as destination.
+- Select Shielded Balance as source and enter a Core address as destination.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
@@ -500,7 +500,7 @@ As a user, I want a "Max" button on a Core-to-Core send that fills in the larges
 
 As a developer, I want to move credits out of the shielded pool to one of my Platform addresses so that I can use them for ordinary Platform operations.
 
-- Select Shielded Pool as source and enter a Platform address as destination.
+- Select Shielded Balance as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -510,7 +510,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 
 As a developer, I want to transfer credits privately from my shielded pool to another shielded address so that the transfer amount and parties are not exposed on Platform.
 
-- Select Shielded Pool as source and enter a shielded address as destination.
+- Select Shielded Balance as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
@@ -722,7 +722,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 - A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
 - The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
-### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
+### IDN-013: Password-protect an identity's signing keys [Implemented]
 **Persona:** Priya, Jordan
 
 As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
@@ -1461,6 +1461,8 @@ As a developer, I want to see raw JSON representations of documents and contract
 As a user, I want to see Platform status (epoch info, total credits, validators, version voting) so that I can understand the current state of the network.
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
+- When the network runs a newer protocol version than this build knows, the current-epoch report advises updating Dash Evo Tool; some features stay unavailable until then.
+- The recent withdrawal history, when it lists a failed withdrawal, notes that its amount is not returned to the identity, because it was too small to ever be paid out. Expired withdrawals are refunded and carry no note.
 
 ### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
@@ -1632,6 +1634,7 @@ As a user, I want a clear connection indicator and status rows so that I know at
 
 - Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
 - Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+- When wallet sync data could not be saved, the tooltip adds a line saying so and advising a restart of Dash Evo Tool. The indicator colour is not affected by this fault in any connection state.
 
 ### NET-018: Auto-start SPV sync on startup [Implemented]
 **Persona:** Priya, Jordan
@@ -1723,7 +1726,7 @@ As a masternode operator, I want to withdraw my node's Platform credits to Core 
 As a user, while a long operation that is unsafe to interrupt is running (broadcasting a state transition, signing, key import, a multi-step registration, a network migration), I want to see a clear please-wait block over the whole window so that I understand the app is busy and cannot accidentally fire a conflicting second action.
 
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
-- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
+- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath. The block is never dismissable by Esc or Tab. Enter and Space do nothing either, unless the block is one of the exceptions named below: those designate a single escape, and Enter or Space activate only that.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
 - The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
 - Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exceptions: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness. The identity top-up block of IDN-004 can wait on the Dash network without a fixed limit, so after 30 s it offers "Continue in background" as its designated escape. The top-up keeps running, the funding form for that identity stays paused until it ends, and a banner tracks it to its result.)_
@@ -1758,7 +1761,7 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 As an existing user upgrading into the platform-wallet version, I want a one-time in-app notice explaining what changed — notably that direct funding from a scanned external payment (QR) was removed — so that I understand why a workflow I relied on is gone.
 
 - A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
-- Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+- Note: not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
 
 ### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1856,7 +1859,8 @@ As a user, I want to handle my contacts entirely from the Identities hub — ans
 - Sent requests offer Cancel, which withdraws the request (see DPY-014).
 - Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
 - Each contact row offers Pay, which opens the existing send-payment flow for that contact.
-- Contacts the user has hidden do not appear in the list.
+- Contacts the user has hidden do not appear in the main list; they stay available in the collapsed "Show hidden contacts" section (see DPY-009).
+- Selecting a contact shows its details (picture, name, username, bio) and a private note beside the list, or under it on a narrow window (see DPY-005, DPY-009).
 
 ## Masternodes (MN)
 

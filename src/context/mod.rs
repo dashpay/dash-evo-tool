@@ -31,6 +31,7 @@ pub use wallet_lifecycle::PrepareGateGuard;
 pub use wallet_lifecycle::WalletUnlockRetention;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
@@ -43,6 +44,7 @@ use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::SingleKeyHash;
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
+use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::wallet_context::WalletContext;
 use crate::wallet_backend::{
@@ -398,6 +400,14 @@ pub struct AppContext {
     /// after `AppContext::new` but before the backend reads it; contention is
     /// nil (touched only at install and backend construction).
     secret_prompt: SecretPromptSlot,
+    /// The frame loop that takes this context's task reports: progress,
+    /// cache notifications and the backend's requests. The wallet backend
+    /// keeps the sender it is built with for the life of the context, so it
+    /// is never a per-request one: the GUI installs its sender through
+    /// [`Self::install_frame_loop`] before any request can reach the context,
+    /// and a headless process gets one sink per context from
+    /// [`Self::frame_loop_sender`].
+    frame_loop: ArcSwapOption<SenderAsync<TaskResult>>,
     /// Whether the preserved legacy `data.db` holds any identity of this
     /// network — the gate on the stranded-key recovery offer, probed at most
     /// once per context by [`Self::has_legacy_identities`]. The legacy file is
@@ -658,6 +668,7 @@ impl AppContext {
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
+            frame_loop: ArcSwapOption::const_empty(),
             legacy_identities_present: std::sync::OnceLock::new(),
         };
 
@@ -1503,6 +1514,52 @@ impl AppContext {
             .unwrap_or_else(|_| Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>)
     }
 
+    /// Install the frame loop that takes this context's task reports. The GUI
+    /// calls this on every context it holds before any request can reach it:
+    /// at boot, and in the network switch that creates a context. A later
+    /// install replaces the sender for later callers only; the wallet backend
+    /// keeps the one it was built with.
+    pub fn install_frame_loop(&self, sender: SenderAsync<TaskResult>) {
+        self.frame_loop.store(Some(Arc::new(sender)));
+    }
+
+    /// The sender to this context's frame loop. Headless callers (MCP, CLI)
+    /// pass it to work that reports to a frame loop, such as
+    /// [`Self::run_backend_task`]: a context with no frame loop installed gets
+    /// a sink that reads and drops reports until shutdown, one per context,
+    /// tracked by the task manager so a report never stalls on a full channel
+    /// and the sink ends with the process. Must run inside a Tokio runtime.
+    pub fn frame_loop_sender(&self) -> SenderAsync<TaskResult> {
+        if let Some(sender) = self.frame_loop.load_full() {
+            return (*sender).clone();
+        }
+        let (tx, mut reports) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, self.egui_ctx.clone());
+        let cancelled = self.subtasks.cancellation_token.clone();
+        let sink = async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => break,
+                    report = reports.recv() => if report.is_none() { break },
+                }
+            }
+        };
+        if self.subtasks.spawn_sync("frame-loop-sink", sink).is_err() {
+            tracing::debug!("No frame-loop sink after shutdown began; reports will be refused");
+        }
+        // Another caller may have installed a frame loop meanwhile: the first
+        // one wins, as it is the one a backend may already hold. A losing
+        // sink ends when its sender drops here.
+        let previous = self
+            .frame_loop
+            .compare_and_swap(&None::<Arc<_>>, Some(Arc::new(sender.clone())));
+        match previous.as_ref() {
+            Some(installed) => (**installed).clone(),
+            None => sender,
+        }
+    }
+
     /// Whether this context has a host that can render a human password prompt.
     /// The GUI installs that capability during boot; standalone MCP/CLI contexts
     /// retain the non-interactive default.
@@ -2268,6 +2325,49 @@ mod tests {
             .await
             .expect("wire wallet backend offline");
         (temp_dir, ctx)
+    }
+
+    /// A context with no frame loop installed, as in a headless process,
+    /// sinks every report it is handed through one sender for its life, and
+    /// the sink ends with the task manager's shutdown.
+    #[tokio::test]
+    async fn a_headless_context_sinks_frame_loop_reports_until_shutdown() {
+        use crate::utils::tasks::TaskShutdownOutcome;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sender = ctx.frame_loop_sender();
+        for _ in 0..100 {
+            sender
+                .send(TaskResult::Repaint)
+                .await
+                .expect("the sink reads reports past the channel's capacity");
+        }
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("later callers share the sink");
+        assert_eq!(
+            ctx.subtasks
+                .shutdown_async()
+                .await
+                .expect("shutdown outcome"),
+            TaskShutdownOutcome::Complete,
+            "the sink ends on shutdown although the context still holds its sender"
+        );
+    }
+
+    /// An installed frame loop is what every later caller gets.
+    #[tokio::test]
+    async fn an_installed_frame_loop_takes_every_report() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.install_frame_loop(SenderAsync::new(tx, ctx.egui_ctx().clone()));
+        ctx.frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("send to the installed frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
     }
 
     /// Regression (mn-live-qa Bug 1): the user role is a single app-global value

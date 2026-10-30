@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
@@ -23,9 +24,10 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity
-        let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
-            Ok(Some(identity)) => identity,
-            Ok(None) => return Err(TaskError::IdentityNotFound),
+        let (identity, fetched) = match Identity::fetch_with_metadata(sdk, identity_id, None).await
+        {
+            Ok((Some(identity), metadata)) => (identity, metadata),
+            Ok((None, _)) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
 
@@ -43,7 +45,7 @@ impl AppContext {
             encrypted_private_keys.extend(wallet_private_keys);
         }
 
-        let qualified_identity = QualifiedIdentity {
+        let mut qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity: None,
             associated_operator_identity: None,
@@ -70,7 +72,11 @@ impl AppContext {
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
+        self.insert_local_qualified_identity_observed(
+            &mut qualified_identity,
+            &wallet_info,
+            BalanceProvenance::ObservedAt(fetched.height),
+        )?;
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }

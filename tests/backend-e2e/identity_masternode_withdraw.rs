@@ -137,7 +137,7 @@ fn load_task(
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
         encryption_password: None,
-        load_mode: IdentityLoadMode::Overwrite,
+        load_mode: IdentityLoadMode::MergeOrInsert,
         load_token: None,
     };
     BackendTask::IdentityTask(IdentityTask::LoadIdentity(input))

@@ -234,6 +234,9 @@ det-cli masternode-identity-load \
 #      "withdrawals_available": true, "payout_address": "y...", ... }
 #    A node with neither key on this device still loads, with
 #    "withdrawals_available": false and a "note" saying how to enable them.
+#    Loading a node again never removes its stored keys: a blank field keeps
+#    them, and a key you supply replaces the one it matches. A password-protected
+#    node can only be reloaded from the app window.
 
 # 2a. Owner key — destination is forced to the registered payout address.
 #     Supplying to-address is rejected.

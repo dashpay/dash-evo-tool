@@ -168,6 +168,18 @@ impl AppContext {
         // tier are never silently overwritten. Checked here, at the storage
         // layer, so every `RejectIfExists` caller is guarded uniformly.
         let existing_stored = self.get_local_qualified_identity(&identity_id)?;
+        // A repeatable load settles here, under the claim. A blob without an index
+        // entry is what a failed removal leaves: not a listed identity to merge into.
+        let renames_node = load_mode == IdentityLoadMode::MergeOrInsert && !alias_input.is_empty();
+        let load_mode = match load_mode {
+            IdentityLoadMode::MergeOrInsert
+                if existing_stored.is_some() && self.is_identity_listed(&identity_id)? =>
+            {
+                IdentityLoadMode::MergeIntoExisting
+            }
+            IdentityLoadMode::MergeOrInsert => IdentityLoadMode::Overwrite,
+            other => other,
+        };
         match load_mode {
             IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
                 return Err(TaskError::DuplicateProTxHash { identity_id });
@@ -539,6 +551,12 @@ impl AppContext {
             &load_guard,
             encryption_password.as_ref(),
         )?;
+
+        // A merge keeps the stored alias; this caller named a new one.
+        if renames_node && qualified_identity.alias.as_deref() != Some(alias_input.as_str()) {
+            self.set_identity_alias(&identity_id, Some(&alias_input))?;
+            qualified_identity.alias = Some(alias_input);
+        }
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
@@ -3371,10 +3389,19 @@ mod tests {
 
         // The verify happens before the SDK fetch, so this resolves offline.
         let sdk = ctx.sdk();
-        let result = ctx.load_identity(&sdk, input).await;
+        let result = ctx.load_identity(&sdk, input.clone()).await;
         assert!(
             matches!(result, Err(TaskError::SecretPromptUnavailable)),
             "a headless merge into a Tier-2 node must fail closed, got {result:?}",
+        );
+        let repeat = IdentityInputToLoad {
+            load_mode: IdentityLoadMode::MergeOrInsert,
+            ..input
+        };
+        let result = ctx.load_identity(&sdk, repeat).await;
+        assert!(
+            matches!(result, Err(TaskError::SecretPromptUnavailable)),
+            "a repeat headless load of a Tier-2 node must fail closed, got {result:?}",
         );
 
         // The stored node is untouched — still fully Tier-2.
@@ -3815,6 +3842,229 @@ mod tests {
                 if *found == wallet_reference(seed_hash, WALLET_NODE_OWNER_PATH)),
             "the rotated owner key must be referenced in the wallet, got {new_entry:?}"
         );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A node private key no wallet holds: its WIF, raw bytes and hash160.
+    fn typed_node_key() -> (String, [u8; 32], [u8; 20]) {
+        let bytes: [u8; 32] = rand::random();
+        let key = PrivateKey::from_byte_array(&bytes, Network::Testnet).unwrap();
+        (
+            key.to_wif(),
+            bytes,
+            key.public_key().pubkey_hash().to_byte_array(),
+        )
+    }
+
+    /// A context with no wallets, so a blank key field finds nothing to use.
+    async fn walletless_context() -> (Arc<AppContext>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        (ctx, dir)
+    }
+
+    fn repeatable_load(
+        node_id: Identifier,
+        owner: Option<&str>,
+        payout: Option<&str>,
+    ) -> IdentityInputToLoad {
+        IdentityInputToLoad {
+            payout_address_private_key_input: Secret::new(payout.unwrap_or_default()),
+            ..node_load_input(
+                node_id,
+                Secret::new(owner.unwrap_or_default()),
+                IdentityLoadMode::MergeOrInsert,
+            )
+        }
+    }
+
+    fn withdrawal_key_ids(qi: &QualifiedIdentity) -> Vec<KeyID> {
+        qi.available_withdrawal_keys()
+            .iter()
+            .map(|key| key.identity_public_key.id())
+            .collect()
+    }
+
+    /// The reported data loss: with no wallet to fall back on, a repeat load
+    /// with blank fields used to replace the stored key set with nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repeat_load_with_blank_fields_keeps_the_typed_keys() {
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, _dir) = walletless_context().await;
+        let node_id = Identifier::from([0x5D; 32]);
+        let (owner_wif, owner_bytes, owner_hash) = typed_node_key();
+        let (payout_wif, payout_bytes, payout_hash) = typed_node_key();
+        let sdk = node_sdk(
+            &ctx,
+            node_id,
+            vec![
+                hash160_key(0, Purpose::OWNER, owner_hash),
+                hash160_key(1, Purpose::TRANSFER, payout_hash),
+            ],
+        )
+        .await;
+        ctx.load_identity(
+            &sdk,
+            repeatable_load(node_id, Some(&owner_wif), Some(&payout_wif)),
+        )
+        .await
+        .expect("a first load stores the node");
+
+        ctx.load_identity(&sdk, repeatable_load(node_id, None, None))
+            .await
+            .expect("a repeat load succeeds");
+
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert_eq!(withdrawal_key_ids(&stored), vec![0, 1]);
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), node_id.to_buffer());
+        assert!(*view.get(&M, 0).unwrap().expect("owner key") == owner_bytes);
+        assert!(*view.get(&M, 1).unwrap().expect("payout key") == payout_bytes);
+        backend.shutdown().await;
+    }
+
+    /// After a rotation the stored key stays on file but is not offered: a
+    /// blank repeat load must not report a key Platform would refuse, and a
+    /// typed repeat load must put the new key to use.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repeat_load_after_a_rotation_offers_only_the_active_key() {
+        use dash_sdk::dpp::identity::Purpose;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let (ctx, _dir) = walletless_context().await;
+        let node_id = Identifier::from([0x5E; 32]);
+        let (old_wif, _, old_hash) = typed_node_key();
+        let (new_wif, _, new_hash) = typed_node_key();
+        let (payout_wif, _, payout_hash) = typed_node_key();
+        let old_owner = hash160_key(0, Purpose::OWNER, old_hash);
+        let payout = hash160_key(1, Purpose::TRANSFER, payout_hash);
+        let before = node_sdk(&ctx, node_id, vec![old_owner.clone(), payout.clone()]).await;
+        ctx.load_identity(
+            &before,
+            repeatable_load(node_id, Some(&old_wif), Some(&payout_wif)),
+        )
+        .await
+        .unwrap();
+
+        let mut disabled_owner = old_owner;
+        disabled_owner.set_disabled_at(1);
+        let after = node_sdk(
+            &ctx,
+            node_id,
+            vec![
+                disabled_owner,
+                payout,
+                hash160_key(2, Purpose::OWNER, new_hash),
+            ],
+        )
+        .await;
+
+        ctx.load_identity(&after, repeatable_load(node_id, None, None))
+            .await
+            .unwrap();
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert!(
+            stored.private_keys.entry_at(&(M, 0)).is_some(),
+            "the replaced key's material stays on file"
+        );
+        assert_eq!(
+            withdrawal_key_ids(&stored),
+            vec![1],
+            "only the payout key is still signable"
+        );
+
+        ctx.load_identity(&after, repeatable_load(node_id, Some(&new_wif), None))
+            .await
+            .unwrap();
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert_eq!(withdrawal_key_ids(&stored), vec![1, 2]);
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_key_replaces_the_wallet_reference_on_a_repeat_load() {
+        let (ctx, _dir, _seed_hash, node_id, sdk) = wallet_held_node().await;
+        ctx.load_identity(&sdk, repeatable_load(node_id, None, None))
+            .await
+            .unwrap();
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert!(matches!(
+            stored.private_keys.entry_at(&(M, 0)),
+            Some((_, PrivateKeyData::AtWalletDerivationPath(_)))
+        ));
+
+        let owner_wif = WALLET_NODE_OWNER_PATH
+            .parse::<DerivationPath>()
+            .unwrap()
+            .derive_priv_ecdsa_for_master_seed(&*WALLET_NODE_SEED, Network::Testnet)
+            .unwrap()
+            .to_priv()
+            .to_wif();
+        ctx.load_identity(&sdk, repeatable_load(node_id, Some(&owner_wif), None))
+            .await
+            .unwrap();
+
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let owner = stored.private_keys.entry_at(&(M, 0));
+        assert!(
+            !matches!(owner, Some((_, PrivateKeyData::AtWalletDerivationPath(_)))),
+            "the typed owner key replaces the reference, got {owner:?}"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repeat_load_keeps_the_alias_unless_it_names_a_new_one() {
+        let (ctx, _dir) = walletless_context().await;
+        let node_id = Identifier::from([0x5F; 32]);
+        let sdk = node_sdk(&ctx, node_id, vec![]).await;
+        let load = |alias: &str| IdentityInputToLoad {
+            alias_input: alias.to_owned(),
+            ..repeatable_load(node_id, None, None)
+        };
+        let stored_alias = || {
+            ctx.get_local_qualified_identity(&node_id)
+                .unwrap()
+                .unwrap()
+                .alias
+        };
+
+        ctx.load_identity(&sdk, load("first")).await.unwrap();
+        assert_eq!(stored_alias().as_deref(), Some("first"));
+
+        ctx.load_identity(&sdk, load("")).await.unwrap();
+        assert_eq!(stored_alias().as_deref(), Some("first"));
+
+        let renamed = ctx.load_identity(&sdk, load("second")).await.unwrap();
+        assert_eq!(stored_alias().as_deref(), Some("second"));
+        let BackendTaskSuccessResult::LoadedIdentity(renamed) = renamed else {
+            panic!("a loaded identity");
+        };
+        assert_eq!(
+            renamed.alias.as_deref(),
+            Some("second"),
+            "the result reports the alias that was stored"
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A removal that failed part-way leaves the blob without its index entry.
+    /// The repeat load is then a new load, not a merge into a listed identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repeat_load_restores_a_node_left_unlisted_by_a_failed_removal() {
+        let (ctx, _dir) = walletless_context().await;
+        let node_id = Identifier::from([0x60; 32]);
+        let sdk = node_sdk(&ctx, node_id, vec![]).await;
+        ctx.load_identity(&sdk, repeatable_load(node_id, None, None))
+            .await
+            .unwrap();
+        ctx.unlist_identity_for_test(&node_id);
+        assert!(!ctx.is_identity_listed(&node_id).unwrap());
+
+        ctx.load_identity(&sdk, repeatable_load(node_id, None, None))
+            .await
+            .expect("the load does not depend on the stale blob");
+
+        assert!(ctx.is_identity_listed(&node_id).unwrap());
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 }

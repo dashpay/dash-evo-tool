@@ -58,7 +58,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IdentityLoadMode {
     /// Overwrite any existing stored identity (legacy behaviour; the User
-    /// re-load and headless flows that always resubmit their full key set).
+    /// re-load, which always resubmits its full key set).
     #[default]
     Overwrite,
     /// A fresh load: reject with [`TaskError::DuplicateProTxHash`] when an
@@ -68,6 +68,11 @@ pub enum IdentityLoadMode {
     /// stored identity's keys, preserving keys the caller did not resupply
     /// (§10.8 / the "Add voting key" fix-up). Exempt from duplicate rejection.
     MergeIntoExisting,
+    /// A repeatable load, for headless callers that cannot tell a first load
+    /// from a repeat: stores a new identity, and on a repeat behaves as
+    /// [`Self::MergeIntoExisting`], so a blank field never removes a stored key.
+    /// Unlike that scoped fix-up, a non-blank alias renames the identity.
+    MergeOrInsert,
 }
 
 #[derive(Debug, Clone, PartialEq)]

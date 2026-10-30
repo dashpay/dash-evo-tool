@@ -25,7 +25,7 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::model::masternode_input::{self, KeyMode};
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::secret::Secret;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,8 @@ pub struct MasternodeIdentityLoadParams {
     /// Node type: "masternode" or "evonode".
     pub node_type: String,
     /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. Leave
-    /// blank to use the owner key held by one of this device's wallets.
+    /// blank to use the owner key held by one of this device's wallets, or to
+    /// keep the one already stored for this node.
     #[serde(default)]
     pub owner_private_key: Secret,
     /// Voting private key (WIF or 64-char hex). Optional; binds the voter
@@ -57,10 +58,11 @@ pub struct MasternodeIdentityLoadParams {
     pub voting_private_key: Secret,
     /// Payout/transfer private key (WIF or 64-char hex). Bound as the
     /// TRANSFER key. Leave blank to use the payout key held by one of this
-    /// device's wallets.
+    /// device's wallets, or to keep the one already stored for this node.
     #[serde(default)]
     pub payout_private_key: Secret,
-    /// Optional human-readable name; trimmed, empty falls back to a DPNS name.
+    /// Optional human-readable name; trimmed. On a first load, empty falls back
+    /// to a DPNS name; on a repeat load, empty keeps the stored name.
     #[serde(default)]
     pub alias: String,
     /// Expected network (required so keys and addresses bind to the right
@@ -120,7 +122,9 @@ impl ToolBase for MasternodeIdentityLoad {
             "Load a masternode or evonode identity by ProTxHash, binding its \
              owner/voting/payout private keys (WIF or hex) and persisting it \
              locally for the withdraw tool. A key left blank is taken from a \
-             wallet loaded in this app when one holds it. A node with neither \
+             wallet loaded in this app when one holds it. Loading a node again \
+             never removes its stored keys: a blank field keeps them, and a key \
+             you supply replaces the one it matches. A node with neither \
              an owner nor a payout key still loads, with \
              withdrawals_available=false and a note. The output reports which keys \
              loaded, the available withdrawal modes, and the registered payout \
@@ -163,39 +167,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         // chain.
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let input = IdentityInputToLoad {
-            identity_id_input: param.pro_tx_hash,
-            identity_type,
-            alias_input: param.alias.trim().to_owned(),
-            // Keys are moved out of the Secret wrapper directly into the
-            // backend input — no intermediate plain-String copy.
-            voting_private_key_input: param.voting_private_key,
-            owner_private_key_input: param.owner_private_key,
-            payout_address_private_key_input: param.payout_private_key,
-            keys_input: vec![],
-            derive_keys_from_wallets: false,
-            selected_wallet_seed_hash: None,
-            // FR-8 load-time key encryption is GUI-only this iteration
-            // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
-            // entry point, so it loads unprotected.
-            // TODO: headless password parity — accept an optional encryption
-            // password param and thread it here once MCP secret handling is
-            // designed.
-            encryption_password: None,
-            // Headless load uses overwrite/upsert semantics: a repeat load
-            // REPLACES the stored node's keys with those supplied in this call.
-            // Keys omitted this time are dropped — this is a full replace, not a
-            // merge, so a partial-key repeat load is destructive. Duplicate
-            // rejection and key-preserving merge are GUI-form affordances, not a
-            // headless contract.
-            // TODO: headless merge parity — expose a load-mode param so callers
-            // can request MergeIntoExisting (key-preserving) once MCP secret
-            // handling for Tier-2 nodes is designed.
-            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
-            // A headless load gates on nothing: it opens a record of its own rather
-            // than adopting one a GUI screen is waiting on.
-            load_token: None,
-        };
+        let input = identity_input_to_load(param, identity_type);
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));
         let result = dispatch_task(&ctx, task)
@@ -248,6 +220,39 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
                 .map(|addr| addr.to_string()),
             dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
         })
+    }
+}
+
+/// The backend load this tool asks for.
+fn identity_input_to_load(
+    param: MasternodeIdentityLoadParams,
+    identity_type: IdentityType,
+) -> IdentityInputToLoad {
+    IdentityInputToLoad {
+        identity_id_input: param.pro_tx_hash,
+        identity_type,
+        alias_input: param.alias.trim().to_owned(),
+        // Keys are moved out of the Secret wrapper directly into the
+        // backend input — no intermediate plain-String copy.
+        voting_private_key_input: param.voting_private_key,
+        owner_private_key_input: param.owner_private_key,
+        payout_address_private_key_input: param.payout_private_key,
+        keys_input: vec![],
+        derive_keys_from_wallets: false,
+        selected_wallet_seed_hash: None,
+        // FR-8 load-time key encryption is GUI-only this iteration
+        // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
+        // entry point, so it loads unprotected.
+        // TODO: headless password parity — accept an optional encryption
+        // password param and thread it here once MCP secret handling is
+        // designed.
+        encryption_password: None,
+        // The tool cannot tell a first load from a repeat, and a repeat with
+        // blank fields must never remove a stored key.
+        load_mode: crate::backend_task::identity::IdentityLoadMode::MergeOrInsert,
+        // A headless load gates on nothing: it opens a record of its own rather
+        // than adopting one a GUI screen is waiting on.
+        load_token: None,
     }
 }
 
@@ -546,6 +551,27 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    /// A repeat load with blank fields must not remove the node's stored keys.
+    #[test]
+    fn the_tool_asks_for_a_repeatable_load() {
+        let input = identity_input_to_load(
+            MasternodeIdentityLoadParams {
+                pro_tx_hash: "PROTX_HASH_VALUE".to_owned(),
+                node_type: "evonode".to_owned(),
+                owner_private_key: Secret::default(),
+                voting_private_key: Secret::default(),
+                payout_private_key: Secret::default(),
+                alias: String::new(),
+                network: "testnet".to_owned(),
+            },
+            IdentityType::Evonode,
+        );
+        assert_eq!(
+            input.load_mode,
+            crate::backend_task::identity::IdentityLoadMode::MergeOrInsert
+        );
+    }
 
     #[test]
     fn a_node_without_withdrawal_keys_gets_a_note() {

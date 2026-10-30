@@ -1193,6 +1193,14 @@ impl AppContext {
         identity_is_listed(&self.det_kv()?, &id.to_buffer())
     }
 
+    /// Drop `id` from the index and keep its blob, the state a removal that
+    /// failed part-way leaves behind.
+    #[cfg(test)]
+    pub(crate) fn unlist_identity_for_test(&self, id: &Identifier) {
+        index_remove_identity(&self.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the index");
+    }
+
     /// Read one stored qualified identity by id, hydrated like the list loads
     /// (status, wallet index, network, wallets, secret access). `None` when no
     /// identity with `id` is stored. Backs the load-path existence check

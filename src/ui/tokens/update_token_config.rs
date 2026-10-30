@@ -4,8 +4,9 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::token::token_change_item_is_supported;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -84,13 +85,7 @@ impl UpdateTokenConfigScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .signing_key_now(KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
-                    contract_id: identity_token_info.data_contract.contract.id(),
-                },
-            ))
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         // Initialize with no group - will be set when user selects a change item
@@ -926,99 +921,93 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 ui.heading("Update Token Configuration");
                 ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
-                ui.colored_label(
-                    Color32::DARK_RED,
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity.identity_type,
-                    ),
-                );
-                ui.add_space(10.0);
-
-                // Show "Add key" or "Check keys" option
-                let first_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
+                // Open the form only when the action's key choice picks a key.
+                let key_status = super::token_action_key_status(
+                    &self.app_context,
+                    &self.identity,
+                    self.identity_token_info.data_contract.contract.id(),
                 );
 
-                if let Some(key) = first_key {
-                    if ui.button("Check Keys").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                if key_status != SigningKeyStatus::Usable {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        super::token_action_key_message(key_status, &self.identity),
+                    );
+                    ui.add_space(10.0);
+
+                    // Show "Add key" or "Check keys" option
+                    let first_key = self.identity.identity.get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
+
+                    if let Some(key) = first_key {
+                        if ui.button("Check Keys").clicked() {
+                            action |=
+                                AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                    self.identity.clone(),
+                                    key.clone(),
+                                    None,
+                                    &self.app_context,
+                                )));
+                        }
+                        ui.add_space(5.0);
+                    }
+
+                    if ui.button("Add key").clicked() {
+                        action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                             self.identity.clone(),
-                            key.clone(),
-                            None,
                             &self.app_context,
                         )));
                     }
-                    ui.add_space(5.0);
-                }
-
-                if ui.button("Add key").clicked() {
-                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
-            } else {
-                // Header with Advanced Options checkbox
-                ui.horizontal(|ui| {
-                    ui.heading("Update Token Config");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                } else {
+                    // Header with Advanced Options checkbox
+                    ui.horizontal(|ui| {
+                        ui.heading("Update Token Config");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                        });
                     });
-                });
-                ui.add_space(10.0);
-
-                // Key selection (only in advanced mode)
-                if self.show_advanced_options {
-                    ui.heading("1. Select the key to sign the transaction with");
                     ui.add_space(10.0);
-                    add_key_chooser(
+
+                    // Key selection (only in advanced mode)
+                    if self.show_advanced_options {
+                        ui.heading("1. Select the key to sign the transaction with");
+                        ui.add_space(10.0);
+                        add_key_chooser(
+                            ui,
+                            &self.app_context,
+                            &self.identity,
+                            &mut self.signing_key,
+                            TransactionType::TokenAction,
+                            SigningScope::ContractWide {
+                                contract_id: self.identity_token_info.data_contract.contract.id(),
+                            },
+                        );
+                        follow_signing_key_wallet(
+                            &self.identity,
+                            self.signing_key.as_ref(),
+                            &mut self.selected_wallet,
+                            &mut self.wallet_open_attempted,
+                        );
+                        ui.add_space(10.0);
+                        ui.separator();
+                    }
+                    if show_wallet_lock_gate(
                         ui,
                         &self.app_context,
-                        &self.identity,
-                        &mut self.signing_key,
-                        TransactionType::TokenAction,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_info.data_contract.contract.id(),
-                        },
-                    );
-                    follow_signing_key_wallet(
-                        &self.identity,
-                        self.signing_key.as_ref(),
-                        &mut self.selected_wallet,
+                        self.selected_wallet.as_ref(),
                         &mut self.wallet_open_attempted,
-                    );
+                        &mut self.wallet_unlock_popup,
+                    ) {
+                        return;
+                    }
                     ui.add_space(10.0);
-                    ui.separator();
-                }
-                if show_wallet_lock_gate(
-                    ui,
-                    &self.app_context,
-                    self.selected_wallet.as_ref(),
-                    &mut self.wallet_open_attempted,
-                    &mut self.wallet_unlock_popup,
-                ) {
-                    return;
-                }
-                ui.add_space(10.0);
 
-                action |= self.render_token_config_updater(ui);
-
-            }
+                    action |= self.render_token_config_updater(ui);
+                }
             }); // end of ScrollArea
         });
 

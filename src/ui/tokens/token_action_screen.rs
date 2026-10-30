@@ -11,7 +11,8 @@ use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -174,13 +175,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .signing_key_now(KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
-                    contract_id: identity_token_info.data_contract.contract.id(),
-                },
-            ))
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         let takers = A::authorized_takers(&identity_token_info.token_config);
@@ -246,17 +241,14 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     /// Renders the missing-key banner with "Check Keys" / "Add key" shortcuts.
-    fn render_no_keys(&self, ui: &mut Ui) -> AppAction {
+    fn render_no_keys(&self, ui: &mut Ui, key_status: SigningKeyStatus) -> AppAction {
         let mut action = AppAction::None;
         let identity = &self.common.identity_token_info.identity;
         let dark_mode = ui.style().visuals.dark_mode;
 
         ui.colored_label(
             DashColors::error_color(dark_mode),
-            format!(
-                "No authentication keys with CRITICAL security level found for this {} identity.",
-                identity.identity_type,
-            ),
+            super::token_action_key_message(key_status, identity),
         );
         ui.add_space(10.0);
 
@@ -407,6 +399,14 @@ impl<A: TokenAction> TokenActionScreen<A> {
 }
 
 impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
+    fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
+        use crate::backend_task::CacheDomain;
+        if update.network == self.common.app_context.network
+            && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
+        {
+            self.refresh();
+        }
+    }
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.common.refresh_banner.take_and_clear();
@@ -466,24 +466,15 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return self.show_success_screen(ui);
             }
 
-            let identity = &self.common.identity_token_info.identity;
-            let has_keys = if self
-                .common
-                .app_context
-                .user_role()
-                .at_least(UserRole::Developer)
-            {
-                !identity.identity.public_keys().is_empty()
-            } else {
-                !identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
+            let key_status = super::token_action_key_status(
+                &self.common.app_context,
+                &self.common.identity_token_info.identity,
+                self.common.identity_token_info.data_contract.contract.id(),
+            );
+            if key_status != SigningKeyStatus::Usable {
                 ui.heading(A::PAGE_HEADING);
                 ui.add_space(10.0);
-                return self.render_no_keys(ui);
+                return self.render_no_keys(ui, key_status);
             }
 
             let mut inner_action = AppAction::None;

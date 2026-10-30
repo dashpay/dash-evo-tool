@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -16,8 +17,10 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
+use crate::ui::state::PendingRequest;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
@@ -37,6 +40,9 @@ pub struct QRCodeGeneratorScreen {
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     generated_qr_data: Option<String>,
+    /// The outstanding generate request and the identity it is for. Only its
+    /// result is shown, and only while that identity is still selected.
+    qr_request: PendingRequest<dash_sdk::platform::Identifier>,
     qr_code: Option<QrCodeImage>,
     show_info_popup: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -51,6 +57,7 @@ impl QRCodeGeneratorScreen {
             selected_identity: None,
             selected_identity_string: String::new(),
             generated_qr_data: None,
+            qr_request: PendingRequest::default(),
             qr_code: None,
             show_info_popup: false,
             selected_wallet: None,
@@ -62,7 +69,6 @@ impl QRCodeGeneratorScreen {
         if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
-            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
             let selected_id = app_context.selected_identity_id();
@@ -80,6 +86,15 @@ impl QRCodeGeneratorScreen {
         new_self
     }
 
+    /// React to a new `selected_identity`: follow its wallet and drop the QR
+    /// code shown for the previous one.
+    fn identity_changed(&mut self) {
+        self.selected_wallet = self.selected_identity.as_ref().and_then(qr_wallet);
+        self.wallet_open_attempted = false;
+        self.generated_qr_data = None;
+        self.qr_request.clear();
+    }
+
     /// Dispatch the auto-accept QR build to the backend, which resolves the key
     /// and derives the proof through the JIT chokepoint (no seed in the UI).
     fn generate_qr_code(&mut self) -> AppAction {
@@ -92,11 +107,13 @@ impl QRCodeGeneratorScreen {
             return AppAction::None;
         };
 
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::GenerateAutoAcceptQrCode {
+        let identity_id = identity.identity.id();
+        self.qr_request.dispatch_with(
+            BackendTask::DashPayTask(Box::new(DashPayTask::GenerateAutoAcceptQrCode {
                 identity: identity.clone(),
-            },
-        )))
+            })),
+            identity_id,
+        )
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -162,15 +179,7 @@ impl QRCodeGeneratorScreen {
                             );
 
                             if response.changed() {
-                                // Update wallet for the newly selected identity
-                                if let Some(identity) = &self.selected_identity {
-                                    self.selected_wallet = qr_wallet(identity);
-                                } else {
-                                    self.selected_wallet = None;
-                                }
-                                self.wallet_open_attempted = false;
-                                // Clear generated QR code when identity changes
-                                self.generated_qr_data = None;
+                                self.identity_changed();
                             }
                         });
                         ui.end_row();
@@ -354,9 +363,76 @@ impl ScreenLike for QRCodeGeneratorScreen {
         // Banner display is handled globally by AppState; no side-effects needed.
     }
 
-    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr_string) = result {
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr_string) = result else {
+            return;
+        };
+        // A superseded request, or one for an identity no longer selected,
+        // would show another identity's contact code under this one.
+        let Some(requested_for) = self.qr_request.settle(context) else {
+            return;
+        };
+        if self
+            .selected_identity
+            .as_ref()
+            .is_some_and(|identity| identity.identity.id() == requested_for)
+        {
             self.generated_qr_data = Some(qr_string);
         }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.qr_request.settle(context);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use crate::context::test_support::bare_user_identity;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::Identifier;
+
+    /// The context the screen's generate request is reported under.
+    fn dispatch_context(action: AppAction) -> BackendTaskContext {
+        match action {
+            AppAction::BackendTaskWithContext { context, .. } => context,
+            _ => BackendTaskContext::Unknown,
+        }
+    }
+
+    fn qr_result(qr: &str) -> BackendTaskSuccessResult {
+        BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr.to_string())
+    }
+
+    /// Regression: a QR code generated for one identity arrived after the user
+    /// had picked another and was shown under it, handing out the first
+    /// identity's contact code as if it were the second's.
+    #[test]
+    fn a_qr_code_for_a_previously_selected_identity_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen = QRCodeGeneratorScreen::new(context);
+        let first = bare_user_identity(Identifier::new([1; 32]), Network::Testnet);
+        let second = bare_user_identity(Identifier::new([2; 32]), Network::Testnet);
+
+        screen.selected_identity = Some(first);
+        let for_first = dispatch_context(screen.generate_qr_code());
+        screen.selected_identity = Some(second);
+        screen.identity_changed();
+        screen.display_backend_task_result(&for_first, qr_result("first"));
+        assert_eq!(screen.generated_qr_data, None, "the identity changed");
+
+        // A newer request for the second identity supersedes the first one.
+        let for_second = dispatch_context(screen.generate_qr_code());
+        screen.display_backend_task_result(&for_first, qr_result("first"));
+        assert_eq!(screen.generated_qr_data, None, "a superseded request");
+        screen.display_backend_task_result(&for_second, qr_result("second"));
+        assert_eq!(screen.generated_qr_data.as_deref(), Some("second"));
     }
 }

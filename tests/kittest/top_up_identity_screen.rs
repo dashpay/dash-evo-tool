@@ -847,8 +847,8 @@ fn top_up_survives_a_network_switch_that_drops_its_screen() {
         );
         assert_eq!(
             harness.state().test_dispatch_owner_count(),
-            0,
-            "results of tasks sent before the switch go to the screen in view"
+            1,
+            "the switch keeps the top-up's sender on record with its network"
         );
         assert_eq!(count(&harness, DIALOG), 0);
         assert_eq!(

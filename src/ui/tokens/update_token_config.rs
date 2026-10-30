@@ -4,9 +4,13 @@ use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
+use crate::model::identity_key_usability::SigningScope;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::token::token_change_item_is_supported;
+use crate::model::qualified_identity::SigningKeyStatus;
+use crate::model::token::{
+    TokenConfigInputError, parse_max_supply_input, parse_new_tokens_destination_input,
+    token_change_item_is_supported,
+};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -59,6 +63,11 @@ pub struct UpdateTokenConfigScreen {
     pub change_item: TokenConfigurationChangeItem,
     update_text: String,
     text_input_error: String,
+    /// Text of the Max Supply or New-Tokens Destination field as typed, kept
+    /// while it does not parse so a typo is not replaced by "none".
+    field_text: Option<String>,
+    /// Why `field_text` does not parse; blocks the update until fixed.
+    field_error: Option<TokenConfigInputError>,
     signing_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
@@ -84,13 +93,7 @@ impl UpdateTokenConfigScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .signing_key_now(KeyRequirements::new(
-                Purpose::AUTHENTICATION,
-                &[SecurityLevel::CRITICAL],
-                SigningScope::ContractWide {
-                    contract_id: identity_token_info.data_contract.contract.id(),
-                },
-            ))
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         // Initialize with no group - will be set when user selects a change item
@@ -112,6 +115,8 @@ impl UpdateTokenConfigScreen {
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
             update_text: "".to_string(),
             text_input_error: "".to_string(),
+            field_text: None,
+            field_error: None,
             signing_key: possible_key,
             show_advanced_options: false,
             public_note: None,
@@ -152,8 +157,10 @@ impl UpdateTokenConfigScreen {
 
     fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        // Step 1 (choosing the signing key) only shows in advanced mode.
+        let first_step = if self.show_advanced_options { 2 } else { 1 };
 
-        ui.heading("2. Select the item to update");
+        ui.heading(format!("{first_step}. Select the item to update"));
         ui.add_space(10.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -167,6 +174,7 @@ impl UpdateTokenConfigScreen {
 
         // Clone the token configuration to avoid borrowing issues
         let default_token_configuration = self.identity_token_info.token_config.clone();
+        let item_before_selection = self.change_item.clone();
 
         ui.horizontal(|ui| {
             let label = token_change_item_label(&self.change_item);
@@ -492,6 +500,12 @@ impl UpdateTokenConfigScreen {
                 });
 
 
+        if self.change_item != item_before_selection {
+            // A newly chosen item starts from its own current value.
+            self.field_text = None;
+            self.field_error = None;
+        }
+
         ui.add_space(10.0);
 
         /* ========== PER‑VARIANT EDITING ========== */
@@ -527,21 +541,43 @@ impl UpdateTokenConfigScreen {
                 });
             }
             TokenConfigurationChangeItem::MaxSupply(opt_amt) => {
-                let mut txt = opt_amt.map(|a| a.to_string()).unwrap_or_default();
-                if ui.text_edit_singleline(&mut txt).changed() {
-                    *opt_amt = txt.parse::<u64>().ok();
+                let text = self
+                    .field_text
+                    .get_or_insert_with(|| opt_amt.map(|a| a.to_string()).unwrap_or_default());
+                if labelled_text_field(ui, "New maximum supply, in the token's smallest units:", text) {
+                    // An empty field means no limit; a typo keeps the
+                    // earlier value and blocks the update.
+                    match parse_max_supply_input(text) {
+                        Ok(max_supply) => {
+                            *opt_amt = max_supply;
+                            self.field_error = None;
+                        }
+                        Err(e) => self.field_error = Some(e),
+                    }
                 }
+                show_field_error(ui, self.field_error.as_ref());
             }
             TokenConfigurationChangeItem::MintingAllowChoosingDestination(b) => {
                 ui.checkbox(b, "Allow user to choose destination when minting");
             }
             TokenConfigurationChangeItem::NewTokensDestinationIdentity(opt_id) => {
-                let mut txt = opt_id
-                    .map(|id| id.to_string(Encoding::Base58))
-                    .unwrap_or_default();
-                if ui.text_edit_singleline(&mut txt).changed() {
-                    *opt_id = Identifier::from_string(&txt, Encoding::Base58).ok();
+                let text = self.field_text.get_or_insert_with(|| {
+                    opt_id
+                        .map(|id| id.to_string(Encoding::Base58))
+                        .unwrap_or_default()
+                });
+                if labelled_text_field(ui, "New default destination identity:", text) {
+                    // An empty field means no default destination; a typo
+                    // keeps the earlier value and blocks the update.
+                    match parse_new_tokens_destination_input(text) {
+                        Ok(destination) => {
+                            *opt_id = destination;
+                            self.field_error = None;
+                        }
+                        Err(e) => self.field_error = Some(e),
+                    }
                 }
+                show_field_error(ui, self.field_error.as_ref());
             }
             TokenConfigurationChangeItem::PerpetualDistribution(opt_json) => {
                 ui.add_space(5.0);
@@ -619,7 +655,7 @@ impl UpdateTokenConfigScreen {
         ui.separator();
         ui.add_space(10.0);
 
-        ui.heading("3. Public note (optional)");
+        ui.heading(format!("{}. Public note (optional)", first_step + 1));
         ui.add_space(5.0);
         if self.group_action_id.is_some() {
             ui.label(
@@ -676,8 +712,11 @@ impl UpdateTokenConfigScreen {
         );
 
         if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
-            && token_change_item_is_supported(&self.change_item)
-            && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
+            && change_item_can_be_submitted(
+                &self.change_item,
+                &self.text_input_error,
+                self.field_error.as_ref(),
+            )
         {
             ui.add_space(20.0);
             if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
@@ -923,110 +962,101 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     return;
                 }
 
-                ui.heading("Update Token Configuration");
-                ui.add_space(10.0);
-
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
-                ui.colored_label(
-                    Color32::DARK_RED,
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity.identity_type,
-                    ),
-                );
-                ui.add_space(10.0);
-
-                // Show "Add key" or "Check keys" option
-                let first_key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-
-                if let Some(key) = first_key {
-                    if ui.button("Check Keys").clicked() {
-                        action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
-                            key.clone(),
-                            None,
-                            &self.app_context,
-                        )));
-                    }
-                    ui.add_space(5.0);
-                }
-
-                if ui.button("Add key").clicked() {
-                    action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
-            } else {
-                // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if let Some(wallet) = &self.selected_wallet {
-                    if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
-                                .disable_auto_dismiss();
-                        }
-                        self.wallet_open_attempted = true;
-                    }
-                    if wallet_needs_unlock(wallet) {
-                        ui.add_space(10.0);
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "Wallet is locked. Please unlock to continue.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Unlock Wallet").clicked() {
-                            self.wallet_unlock_popup.open();
-                        }
-                        return;
-                    }
-                }
-
-                // Header with Advanced Options checkbox
+                // The page heading shares its row with the Advanced Options toggle.
                 ui.horizontal(|ui| {
-                    ui.heading("Update Token Config");
+                    ui.heading("Update Token Configuration");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
                     });
                 });
                 ui.add_space(10.0);
 
-                // Key selection (only in advanced mode)
-                if self.show_advanced_options {
-                    ui.heading("1. Select the key to sign the transaction with");
-                    ui.add_space(10.0);
-                    add_key_chooser(
-                        ui,
-                        &self.app_context,
-                        &self.identity,
-                        &mut self.signing_key,
-                        TransactionType::TokenAction,
-                        SigningScope::ContractWide {
-                            contract_id: self.identity_token_info.data_contract.contract.id(),
-                        },
+                // Open the form only when the action's key choice picks a key.
+                let key_status = super::token_action_key_status(
+                    &self.app_context,
+                    &self.identity,
+                    self.identity_token_info.data_contract.contract.id(),
+                );
+
+                if key_status != SigningKeyStatus::Usable {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        super::token_action_key_message(key_status, &self.identity),
                     );
                     ui.add_space(10.0);
-                    ui.separator();
+
+                    // Show "Add key" or "Check keys" option
+                    let first_key = self.identity.identity.get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    );
+
+                    if let Some(key) = first_key {
+                        if ui.button("Check Keys").clicked() {
+                            action |=
+                                AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+                                    self.identity.clone(),
+                                    key.clone(),
+                                    None,
+                                    &self.app_context,
+                                )));
+                        }
+                        ui.add_space(5.0);
+                    }
+
+                    if ui.button("Add key").clicked() {
+                        action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                            self.identity.clone(),
+                            &self.app_context,
+                        )));
+                    }
+                } else {
+                    // Possibly handle locked wallet scenario (similar to TransferTokens)
+                    if let Some(wallet) = &self.selected_wallet {
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
+                            }
+                            self.wallet_open_attempted = true;
+                        }
+                        if wallet_needs_unlock(wallet) {
+                            ui.add_space(10.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 150, 50),
+                                "Wallet is locked. Please unlock to continue.",
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Unlock Wallet").clicked() {
+                                self.wallet_unlock_popup.open();
+                            }
+                            return;
+                        }
+                    }
+
+                    // Key selection (only in advanced mode)
+                    if self.show_advanced_options {
+                        ui.heading("1. Select the key to sign the transaction with");
+                        ui.add_space(10.0);
+                        add_key_chooser(
+                            ui,
+                            &self.app_context,
+                            &self.identity,
+                            &mut self.signing_key,
+                            TransactionType::TokenAction,
+                            SigningScope::ContractWide {
+                                contract_id: self.identity_token_info.data_contract.contract.id(),
+                            },
+                        );
+                        ui.add_space(10.0);
+                        ui.separator();
+                    }
+                    ui.add_space(10.0);
+
+                    action |= self.render_token_config_updater(ui);
                 }
-                ui.add_space(10.0);
-
-                action |= self.render_token_config_updater(ui);
-
-            }
             }); // end of ScrollArea
         });
 
@@ -1043,6 +1073,52 @@ impl ScreenLike for UpdateTokenConfigScreen {
         }
 
         action
+    }
+}
+
+/// Whether `item` can be sent as a configuration update.
+///
+/// The conventions editor keeps the last valid conventions while its text
+/// does not parse, so `conventions_parse_error` must be empty before
+/// conventions are sent: otherwise the update would carry the earlier value
+/// instead of what the editor shows. Likewise `field_error` must be `None`
+/// before the Max Supply or New-Tokens Destination field is sent.
+fn change_item_can_be_submitted(
+    item: &TokenConfigurationChangeItem,
+    conventions_parse_error: &str,
+    field_error: Option<&TokenConfigInputError>,
+) -> bool {
+    if !token_change_item_is_supported(item) {
+        return false;
+    }
+    match item {
+        TokenConfigurationChangeItem::TokenConfigurationNoChange => false,
+        TokenConfigurationChangeItem::Conventions(_) => conventions_parse_error.is_empty(),
+        TokenConfigurationChangeItem::MaxSupply(_)
+        | TokenConfigurationChangeItem::NewTokensDestinationIdentity(_) => field_error.is_none(),
+        _ => true,
+    }
+}
+
+/// A single-line text field named by the label before it; returns whether
+/// the text changed.
+fn labelled_text_field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
+    ui.horizontal(|ui| {
+        let label = ui.label(label);
+        ui.text_edit_singleline(text)
+            .labelled_by(label.id)
+            .changed()
+    })
+    .inner
+}
+
+/// Shows why the typed value cannot be used, if it cannot.
+fn show_field_error(ui: &mut Ui, error: Option<&TokenConfigInputError>) {
+    if let Some(error) = error {
+        ui.colored_label(
+            DashColors::error_color(ui.style().visuals.dark_mode),
+            error.to_string(),
+        );
     }
 }
 
@@ -1136,5 +1212,53 @@ mod sdk_adapter_tests {
         assert!(token_change_item_is_supported(
             &TokenConfigurationChangeItem::MaxSupply(Some(17))
         ));
+    }
+
+    /// While the conventions text does not parse, the editor still holds the
+    /// earlier conventions, so they must not be sent.
+    #[test]
+    fn conventions_with_invalid_json_cannot_be_submitted() {
+        let conventions = TokenConfigurationChangeItem::Conventions(
+            TokenConfigurationConvention::V0(Default::default()),
+        );
+        assert!(!change_item_can_be_submitted(
+            &conventions,
+            "Invalid JSON: expected value",
+            None
+        ));
+        assert!(change_item_can_be_submitted(&conventions, "", None));
+        // A parse error left over from the conventions editor does not block
+        // other items, which do not use that editor.
+        assert!(change_item_can_be_submitted(
+            &TokenConfigurationChangeItem::MaxSupply(Some(17)),
+            "Invalid JSON: expected value",
+            None
+        ));
+        assert!(!change_item_can_be_submitted(
+            &TokenConfigurationChangeItem::TokenConfigurationNoChange,
+            "",
+            None
+        ));
+    }
+
+    /// A Max Supply or New-Tokens Destination field that does not parse
+    /// still holds the earlier value, so it must not be sent as "none".
+    #[test]
+    fn a_field_that_does_not_parse_cannot_be_submitted() {
+        let max_supply = TokenConfigurationChangeItem::MaxSupply(None);
+        let destination = TokenConfigurationChangeItem::NewTokensDestinationIdentity(None);
+        assert!(!change_item_can_be_submitted(
+            &max_supply,
+            "",
+            Some(&TokenConfigInputError::MaxSupplyNotANumber)
+        ));
+        assert!(!change_item_can_be_submitted(
+            &destination,
+            "",
+            Some(&TokenConfigInputError::DestinationNotAnIdentity)
+        ));
+        // A deliberately empty field means "none" and can be sent.
+        assert!(change_item_can_be_submitted(&max_supply, "", None));
+        assert!(change_item_can_be_submitted(&destination, "", None));
     }
 }

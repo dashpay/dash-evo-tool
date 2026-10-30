@@ -173,6 +173,10 @@ pub const RESTORE_KEYS_TO_REGISTER: &str = "The key this identity needs to regis
 /// version, when no restore is offered in place.
 pub const RESTORE_FROM_PREVIOUS_VERSION_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device. If you updated from an earlier version of Dash Evo Tool, open Settings and use Restore from Previous Version to bring back missing wallets and keys.";
 
+/// Why an identity cannot register when its key was saved by an early version
+/// in a form this version cannot open.
+pub const REENTER_KEY_TO_REGISTER: &str = "The key this identity needs to register usernames was saved by an older version of Dash Evo Tool and must be entered again. Open this identity's keys and enter the key to register usernames.";
+
 /// Why an identity cannot register when its key was never saved on this device.
 pub const ENTER_KEY_TO_REGISTER: &str = "The key this identity needs to register usernames is not on this device. Open this identity's keys and enter the key to use it here.";
 

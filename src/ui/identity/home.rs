@@ -18,6 +18,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing}
 use crate::ui::wallets::send_screen::IdentitySendMode;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use egui::{self, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ use std::sync::Arc;
 pub enum HomeOutcome {
     None,
     GoToContacts,
+    GoToContact(Identifier),
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
@@ -514,7 +516,7 @@ pub(super) fn card<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<IdentityHubTab> {
     match outcome {
         HomeOutcome::None => None,
-        HomeOutcome::GoToContacts => Some(IdentityHubTab::Contacts),
+        HomeOutcome::GoToContacts | HomeOutcome::GoToContact(_) => Some(IdentityHubTab::Contacts),
         HomeOutcome::GoToSettings | HomeOutcome::GoToUsernames | HomeOutcome::GoToAdvanced => {
             Some(IdentityHubTab::Settings)
         }

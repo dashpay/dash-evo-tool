@@ -419,17 +419,17 @@ mod tests {
     /// path.
     #[test]
     fn hd_seed_for_shielded_spend_accepts_hd_seed() {
-        let seed = Zeroizing::new([0x11u8; 64]);
+        let seed = Zeroizing::new(crate::test_support::keys::seed());
         let plaintext = SecretPlaintext::HdSeed(&seed);
         let got = hd_seed_for_shielded_spend(&plaintext).expect("an HD seed must resolve");
-        assert_eq!(got, &[0x11u8; 64]);
+        assert_eq!(got, &*seed);
     }
 
     /// A non-HD-seed secret at an HD scope is a structural wallet inconsistency,
     /// distinct from the protected-wallet prompt path.
     #[test]
     fn hd_seed_for_shielded_spend_rejects_non_hd_secret_as_wallet_state_inconsistent() {
-        let key = Zeroizing::new([0x22u8; 32]);
+        let key = Zeroizing::new(crate::test_support::keys::secret_bytes());
         let plaintext = SecretPlaintext::SingleKey(&key);
         let err = hd_seed_for_shielded_spend(&plaintext)
             .expect_err("a non-HD-seed secret must not yield a shielded spend key");

@@ -824,8 +824,8 @@ mod tests {
         let ctx = test_app_context(dir.path());
         let mut wallets = Vec::new();
         let mut response = AddressInfos::new();
-        for (seed_byte, balance) in [(0x31, 205_741_823_420), (0x32, 68_892_360)] {
-            let seed = [seed_byte; 64];
+        for balance in [205_741_823_420, 68_892_360] {
+            let seed = crate::test_support::keys::seed();
             let mut wallet = Wallet::new_from_seed(seed, ctx.network, None, None).expect("wallet");
             let address = wallet
                 .generate_platform_receive_address_with_seed(&seed, ctx.network)

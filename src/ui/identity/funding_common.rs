@@ -685,8 +685,10 @@ mod tests {
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).
     fn addr(n: u8) -> Address {
-        let mut sk_bytes = [1u8; 32];
-        sk_bytes[31] = n.max(1);
+        let sk_bytes = crate::test_support::keys::labelled_secret(
+            "ui::identity::funding_common::addr",
+            n.into(),
+        );
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         let pubkey = PublicKey::new(sk.public_key());
         Address::p2pkh(&pubkey, Network::Testnet)

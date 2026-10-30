@@ -445,9 +445,12 @@ mod tests {
     // and would not exercise the encoder honestly.
 
     fn test_shielded_raw_address(network: Network) -> [u8; SHIELDED_ADDRESS_RAW_LEN] {
-        let keys =
-            platform_wallet::wallet::shielded::OrchardKeySet::from_seed(&[7u8; 64], network, 0)
-                .expect("ZIP-32 derivation from a valid test seed");
+        let keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
+            &crate::test_support::keys::seed(),
+            network,
+            0,
+        )
+        .expect("ZIP-32 derivation from a valid test seed");
         keys.address_at(0).to_raw_address_bytes()
     }
 
@@ -590,7 +593,7 @@ mod tests {
         use dash_sdk::dashcore_rpc::dashcore::{PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
 
-        let sk = SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+        let sk = SecretKey::from_secret_bytes(crate::test_support::keys::secret_bytes()).unwrap();
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);

@@ -3296,8 +3296,16 @@ mod tests {
 
     /// Register an HD wallet derived from a distinct seed, returning its hash.
     fn seed_hd_wallet(ctx: &Arc<AppContext>, seed_byte: u8) -> WalletSeedHash {
-        let wallet =
-            Wallet::new_from_seed([seed_byte; 64], ctx.network(), None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(
+            crate::test_support::keys::labelled_seed(
+                "ui::wallets::wallets_screen::seed_hd_wallet",
+                seed_byte.into(),
+            ),
+            ctx.network(),
+            None,
+            None,
+        )
+        .expect("wallet");
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()
             .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
@@ -3449,7 +3457,7 @@ mod tests {
 
         fn seed_hd(ctx: &Arc<AppContext>, seed_byte: u8) -> (WalletSeedHash, Arc<RwLock<Wallet>>) {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("wallets_screen", u64::from(seed_byte)),
                 Network::Testnet,
                 Some(format!("hd-{seed_byte}")),
                 None,
@@ -3465,8 +3473,10 @@ mod tests {
             ctx: &Arc<AppContext>,
             key_byte: u8,
         ) -> (SingleKeyHash, Arc<RwLock<SingleKeyWallet>>) {
-            let mut pk = [1u8; 32];
-            pk[31] = key_byte.max(1);
+            let pk = crate::test_support::keys::labelled_secret(
+                "ui::wallets::wallets_screen::seed_sk",
+                key_byte.into(),
+            );
             let wallet =
                 SingleKeyWallet::new(pk, Network::Testnet, None, Some(format!("sk-{key_byte}")))
                     .expect("sk wallet");

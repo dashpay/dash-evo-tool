@@ -701,8 +701,9 @@ mod tests {
     fn sample_core_address() -> String {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_7 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([7u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_7).expect("valid secret key");
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -857,8 +858,9 @@ mod tests {
     fn testnet_core_address() -> String {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_9 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([9u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_9).expect("valid secret key");
         let pk = PublicKey::from_private_key(
             &PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
                 .expect("valid secret key"),
@@ -938,8 +940,9 @@ mod tests {
     fn transfer_mode_cross_network_address_rejected() {
         use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
         use dash_sdk::dpp::secp256k1::SecretKey;
+        let secret_3 = crate::test_support::keys::secret_bytes();
 
-        let sk = SecretKey::from_secret_bytes([3u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(secret_3).expect("valid secret key");
         let pk = PublicKey::from_private_key(
             &PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Mainnet)
                 .expect("valid secret key"),

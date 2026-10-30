@@ -2270,7 +2270,8 @@ mod tests {
         use dash_sdk::dpp::dashcore::PublicKey;
         use dash_sdk::dpp::secp256k1::{PublicKey as SecpPublicKey, SecretKey};
 
-        let sk = SecretKey::from_secret_bytes([1u8; 32]).expect("valid secret key");
+        let sk = SecretKey::from_secret_bytes(crate::test_support::keys::secret_bytes())
+            .expect("valid secret key");
         let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&sk).serialize())
             .expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)

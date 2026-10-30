@@ -1114,9 +1114,10 @@ mod wallet_picker_tests {
 
     /// A context holding one wallet named "Main".
     fn context_with_main_wallet(dir: &std::path::Path) -> (Arc<AppContext>, WalletSeedHash) {
+        let seed_71 = crate::test_support::keys::seed();
         let ctx = test_app_context(dir);
         let wallet =
-            Wallet::new_from_seed([0x71; 64], Network::Testnet, Some("Main".to_string()), None)
+            Wallet::new_from_seed(seed_71, Network::Testnet, Some("Main".to_string()), None)
                 .expect("wallet");
         let seed_hash = wallet.seed_hash();
         ctx.wallet_context()

@@ -20,7 +20,14 @@ use egui_kittest::kittest::Queryable;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-const KNOWN_TESTNET_WIF: &str = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK";
+/// A testnet WIF, stable for the whole test process.
+fn known_testnet_wif() -> String {
+    dash_evo_tool::test_support::keys::labelled_wif(
+        "kittest::import_single_key::known_testnet_wif",
+        0,
+        Network::Testnet,
+    )
+}
 
 fn open_dialog(network: Network) -> ImportSingleKeyDialog {
     let mut dialog = ImportSingleKeyDialog::new(network);
@@ -62,7 +69,7 @@ fn tc_sk_005_invalid_wif_renders_inline_error() {
 #[test]
 fn tc_sk_004_valid_wif_renders_address_preview() {
     let mut dialog = open_dialog(Network::Testnet);
-    dialog.force_input_for_test(KNOWN_TESTNET_WIF.to_string());
+    dialog.force_input_for_test(known_testnet_wif());
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(640.0, 400.0))
@@ -157,9 +164,7 @@ fn imported_single_key_is_visible_in_session() {
         let network = app_context.network();
 
         // A network-correct WIF for whatever network the fresh context opened on.
-        let mut key_bytes = [0u8; 32];
-        key_bytes[0] = 1;
-        key_bytes[31] = 7;
+        let key_bytes = dash_evo_tool::test_support::keys::secret_bytes();
         let wif = PrivateKey::from_byte_array(&key_bytes, network)
             .expect("valid private key")
             .to_wif();
@@ -190,7 +195,7 @@ fn imported_single_key_is_visible_in_session() {
 #[test]
 fn nickname_counter_counts_cleaned_characters_and_request_carries_raw_alias() {
     let mut dialog = open_dialog(Network::Testnet);
-    dialog.force_input_for_test(KNOWN_TESTNET_WIF.to_string());
+    dialog.force_input_for_test(known_testnet_wif());
     let confirmed_alias: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let captured = confirmed_alias.clone();
 
@@ -239,9 +244,11 @@ fn blank_nickname_gets_default_key_name_and_duplicates_are_rejected() {
         let app_context = crate::support::wait_for_wallet_backend(&mut harness);
         let network = app_context.network();
         let wif_for = |byte: u8| {
-            PrivateKey::from_byte_array(&[byte; 32], network)
-                .expect("valid private key")
-                .to_wif()
+            dash_evo_tool::test_support::keys::labelled_wif(
+                "kittest::import_single_key::wif_for",
+                byte.into(),
+                network,
+            )
         };
 
         let mut screen = WalletsBalancesScreen::new(&app_context);

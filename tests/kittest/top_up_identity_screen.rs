@@ -232,9 +232,10 @@ fn waiting_wallet_send(
     harness: &App,
     recipient: &QualifiedIdentity,
 ) -> (WalletSendScreen, BackendTaskContext) {
+    let seed_54 = dash_evo_tool::test_support::keys::seed();
     let app_context = harness.state().current_app_context().clone();
-    let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
-        .expect("wallet fixture");
+    let wallet =
+        Wallet::new_from_seed(seed_54, app_context.network(), None, None).expect("wallet fixture");
     let mut wallet_send = WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet)));
     let dispatch = wallet_send
         .confirm_send_for_test(top_up_of(recipient))
@@ -451,10 +452,11 @@ fn a_failed_load_of_another_screen_leaves_wallet_send_waiting() {
 
 /// The identity with a wallet of its own, stored where the send form reads it.
 fn stored_identity_with_wallet(harness: &App) -> QualifiedIdentity {
+    let seed_54 = dash_evo_tool::test_support::keys::seed();
     let app_context = harness.state().current_app_context().clone();
     let mut identity = test_identity(app_context.network());
-    let wallet = Wallet::new_from_seed([0x54; 64], app_context.network(), None, None)
-        .expect("wallet fixture");
+    let wallet =
+        Wallet::new_from_seed(seed_54, app_context.network(), None, None).expect("wallet fixture");
     identity
         .associated_wallets
         .insert(wallet.seed_hash(), Arc::new(RwLock::new(wallet)));
@@ -499,9 +501,10 @@ fn confirm_top_up(harness: &mut App, identity: &QualifiedIdentity) -> BackendTas
 
 /// Fill the visible Top up form and ask it for the send it would confirm.
 fn prepare_top_up(harness: &mut App, identity: &QualifiedIdentity) -> Result<AppAction, String> {
+    let secret_31 = dash_evo_tool::test_support::keys::secret_bytes();
     let core = Address::p2pkh(
         &PublicKey::new(
-            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([0x31; 32])
+            dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(secret_31)
                 .expect("secret key")
                 .public_key(),
         ),

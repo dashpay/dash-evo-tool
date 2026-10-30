@@ -451,24 +451,16 @@ mod tests {
     use dash_sdk::dpp::version::LATEST_VERSION;
     use dash_sdk::platform::DataContract;
 
-    /// Mocks the DPNS-contract fetch that drives the protocol-version ratchet,
-    /// the epoch task's fallback when the current epoch cannot be read (the
-    /// mock has no epoch response). The app reads the version the SDK
-    /// verified, and a mock expectation is made up, never verified, so the
-    /// SDK accepts `LATEST_VERSION` from metadata it is told was proved, as
-    /// it does after a live network's quorum-signed response.
-    async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
-        let sdk = mock_sdk_with_unproved_dpns_contract(ctx).await;
-        sdk.verify_response_metadata(
-            "get_data_contract",
-            &dash_sdk::dapi_grpc::platform::v0::ResponseMetadata {
-                protocol_version: LATEST_VERSION,
-                height: 1,
-                ..Default::default()
-            },
-        )
-        .expect("proved metadata is accepted");
-        sdk
+    /// Install a mock SDK on `ctx` that answers the DPNS-contract fetch driving
+    /// the protocol-version ratchet, the epoch task's fallback when the current
+    /// epoch cannot be read (the mock has no epoch response). The app reads the
+    /// version the SDK verified, and a mock expectation is made up, never
+    /// verified, so the test declares `LATEST_VERSION` proven for that SDK, as
+    /// a live network's quorum-signed response would prove it.
+    async fn install_mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) {
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_unproved_dpns_contract(ctx).await));
+        crate::context::test_support::prove_protocol_version(ctx, LATEST_VERSION);
     }
 
     /// The DPNS-contract fetch alone: its expectation proves nothing about the
@@ -506,8 +498,7 @@ mod tests {
     async fn headless_sync_reads_the_proven_protocol_version_after_spv_is_running() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
+        install_mock_sdk_with_dpns_contract(&ctx).await;
         ctx.connection_status().set_spv_status(SpvStatus::Running);
 
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
@@ -536,8 +527,7 @@ mod tests {
             .expect("SPV readiness survives a Platform metadata failure");
         assert_eq!(ctx.protocol_version_info().verified_version, None);
 
-        ctx.sdk
-            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
+        install_mock_sdk_with_dpns_contract(&ctx).await;
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("SPV readiness retries Platform metadata");

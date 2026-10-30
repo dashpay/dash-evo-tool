@@ -18,7 +18,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::voting::vote_polls::VotePoll;
 
 /// The immediate result of submitting a DPNS registration document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,9 +52,7 @@ pub fn classify_dpns_registration_outcome(
         .contested_vote_poll_for_document_properties(&properties, platform_version)
         .map_err(Box::new)?
     {
-        Some(VotePoll::ContestedDocumentResourceVotePoll(_)) => {
-            Ok(DpnsRegistrationOutcome::PendingCommunityVote)
-        }
+        Some(_) => Ok(DpnsRegistrationOutcome::PendingCommunityVote),
         None => Ok(DpnsRegistrationOutcome::Registered),
     }
 }

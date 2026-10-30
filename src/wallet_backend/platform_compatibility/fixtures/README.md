@@ -33,8 +33,10 @@ Platform revision `a0d7b6ffec6f91e3818530b83d75adcd62480ebe` changes only doc
 comments in `V007__utxo_sweep_winner_height.rs`; every migration's SQL and
 checksum, and so the snapshot, are unchanged.
 Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
-`063589bf0adbe1a8823a943cee95385b423b0e3f` and
-`575d961fe0c54bd7e01a3cf3823494e58c6c4fdb` leave the migrations untouched.
+`063589bf0adbe1a8823a943cee95385b423b0e3f`,
+`575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`,
+`0d91c133f03d4a9350b964586efa68b6e2f04791` and
+`6323a430c731a14bbec1d7a18466ca28bb083316` leave the migrations untouched.
 
 
 `public-rows.sql` contains only public synthetic rows from that old revision's

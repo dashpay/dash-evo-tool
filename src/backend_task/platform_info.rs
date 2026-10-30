@@ -1217,15 +1217,13 @@ mod tests {
         assert_eq!(text, "summary", "a version this build defines");
     }
 
-    /// The advice reaches the user even when the epoch itself cannot be read.
+    /// A failed epoch fetch still answers, with the report of an unavailable
+    /// epoch: the network's version and the last known fee multiplier.
     #[tokio::test]
-    async fn a_failed_epoch_fetch_still_advises_updating_for_a_newer_network() {
-        use crate::context::test_support::prove_protocol_version;
-        use dash_sdk::dpp::version::LATEST_VERSION;
+    async fn a_failed_epoch_fetch_degrades_to_the_unavailable_epoch_report() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(temp_dir.path());
         ctx.sdk.store(Arc::new(dash_sdk::Sdk::new_mock()));
-        prove_protocol_version(&ctx, LATEST_VERSION + 1);
         let sdk = ctx.sdk.load_full();
 
         let result = ctx
@@ -1238,12 +1236,9 @@ mod tests {
         else {
             panic!("a failed epoch fetch returns a text result");
         };
-        assert!(
-            text.ends_with(&expected_newer_protocol_advisory(
-                LATEST_VERSION + 1,
-                LATEST_VERSION
-            )),
-            "the update advice must close the report, got: {text}"
+        assert_eq!(
+            text,
+            format_unavailable_current_epoch_info(None, ctx.fee_multiplier_permille())
         );
     }
 

@@ -4,10 +4,11 @@ use crate::context::AppContext;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::utils::egui_mpsc::SenderAsync;
-use dash_sdk::Sdk;
+use dash_sdk::dapi_grpc::platform::v0::ResponseMetadata;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::platform::{Fetch, Identifier, Identity};
 use dash_sdk::query_types::IdentityBalance;
+use dash_sdk::{Error as SdkError, Sdk};
 use std::sync::Arc;
 
 use super::BackendTaskSuccessResult;
@@ -129,14 +130,25 @@ impl AppContext {
         sdk: &Sdk,
         identity_id: Identifier,
     ) -> bool {
-        let read = tokio::time::timeout(
-            FEE_PAYER_BALANCE_READ_TIMEOUT,
-            IdentityBalance::fetch(sdk, identity_id),
+        self.store_identity_balance_read(
+            identity_id,
+            IdentityBalance::fetch_with_metadata(sdk, identity_id, None),
         )
-        .await;
-        let balance = match read {
-            Ok(Ok(Some(balance))) => balance,
-            Ok(Ok(None)) => {
+        .await
+    }
+
+    /// [`Self::store_identity_balance_from_platform`] with the read passed in
+    /// as `read`, so what it does with a response's height runs without a
+    /// network.
+    async fn store_identity_balance_read(
+        &self,
+        identity_id: Identifier,
+        read: impl Future<Output = Result<(Option<IdentityBalance>, ResponseMetadata), SdkError>>,
+    ) -> bool {
+        let read = tokio::time::timeout(FEE_PAYER_BALANCE_READ_TIMEOUT, read).await;
+        let (balance, height) = match read {
+            Ok(Ok((Some(balance), metadata))) => (balance, metadata.height),
+            Ok(Ok((None, _))) => {
                 tracing::debug!(%identity_id, "Paying identity not found on Platform; its stored balance is kept");
                 return false;
             }
@@ -149,7 +161,8 @@ impl AppContext {
                 return false;
             }
         };
-        match self.edit_local_qualified_identity(&identity_id, |stored| {
+        let provenance = BalanceProvenance::ObservedAt(height);
+        match self.edit_local_qualified_identity_observed(&identity_id, provenance, |stored| {
             stored.identity.set_balance(balance);
             Ok(())
         }) {
@@ -210,6 +223,59 @@ mod tests {
 
         assert!(ctx.store_identity_balance_from_platform(&sdk, id).await);
         assert_eq!(stored_balance(&ctx, &id), 3_400_000_000);
+    }
+
+    /// Store `balance` for `id` as observed at `height`.
+    fn observe_balance(ctx: &AppContext, id: &Identifier, balance: u64, height: u64) {
+        ctx.edit_local_qualified_identity_observed(
+            id,
+            BalanceProvenance::ObservedAt(height),
+            |stored| {
+                stored.identity.set_balance(balance);
+                Ok(())
+            },
+        )
+        .expect("store the observed balance");
+    }
+
+    /// A read of the payer's balance made at `height`.
+    fn read_at(
+        balance: u64,
+        height: u64,
+    ) -> impl Future<Output = Result<(Option<IdentityBalance>, ResponseMetadata), SdkError>> {
+        std::future::ready(Ok((
+            Some(balance),
+            ResponseMetadata {
+                height,
+                ..Default::default()
+            },
+        )))
+    }
+
+    /// A read answered by a node behind the block of a balance already stored
+    /// is older than that balance, so it must not replace it.
+    #[tokio::test]
+    async fn a_read_from_an_earlier_block_keeps_the_later_balance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, id) = context_with_payer(dir.path(), 1_000);
+        observe_balance(&ctx, &id, 700, 100);
+
+        ctx.store_identity_balance_read(id, read_at(900, 99)).await;
+
+        assert_eq!(stored_balance(&ctx, &id), 700);
+    }
+
+    /// Regression: with a height on record, a read stored without its own
+    /// height was pinned to the old balance, so the fee never showed.
+    #[tokio::test]
+    async fn a_read_from_a_later_block_updates_a_balance_with_a_height() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, id) = context_with_payer(dir.path(), 1_000);
+        observe_balance(&ctx, &id, 700, 100);
+
+        assert!(ctx.store_identity_balance_read(id, read_at(600, 101)).await);
+
+        assert_eq!(stored_balance(&ctx, &id), 600);
     }
 
     /// The task already succeeded and was paid for: an unreadable balance

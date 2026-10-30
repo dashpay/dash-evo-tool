@@ -2775,8 +2775,10 @@ mod tests {
 
     #[test]
     fn stored_identity_debug_redacts_qi_bytes() {
+        let qi_bytes = crate::test_support::keys::seed().to_vec();
+        let forms = crate::test_support::keys::rendered_forms(&qi_bytes);
         let s = StoredQualifiedIdentity {
-            qi_bytes: vec![0x42; 48],
+            qi_bytes,
             status: 1,
             identity_type: "User".to_string(),
             wallet_hash: Some([9u8; 32]),
@@ -2785,7 +2787,9 @@ mod tests {
         let dbg = format!("{s:?}");
         assert!(dbg.contains("[redacted]"), "expected redaction: {dbg}");
         assert!(dbg.contains("qi_bytes_len"), "expected length field: {dbg}");
-        assert!(!dbg.contains("66, 66, 66"), "leaked qi bytes: {dbg}");
+        for form in forms {
+            assert!(!dbg.contains(&form), "leaked qi bytes: {dbg}");
+        }
     }
 
     // ---------------------------------------------------------------

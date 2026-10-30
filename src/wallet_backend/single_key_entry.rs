@@ -272,11 +272,12 @@ mod tests {
         let raw = crate::test_support::keys::secret_bytes();
         let entry = SingleKeyEntry::unprotected(raw);
         let dbg = format!("{entry:?}");
-        // The raw key byte 0x42 must not appear verbatim in the debug string.
-        assert!(
-            !dbg.contains("42, 42, 42"),
-            "debug output leaked private bytes: {dbg}"
-        );
+        for form in crate::test_support::keys::rendered_forms(&raw) {
+            assert!(
+                !dbg.contains(&form),
+                "debug output leaked private bytes: {dbg}"
+            );
+        }
         assert!(
             dbg.contains("[redacted]"),
             "expected [redacted] in debug output: {dbg}"

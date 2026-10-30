@@ -524,7 +524,9 @@ mod tests {
         let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&seed), Network::Testnet);
         let dbg = format!("{signer:?}");
         assert!(dbg.contains("HdSeed"), "kind tag present: {dbg}");
-        assert!(!dbg.contains("42, 42, 42"), "seed bytes leaked: {dbg}");
+        for form in crate::test_support::keys::rendered_forms(&*seed) {
+            assert!(!dbg.contains(&form), "seed bytes leaked: {dbg}");
+        }
         assert_eq!(signer.supported_methods(), &[SignerMethod::Digest]);
     }
 }

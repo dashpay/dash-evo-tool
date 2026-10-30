@@ -393,6 +393,9 @@ struct Inner {
     registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
+    /// Stands in for the masternode list, which needs a synced SPV client.
+    #[cfg(test)]
+    masternode_voting_hash_test_override: std::sync::Mutex<Option<[u8; 20]>>,
     #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -689,6 +692,8 @@ impl WalletBackend {
                 registration_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                masternode_voting_hash_test_override: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]

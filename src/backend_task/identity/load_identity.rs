@@ -3902,6 +3902,158 @@ mod tests {
         ctx.wallet_backend().unwrap().shutdown().await;
     }
 
+    const WALLET_NODE_VOTING_PATH: &str = "m/9'/1'/3'/1'/0";
+
+    /// `key`'s hash160, as the masternode list names it.
+    fn key_hash(key: &IdentityPublicKey) -> [u8; 20] {
+        use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
+        key.public_key_hash().unwrap()
+    }
+
+    /// A node loaded from a wallet that also stores an old voting key on its
+    /// old voter identity, on a list that names the wallet's voting key.
+    /// Returns the context, the node id, the wallet's seed hash and the
+    /// wallet's voting key hash.
+    async fn node_with_rotated_voting_key() -> (
+        Arc<AppContext>,
+        tempfile::TempDir,
+        Identifier,
+        WalletSeedHash,
+        [u8; 20],
+    ) {
+        use dash_sdk::dpp::identity::Purpose;
+        let (ctx, dir, seed_hash, node_id, sdk) = wallet_held_node().await;
+        ctx.load_identity(
+            &sdk,
+            node_load_input(node_id, Secret::default(), IdentityLoadMode::RejectIfExists),
+        )
+        .await
+        .unwrap();
+        let old_key = hash160_key(0, Purpose::VOTING, [0x0D; 20]);
+        let old_voter = Identity::create_basic_identity(
+            Identifier::from([0x0E; 32]),
+            PlatformVersion::latest(),
+        )
+        .unwrap();
+        ctx.edit_local_qualified_identity(&node_id, |node| {
+            node.private_keys.insert_at(
+                (V, 0),
+                (
+                    QualifiedIdentityPublicKey::from(old_key.clone()),
+                    PrivateKeyData::Clear(rand::random()),
+                ),
+            );
+            node.associated_voter_identity = Some((old_voter, old_key));
+            Ok(())
+        })
+        .unwrap();
+        let current = wallet_key_hash(&WALLET_NODE_SEED, WALLET_NODE_VOTING_PATH);
+        ctx.wallet_backend()
+            .unwrap()
+            .set_masternode_voting_hash_for_test(current);
+        (ctx, dir, node_id, seed_hash, current)
+    }
+
+    /// A mock SDK serving the node and the voter identity behind `voting`.
+    async fn node_and_voter_sdk(ctx: &AppContext, node_id: Identifier, voting: [u8; 20]) -> Sdk {
+        use dash_sdk::dpp::identity::Purpose;
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let keys = stored.identity.public_keys().values().cloned().collect();
+        let mut sdk = node_sdk(ctx, node_id, keys).await;
+        let voter_id = voter_identity_id(ProTxHash::from_byte_array(node_id.to_buffer()), &voting);
+        let mut voter =
+            Identity::create_basic_identity(voter_id, PlatformVersion::latest()).unwrap();
+        voter.add_public_keys([hash160_key(0, Purpose::VOTING, voting)]);
+        sdk.mock()
+            .expect_fetch(voter_id, Some(voter))
+            .await
+            .unwrap();
+        sdk
+    }
+
+    /// Removing a retired voting key looks again in the wallets, so the wallet
+    /// holding the current key takes its place without another manual load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_a_retired_voting_key_substitutes_the_wallets_current_one() {
+        let (ctx, _dir, node_id, seed_hash, current) = node_with_rotated_voting_key().await;
+        let sdk = node_and_voter_sdk(&ctx, node_id, current).await;
+
+        let result = ctx.remove_retired_voting_key(&sdk, node_id).await.unwrap();
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
+        ));
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let entry = stored.private_keys.entry_at(&(V, 0));
+        assert!(
+            matches!(entry, Some((_, PrivateKeyData::AtWalletDerivationPath(found)))
+                if *found == wallet_reference(seed_hash, WALLET_NODE_VOTING_PATH)),
+            "the wallet's current voting key must take the old one's place, got {entry:?}"
+        );
+        let (voter, key) = stored
+            .associated_voter_identity
+            .as_ref()
+            .expect("the current voter identity is stored");
+        assert_eq!(
+            voter.id(),
+            voter_identity_id(ProTxHash::from_byte_array(node_id.to_buffer()), &current)
+        );
+        assert_eq!(key_hash(key), current);
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// The old key is already gone when the search fails, so the removal
+    /// still reports success; the next load can find the current key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_wallet_search_after_a_removal_still_reports_the_removal() {
+        let (ctx, _dir, node_id, _, _) = node_with_rotated_voting_key().await;
+
+        let result = ctx
+            .remove_retired_voting_key(&Sdk::new_mock(), node_id)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
+        ));
+        let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert!(stored.private_keys.entry_at(&(V, 0)).is_none());
+        assert!(stored.associated_voter_identity.is_none());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// A stored key the list still names is kept and nothing is looked up: a
+    /// wallet never displaces it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_kept_voting_key_is_not_replaced_by_a_wallet_search() {
+        let (ctx, _dir, node_id, _, current) = node_with_rotated_voting_key().await;
+        let backend = ctx.wallet_backend().unwrap();
+        let before = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        let stored_hash = key_hash(&before.associated_voter_identity.as_ref().unwrap().1);
+        assert_ne!(stored_hash, current);
+        backend.set_masternode_voting_hash_for_test(stored_hash);
+        let sdk = node_and_voter_sdk(&ctx, node_id, current).await;
+
+        let result = ctx.remove_retired_voting_key(&sdk, node_id).await.unwrap();
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RetiredVotingKeyKept { .. }
+        ));
+        let after = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
+        assert_eq!(
+            after.associated_voter_identity,
+            before.associated_voter_identity
+        );
+        assert!(matches!(
+            after.private_keys.entry_at(&(V, 0)),
+            Some((_, data)) if !matches!(data, PrivateKeyData::AtWalletDerivationPath(_))
+        ));
+        backend.shutdown().await;
+    }
+
     /// A node private key no wallet holds: its WIF, raw bytes and hash160.
     fn typed_node_key() -> (String, [u8; 32], [u8; 20]) {
         let bytes: [u8; 32] = rand::random();

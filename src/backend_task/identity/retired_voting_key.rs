@@ -7,14 +7,20 @@
 //! the current key look retired. Instead the node's page asks
 //! [`AppContext::check_retired_voting_key`] whether the stored key still
 //! matches, and the user removes an old one with
-//! [`AppContext::remove_retired_voting_key`].
+//! [`AppContext::remove_retired_voting_key`], which then looks in the wallets
+//! for the current one.
 
+use super::{IdentityInputToLoad, IdentityLoadMode};
 use crate::backend_task::{BackendTaskSuccessResult, TaskError};
 use crate::context::AppContext;
 use crate::model::masternode_keys::{
     StoredVotingKeys, retired_voting_keys, stored_voting_keys, stores_voting_key,
 };
+use crate::model::qualified_identity::IdentityType;
+use crate::model::secret::Secret;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 
 impl AppContext {
@@ -50,8 +56,14 @@ impl AppContext {
     /// under the record guard, the list read is at least as new as whatever
     /// reload stored them, so it can judge them. If not, it cannot, and
     /// nothing is removed.
+    ///
+    /// A removed key leaves the node without a voting key, so the wallets are
+    /// searched again for the current one. A key the node stores is never
+    /// displaced: this runs only after a removal, and the search itself skips
+    /// a node that stores a voting key.
     pub(super) async fn remove_retired_voting_key(
         &self,
+        sdk: &Sdk,
         identity_id: Identifier,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let node = self
@@ -59,7 +71,49 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         let expected = stored_voting_keys(&node);
         let current = self.current_voting_key_hash(identity_id).await;
-        self.remove_retired_voting_key_against(identity_id, current, &expected)
+        let result = self.remove_retired_voting_key_against(identity_id, current, &expected)?;
+        if matches!(
+            result,
+            BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
+        ) {
+            self.find_current_voting_key_in_wallets(sdk, identity_id, node.identity_type)
+                .await;
+        }
+        Ok(result)
+    }
+
+    /// Merge the node's current voting key from a wallet that holds it, by
+    /// loading the node again with nothing typed.
+    ///
+    /// Best effort: the old key is already gone, so a failure is only logged
+    /// and the next load of the node can still find the key.
+    async fn find_current_voting_key_in_wallets(
+        &self,
+        sdk: &Sdk,
+        identity_id: Identifier,
+        identity_type: IdentityType,
+    ) {
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::default(),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: Vec::new(),
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
+        };
+        if let Err(error) = self.load_identity(sdk, input).await {
+            tracing::warn!(
+                ?error,
+                %identity_id,
+                "Could not look for the current voting key in this device's wallets after removing the old one"
+            );
+        }
     }
 
     /// The list's current voting key hash for the node, or `None` when it
@@ -181,9 +235,9 @@ mod tests {
     use crate::model::dpns_voting::{
         DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
     };
+    use crate::model::qualified_identity::PrivateKeyTarget;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-    use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;

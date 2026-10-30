@@ -92,7 +92,26 @@ impl WalletBackend {
     /// user, never deleted automatically: the user removes it from the node's
     /// page (`IdentityTask::RemoveRetiredVotingKey`).
     pub async fn masternode_voting_key_hash(&self, identity_id: Identifier) -> Option<[u8; 20]> {
+        #[cfg(test)]
+        if let Some(hash) = *self
+            .inner
+            .masternode_voting_hash_test_override
+            .lock()
+            .unwrap()
+        {
+            return Some(hash);
+        }
         current_voting_key_hash(self.inner.pwm.spv(), identity_id).await
+    }
+
+    /// Answer [`Self::masternode_voting_key_hash`] with `hash` from now on.
+    #[cfg(test)]
+    pub(crate) fn set_masternode_voting_hash_for_test(&self, hash: [u8; 20]) {
+        *self
+            .inner
+            .masternode_voting_hash_test_override
+            .lock()
+            .unwrap() = Some(hash);
     }
 
     /// Find which of this device's registered wallets hold the masternode

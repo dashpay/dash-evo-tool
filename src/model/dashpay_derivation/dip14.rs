@@ -235,7 +235,6 @@ mod tests {
     #[test]
     fn test_dip14_test_vector_1() {
         // Test Vector 1 from DIP-14
-        // Mnemonic: birth kingdom trash renew flavor utility donkey gasp regular alert pave layer
         let seed_hex = "b16d3782e714da7c55a397d5f19104cfed7ffa8036ac514509bbb50807f8ac598eeb26f0797bd8cc221a6cbff2168d90a5e9ee025a5bd977977b9eccd97894bb";
         let seed = hex::decode(seed_hex).unwrap();
         let network = Network::Testnet;

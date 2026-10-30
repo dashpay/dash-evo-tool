@@ -1,6 +1,7 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
@@ -160,17 +161,28 @@ fn assert_validation_error(
     });
 }
 
+/// The display snapshot never vetoes a Core send: an empty snapshot still
+/// reaches the backend, whose pooled build refuses a real shortfall.
 #[test]
 fn routes_core_wallet_to_core_address() {
-    let error = assert_route(
+    let destination = core_address();
+    let action = assert_route(
         SourceSelection::CoreWallet,
-        ValidatedAddress::Core(core_address()),
+        ValidatedAddress::Core(destination.clone()),
         "Send DASH",
         None,
-    )
-    .expect_err("offline Core wallet has no spendable snapshot balance");
-    assert!(error.starts_with("Insufficient balance. Need "), "{error}");
-    assert!(!error.contains("including fee"), "{error}");
+    );
+    let Ok(AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
+        request,
+        ..
+    }))) = action
+    else {
+        panic!("a Core-to-Core send must reach the backend: {action:?}");
+    };
+    assert_eq!(request.recipients.len(), 1);
+    assert_eq!(request.recipients[0].address, destination.to_string());
+    assert_eq!(request.recipients[0].amount_duffs, 100_000_000);
+    assert_eq!(request.override_fee, None);
 }
 
 #[test]

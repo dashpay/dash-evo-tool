@@ -1067,11 +1067,10 @@ impl AppContext {
         }
     }
 
-    /// Get a fee estimator configured with the cached fee multiplier.
-    /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
-    /// that reflect the current network fee multiplier.
+    /// A fee estimator for the protocol version the SDK speaks, at the cached
+    /// epoch fee multiplier. Use it for every fee estimate.
     pub fn fee_estimator(&self) -> PlatformFeeEstimator {
-        PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
+        PlatformFeeEstimator::new(self.platform_version(), self.fee_multiplier_permille())
     }
 
     /// A handle on the shared app-global role, for wiring a newly-created
@@ -1845,14 +1844,57 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
-    /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
+    /// The revision a Core send Max quote is made against; see
+    /// [`crate::wallet_backend::WalletBackend::core_send_quote_revision`].
+    pub fn core_send_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.core_send_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// The shield-in-flight part of a shield-from-Platform Max quote key; see
+    /// [`crate::wallet_backend::WalletBackend::platform_shield_quote_revision`].
+    pub fn platform_shield_quote_revision(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.platform_shield_quote_revision(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Number of UTXOs in the wallet's display snapshot, in every account.
+    /// Sizes the Core fee a wallet deposit is asked to bring on top.
     ///
     /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
-    /// selection — it only sizes the fee reserved off the displayed balance.
+    /// selection or a Max amount — those come from the backend builder.
     pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
         self.wallet_backend()
             .map(|wb| wb.utxo_count(seed_hash))
+            .unwrap_or(0)
+    }
+
+    /// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` to a
+    /// `destination` script, never below what the build charges. `quote` is
+    /// the quoted Max for the same destination and what it was proven
+    /// against; without it, the coins the snapshot counts stand in.
+    pub fn snapshot_core_payment_fee_duffs(
+        &self,
+        seed_hash: &WalletSeedHash,
+        destination: crate::model::spend_limit::CoreDestinationScript,
+        amount_duffs: u64,
+        quote: Option<(u64, crate::model::spend_limit::CoreSendQuoteFee)>,
+    ) -> u64 {
+        crate::model::fee_estimation::estimate_core_payment_fee_duffs(
+            destination,
+            amount_duffs,
+            quote,
+            self.snapshot_core_send_input_count(seed_hash),
+        )
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, from
+    /// the wallet's snapshot.
+    fn snapshot_core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.wallet_backend()
+            .map(|wb| wb.core_send_input_count(seed_hash))
             .unwrap_or(0)
     }
 

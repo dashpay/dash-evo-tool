@@ -8,19 +8,17 @@ use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress, parse_shielded_recipient};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES, validate_nonzero_amount};
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, asset_lock_user_max_amount,
-    validate_asset_lock_amount,
-};
+use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max_amount};
 use crate::model::fee_estimation::{
-    MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
-    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
-    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
-    format_duffs_as_dash, identity_topup_min_funding_duffs, max_spendable_credits,
+    PlatformFeeEstimator, allocate_platform_addresses, allocate_platform_addresses_with_fee,
+    core_send_fee_at_max_duffs, estimate_address_funding_fee_from_transition,
+    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
     shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::spend_limit::SpendLimitKind;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
@@ -34,11 +32,11 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, network_fee_refusal};
+use crate::ui::identity::funding_common::{FUNDING_FEE_NOT_COVERED, asset_lock_amount_refusal};
 use crate::ui::identity::top_up_identity_screen::{
     send_top_up_to_background, top_up_in_flight_for, track_top_up_sent_elsewhere,
 };
-use crate::ui::state::{AssetLockBalanceCache, PendingRequest};
+use crate::ui::state::{AssetLockBalanceCache, PendingRequest, SpendLimitCache};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::shielded_tab::SHIELDED_FROM_CORE_WITHOUT_AMOUNT;
 use crate::ui::{
@@ -349,6 +347,9 @@ pub struct WalletSendScreen {
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
     asset_lock_balance: AssetLockBalanceCache,
+    /// Backend-quoted Max amounts for sends whose builder applies rules the
+    /// screen cannot see.
+    spend_limits: SpendLimitCache,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -413,6 +414,7 @@ impl WalletSendScreen {
             send_banner: None,
             send_confirmation: None,
             asset_lock_balance: AssetLockBalanceCache::default(),
+            spend_limits: SpendLimitCache::default(),
             flow: SendFlow::General,
             identity_flow: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -549,7 +551,9 @@ impl WalletSendScreen {
             .collect();
         sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
-        let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+        let usable_count = sorted_addresses
+            .len()
+            .min(fee_estimator.max_platform_inputs());
         if usable_count == 0 {
             return estimate_platform_fee(fee_estimator, 1, 1);
         }
@@ -602,6 +606,7 @@ impl WalletSendScreen {
         self.invalidate_address_input();
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
+        self.spend_limits.invalidate();
     }
 
     fn reset_form(&mut self) {
@@ -624,6 +629,7 @@ impl WalletSendScreen {
         self.pending_send.clear();
         self.send_confirmation = None;
         self.asset_lock_balance.invalidate();
+        self.spend_limits.invalidate();
         self.refresh_bound_identity();
     }
 
@@ -720,7 +726,7 @@ impl WalletSendScreen {
             AddressKind::Platform => Some(
                 self.app_context
                     .fee_estimator()
-                    .address_funding_min_amount_duffs(true, platform_version),
+                    .address_funding_min_amount_duffs(true),
             ),
             _ => None,
         }
@@ -853,6 +859,20 @@ impl WalletSendScreen {
             .unwrap_or(0)
     }
 
+    /// The builder ceiling an explicit asset-lock amount is checked against:
+    /// `None` while another transaction from the wallet is in progress, when
+    /// only Max is withheld and the backend decides the amount.
+    fn asset_lock_validation_ceiling(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<u64>, String> {
+        match self.asset_lock_max_amount(seed_hash) {
+            Ok(ceiling) => Ok(Some(ceiling)),
+            Err(_) if self.asset_lock_balance.is_busy(seed_hash) => Ok(None),
+            Err(message) => Err(message),
+        }
+    }
+
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
         let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
         self.asset_lock_balance
@@ -884,6 +904,109 @@ impl WalletSendScreen {
         )
     }
 
+    /// The backend-quoted limit the current source and destination need, and
+    /// the wallet state it must have been quoted against. A Core wallet with
+    /// no destination yet is quoted as a Core send to P2PKH (see
+    /// [`Self::core_send_limit_kind`]), so Max never falls back to the
+    /// displayed balance.
+    fn spend_limit_target(&self) -> Option<(WalletSeedHash, SpendLimitKind, u64)> {
+        let seed_hash = self.selected_wallet_seed_hash?;
+        match (self.selected_source.as_ref()?, self.destination_kind()) {
+            (SourceSelection::PlatformAddresses(_), Some(AddressKind::Shielded)) => Some((
+                seed_hash,
+                SpendLimitKind::ShieldFromPlatform,
+                // A shield in flight has spent credits the live balances
+                // still show, so its opening and settling re-key the quote.
+                self.live_platform_balances_revision()
+                    ^ self
+                        .app_context
+                        .platform_shield_quote_revision(&seed_hash)
+                        .rotate_left(32),
+            )),
+            (SourceSelection::CoreWallet, Some(AddressKind::Core) | None) => Some((
+                seed_hash,
+                self.core_send_limit_kind(),
+                self.app_context.core_send_quote_revision(&seed_hash),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Core send Max is quoted for the script the destination pays to; with
+    /// none chosen yet, for P2PKH, the larger output and so the safe bound.
+    fn core_send_limit_kind(&self) -> SpendLimitKind {
+        SpendLimitKind::CoreSend {
+            destination: self.core_send_destination(),
+        }
+    }
+
+    /// The script kind a Core send pays to: the destination's, or P2PKH, the
+    /// conservative bound, before one is chosen.
+    fn core_send_destination(&self) -> crate::model::spend_limit::CoreDestinationScript {
+        match &self.validated_destination {
+            Some(ValidatedAddress::Core(address)) => {
+                crate::model::spend_limit::CoreDestinationScript::of(address)
+            }
+            _ => Default::default(),
+        }
+    }
+
+    /// Names the wallet's live Platform balances, not the ones captured in
+    /// `selected_source`: a balance fetch or sync push updates the wallet
+    /// without re-selecting the source, and must still re-quote shield Max.
+    fn live_platform_balances_revision(&self) -> u64 {
+        let addresses: Vec<_> = self
+            .get_platform_addresses()
+            .into_iter()
+            .map(|(core_address, platform_address, balance)| {
+                (platform_address, core_address, balance)
+            })
+            .collect();
+        platform_balances_revision(&addresses)
+    }
+
+    /// What the loaded Core send Max was proven against, for the current
+    /// destination.
+    fn core_send_quote_fee(&self) -> Option<crate::model::spend_limit::CoreSendQuoteFee> {
+        let (seed_hash, target_kind, revision) = self.spend_limit_target()?;
+        let kind = self.core_send_limit_kind();
+        (target_kind == kind)
+            .then(|| self.spend_limits.core_fee(&seed_hash, kind, revision))
+            .flatten()
+    }
+
+    /// The quoted Max, in credits, for the current source and destination.
+    fn spend_limit(&self, kind: SpendLimitKind) -> Option<u64> {
+        let (seed_hash, target_kind, revision) = self.spend_limit_target()?;
+        (target_kind == kind)
+            .then(|| self.spend_limits.get(&seed_hash, kind, revision))
+            .flatten()
+    }
+
+    fn request_spend_limit(&mut self) -> Option<BackendTask> {
+        let (seed_hash, kind, revision) = self.spend_limit_target()?;
+        self.spend_limits
+            .ensure_requested(seed_hash, kind, revision)
+    }
+
+    fn render_spend_limit_status(&mut self, ui: &mut Ui) {
+        let Some((seed_hash, kind, revision)) = self.spend_limit_target() else {
+            return;
+        };
+        if self.spend_limits.is_busy(&seed_hash, kind, revision) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if let Some(reason) = self.spend_limits.unavailable(&seed_hash, kind, revision) {
+            ui.label(reason.message());
+        } else if self.spend_limits.is_failed(&seed_hash, kind, revision) {
+            ui.label("The available amount could not be checked.");
+            if ui.button("Retry available amount check").clicked() {
+                self.spend_limits.invalidate();
+            }
+        } else if self.spend_limits.get(&seed_hash, kind, revision).is_none() {
+            ui.label("Checking the available amount…");
+        }
+    }
+
     fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
         let Some(seed_hash) = self.selected_wallet_seed_hash else {
             return;
@@ -899,7 +1022,9 @@ impl WalletSendScreen {
 
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
         let loading = self.asset_lock_max_amount(&seed_hash).is_err();
-        if failed {
+        if self.asset_lock_balance.is_busy(&seed_hash) {
+            ui.label(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE);
+        } else if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {
             ui.label("Checking the available amount…");
@@ -1222,9 +1347,7 @@ impl WalletSendScreen {
             ValidatedSendRoute::ShieldedToPlatform(sh) => self.send_shielded_to_platform(sh),
             ValidatedSendRoute::CoreToShielded => self.send_core_to_shielded(seed_hash),
             ValidatedSendRoute::CoreToIdentity => self.send_core_to_identity(seed_hash),
-            ValidatedSendRoute::PlatformToShielded(addresses) => {
-                self.send_platform_to_shielded(seed_hash, addresses)
-            }
+            ValidatedSendRoute::PlatformToShielded(_) => self.send_platform_to_shielded(seed_hash),
             ValidatedSendRoute::PlatformToIdentity(addresses) => {
                 self.send_platform_to_identity(seed_hash, addresses)
             }
@@ -1245,16 +1368,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                format_duffs_as_dash(amount_duffs),
-                format_duffs_as_dash(balance)
-            ));
-        }
-
+        // No balance check here: the display snapshot can lag the pooled
+        // quote behind Max. `WalletBackend::send_payment` dry-runs the pooled
+        // build before any prompt and refuses a shortfall with a typed error.
         let wallet = self
             .selected_wallet
             .as_ref()
@@ -1297,28 +1413,14 @@ impl WalletSendScreen {
             &destination,
         )
         .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             platform_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Platform),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
@@ -1401,12 +1503,13 @@ impl WalletSendScreen {
         }
 
         if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+            // Calculate the max we can send with the protocol's input limit (minus fees)
+            let max_inputs = fee_estimator.max_platform_inputs();
+            let addresses_available = allocation.sorted_addresses.len().min(max_inputs);
             let max_balance: u64 = allocation
                 .sorted_addresses
                 .iter()
-                .take(MAX_PLATFORM_INPUTS)
+                .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
             let max_fee = self.estimate_max_fee_for_platform_send(
@@ -1428,7 +1531,7 @@ impl WalletSendScreen {
                 format_credits_as_dash(max_sendable),
                 addresses_available,
                 format_credits_as_dash(max_balance),
-                MAX_PLATFORM_INPUTS,
+                max_inputs,
                 format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
                 format_credits_as_dash(allocation.shortfall)
@@ -1502,20 +1605,26 @@ impl WalletSendScreen {
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
         let platform_version = self.app_context.platform_version();
+        let max_inputs = max_platform_inputs(platform_version);
 
         // Allocate addresses using state-transition-based fee estimation (no destination filter)
-        let allocation =
-            allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
+        let allocation = allocate_platform_addresses_with_fee(
+            &addresses,
+            amount_credits,
+            None,
+            max_inputs,
+            |inputs| {
                 estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            });
+            },
+        );
 
         if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+            // Calculate the max we can send with the protocol's input limit (minus fees)
+            let addresses_available = allocation.sorted_addresses.len().min(max_inputs);
             let max_balance: u64 = allocation
                 .sorted_addresses
                 .iter()
-                .take(MAX_PLATFORM_INPUTS)
+                .take(max_inputs)
                 .map(|(_, _, b)| *b)
                 .sum();
             let max_fee_inputs: BTreeMap<PlatformAddress, u64> = allocation
@@ -1543,7 +1652,7 @@ impl WalletSendScreen {
                 format_credits_as_dash(max_sendable),
                 addresses_available,
                 format_credits_as_dash(max_balance),
-                MAX_PLATFORM_INPUTS,
+                max_inputs,
                 format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
                 format_credits_as_dash(allocation.shortfall)
@@ -1715,6 +1824,7 @@ impl WalletSendScreen {
 
         // Amount
         self.render_asset_lock_balance_status(ui);
+        self.render_spend_limit_status(ui);
         self.render_amount_input(ui);
 
         ui.add_space(10.0);
@@ -1911,6 +2021,7 @@ impl WalletSendScreen {
         }
 
         self.render_asset_lock_balance_status(ui);
+        self.render_spend_limit_status(ui);
         self.render_amount_input(ui);
 
         ui.add_space(10.0);
@@ -2048,20 +2159,11 @@ impl WalletSendScreen {
                 }
                 .to_string()
             })?;
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) =
+            asset_lock_amount_refusal(amount_duffs, asset_lock_max, platform_fee_duffs, None)
         {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
+            return Err(message);
         }
 
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -2088,28 +2190,14 @@ impl WalletSendScreen {
             .fee_estimator()
             .estimate_identity_topup()
             .div_ceil(CREDITS_PER_DUFF);
-        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Some(message) = network_fee_refusal(
+        let asset_lock_max = self.asset_lock_validation_ceiling(&seed_hash)?;
+        if let Some(message) = asset_lock_amount_refusal(
             amount_duffs,
             asset_lock_max,
             identity_fee_duffs,
             self.wallet_funding_minimum_duffs(AddressKind::Identity),
         ) {
             return Err(message);
-        }
-        if let Err(error) =
-            validate_asset_lock_amount(amount_duffs, identity_fee_duffs, asset_lock_max)
-        {
-            let maximum_amount_duffs = match error {
-                AssetLockAmountError::Overflow => asset_lock_max,
-                AssetLockAmountError::ExceedsMaximum {
-                    maximum_amount_duffs,
-                } => maximum_amount_duffs,
-            };
-            return Err(format!(
-                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                format_duffs_as_dash(maximum_amount_duffs)
-            ));
         }
 
         // Resolve identity from destination
@@ -2158,7 +2246,6 @@ impl WalletSendScreen {
     fn send_platform_to_shielded(
         &mut self,
         seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         if !matches!(
             &self.validated_destination,
@@ -2176,17 +2263,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Pre-flight: the total platform balance must cover the amount. The
-        // upstream coordinator handles per-address selection and fees.
-        let total_available: u64 = addresses.iter().map(|(_, _, b)| b).sum();
-        if amount_credits > total_available {
-            return Err(format!(
-                "Insufficient platform balance. Need {} but total available is {}.",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(total_available)
-            ));
-        }
-
+        // No balance check here: the source's captured balances can lag a
+        // sync. The shield planner decides, and the backend refuses an amount
+        // above its maximum before any prompt.
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldFromBalance {
                 seed_hash,
@@ -2982,6 +3061,10 @@ impl WalletSendScreen {
                 let mut max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read().ok().and_then(|wallet| {
                         let seed_hash = wallet.seed_hash();
+                        // Only an asset-lock route starts from the builder
+                        // ceiling: the same current-composition accessor
+                        // validation uses, so Max can never offer a stale
+                        // ceiling. A Core send takes the backend quote below.
                         let max_duffs = if matches!(
                             dest_kind,
                             Some(
@@ -2990,11 +3073,9 @@ impl WalletSendScreen {
                                     | AddressKind::Identity
                             )
                         ) {
-                            // Same current-composition accessor validation
-                            // uses, so Max can never offer a stale ceiling.
                             self.asset_lock_max_amount(&seed_hash).ok()
                         } else {
-                            Some(self.app_context.snapshot_balance(&seed_hash).spendable())
+                            None
                         };
                         max_duffs.map(|amount| amount.saturating_mul(CREDITS_PER_DUFF))
                     })
@@ -3013,10 +3094,7 @@ impl WalletSendScreen {
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
                             let fee = format_credits_as_dash(estimated_fee);
                             let minimum = format_duffs_as_dash(
-                                fee_estimator.address_funding_min_amount_duffs(
-                                    true,
-                                    self.app_context.sdk_platform_version(),
-                                ),
+                                fee_estimator.address_funding_min_amount_duffs(true),
                             );
                             Some(format!(
                                 "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount, so the amount must be at least {minimum}."
@@ -3065,72 +3143,64 @@ impl WalletSendScreen {
                             },
                         )
                     }
-                    Some(AddressKind::Core) => {
-                        // Core-to-Core "Max": reserve the L1 network fee so the
-                        // send leaves enough to cover it. The fee scales with
-                        // the wallet's UTXO count (a Max send spends them all)
-                        // into a single recipient output with no change.
-                        let seed_hash = self
-                            .selected_wallet
-                            .as_ref()
-                            .and_then(|w| w.read().ok().map(|wallet| wallet.seed_hash()));
-                        if let Some(seed_hash) = seed_hash {
-                            let spendable_balance_duffs =
-                                self.app_context.snapshot_balance(&seed_hash).spendable();
-                            let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
-                            match core_max_send_amount_duffs(spendable_balance_duffs, utxo_count, 1)
-                            {
-                                Some(send_amount_duffs) => {
-                                    max = Some(send_amount_duffs * CREDITS_PER_DUFF);
-                                    let fee_duffs = core_max_send_reserve_duffs(
-                                        spendable_balance_duffs,
-                                        utxo_count,
-                                        1,
-                                    )
-                                    .unwrap_or(0);
-                                    let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
-                                    Some(format!(
-                                        "A network fee of approximately {fee} is reserved from your balance."
-                                    ))
-                                }
-                                None => {
-                                    // Balance does not cover the network fee.
-                                    // Leave no Max value so the button cannot
-                                    // produce an amount that would fail.
-                                    max = None;
-                                    Some(
-                                        "Your balance is too low to cover the network fee."
-                                            .to_string(),
-                                    )
-                                }
+                    Some(AddressKind::Core) | None => {
+                        // Core-to-Core "Max": the backend's quote of the largest
+                        // payment the pooled build accepts, net of its fee;
+                        // with no destination yet, the P2PKH quote.
+                        // Nothing is offered until it arrives.
+                        match self.spend_limit(self.core_send_limit_kind()) {
+                            // The backend states a zero as its reason; this
+                            // only keeps a zero from being offered.
+                            Some(0) => {
+                                max = None;
+                                None
                             }
-                        } else {
-                            None
+                            Some(max_credits) => {
+                                max = Some(max_credits);
+                                let fee_duffs = self
+                                    .core_send_quote_fee()
+                                    .map(|quote| core_send_fee_at_max_duffs(&quote))
+                                    .unwrap_or_default();
+                                let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
+                                Some(format!(
+                                    "A network fee of approximately {fee} is reserved from your balance."
+                                ))
+                            }
+                            None => {
+                                max = None;
+                                None
+                            }
                         }
                     }
-                    _ => None,
                 };
                 (max, hint)
             }
-            Some(SourceSelection::PlatformAddresses(addresses))
+            Some(SourceSelection::PlatformAddresses(_))
                 if self.destination_kind() == Some(AddressKind::Shielded) =>
             {
-                // Shield-from-Platform: the coordinator selects the inputs and
-                // the shield fee is paid from the same balance as the amount, so
-                // reserve the two-action shielded-fee headroom (far larger than
-                // the plain platform-transfer estimate) against the full balance.
-                let total: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
-                let headroom = shield_from_balance_fee_headroom(
-                    self.app_context.platform_version(),
-                    self.app_context.fee_multiplier_permille(),
-                );
+                // Shield-from-Platform: the upstream planner picks the input
+                // addresses in its own order, skips the ones below the minimum
+                // input and caps their count, so only its quote is a Max it
+                // accepts. Nothing is offered until that quote arrives.
+                let headroom =
+                    shield_from_balance_fee_headroom(self.app_context.platform_version());
                 let fee = format_credits_as_dash(headroom);
-                (
-                    Some(total.saturating_sub(headroom)),
-                    Some(format!(
-                        "A shielding fee of approximately {fee} is reserved from your balance."
-                    )),
-                )
+                match self.spend_limit(SpendLimitKind::ShieldFromPlatform) {
+                    // No address can keep the fee back: a zero Max would only
+                    // fill in an amount the form refuses.
+                    Some(0) => (
+                        None,
+                        Some(format!(
+                            "None of your Platform addresses can keep back {fee} to pay the shielding fee, so nothing can be shielded right now."
+                        )),
+                    ),
+                    max => (
+                        max,
+                        Some(format!(
+                            "Up to {fee} is kept back from your balance to pay the shielding fee. What the fee does not use stays on your Platform address."
+                        )),
+                    ),
+                }
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Extract destination to exclude it from max calculation (can't send to yourself)
@@ -3147,10 +3217,12 @@ impl WalletSendScreen {
                     .collect();
                 sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
-                // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
+                // Sum balances from top addresses, limited by the protocol's
+                // input limit.
+                let max_inputs = fee_estimator.max_platform_inputs();
                 let total: u64 = sorted_addresses
                     .iter()
-                    .take(MAX_PLATFORM_INPUTS)
+                    .take(max_inputs)
                     .map(|(_, _, balance)| *balance)
                     .sum();
                 let max_fee = self.estimate_max_fee_for_platform_send(
@@ -3161,9 +3233,9 @@ impl WalletSendScreen {
 
                 // Build hint explaining the limit
                 let fee = format_credits_as_dash(max_fee);
-                let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
+                let hint = if sorted_addresses.len() > max_inputs {
                     format!(
-                        "This transaction is limited to {MAX_PLATFORM_INPUTS} input addresses, and fees of approximately {fee} are reserved from your balance."
+                        "This transaction is limited to {max_inputs} input addresses, and fees of approximately {fee} are reserved from your balance."
                     )
                 } else {
                     format!("Fees of approximately {fee} are reserved from your balance.")
@@ -3327,13 +3399,13 @@ impl WalletSendScreen {
 
                 if hit_limit {
                     // Determine if the shortfall is due to address limit or insufficient balance
-                    let exceeds_address_limit =
-                        allocation.sorted_addresses.len() > MAX_PLATFORM_INPUTS;
+                    let max_inputs = max_platform_inputs(self.app_context.platform_version());
+                    let exceeds_address_limit = allocation.sorted_addresses.len() > max_inputs;
                     let warning_msg = if exceeds_address_limit {
                         format!(
                             "Warning: Amount requires more than {} addresses. \
                              Reduce amount or use multiple transactions.",
-                            MAX_PLATFORM_INPUTS
+                            max_inputs
                         )
                     } else {
                         "Warning: Amount exceeds available balance (including fees).".to_string()
@@ -3374,9 +3446,19 @@ impl WalletSendScreen {
         match (self.selected_source.as_ref()?, dest_kind) {
             // Core → Core: L1 network fee, paid on top (reserved from balance).
             (SourceSelection::CoreWallet, AddressKind::Core) => {
+                // Never below what the pooled build charges for this amount
+                // and destination; at the Max, exactly the Max's fee.
                 let seed_hash = self.selected_wallet_seed_hash?;
-                let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
-                let fee_duffs = estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                let quote = self
+                    .spend_limit(self.core_send_limit_kind())
+                    .zip(self.core_send_quote_fee())
+                    .map(|(max_credits, quote)| (max_credits / CREDITS_PER_DUFF, quote));
+                let fee_duffs = self.app_context.snapshot_core_payment_fee_duffs(
+                    &seed_hash,
+                    self.core_send_destination(),
+                    amount_credits / CREDITS_PER_DUFF,
+                    quote,
+                );
                 let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
@@ -3429,6 +3511,7 @@ impl WalletSendScreen {
                     addresses,
                     amount_credits,
                     None,
+                    max_platform_inputs(platform_version),
                     |inputs| {
                         estimate_withdrawal_fee_from_transition(
                             platform_version,
@@ -3439,11 +3522,12 @@ impl WalletSendScreen {
                 );
                 Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
             }
-            // Platform → Shielded: two-action shield fee headroom, paid on top.
+            // Platform → Shielded: the two-action shield fee, paid on top. The
+            // planner keeps a larger reserve back; what the fee does not use
+            // stays on the Platform address.
             (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => {
-                let fee_credits = shield_from_balance_fee_headroom(
+                let fee_credits = crate::model::fee_estimation::shield_from_balance_fee_estimate(
                     self.app_context.platform_version(),
-                    self.app_context.fee_multiplier_permille(),
                 );
                 Some(FeePreview::on_top(amount_credits, fee_credits))
             }
@@ -4706,10 +4790,7 @@ impl WalletSendScreen {
         let minimum_duffs = self
             .app_context
             .fee_estimator()
-            .address_funding_min_amount_duffs(
-                fee_deduct_from_output,
-                self.app_context.sdk_platform_version(),
-            );
+            .address_funding_min_amount_duffs(fee_deduct_from_output);
         ensure_funding_covers_network_fee(amount_duffs, Ok(minimum_duffs))
             .map_err(|error| error.to_string())?;
 
@@ -4972,6 +5053,18 @@ impl WalletSendScreen {
             );
             return true;
         }
+        if let crate::backend_task::BackendTaskSuccessResult::SpendLimit {
+            seed_hash,
+            kind,
+            request_id,
+            max_credits,
+            core_fee,
+        } = result
+        {
+            self.spend_limits
+                .store(*seed_hash, *kind, *request_id, *max_credits, *core_fee);
+            return true;
+        }
         if Self::task_result_updates_address_input(result) {
             self.address_input_snapshot_signature = None;
         }
@@ -5110,6 +5203,11 @@ impl ScreenLike for WalletSendScreen {
         {
             action = append_concurrent_backend_tasks(action, vec![task]);
         }
+        if can_append_concurrent_backend_tasks(&action)
+            && let Some(task) = self.request_spend_limit()
+        {
+            action = append_concurrent_backend_tasks(action, vec![task]);
+        }
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
@@ -5181,12 +5279,14 @@ impl ScreenLike for WalletSendScreen {
         self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.asset_lock_balance.invalidate();
+        self.spend_limits.invalidate();
     }
 
     fn refresh(&mut self) {
         self.refresh_bound_identity();
         self.address_input_snapshot_signature = None;
         self.asset_lock_balance.invalidate();
+        self.spend_limits.invalidate();
     }
 
     fn cached_data_changed(&mut self, update: crate::backend_task::CacheUpdate) {
@@ -5198,7 +5298,7 @@ impl ScreenLike for WalletSendScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         if self.awaits_send(context) {
             // The global banner says why; the form is handed back.
             self.pending_send.clear();
@@ -5208,11 +5308,16 @@ impl ScreenLike for WalletSendScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
+        }
+        if let Some((seed_hash, kind, request_id)) = context.spend_limit_request() {
+            self.spend_limits
+                .mark_request_error(seed_hash, kind, request_id, error);
         }
     }
 
@@ -5221,8 +5326,20 @@ impl ScreenLike for WalletSendScreen {
         context: &BackendTaskContext,
         _error: &TaskError,
     ) -> bool {
-        context.asset_lock_max_amount_request().is_some()
+        context.asset_lock_max_amount_request().is_some() || context.spend_limit_request().is_some()
     }
+}
+
+/// Names the Platform balances a shield quote was made against: any change in
+/// the offered addresses or their balances asks for a new quote.
+fn platform_balances_revision(addresses: &[(PlatformAddress, Address, u64)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (platform_address, _, balance) in addresses {
+        Hash::hash(platform_address, &mut hasher);
+        Hash::hash(balance, &mut hasher);
+    }
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -6468,7 +6585,7 @@ mod tests {
             .send_core_to_shielded(seed_hash)
             .expect_err("one duff above Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "validation should report the builder-derived ceiling: {error}"
         );
 
@@ -6515,7 +6632,7 @@ mod tests {
             .send_core_to_identity(seed_hash)
             .expect_err("one duff above Identity Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "validation should report the builder-derived identity ceiling: {error}"
         );
 
@@ -6559,7 +6676,7 @@ mod tests {
             .send_core_to_platform(seed_hash)
             .expect_err("one duff above Platform Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can transfer up to "),
+            error.starts_with("You can use up to "),
             "Platform validation should report the builder-derived ceiling: {error}"
         );
     }
@@ -6636,6 +6753,643 @@ mod tests {
         assert_ne!(
             failed_message, loading_message,
             "a permanently failed probe must not be described as still loading"
+        );
+    }
+
+    /// The shield planner decides which Platform addresses it may spend, so
+    /// Max for a shield from Platform is the planner's quote — never the
+    /// balance minus a fee — and nothing is offered before the quote arrives.
+    #[test]
+    fn shield_from_platform_max_is_the_planner_quote() {
+        const BALANCE_CREDITS: u64 = 2 * CREDITS_PER_DUFF * 100_000_000;
+        const QUOTE_CREDITS: u64 = 123_456_789_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            BALANCE_CREDITS,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind: SpendLimitKind::ShieldFromPlatform,
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert_eq!(
+            screen.spend_limit(SpendLimitKind::ShieldFromPlatform),
+            None,
+            "no Max before the quote arrives"
+        );
+        assert!(
+            screen.request_spend_limit().is_none(),
+            "the quote is asked for once per balance"
+        );
+
+        let quote = BackendTaskSuccessResult::SpendLimit {
+            seed_hash,
+            kind: SpendLimitKind::ShieldFromPlatform,
+            request_id,
+            max_credits: QUOTE_CREDITS,
+            core_fee: None,
+        };
+        assert!(screen.refresh_form_inputs(&quote));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_CREDITS),
+            "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// The Platform balances captured when the source was picked can lag a
+    /// sync that raised them, so they must not veto a shield: the planner
+    /// decides, and refuses an amount above its maximum itself.
+    #[test]
+    fn shield_from_platform_send_is_not_refused_by_the_captured_balances() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(1.0));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let action = screen.send_platform_to_shielded(seed_hash);
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldFromBalance { amount, .. }
+                ))) if amount == Amount::new_dash(1.0).value()
+            ),
+            "the shield must reach the planner: {action:?}"
+        );
+    }
+
+    /// When the planner can shield nothing (no address can keep the fee
+    /// reserve back), there is no Max to offer: the form says why instead of
+    /// a Max that fills in zero.
+    #[test]
+    fn shield_from_platform_offers_no_max_when_nothing_can_be_shielded() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: 0,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.run();
+
+        let field_text = harness
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .value()
+            .unwrap_or_default();
+        assert!(
+            field_text.is_empty(),
+            "a zero quote must not be offered as Max, got {field_text:?}"
+        );
+        assert!(
+            harness
+                .query_all(
+                    egui_kittest::kittest::By::new()
+                        .label_contains("so nothing can be shielded right now")
+                        .include_labels()
+                )
+                .next()
+                .is_some(),
+            "the form must say why nothing can be shielded"
+        );
+    }
+
+    /// A Platform balance that changes after the shield quote (a balance
+    /// fetch or a sync push, neither of which re-selects the source) makes
+    /// that quote stale: Max is withdrawn and a fresh quote is asked for.
+    #[test]
+    fn shield_from_platform_max_is_requoted_when_live_balances_change() {
+        const BALANCE_CREDITS: u64 = 2 * CREDITS_PER_DUFF * 100_000_000;
+        const QUOTE_CREDITS: u64 = 123_456_789_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        let wallet = screen.selected_wallet.clone().expect("selected wallet");
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(source_core.clone(), BALANCE_CREDITS, 1);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core.clone(),
+            BALANCE_CREDITS,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+        assert_eq!(
+            screen.spend_limit(SpendLimitKind::ShieldFromPlatform),
+            Some(QUOTE_CREDITS)
+        );
+
+        // The balance drops behind the form's back; the selected source keeps
+        // its old figures.
+        wallet
+            .write()
+            .expect("wallet lock")
+            .set_platform_address_info(source_core, BALANCE_CREDITS / 4, 2);
+
+        assert_eq!(
+            screen.spend_limit(SpendLimitKind::ShieldFromPlatform),
+            None,
+            "a quote made against the old balance must not back Max"
+        );
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::ShieldFromPlatform,
+                    ..
+                }))
+            ),
+            "the changed balance must be quoted afresh"
+        );
+    }
+
+    /// The display snapshot can lag (or be empty before its first update)
+    /// while the pooled quote already offers a positive Max, so it must not
+    /// veto a Core send: the backend's pooled build decides and refuses a
+    /// real shortfall with a typed error.
+    #[test]
+    fn core_send_is_not_refused_by_the_display_balance() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        screen.amount = Some(Amount::new_dash(1.0));
+        assert_eq!(screen.get_core_balance(), 0, "precondition: empty snapshot");
+
+        let action = screen.send_core_to_core();
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::CoreTask(
+                    CoreTask::SendWalletPayment { ref request, .. }
+                ))) if request.recipients.len() == 1
+                    && request.recipients[0].amount_duffs == 100_000_000
+            ),
+            "the send must reach the backend: {action:?}"
+        );
+    }
+
+    /// Core sends pool several accounts, so Max for a Core payment is the
+    /// backend's pooled quote, never the displayed balance less an estimate.
+    #[test]
+    fn core_send_max_is_the_backend_quote() {
+        const QUOTE_DUFFS: u64 = 1_234_567;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind:
+                SpendLimitKind::CoreSend {
+                    destination: crate::model::spend_limit::CoreDestinationScript::PubkeyHash,
+                },
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("the Core send form must ask for the pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// Before a destination is chosen, Core Max is still the backend's pooled
+    /// quote, taken for P2PKH (the larger output, so the safe bound), never
+    /// the displayed spendable balance, which can include inputs the pooled
+    /// build cannot spend and keeps no fee back.
+    #[test]
+    fn core_send_max_without_destination_is_the_p2pkh_quote() {
+        use crate::model::spend_limit::CoreDestinationScript;
+        const QUOTE_DUFFS: u64 = 7_654_321;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = None;
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind:
+                SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+            request_id,
+            ..
+        })) = screen.request_spend_limit()
+        else {
+            panic!("with no destination, Core Max must ask for the P2PKH pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "Max with no destination must be exactly the P2PKH pooled quote"
+        );
+    }
+
+    /// Core Max is quoted for the script the chosen destination pays to, and
+    /// a change of destination kind asks for that kind's own quote.
+    #[test]
+    fn core_send_max_is_requested_for_the_destination_script() {
+        use crate::model::spend_limit::CoreDestinationScript;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        let p2sh = Address::new(
+            Network::Testnet,
+            dash_sdk::dpp::dashcore::address::Payload::ScriptHash(
+                dash_sdk::dpp::dashcore::ScriptHash::from_byte_array([9; 20]),
+            ),
+        );
+        screen.validated_destination = Some(ValidatedAddress::Core(p2sh));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::ScriptHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2SH destination is quoted as P2SH"
+        );
+
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        assert!(
+            matches!(
+                screen.request_spend_limit(),
+                Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                    kind: SpendLimitKind::CoreSend {
+                        destination: CoreDestinationScript::PubkeyHash
+                    },
+                    ..
+                }))
+            ),
+            "a P2PKH destination needs its own quote"
+        );
+    }
+
+    /// Busy withholds only Max: an explicit asset-lock amount still reaches
+    /// the backend, whose reservation-aware dry run and the build decide it.
+    #[test]
+    fn an_explicit_asset_lock_amount_is_sent_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(0.5));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(
+            task @ BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                snapshot_generation,
+                request_id,
+                ..
+            }),
+        ) = screen.request_asset_lock_max_amount()
+        else {
+            panic!("the asset-lock form must ask for the builder ceiling");
+        };
+        let _ = task;
+        screen.asset_lock_balance.mark_request_error(
+            &seed_hash,
+            snapshot_generation,
+            request_id,
+            &TaskError::SpendInProgress,
+        );
+
+        let action = screen.send_core_to_shielded(seed_hash);
+
+        assert!(
+            matches!(
+                action,
+                Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
+                        amount_duffs: 50_000_000,
+                        ..
+                    }
+                )))
+            ),
+            "an explicit amount must reach the backend: {action:?}"
+        );
+    }
+
+    /// When the wallet says a Core send has nothing to offer, the form names
+    /// the reason (here: only CoinJoin funds) instead of a fee shortfall or a
+    /// retry, and Max fills nothing.
+    #[test]
+    fn core_send_states_why_no_max_is_offered() {
+        use crate::model::spend_limit::CoreSendShortfall;
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(
+            &context,
+            &TaskError::CoreSendMaxUnavailable {
+                reason: CoreSendShortfall::NothingSpendable,
+            },
+        );
+
+        assert!(screen.request_spend_limit().is_none());
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_spend_limit_status(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let caption = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(CoreSendShortfall::NothingSpendable.message())
+                    .include_labels(),
+            )
+            .count();
+        assert_eq!(caption, 1, "the form must say why Max is unavailable");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none(),
+            "retrying cannot change the answer"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Checking the available amount")
+                .is_none(),
+            "the answer is in, not pending"
+        );
+    }
+
+    /// The shield fee preview states the fee the shield is charged, not the
+    /// larger reserve the planner keeps back on the Platform address.
+    #[test]
+    fn shield_from_platform_preview_states_the_shield_fee_not_the_reserve() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            100 * CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::new_dash(1.0));
+        let platform_version = screen.app_context.platform_version();
+
+        let preview = screen.current_fee_preview().expect("shield fee preview");
+
+        let fee = crate::model::fee_estimation::shield_from_balance_fee_estimate(platform_version);
+        assert_eq!(preview.fee_credits, fee);
+        assert_eq!(
+            preview.total_debit_credits,
+            Amount::new_dash(1.0).value() + fee
+        );
+    }
+
+    /// A shield from Platform spends credits the live balances keep showing
+    /// until a sync pass reads them back, so the shield Max key also follows
+    /// the wallet's shields in flight: a quote made before one opens is not
+    /// offered while it runs, nor after it settles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shield_in_flight_moves_the_shield_from_platform_max_key() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            100 * CREDITS_PER_DUFF,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let key = |screen: &WalletSendScreen| {
+            let (_, kind, revision) = screen.spend_limit_target().expect("shield target");
+            assert_eq!(kind, SpendLimitKind::ShieldFromPlatform);
+            revision
+        };
+        let before = key(&screen);
+        let balances = screen.live_platform_balances_revision();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(16);
+        screen
+            .app_context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                egui::Context::default(),
+            ))
+            .await
+            .expect("wallet backend");
+        let backend = screen.app_context.wallet_backend().expect("wallet backend");
+
+        let shielding = backend.begin_platform_shield(&seed_hash);
+        let during = key(&screen);
+        assert_ne!(during, before, "a quote from before the shield is stale");
+        drop(shielding);
+        let after = key(&screen);
+        assert_eq!(
+            screen.live_platform_balances_revision(),
+            balances,
+            "precondition: the balances never moved, only the shield did"
+        );
+        assert_ne!(after, during, "a quote from during the shield is stale");
+        assert_ne!(
+            after, before,
+            "at the same balances, a quote from before the shield stays stale"
+        );
+    }
+
+    /// While another transaction from the wallet is in progress, the backend
+    /// quotes no Max; the form offers none and says why, without a Retry
+    /// that could only get the same answer, and asks again only once the
+    /// wallet's quote revision moves.
+    #[test]
+    fn core_send_offers_no_max_while_another_transaction_is_in_progress() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let task = screen
+            .request_spend_limit()
+            .expect("the Core send form must ask for the pooled quote");
+        let context = BackendTaskContext::for_dispatch_on(&task, Network::Testnet);
+
+        screen.display_backend_task_error(&context, &TaskError::SpendInProgress);
+
+        assert!(
+            screen.request_spend_limit().is_none(),
+            "the same wallet state must not be re-quoted"
+        );
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| {
+                screen.render_amount_input(ui);
+                screen.render_spend_limit_status(ui);
+            },
+            screen,
+        );
+        harness.run();
+        let caption = harness
+            .query_all(
+                egui_kittest::kittest::By::new()
+                    .label_contains(crate::model::spend_limit::SPEND_IN_PROGRESS_MESSAGE)
+                    .include_labels(),
+            )
+            .count();
+        assert_eq!(caption, 1, "the form must say why Max is unavailable");
+        assert!(
+            harness
+                .query_by_label("Retry available amount check")
+                .is_none(),
+            "retrying cannot help while the transaction is in progress"
+        );
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+        assert_eq!(
+            harness
+                .state()
+                .amount
+                .as_ref()
+                .map(Amount::value)
+                .unwrap_or(0),
+            0,
+            "Max must offer nothing"
         );
     }
 
@@ -7712,23 +8466,24 @@ mod tests {
         (screen, seed_hash, temp_dir)
     }
 
-    /// With the fee paid on top, the funding is the amount plus 18 750 duffs,
-    /// and the network requires 62 000 for the recipient and the change.
+    /// With the fee paid on top, the funding is the amount plus the 62 000
+    /// duffs the network requires for the recipient and the change, so the
+    /// amount only has to meet the smallest a named recipient may receive.
     #[test]
     fn advanced_core_to_platform_refuses_an_amount_the_fee_on_top_cannot_carry() {
         let (mut screen, seed_hash, _temp_dir) =
-            advanced_core_to_platform("0.00043249", PlatformFeeStrategy::DeductFromFirstInput);
+            advanced_core_to_platform("0.00000499", PlatformFeeStrategy::DeductFromFirstInput);
         let error = screen
             .send_advanced_core_to_platform(seed_hash)
-            .expect_err("the funding would be below what the network requires");
+            .expect_err("the amount is below the smallest a recipient may receive");
         assert_eq!(
             error,
             "This amount is too small to cover the network fee. \
-             Enter at least 0.0004325 DASH and try again."
+             Enter at least 0.000005 DASH and try again."
         );
 
         let (mut screen, seed_hash, _temp_dir) =
-            advanced_core_to_platform("0.0004325", PlatformFeeStrategy::DeductFromFirstInput);
+            advanced_core_to_platform("0.000005", PlatformFeeStrategy::DeductFromFirstInput);
         assert!(screen.send_advanced_core_to_platform(seed_hash).is_ok());
     }
 

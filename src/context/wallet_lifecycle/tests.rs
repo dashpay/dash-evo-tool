@@ -7789,8 +7789,10 @@ async fn platform_address_funding_below_the_network_fee_is_refused_before_the_wa
     let seed_hash = [0x7Bu8; 32];
     let destination = PlatformAddress::P2pkh([0x21u8; 20]);
 
-    // (fee taken from the amount, smallest amount the network accepts)
-    for (fee_from_amount, minimum) in [(true, 56_000u64), (false, 43_250u64)] {
+    // (fee taken from the amount, smallest amount the network accepts). With
+    // the fee on top, the fee estimate already covers what the network
+    // requires, so the smallest amount a recipient may receive binds.
+    for (fee_from_amount, minimum) in [(true, 56_000u64), (false, 500u64)] {
         let error = ctx
             .fund_platform_address_from_wallet_utxos(
                 seed_hash,

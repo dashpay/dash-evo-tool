@@ -126,6 +126,12 @@ pub fn availability_line(name: &str, row: &AvailabilityRow) -> (Tone, String) {
                 Tone::Negative,
                 format!("Others can no longer join the vote for @{name}. Try another name."),
             ),
+            UsernameAvailability::ContestFull => (
+                Tone::Negative,
+                format!(
+                    "The vote for @{name} already has the most requests it accepts. Try another name."
+                ),
+            ),
             UsernameAvailability::AlreadyRequested => (
                 Tone::Caution,
                 format!(
@@ -144,6 +150,7 @@ pub fn offers_suggestions(row: &AvailabilityRow) -> bool {
             UsernameAvailability::NeedsVote
                 | UsernameAvailability::Joinable { .. }
                 | UsernameAvailability::Taken
+                | UsernameAvailability::ContestFull
         )
     )
 }
@@ -336,6 +343,19 @@ pub fn pay_label(name: &str, total_credits: u64, needs_vote: bool) -> String {
     } else {
         format!("Pay {total} and get @{name}")
     }
+}
+
+/// Why the identity needs more than the registration charges.
+pub fn admission_reserve_line(reserve_credits: u64) -> String {
+    let reserve = format_credits_as_dash(reserve_credits);
+    format!(
+        "The balance must also hold {reserve} while the network checks the name. This amount is not charged."
+    )
+}
+
+/// Why the community vote fee is above the usual one.
+pub fn raised_contest_fee_line() -> &'static str {
+    "Many people have already asked for this name, so joining its vote costs more than usual."
 }
 
 /// Low-balance warning on the confirm step.
@@ -531,6 +551,10 @@ mod tests {
             (
                 AvailabilityRow::Known(UsernameAvailability::JoinClosed),
                 "Others can no longer join the vote for @nova. Try another name.",
+            ),
+            (
+                AvailabilityRow::Known(UsernameAvailability::ContestFull),
+                "The vote for @nova already has the most requests it accepts. Try another name.",
             ),
             (
                 AvailabilityRow::CantCheck,

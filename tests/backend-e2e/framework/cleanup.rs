@@ -7,10 +7,13 @@
 use crate::framework::identity_helpers::get_receive_address;
 use crate::framework::task_runner::run_task;
 use crate::framework::wait;
-use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use dash_evo_tool::backend_task::wallet::WalletTask;
+use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::spend_limit::{CoreDestinationScript, SpendLimitKind};
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -93,15 +96,30 @@ pub async fn cleanup_test_wallets(
         }
 
         // Attempt to sweep spendable funds back to framework wallet. The
-        // wallet engine cannot subtract the fee from the amount, so reserve
-        // the estimated L1 fee here and send the remainder.
-        let utxo_count = app_context.snapshot_utxo_count(&hash);
-        let Some(sweep_amount) = dash_evo_tool::model::fee_estimation::core_max_send_amount_duffs(
-            spendable, utxo_count, 1,
-        ) else {
+        // wallet engine cannot subtract the fee from the amount, so send the
+        // backend's quote of the largest payment the pooled build accepts.
+        let quote = run_task(
+            app_context,
+            BackendTask::WalletTask(WalletTask::GetSpendLimit {
+                seed_hash: hash,
+                // The framework wallet's receive address is P2PKH.
+                kind: SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+                request_id: 0,
+            }),
+        )
+        .await;
+        let sweep_amount = match quote {
+            Ok(BackendTaskSuccessResult::SpendLimit { max_credits, .. }) => {
+                max_credits / CREDITS_PER_DUFF
+            }
+            Ok(_) | Err(_) => continue,
+        };
+        if sweep_amount == 0 {
             // Spendable funds do not cover the network fee — skip this run.
             continue;
-        };
+        }
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {

@@ -40,13 +40,13 @@ use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_
 use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 #[cfg(test)]
 use dash_sdk::dpp::key_wallet::Utxo;
-use dash_sdk::dpp::key_wallet::account::Account;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
 use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
+use dash_sdk::dpp::key_wallet::wallet::Wallet;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::{
     SelectionError, SelectionStrategy,
 };
@@ -57,7 +57,9 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
-use super::payments::ProbeDeadline;
+use super::payments::{
+    AssetLockFundingPool, ProbeDeadline, pooled_send_input_count, pooled_send_utxos,
+};
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{
@@ -80,6 +82,10 @@ pub struct AssetLockInputState {
     /// Sum of the observed input values in duffs.
     pub final_funds_duffs: u64,
     inputs: Arc<[(OutPoint, u64)]>,
+    /// The reserving-operation key this state was read under (see
+    /// `spend_activity`). Part of equality, so a quote stops matching once
+    /// an operation that can move reservations starts or ends.
+    spend_key: u64,
 }
 
 impl AssetLockInputState {
@@ -94,7 +100,14 @@ impl AssetLockInputState {
         Self {
             final_funds_duffs,
             inputs: inputs.into(),
+            spend_key: 0,
         }
+    }
+
+    /// This state, read under the reserving-operation key `spend_key`.
+    pub(crate) fn with_spend_key(mut self, spend_key: u64) -> Self {
+        self.spend_key = spend_key;
+        self
     }
 }
 
@@ -141,6 +154,14 @@ pub struct WalletSnapshot {
     pub(super) asset_lock_inputs: AssetLockInputState,
     /// Revision advanced whenever that exact input composition changes.
     pub(super) asset_lock_input_revision: u64,
+    /// Names the coins a pooled Core send can draw on (see
+    /// [`core_send_inputs_key`]); unlike `generation`, unchanged by events
+    /// that leave them as they were.
+    pub(super) core_send_inputs_key: u64,
+    /// How many of those coins a pooled send of the whole balance spends;
+    /// prices the Core fee shown beside the Max (see
+    /// [`pooled_send_input_count`]).
+    pub(super) core_send_input_count: usize,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -213,6 +234,8 @@ impl TransactionHistoryStatus {
 struct SnapshotState {
     balance: DetWalletBalance,
     asset_lock_inputs: AssetLockInputState,
+    core_send_inputs_key: u64,
+    core_send_input_count: usize,
     utxos: Vec<DetUtxo>,
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
@@ -240,75 +263,78 @@ fn asset_lock_final_funds_duffs<'a>(
 }
 
 fn observe_asset_lock_inputs_locked(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
-    let candidates: Vec<_> = managed_account
-        .utxos
-        .values()
-        .filter(|utxo| {
-            (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
-        })
-        .cloned()
-        .collect();
-    let values: BTreeMap<_, _> = candidates
-        .iter()
-        .map(|utxo| (utxo.outpoint, utxo.value()))
-        .collect();
-    let mut observed = Vec::with_capacity(candidates.len());
-    // One account clone reused across batches: only `.utxos` varies per batch,
-    // and the live `ReservationSet` is `Arc`-shared by the clone anyway.
-    let mut dry_run_account = managed_account.clone();
-
-    for batch in candidates.chunks(ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE) {
-        if deadline.expired() {
-            return Ok(None);
-        }
-        dry_run_account.utxos = batch
-            .iter()
+    let current_height = pool.current_height();
+    let mut observed = Vec::new();
+    for (managed_account, account) in pool.accounts() {
+        let candidates: Vec<_> = managed_account
+            .utxos
+            .values()
+            .filter(|utxo| {
+                (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
+            })
             .cloned()
-            .map(|utxo| (utxo.outpoint, utxo))
             .collect();
-        let result = TransactionBuilder::new()
-            .set_fee_rate(FeeRate::new(0))
-            .set_current_height(current_height)
-            .set_selection_strategy(SelectionStrategy::All)
-            .set_special_payload(TransactionPayload::AssetLockPayloadType(
-                AssetLockPayload::new(vec![TxOut {
-                    value: 1,
-                    script_pubkey: ScriptBuf::new(),
-                }]),
-            ))
-            .add_funding(&mut dry_run_account, account)
-            .require_final_inputs()
-            .build_unsigned_reserved();
-        match result {
-            Ok((transaction, _, reservation)) => {
-                observed.extend(transaction.input.iter().filter_map(|input| {
-                    values
-                        .get(&input.previous_output)
-                        .map(|value| (input.previous_output, *value))
-                }));
-                if let Some(token) = reservation {
-                    dry_run_account.release_reservation_if_owner(&transaction, token);
+        let values: BTreeMap<_, _> = candidates
+            .iter()
+            .map(|utxo| (utxo.outpoint, utxo.value()))
+            .collect();
+        // One account clone reused across batches: only `.utxos` varies per
+        // batch, and the live `ReservationSet` is `Arc`-shared by the clone
+        // anyway.
+        let mut dry_run_account = managed_account.clone();
+
+        for batch in candidates.chunks(ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE) {
+            if deadline.expired() {
+                return Ok(None);
+            }
+            dry_run_account.utxos = batch
+                .iter()
+                .cloned()
+                .map(|utxo| (utxo.outpoint, utxo))
+                .collect();
+            let result = TransactionBuilder::new()
+                .set_fee_rate(FeeRate::new(0))
+                .set_current_height(current_height)
+                .set_selection_strategy(SelectionStrategy::All)
+                .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                    AssetLockPayload::new(vec![TxOut {
+                        value: 1,
+                        script_pubkey: ScriptBuf::new(),
+                    }]),
+                ))
+                .add_funding(&mut dry_run_account, account)
+                .require_final_inputs()
+                .build_unsigned_reserved();
+            match result {
+                Ok((transaction, _, reservation)) => {
+                    observed.extend(transaction.input.iter().filter_map(|input| {
+                        values
+                            .get(&input.previous_output)
+                            .map(|value| (input.previous_output, *value))
+                    }));
+                    if let Some(token) = reservation {
+                        dry_run_account.release_reservation_if_owner(&transaction, token);
+                    }
                 }
+                Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
+                Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
+                | Err(BuilderError::InsufficientFunds { .. }) => {
+                    // A sub-dust batch is an ordinary near-drained state, not a
+                    // failure; its eligible candidates still shape the real
+                    // builder's cross-batch choices, so they stay in the key.
+                    // Unlike the success branch above, this arm cannot filter
+                    // out an already-reserved outpoint, so one may transiently
+                    // enter `observed`. That is safe: this key only ever drives
+                    // quote *match* detection (see the doc comment below),
+                    // never the amount `TransactionBuilder` reports or actually
+                    // spends.
+                    observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
+                }
+                Err(source) => return Err(source),
             }
-            Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
-            Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
-            | Err(BuilderError::InsufficientFunds { .. }) => {
-                // A sub-dust batch is an ordinary near-drained state, not a
-                // failure; its eligible candidates still shape the real
-                // builder's cross-batch choices, so they stay in the key.
-                // Unlike the success branch above, this arm cannot filter out
-                // an already-reserved outpoint, so one may transiently enter
-                // `observed`. That is safe: this key only ever drives quote
-                // *match* detection (see the doc comment below), never the
-                // amount `TransactionBuilder` reports or actually spends.
-                observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
-            }
-            Err(source) => return Err(source),
         }
     }
 
@@ -322,29 +348,25 @@ fn observe_asset_lock_inputs_locked(
 /// `Ok(None)` means the deadline expired before the whole composition was
 /// observed — a truncated set must never be used as a key.
 pub(super) fn asset_lock_final_input_state(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
+    observe_asset_lock_inputs_locked(pool, deadline)
 }
 
 /// Like [`asset_lock_final_input_state`], but `Ok(None)` also covers losing
 /// the observation try-lock, so the per-event recompute path never blocks.
 fn try_asset_lock_final_input_state(
-    managed_account: &ManagedCoreFundsAccount,
-    account: &Account,
-    current_height: u32,
+    pool: &AssetLockFundingPool,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let Ok(_observation_guard) = ASSET_LOCK_INPUT_OBSERVATION_LOCK.try_lock() else {
         return Ok(None);
     };
-    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
+    observe_asset_lock_inputs_locked(pool, deadline)
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -556,10 +578,36 @@ fn address_paths_from_info(
 /// generation). Refreshing balance alone here while carrying the breakdown
 /// stale is exactly the split-source divergence [`SnapshotStore::recompute`]
 /// avoids.
+/// Names the coins a pooled Core send can draw on: each coin's outpoint,
+/// value and whether it is spendable at the wallet's height. A republish of
+/// the same coins (a new block, a chainlock) keeps the key; a coin arriving,
+/// leaving or maturing changes it. Reservations are keyed separately.
+fn core_send_inputs_key(coins: impl IntoIterator<Item = (OutPoint, u64, bool)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut coins: Vec<_> = coins.into_iter().collect();
+    coins.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    coins.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// [`core_send_inputs_key`] over the coins of the accounts a pooled Core send
+/// draws on, at the wallet's height. A coin in any other account (CoinJoin)
+/// cannot move the Core Max, so it must not invalidate the cached quote.
+fn pooled_send_inputs_key(wallet: &Wallet, info: &ManagedWalletInfo) -> u64 {
+    let height = info.last_processed_height();
+    core_send_inputs_key(
+        pooled_send_utxos(wallet, info)
+            .map(|u| (u.outpoint, u.txout.value, u.is_spendable(height))),
+    )
+}
+
 fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
     SnapshotState {
         balance: prior.balance,
         asset_lock_inputs: prior.asset_lock_inputs.clone(),
+        core_send_inputs_key: prior.core_send_inputs_key,
+        core_send_input_count: prior.core_send_input_count,
         utxos: prior.utxos.clone(),
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
@@ -690,6 +738,24 @@ impl SnapshotStore {
             .load()
             .get(seed_hash)
             .map_or(0, |snapshot| snapshot.utxos.len())
+    }
+
+    /// How many coins a pooled Core send of the whole balance spends, per the
+    /// published snapshot; 0 before the first publish.
+    pub(super) fn core_send_input_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.core_send_input_count)
+    }
+
+    /// The key naming the coins a pooled Core send can draw on; 0 before
+    /// the first publish.
+    pub(super) fn core_send_inputs_key(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.snapshots
+            .load()
+            .get(seed_hash)
+            .map_or(0, |snapshot| snapshot.core_send_inputs_key)
     }
 
     /// Atomically read the generation, exact input composition, and revision.
@@ -904,7 +970,6 @@ impl SnapshotStore {
         let state = match wallet.try_state() {
             Some(state) => {
                 let core_balance = state.balance();
-                let current_height = state.last_processed_height();
                 let balance = DetWalletBalance {
                     confirmed: core_balance.confirmed(),
                     unconfirmed: core_balance.unconfirmed(),
@@ -913,43 +978,38 @@ impl SnapshotStore {
                 // Best-effort: on observation contention or failure only this
                 // field carries forward — the composition key is fail-closed
                 // by construction, so a stale key merely forces revalidation.
-                let asset_lock_inputs = match (
-                    state
-                        .wallet()
-                        .get_bip44_account(super::DEFAULT_BIP44_ACCOUNT),
-                    state
-                        .core_wallet
-                        .accounts
-                        .standard_bip44_accounts
-                        .get(&super::DEFAULT_BIP44_ACCOUNT),
+                // The observation key ignores the input cap: it only detects
+                // composition changes, so any cap would do.
+                let pool = AssetLockFundingPool::from_wallet(
+                    state.wallet(),
+                    &state.core_wallet,
+                    usize::MAX,
+                );
+                let asset_lock_inputs = match try_asset_lock_final_input_state(
+                    &pool,
+                    &ProbeDeadline::unbounded(),
                 ) {
-                    (Some(account), Some(managed_account)) => {
-                        match try_asset_lock_final_input_state(
-                            managed_account,
-                            account,
-                            current_height,
-                            &ProbeDeadline::unbounded(),
-                        ) {
-                            Ok(Some(inputs)) => inputs,
-                            Ok(None) => {
-                                tracing::debug!(
-                                    wallet = ?&wallet_id[..4],
-                                    "asset-lock observation contended during snapshot recompute; carrying the prior composition forward"
-                                );
-                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
-                            }
-                            Err(source) => {
-                                tracing::debug!(
-                                    wallet = ?&wallet_id[..4],
-                                    ?source,
-                                    "asset-lock observation failed during snapshot recompute; carrying the prior composition forward"
-                                );
-                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
-                            }
-                        }
+                    Ok(Some(inputs)) => inputs,
+                    Ok(None) => {
+                        tracing::debug!(
+                            wallet = ?&wallet_id[..4],
+                            "asset-lock observation contended during snapshot recompute; carrying the prior composition forward"
+                        );
+                        self.snapshot(&seed_hash).asset_lock_inputs.clone()
                     }
-                    _ => AssetLockInputState::default(),
+                    Err(source) => {
+                        tracing::debug!(
+                            wallet = ?&wallet_id[..4],
+                            ?source,
+                            "asset-lock observation failed during snapshot recompute; carrying the prior composition forward"
+                        );
+                        self.snapshot(&seed_hash).asset_lock_inputs.clone()
+                    }
                 };
+                let core_send_inputs_key =
+                    pooled_send_inputs_key(state.wallet(), &state.core_wallet);
+                let core_send_input_count =
+                    pooled_send_input_count(state.wallet(), &state.core_wallet);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -964,6 +1024,8 @@ impl SnapshotStore {
                 SnapshotState {
                     balance,
                     asset_lock_inputs,
+                    core_send_inputs_key,
+                    core_send_input_count,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
@@ -1014,6 +1076,8 @@ impl SnapshotStore {
             generation,
             asset_lock_inputs: state.asset_lock_inputs,
             asset_lock_input_revision,
+            core_send_inputs_key: state.core_send_inputs_key,
+            core_send_input_count: state.core_send_input_count,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -1097,6 +1161,8 @@ mod tests {
             &seed,
             &wid,
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1140,6 +1206,8 @@ mod tests {
             &seed(3),
             &wid(3),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos,
@@ -1176,6 +1244,8 @@ mod tests {
             &seed(3),
             &wid(3),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 0,
                     unconfirmed: 1_000,
@@ -1197,6 +1267,8 @@ mod tests {
             &seed(3),
             &wid(3),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1228,6 +1300,8 @@ mod tests {
             &seed(3),
             &wid(3),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: 1_000,
                     unconfirmed: 0,
@@ -1289,6 +1363,8 @@ mod tests {
             &seed_hash,
             &wid(9),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: USABLE_DUFFS,
                     unconfirmed: NOT_YET_USABLE_DUFFS,
@@ -1330,6 +1406,8 @@ mod tests {
             &seed(9),
             &wid(9),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: AssetLockInputState::default(),
                 utxos: Vec::new(),
@@ -1561,9 +1639,12 @@ mod tests {
         managed_account.utxos.insert(outpoint, utxo);
 
         let before = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("initial input observation")
@@ -1573,6 +1654,8 @@ mod tests {
             &seed(0x51),
             &wid(0x51),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: before,
                 utxos: Vec::new(),
@@ -1599,9 +1682,12 @@ mod tests {
             .expect("reservation-producing build");
 
         let after = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("reservation-aware input observation")
@@ -1611,6 +1697,8 @@ mod tests {
             &seed(0x51),
             &wid(0x51),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance::default(),
                 asset_lock_inputs: after,
                 utxos: Vec::new(),
@@ -1626,6 +1714,76 @@ mod tests {
         if let Some(token) = reservation {
             managed_account.release_reservation_if_owner(&reserved_tx, token);
         }
+    }
+
+    /// The Core Max cache key names only the coins a pooled send draws on: a
+    /// coin arriving in an account outside `SEND_FUNDING_SOURCES` (CoinJoin)
+    /// leaves it, and one arriving in a pooled account (BIP44, BIP32) changes it.
+    #[test]
+    fn core_send_inputs_key_covers_only_the_pooled_send_accounts() {
+        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("upstream wallet");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let address = {
+            let account = wallet.get_bip44_account(0).expect("BIP44 account");
+            info.accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed BIP44 account")
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("receive address")
+        };
+        let coin = |n: u8| {
+            let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value: 100_000 + u64::from(n),
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            (outpoint, utxo)
+        };
+        let insert = |accounts: &mut BTreeMap<u32, ManagedCoreFundsAccount>, n: u8| {
+            let (outpoint, utxo) = coin(n);
+            accounts
+                .get_mut(&0)
+                .expect("managed account")
+                .utxos
+                .insert(outpoint, utxo);
+        };
+
+        insert(&mut info.accounts.standard_bip44_accounts, 1);
+        let pooled_only = pooled_send_inputs_key(&wallet, &info);
+
+        insert(&mut info.accounts.coinjoin_accounts, 2);
+        assert_eq!(
+            pooled_send_inputs_key(&wallet, &info),
+            pooled_only,
+            "a CoinJoin coin is no input of a pooled send, so it must not change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip32_accounts, 3);
+        let with_bip32 = pooled_send_inputs_key(&wallet, &info);
+        assert_ne!(
+            with_bip32, pooled_only,
+            "a BIP32 coin is pooled, so it must change the key"
+        );
+
+        insert(&mut info.accounts.standard_bip44_accounts, 4);
+        assert_ne!(
+            pooled_send_inputs_key(&wallet, &info),
+            with_bip32,
+            "a BIP44 coin is pooled, so it must change the key"
+        );
     }
 
     #[test]
@@ -1668,16 +1826,27 @@ mod tests {
 
         let expired = ProbeDeadline::after(Duration::ZERO);
         assert_eq!(
-            asset_lock_final_input_state(managed_account, account, CURRENT_HEIGHT, &expired)
-                .expect("observation"),
+            asset_lock_final_input_state(
+                &AssetLockFundingPool::for_account(
+                    managed_account,
+                    account,
+                    CURRENT_HEIGHT,
+                    usize::MAX
+                ),
+                &expired,
+            )
+            .expect("observation"),
             None,
             "an expired deadline must stop the observation before any builder batch runs"
         );
 
         let complete = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("observation")
@@ -1727,9 +1896,12 @@ mod tests {
         managed_account.utxos.insert(outpoint, utxo);
 
         let observed = asset_lock_final_input_state(
-            managed_account,
-            account,
-            CURRENT_HEIGHT,
+            &AssetLockFundingPool::for_account(
+                managed_account,
+                account,
+                CURRENT_HEIGHT,
+                usize::MAX,
+            ),
             &ProbeDeadline::unbounded(),
         )
         .expect("a sub-dust balance is an ordinary wallet state, not an observation failure")
@@ -1851,42 +2023,6 @@ mod tests {
         assert_eq!(
             observed.asset_lock_inputs.final_funds_duffs, 1_000_000,
             "an uncontended recompute must observe the eligible composition"
-        );
-    }
-
-    /// Crosses the `send_screen` "Max" seam: the Max a Core send reserves must
-    /// come from the *spendable* set, never `total`. When the wallet holds
-    /// immature/locked funds (total > spendable), feeding `total` to the Max
-    /// math over-shoots what coin selection can spend, so the broadcast fails
-    /// with insufficient funds.
-    #[test]
-    fn core_max_reserves_against_spendable_not_total() {
-        use crate::model::fee_estimation::core_max_send_amount_duffs;
-
-        // 800 spendable, 700 immature/locked riding in `total`.
-        let balance = DetWalletBalance {
-            confirmed: 500,
-            unconfirmed: 300,
-            total: 1_500,
-        };
-
-        let max = core_max_send_amount_duffs(balance.spendable(), 1, 1)
-            .expect("spendable covers the fee");
-
-        // Max may never exceed what coin selection can actually spend.
-        assert!(
-            max <= balance.spendable(),
-            "Max {max} over-reserves against spendable {}",
-            balance.spendable()
-        );
-
-        // Reserving against `total` would let Max exceed the spendable set —
-        // the exact over-shoot this fix kills.
-        let buggy_max = core_max_send_amount_duffs(balance.total, 1, 1)
-            .expect("total trivially covers the fee");
-        assert!(
-            buggy_max > balance.spendable(),
-            "the total-based Max should over-reserve, proving the seam matters"
         );
     }
 
@@ -2190,6 +2326,8 @@ mod tests {
         address_paths.insert(a.clone(), DerivationPath::from(Vec::new()));
         address_paths.insert(b.clone(), DerivationPath::from(Vec::new()));
         WalletSnapshot {
+            core_send_inputs_key: 0,
+            core_send_input_count: 0,
             generation: 1,
             asset_lock_inputs: AssetLockInputState::from_inputs([(
                 OutPoint::new(Txid::from_byte_array([1; 32]), 0),
@@ -2513,6 +2651,8 @@ mod tests {
             &seed(20),
             &wid(20),
             SnapshotState {
+                core_send_inputs_key: 0,
+                core_send_input_count: 0,
                 balance: DetWalletBalance {
                     confirmed: total,
                     unconfirmed: 0,

@@ -204,6 +204,7 @@ impl AppContext {
                 &qualified_identity.top_ups,
             )?;
         }
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity_observed(&mut qualified_identity, provenance)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);

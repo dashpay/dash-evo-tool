@@ -25,7 +25,7 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::model::masternode_input::{self, KeyMode};
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::secret::Secret;
 
 // ---------------------------------------------------------------------------
@@ -47,8 +47,9 @@ pub struct MasternodeIdentityLoadParams {
     pub pro_tx_hash: String,
     /// Node type: "masternode" or "evonode".
     pub node_type: String,
-    /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. At
-    /// least one of the owner or payout private key is required.
+    /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. Leave
+    /// blank to use the owner key held by one of this device's wallets, or to
+    /// keep the one already stored for this node.
     #[serde(default)]
     pub owner_private_key: Secret,
     /// Voting private key (WIF or 64-char hex). Optional; binds the voter
@@ -56,11 +57,12 @@ pub struct MasternodeIdentityLoadParams {
     #[serde(default)]
     pub voting_private_key: Secret,
     /// Payout/transfer private key (WIF or 64-char hex). Bound as the
-    /// TRANSFER key. At least one of the owner or payout private key is
-    /// required.
+    /// TRANSFER key. Leave blank to use the payout key held by one of this
+    /// device's wallets, or to keep the one already stored for this node.
     #[serde(default)]
     pub payout_private_key: Secret,
-    /// Optional human-readable name; trimmed, empty falls back to a DPNS name.
+    /// Optional human-readable name; trimmed. On a first load, empty falls back
+    /// to a DPNS name; on a repeat load, empty keeps the stored name.
     #[serde(default)]
     pub alias: String,
     /// Expected network (required so keys and addresses bind to the right
@@ -95,6 +97,11 @@ pub struct MasternodeIdentityLoadOutput {
     payout_key_loaded: bool,
     /// Withdrawal key modes this identity supports ("owner" / "transfer").
     available_withdrawal_keys: Vec<String>,
+    /// Whether the node holds an owner or payout key on this device, so the
+    /// withdraw tool can use it. `false` loads the node without withdrawals.
+    withdrawals_available: bool,
+    /// Set when `withdrawals_available` is `false`: what to do to enable them.
+    note: Option<String>,
     /// Registered payout address (the OWNER-mode withdrawal destination), if
     /// any.
     payout_address: Option<String>,
@@ -114,7 +121,12 @@ impl ToolBase for MasternodeIdentityLoad {
         Some(
             "Load a masternode or evonode identity by ProTxHash, binding its \
              owner/voting/payout private keys (WIF or hex) and persisting it \
-             locally for the withdraw tool. The output reports which keys \
+             locally for the withdraw tool. A key left blank is taken from a \
+             wallet loaded in this app when one holds it. Loading a node again \
+             never removes its stored keys: a blank field keeps them, and a key \
+             you supply replaces the one it matches. A node with neither \
+             an owner nor a payout key still loads, with \
+             withdrawals_available=false and a note. The output reports which keys \
              loaded, the available withdrawal modes, and the registered payout \
              address. The 'network' parameter is required."
                 .into(),
@@ -144,12 +156,8 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         // format are all pure checks that reject without touching the network.
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
-        // Keys are `Secret`-typed; presence check uses `is_blank()` so no
-        // expose_secret() call is needed here.
-        masternode_input::require_at_least_one_signing_key(
-            &param.owner_private_key,
-            &param.payout_private_key,
-        )?;
+        // Blank keys are allowed: the backend looks them up in this device's
+        // wallets. The output reports whether the node can withdraw.
         // S2: validate the ProTxHash format BEFORE the SPV wait so a malformed
         // hash is rejected immediately rather than after a 10-min sync.
         masternode_input::decode_identity_id(&param.pro_tx_hash)?;
@@ -159,39 +167,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         // chain.
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let input = IdentityInputToLoad {
-            identity_id_input: param.pro_tx_hash,
-            identity_type,
-            alias_input: param.alias.trim().to_owned(),
-            // Keys are moved out of the Secret wrapper directly into the
-            // backend input — no intermediate plain-String copy.
-            voting_private_key_input: param.voting_private_key,
-            owner_private_key_input: param.owner_private_key,
-            payout_address_private_key_input: param.payout_private_key,
-            keys_input: vec![],
-            derive_keys_from_wallets: false,
-            selected_wallet_seed_hash: None,
-            // FR-8 load-time key encryption is GUI-only this iteration
-            // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
-            // entry point, so it loads unprotected.
-            // TODO: headless password parity — accept an optional encryption
-            // password param and thread it here once MCP secret handling is
-            // designed.
-            encryption_password: None,
-            // Headless load uses overwrite/upsert semantics: a repeat load
-            // REPLACES the stored node's keys with those supplied in this call.
-            // Keys omitted this time are dropped — this is a full replace, not a
-            // merge, so a partial-key repeat load is destructive. Duplicate
-            // rejection and key-preserving merge are GUI-form affordances, not a
-            // headless contract.
-            // TODO: headless merge parity — expose a load-mode param so callers
-            // can request MergeIntoExisting (key-preserving) once MCP secret
-            // handling for Tier-2 nodes is designed.
-            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
-            // A headless load gates on nothing: it opens a record of its own rather
-            // than adopting one a GUI screen is waiting on.
-            load_token: None,
-        };
+        let input = identity_input_to_load(param, identity_type);
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));
         let result = dispatch_task(&ctx, task)
@@ -227,6 +203,8 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             }
         }
 
+        let withdrawals_available = !available_withdrawal_keys.is_empty();
+
         Ok(MasternodeIdentityLoadOutput {
             identity_id: qi.identity.id().to_string(Encoding::Base58),
             node_type: identity_type.to_string().to_ascii_lowercase(),
@@ -235,12 +213,58 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             voting_key_loaded: qi.associated_voter_identity.is_some(),
             payout_key_loaded,
             available_withdrawal_keys,
+            withdrawals_available,
+            note: withdrawal_note(withdrawals_available),
             payout_address: qi
                 .masternode_payout_address(ctx.network())
                 .map(|addr| addr.to_string()),
             dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
         })
     }
+}
+
+/// The backend load this tool asks for.
+fn identity_input_to_load(
+    param: MasternodeIdentityLoadParams,
+    identity_type: IdentityType,
+) -> IdentityInputToLoad {
+    IdentityInputToLoad {
+        identity_id_input: param.pro_tx_hash,
+        identity_type,
+        alias_input: param.alias.trim().to_owned(),
+        // Keys are moved out of the Secret wrapper directly into the
+        // backend input — no intermediate plain-String copy.
+        voting_private_key_input: param.voting_private_key,
+        owner_private_key_input: param.owner_private_key,
+        payout_address_private_key_input: param.payout_private_key,
+        keys_input: vec![],
+        derive_keys_from_wallets: false,
+        selected_wallet_seed_hash: None,
+        // FR-8 load-time key encryption is GUI-only this iteration
+        // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
+        // entry point, so it loads unprotected.
+        // TODO: headless password parity — accept an optional encryption
+        // password param and thread it here once MCP secret handling is
+        // designed.
+        encryption_password: None,
+        // The tool cannot tell a first load from a repeat, and a repeat with
+        // blank fields must never remove a stored key.
+        load_mode: crate::backend_task::identity::IdentityLoadMode::MergeOrInsert,
+        // A headless load gates on nothing: it opens a record of its own rather
+        // than adopting one a GUI screen is waiting on.
+        load_token: None,
+    }
+}
+
+/// The note a load reports when the node holds neither an owner nor a payout
+/// key on this device; `None` when it can withdraw.
+fn withdrawal_note(withdrawals_available: bool) -> Option<String> {
+    (!withdrawals_available).then(|| {
+        "The node was loaded without an owner or payout key, so it cannot withdraw \
+         yet. Load it again with the owner or payout private key, or load the \
+         wallet that holds one of them first."
+            .to_string()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +551,36 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    /// A repeat load with blank fields must not remove the node's stored keys.
+    #[test]
+    fn the_tool_asks_for_a_repeatable_load() {
+        let input = identity_input_to_load(
+            MasternodeIdentityLoadParams {
+                pro_tx_hash: "PROTX_HASH_VALUE".to_owned(),
+                node_type: "evonode".to_owned(),
+                owner_private_key: Secret::default(),
+                voting_private_key: Secret::default(),
+                payout_private_key: Secret::default(),
+                alias: String::new(),
+                network: "testnet".to_owned(),
+            },
+            IdentityType::Evonode,
+        );
+        assert_eq!(
+            input.load_mode,
+            crate::backend_task::identity::IdentityLoadMode::MergeOrInsert
+        );
+    }
+
+    #[test]
+    fn a_node_without_withdrawal_keys_gets_a_note() {
+        let note = withdrawal_note(false).expect("a note when withdrawals are unavailable");
+        assert!(note.contains("owner"), "names the owner key: {note}");
+        assert!(note.contains("payout"), "names the payout key: {note}");
+        assert!(note.contains("Load it again"), "says what to do: {note}");
+        assert_eq!(withdrawal_note(true), None);
+    }
 
     // ── Tool A param Debug redaction (TC-MN-010) ──────────────────────────
     //

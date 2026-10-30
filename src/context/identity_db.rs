@@ -912,6 +912,17 @@ impl AppContext {
     /// one observed is replaced by that one (see `balance_watermark`). A
     /// write that changes the balance uses
     /// `update_local_qualified_identity_observed`.
+    ///
+    /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
+    /// caller that read the record before a concurrent change (for example a
+    /// key removal) writes that change away, including keys whose vault
+    /// secrets are already gone. Resolved by moving identity keys and scalar
+    /// fields onto platform-wallet's `IdentityManager`: keys persist as
+    /// per-key `IdentityKeysChangeSet` upserts and removals, scalars as an
+    /// `IdentityChangeSet` snapshot, and every mutation goes through the one
+    /// shared manager under its state lock instead of a caller's stale copy.
+    /// Until then, prefer [`Self::edit_local_qualified_identity`] for new
+    /// writers.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -1222,6 +1233,14 @@ impl AppContext {
         id: &Identifier,
     ) -> std::result::Result<bool, TaskError> {
         identity_is_listed(&self.det_kv()?, &id.to_buffer())
+    }
+
+    /// Drop `id` from the index and keep its blob, the state a removal that
+    /// failed part-way leaves behind.
+    #[cfg(test)]
+    pub(crate) fn unlist_identity_for_test(&self, id: &Identifier) {
+        index_remove_identity(&self.det_kv().expect("identity kv"), &id.to_buffer())
+            .expect("remove from the index");
     }
 
     /// Read one stored qualified identity by id, hydrated like the list loads
@@ -1565,6 +1584,17 @@ impl AppContext {
         let _record_guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.delete_local_qualified_identity_locked(identifier)
+    }
+
+    /// [`Self::delete_local_qualified_identity_with_outcome`] for a caller
+    /// that already holds the storage-migration gate (checked that no
+    /// migration is running) and `identifier`'s record guard, taken in that
+    /// order. Calling it without both reopens the races those locks close.
+    pub(crate) fn delete_local_qualified_identity_locked(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(

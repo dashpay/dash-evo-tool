@@ -221,8 +221,9 @@ clear your shell history afterward. In transfer mode, `to-address` must be a Cor
 address — Platform (bech32m `dash1…`/`tdash1…`) addresses are rejected.
 
 ```bash
-# 1. Load an evonode identity (testnet). Provide at least one of the owner or
-#    payout key; voting key and alias are optional.
+# 1. Load an evonode identity (testnet). Provide the owner or payout key, or
+#    leave both blank when a wallet loaded in the app holds them; voting key
+#    and alias are optional.
 det-cli masternode-identity-load \
   pro-tx-hash=<64-hex protx> \
   node-type=evonode \
@@ -230,7 +231,12 @@ det-cli masternode-identity-load \
   payout-private-key=<WIF> \
   network=testnet
 # -> { "identity_id": "...", "available_withdrawal_keys": ["owner","transfer"],
-#      "payout_address": "y...", ... }
+#      "withdrawals_available": true, "payout_address": "y...", ... }
+#    A node with neither key on this device still loads, with
+#    "withdrawals_available": false and a "note" saying how to enable them.
+#    Loading a node again never removes its stored keys: a blank field keeps
+#    them, and a key you supply replaces the one it matches. A password-protected
+#    node can only be reloaded from the app window.
 
 # 2a. Owner key — destination is forced to the registered payout address.
 #     Supplying to-address is rejected.

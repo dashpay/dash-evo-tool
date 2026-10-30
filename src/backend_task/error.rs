@@ -1740,6 +1740,29 @@ pub enum TaskError {
     )]
     OwnerKeyWithdrawalNotAllowed,
 
+    /// A masternode credit withdrawal signed with a wallet-held key failed.
+    /// Upstream also reports some ambiguous broadcast failures (for example an
+    /// unreachable node) this way, so the withdrawal may still have gone
+    /// through; the message never claims that nothing was withdrawn.
+    #[error(
+        "Your masternode withdrawal could not be completed. Refresh the node and check its balance and withdrawal history before you try again, so you do not withdraw twice."
+    )]
+    MasternodeWithdrawalFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A masternode credit withdrawal was sent, but its result could not be
+    /// confirmed. It may already have gone through, so retrying blindly could
+    /// withdraw twice.
+    #[error(
+        "Your masternode withdrawal was sent, but the app could not confirm it. Do not try again yet. Wait a few minutes, then refresh the node and check its balance before withdrawing again."
+    )]
+    MasternodeWithdrawalUnconfirmed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// No active key this app can sign with was available for the withdrawal —
     /// the chosen key may have been disabled, or no suitable transfer key is
     /// loaded for this identity.
@@ -1798,6 +1821,23 @@ pub enum TaskError {
         "This identity could not be found in your local wallet. Try refreshing your identities list."
     )]
     IdentityNotFoundLocally,
+
+    /// Removing a masternode's old voting key was refused because the
+    /// masternode list is not current enough to tell which voting key is the
+    /// node's current one. Nothing was removed.
+    #[error(
+        "The voting key cannot be checked while the masternode list is still updating. Wait for sync to finish, then try again."
+    )]
+    VotingKeyCheckUnavailable,
+
+    /// Removing a masternode's old voting key was refused because a reload
+    /// changed the node's stored voting keys after the masternode list was
+    /// read, so that list no longer tells which key is retired. Nothing was
+    /// removed.
+    #[error(
+        "The node's saved voting key changed while the old one was being removed, so nothing was removed. Open the node's page again to see whether an old key is still there."
+    )]
+    VotingKeyChangedDuringRemoval,
 
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.

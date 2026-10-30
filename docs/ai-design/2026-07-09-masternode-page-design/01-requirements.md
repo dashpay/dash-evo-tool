@@ -67,7 +67,8 @@ Canonical persona: `docs/personas/everyday-user.md`. Alex never operates a node.
   cannot be auto-derived from a wallet — `derive_keys_from_wallets` is hard-gated to `IdentityType::User` in
   `backend_task/identity/load_identity.rs`; masternode keys are Core-side (tied to the node's ProRegTx), not
   part of any wallet's identity-auth HD tree. The "Try to derive from loaded wallet" checkbox does NOT carry
-  over to the load form — see §9 note and US-6 retirement.
+  over to the load form — see §9 note and US-6 retirement. **Superseded 2026-10-23:** this holds only for nodes
+  registered from another wallet; see the note under US-6 in §6.
 - **Secret seam / at-rest storage** — owner/voting/payout keys **enter unprotected (Tier-1 keyless)** at load
   time because the load flow has no password field (by design; confirmed also for the `identity_masternode_load`
   MCP tool). They are **not permanently plaintext**: a loaded node's keys can be sealed to **Tier-2 per-identity**
@@ -151,8 +152,9 @@ A dedicated load flow (extracted from the advanced-options arm) with fields:
 - **Node type** — segmented toggle Masternode / Evonode (replaces the buried combo box; no "User" option here).
 - **Alias** (optional) — local-only label, explicitly "not saved to Dash Platform".
 - **Voting Private Key**, **Owner Private Key**, **Payout Address Private Key** — WIF or hex, all optional,
-  always pasted manually (no auto-derive — see US-6 retirement in §9, these key roles cannot be derived from
-  any wallet). On Testnet with a `.testnet_nodes.yml` fixture present, a **"Fill Random Masternode/Evonode"**
+  pasted manually (no auto-derive checkbox). **Superseded 2026-10-23:** a blank field is filled from a loaded
+  wallet that holds the node's key; only nodes registered from another wallet need all keys pasted. See the note
+  under US-6 in §6. On Testnet with a `.testnet_nodes.yml` fixture present, a **"Fill Random Masternode/Evonode"**
   dev-convenience button (FR-12) can autofill this section from a real test node.
 - **Encryption password (optional)** — an optional password field (WIF-style show/hide eye + helper line). When
   set, the entered voting/owner/payout (and identity) keys are **sealed encrypted-at-rest at load time** (Tier-2);
@@ -468,6 +470,11 @@ story and its "Try to derive from loaded wallet" checkbox do NOT carry over to t
 always pasted manually there. The wallet pill's real purpose on this page is unrelated — it is the **funding
 source for Top up** (FR-9), reflected in US-7's acceptance criteria.
 
+**Superseded 2026-10-23:** the retirement rationale above holds only for nodes registered from another wallet.
+Owner/voting keys live in the registering wallet's DIP-3 provider accounts (non-hardened index) and the payout key
+in its funding accounts; blank key fields are now filled from those wallets automatically (no checkbox). See
+02-ux-spec §4c.
+
 ---
 
 **US-7 — Switch wallet/identity from anywhere (silent + two-way, blast-radius-limited).**
@@ -586,7 +593,8 @@ collect rewards my evonode earned.*
 
 **Could**
 - ~~Per-key "auto-derived vs pasted" provenance indicator~~ — **moot**: no key role on this page is ever
-  auto-derived (see §9 correction); all three are always pasted.
+  auto-derived (see §9 correction); all three are always pasted. **Superseded 2026-10-23:** see the note under
+  US-6 in §6.
 - Sort/filter of the card grid (by type, voter readiness, open-contest count) — aligns with Priya's
   "asset lock table is too compact / no sort or filter" pain point.
 
@@ -676,6 +684,7 @@ wireframe as-drawn — no visual changes required. These decisions are now bindi
    auto-derive affordance; all three keys are always pasted manually (FR-4).** The wallet pill remains
    interactive on this page for an unrelated, verified reason — it is the funding source for **Top up**
    (FR-9). US-6 is retired, not confirmed. See §4c in 02-ux-spec.md and §9 below for the full correction.
+   **Superseded 2026-10-23:** see the note under US-6 in §6.
 
 ---
 

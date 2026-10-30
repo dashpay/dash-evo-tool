@@ -12,6 +12,7 @@ mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
 mod remove_identity;
+mod retired_voting_key;
 mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
@@ -58,7 +59,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IdentityLoadMode {
     /// Overwrite any existing stored identity (legacy behaviour; the User
-    /// re-load and headless flows that always resubmit their full key set).
+    /// re-load, which always resubmits its full key set).
     #[default]
     Overwrite,
     /// A fresh load: reject with [`TaskError::DuplicateProTxHash`] when an
@@ -68,6 +69,11 @@ pub enum IdentityLoadMode {
     /// stored identity's keys, preserving keys the caller did not resupply
     /// (§10.8 / the "Add voting key" fix-up). Exempt from duplicate rejection.
     MergeIntoExisting,
+    /// A repeatable load, for headless callers that cannot tell a first load
+    /// from a repeat: stores a new identity, and on a repeat behaves as
+    /// [`Self::MergeIntoExisting`], so a blank field never removes a stored key.
+    /// Unlike that scoped fix-up, a non-blank alias renames the identity.
+    MergeOrInsert,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,6 +554,22 @@ pub enum IdentityTask {
         /// The items the user chose, as listed by [`Self::CheckLegacyRecovery`].
         approved: Vec<crate::model::legacy_recovery::RecoveryItem>,
     },
+    /// Check whether this masternode stores a voting key or voter identity
+    /// the masternode list no longer names. Read-only, so a screen can
+    /// dispatch it on arrival; answers "not retired" whenever the list is not
+    /// current.
+    CheckRetiredVotingKey {
+        /// The masternode or evonode identity to check.
+        identity_id: Identifier,
+    },
+    /// Remove the voting keys (with their vault secrets) and the voter
+    /// identity this masternode stores that the masternode list no longer
+    /// names. Rechecks the list when it runs and keeps a key that is current
+    /// again; never removes anything without a current list.
+    RemoveRetiredVotingKey {
+        /// The masternode or evonode identity to clean up.
+        identity_id: Identifier,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -995,6 +1017,12 @@ impl AppContext {
             IdentityTask::CheckLegacyRecovery { identity_id } => {
                 self.check_legacy_recovery(identity_id)
             }
+            IdentityTask::CheckRetiredVotingKey { identity_id } => {
+                self.check_retired_voting_key(identity_id).await
+            }
+            IdentityTask::RemoveRetiredVotingKey { identity_id } => {
+                self.remove_retired_voting_key(sdk, identity_id).await
+            }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,
                 approved,
@@ -1085,6 +1113,7 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity_observed(
             &mut updated_identity,
             BalanceProvenance::ObservedAt(height),
@@ -1164,6 +1193,7 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
+        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
         self.update_local_qualified_identity_observed(
             &mut updated_identity,
             BalanceProvenance::ObservedAt(height),

@@ -978,6 +978,19 @@ impl ScreenLike for IdentityHubScreen {
         {
             return;
         }
+        // Another screen's token task changed the balances the hub shows. Pair
+        // checks and Stop tracking answer like a full refresh but read less, so
+        // only a full refresh ends a failure and satisfies the arrival rule.
+        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+            if matches!(context.operation(), BackendTaskContext::TokenBalanceRefresh) {
+                self.tokens_state
+                    .balances_refreshed_elsewhere(crate::utils::time::now_ms());
+            } else {
+                self.tokens_state
+                    .cached_data_changed(crate::backend_task::CacheDomain::Tokens);
+            }
+            return;
+        }
         self.home_state.record_payments(context, &result);
         if self
             .profile_cache
@@ -1051,13 +1064,6 @@ impl ScreenLike for IdentityHubScreen {
             }
             return;
         }
-        // Another screen's token task changed the balances the hub shows.
-        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            self.tokens_state
-                .balances_refreshed_elsewhere(crate::utils::time::now_ms());
-            return;
-        }
-
         if self.handle_contact_request_result(&result) {
             return;
         }

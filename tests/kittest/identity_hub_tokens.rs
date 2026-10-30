@@ -1156,6 +1156,85 @@ fn try_again_on_a_failed_row_says_why_it_waits_for_a_running_refresh() {
     });
 }
 
+/// Mount the Tokens tab with its arrival refresh failed and on show, and no
+/// actions recorded since.
+fn hub_after_a_failed_refresh(
+    runtime: &tokio::runtime::Runtime,
+    app_context: &Arc<AppContext>,
+) -> HubHarness {
+    let identity = seed_signing_identity(app_context, 0xD6);
+    seed_three_tokens(app_context, identity);
+    let mut hub = mount_tokens_tab(app_context);
+    let arrival = balance_refreshes(&hub)
+        .pop()
+        .expect("the arrival refresh is running");
+    let source = runtime
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>()).await
+        })
+        .expect_err("elapsed");
+    hub.state_mut()
+        .0
+        .display_backend_task_error(&arrival, &TaskError::TokenBalanceRefreshTimeout { source });
+    hub.run_steps(2);
+    assert!(hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_some());
+    hub.state_mut().1.clear();
+    hub
+}
+
+/// Another screen's pair check answers like a full refresh but read one pair:
+/// the failure stands and the next arrival still asks for every balance.
+#[test]
+fn a_pair_check_elsewhere_is_not_a_full_refresh() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut hub = hub_after_a_failed_refresh(&runtime, &app_context);
+
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::Other,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_some(),
+            "one pair's answer says nothing about the failed refresh"
+        );
+
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(2);
+        assert_eq!(
+            balance_refreshes(&hub).len(),
+            1,
+            "the next arrival still asks for every balance"
+        );
+    });
+}
+
+#[test]
+fn a_full_refresh_elsewhere_counts_as_one() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut hub = hub_after_a_failed_refresh(&runtime, &app_context);
+
+        hub.state_mut().0.display_backend_task_result(
+            &BackendTaskContext::TokenBalanceRefresh,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(
+            hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_none(),
+            "a full refresh ends the failure"
+        );
+
+        hub.state_mut().0.refresh_on_arrival();
+        hub.run_steps(2);
+        assert!(
+            balance_refreshes(&hub).is_empty(),
+            "the balances are fresh, so the arrival asks for nothing"
+        );
+    });
+}
+
 #[test]
 fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;

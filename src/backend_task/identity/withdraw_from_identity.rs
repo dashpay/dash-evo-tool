@@ -117,7 +117,9 @@ impl AppContext {
                         },
                     )
                     .await?;
-                // Upstream returns only the credits, without a height.
+                // TODO(platform-wallet): `masternode_withdraw` returns only the
+                // credits, without a height, so a late refresh can bring back
+                // the balance from before this withdrawal (same gap as top-up).
                 (remaining, BalanceProvenance::ConfirmedUnordered)
             }
             None => {

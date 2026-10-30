@@ -8,7 +8,6 @@ pub mod mint_tokens_screen;
 pub mod pause_tokens_screen;
 pub mod resume_tokens_screen;
 pub mod set_token_price_screen;
-pub(crate) mod task_feedback;
 pub mod token_action_screen;
 pub mod tokens_screen;
 pub mod transfer_tokens_screen;

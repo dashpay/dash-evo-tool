@@ -613,6 +613,27 @@ impl DashColors {
         }
     }
 
+    /// Text and ring of an informational pill drawn on a 12% tint of itself
+    /// over [`Self::surface`]. Darker than [`Self::DASH_BLUE`] in light mode
+    /// and lighter in dark mode so the label reads at 4.5:1 or better.
+    pub fn pill_accent(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(80, 175, 250)
+        } else {
+            Color32::from_rgb(0, 100, 162)
+        }
+    }
+
+    /// Text and ring of a neutral pill on its own 12% tint over
+    /// [`Self::surface`]; reads at 4.5:1 or better in both themes.
+    pub fn pill_neutral(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(170, 170, 170)
+        } else {
+            Color32::from_rgb(85, 100, 118)
+        }
+    }
+
     pub fn warning_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(255, 200, 100) // Lighter orange for dark mode
@@ -1603,6 +1624,34 @@ mod tests {
                 assert!(
                     ratio >= 4.5,
                     "{mode:?}: bold text {bold:?} on the {surface} fill {fill:?} has contrast {ratio:.2}"
+                );
+            }
+        }
+    }
+
+    /// A pill paints its label in the accent over a 12% tint of the accent on
+    /// the card surface (`ui::components::pill::accent_pill`).
+    #[test]
+    fn pill_accents_read_on_their_own_tint_in_both_themes() {
+        fn tint(accent: Color32, surface: Color32) -> Color32 {
+            let alpha = f32::from((0.12 * 255.0) as u8) / 255.0;
+            let mix = |a: u8, s: u8| (f32::from(a) * alpha + f32::from(s) * (1.0 - alpha)) as u8;
+            Color32::from_rgb(
+                mix(accent.r(), surface.r()),
+                mix(accent.g(), surface.g()),
+                mix(accent.b(), surface.b()),
+            )
+        }
+        for dark_mode in [false, true] {
+            let surface = DashColors::surface(dark_mode);
+            for (name, accent) in [
+                ("accent", DashColors::pill_accent(dark_mode)),
+                ("neutral", DashColors::pill_neutral(dark_mode)),
+            ] {
+                let ratio = contrast_ratio(accent, tint(accent, surface));
+                assert!(
+                    ratio >= 4.5,
+                    "dark_mode={dark_mode}: the {name} pill text {accent:?} reads at {ratio:.2}:1"
                 );
             }
         }

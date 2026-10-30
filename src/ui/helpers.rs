@@ -389,7 +389,7 @@ impl TransactionType {
             TransactionType::Withdraw => "Withdraw",
             TransactionType::DocumentAction => "Document Action",
             TransactionType::TokenAction => "Token Action",
-            TransactionType::TokenTransfer => "Token Transfer",
+            TransactionType::TokenTransfer => "Token sending",
             TransactionType::TokenClaim => "Token Claim",
             TransactionType::ContactRequest => "Contact Request",
         }

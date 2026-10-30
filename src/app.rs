@@ -2390,7 +2390,8 @@ impl App for AppState {
                             TaskError::WalletStorageNotReady => {
                                 self.migration.track_storage_startup_error(handle);
                             }
-                            TaskError::MasternodeListNotReady { .. } => {
+                            TaskError::MasternodeListNotReady { .. }
+                            | TaskError::MasternodeListSyncPending => {
                                 self.connection_banner.track_quorum_startup_error(handle);
                             }
                             TaskError::TransactionConfirmationUnknown {

@@ -1199,10 +1199,10 @@ As a power user, I want to add a token by entering its contract ID or token ID d
 
 - Enter ID manually and add to token list.
 
-### TOK-004: Transfer tokens [Implemented]
+### TOK-004: Send tokens [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to transfer tokens to another identity so that I can send tokens I own.
+As a user, I want to send tokens to another identity so that someone else can hold tokens I own.
 
 - Select token, enter recipient and amount.
 - Confirmation before broadcast.
@@ -1342,8 +1342,26 @@ As a token creator, I want to create a token that holders cannot send to other i
 - The token creator offers "Holders can send this token to other identities" in the Advanced section of Advanced Options, on by default; turning it off is offered only on networks that support it.
 - The confirmation always states that holders cannot send the token when transfers are turned off.
 - A network that does not support it is refused before anything is paid.
-- For a token that cannot be transferred, My Tokens disables Transfer and says why.
+- For a token that cannot be transferred, My Tokens disables Send and says why; a balance still being checked is never called zero.
 - A transfer refused by the network is explained.
+
+### TOK-021: See and use my identity's tokens in the Identity Hub [Implemented]
+**Persona:** Alex, Priya
+
+As an identity owner, I want to see the tokens this identity holds — with balances, rewards I can claim, and Send/Claim actions — inside the Identities hub, so that I don't have to find them in a token-first table that also shows issuer actions.
+
+- The hub has a Tokens tab (`Home · Contacts · Tokens · Profile`) listing this identity's tracked tokens with the balance in the token's decimals, a short ID, "Issued by you" and "Can't be sent" badges, and one plain-words status line per row: "Checking balance…" for an unsynced balance (never shown as zero), "Rewards may be waiting for you.", "You can claim {amount} once." / "Claimed on {date}." for once-per-identity distributions, and "Add a key to this identity to send or claim tokens." for a view-only identity.
+- The tab badge shows the number of pending claims; nothing when zero.
+- Send and Claim open the existing transfer and claim screens pre-scoped to this identity, disabled with a reason until sync finishes, when the identity cannot sign, or when the token cannot be sent; Send is hidden at zero balance. Holder transfers say "Send" everywhere, including the transfer screen and Tokens › My Tokens.
+- No administrative action appears in the hub. "Manage in Tokens screen" shows only when this identity holds an administrative permission under the token's configuration rules — not by role, not for issuers as such.
+- Balances refresh on arrival (older than two minutes) and on demand; a refresh already running elsewhere is never an error. A failed refresh is explained inline with "Try again" while known balances stay on screen with "Showing balances from {time}."
+- A fetched zero renders as a normal row; "Hide tokens with zero balance" (always visible, remembered per device) never hides a row still being checked. Filter and sort appear from eight tokens and are remembered too.
+- Empty states distinguish no tokens on this device from every token dismissed for this identity ("Track tokens again", one request). Adding a token (by name or ID) sits in the header; checking a balance now, copying the ID, the detail page and stop tracking (with confirmation) are in the row menu; the Receive dialog explains how a received token appears. Every network read waits for the masternode list and says so.
+- Home shows a Tokens card only when a balance is above zero or a claim is pending. A single pending claim can be taken from the card; "See all tokens" opens the Tokens tab.
+- Clicking a row opens a detail page with the facts in plain words and copyable IDs, Send/Claim, Manage under the same rule (opening Tokens › My Tokens on that token), and Stop tracking.
+- Token names from the chain are shown without control, direction-override or invisible characters; a name with nothing visible left shows the short token ID.
+- After a failed refresh every unchecked balance says "Couldn't check this balance." with Try again; a check refused because a refresh is already running is retried when it ends.
+- Design: `docs/ai-design/2026-10-28-identity-tokens/`.
 
 ## Contracts and Documents (DOC)
 

@@ -8,11 +8,20 @@ use crate::backend_task::BackendTask;
 use crate::context::AppContext;
 use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::token::TokenListSort;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::qr_code_image::QrCodeImage;
 use crate::ui::identity::tabs::IdentityHubTab;
+use crate::ui::identity::token_copy::{
+    ADD_TOKEN_LABEL, RECEIVE_TOKENS_HINT, SEE_ALL_TOKENS_LABEL, TOKENS_CARD_HEADING,
+    can_claim_once_text, pending_claims_text,
+};
+use crate::ui::identity::tokens_tab::{RowContext, render_claim_button, render_failure};
 pub use crate::ui::state::identity_home::HomeState;
+use crate::ui::state::identity_tokens::{
+    IdentityTokensState, TokenRow, home_card_shows, sort_rows,
+};
 use crate::ui::state::{AvatarCache, contacts_view::ContactsState};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing};
 use crate::ui::wallets::send_screen::IdentitySendMode;
@@ -22,6 +31,9 @@ use dash_sdk::platform::Identifier;
 use egui::{self, Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
+/// How many held tokens the Home card lists.
+const TOKENS_CARD_ROWS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeOutcome {
     None,
@@ -30,6 +42,8 @@ pub enum HomeOutcome {
     GoToSettings,
     GoToUsernames,
     GoToAdvanced,
+    /// Open the Tokens tab (from the Tokens card).
+    GoToTokens,
     DismissChecklist,
 }
 
@@ -213,6 +227,7 @@ pub fn render(
     state: &mut HomeState,
     profiles: &mut ProfileCache,
     contacts: &mut ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     state.reconcile_owner(identity);
     contacts.reconcile_owner(identity);
@@ -247,6 +262,7 @@ pub fn render(
                                 state,
                                 has_profile,
                                 contacts,
+                                tokens,
                             );
                         },
                     );
@@ -267,8 +283,15 @@ pub fn render(
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    (action, outcome) =
-                        render_main_column(ui, app_context, identity, state, has_profile, contacts);
+                    (action, outcome) = render_main_column(
+                        ui,
+                        app_context,
+                        identity,
+                        state,
+                        has_profile,
+                        contacts,
+                        tokens,
+                    );
                     action |= super::contacts::render_preview(
                         ui,
                         app_context,
@@ -326,6 +349,7 @@ fn render_main_column(
     state: &mut HomeState,
     has_profile: Option<bool>,
     contacts: &ContactsState,
+    tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
@@ -338,6 +362,7 @@ fn render_main_column(
         }
         if ComponentStyles::add_secondary_button(ui, "Receive", dark).clicked() {
             state.receive_open = true;
+            state.receive_tokens_hint = false;
         }
         if ComponentStyles::add_secondary_button(ui, "Top up", dark).clicked() {
             action = AppAction::AddScreen(
@@ -347,7 +372,7 @@ fn render_main_column(
         }
     });
     ui.add_space(Spacing::MD);
-    let outcome = render_setup(
+    let mut outcome = render_setup(
         ui,
         app_context,
         identity,
@@ -361,6 +386,77 @@ fn render_main_column(
         action = notice_action;
     }
     action |= render_payments(ui, app_context, state);
+    if outcome == HomeOutcome::None {
+        let (card_action, card_outcome) = render_tokens_card(ui, app_context, identity, tokens);
+        action |= card_action;
+        outcome = card_outcome;
+    }
+    (action, outcome)
+}
+
+/// The Tokens card: a glance at what the identity holds and can claim. Shown
+/// only when there is something to say. A single pending claim can be taken
+/// right here; more than one is listed on the Tokens tab. A failed balance
+/// refresh shows above it, as it may be why there is no card, unless the
+/// identity has no token the failure could be hiding.
+fn render_tokens_card(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    tokens: &mut IdentityTokensState,
+) -> (AppAction, HomeOutcome) {
+    let rows = tokens.rows(app_context, identity);
+    let mut action = if rows.is_empty() {
+        AppAction::None
+    } else {
+        render_failure(ui, app_context, tokens)
+    };
+    if !home_card_shows(&rows) {
+        return (action, HomeOutcome::None);
+    }
+    let mut outcome = HomeOutcome::None;
+    let dark = ui.visuals().dark_mode;
+    let mut held: Vec<&TokenRow> = rows.iter().filter(|row| row.holds_some()).collect();
+    sort_rows(&mut held, TokenListSort::BalanceHighToLow);
+    let claimable: Vec<&TokenRow> = rows.iter().filter(|row| row.claim_available()).collect();
+    let pending_claims = claimable.len();
+    let context = RowContext::new(app_context, identity);
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(TOKENS_CARD_HEADING);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link(SEE_ALL_TOKENS_LABEL).clicked() {
+                    outcome = HomeOutcome::GoToTokens;
+                }
+            });
+        });
+        for row in held.iter().take(TOKENS_CARD_ROWS) {
+            ui.horizontal(|ui| {
+                ui.label(row.name());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(balance) = row.balance() {
+                        ui.label(RichText::new(row.amount(balance).to_string()).monospace());
+                    }
+                });
+            });
+        }
+        if let [only] = claimable.as_slice() {
+            ui.horizontal_wrapped(|ui| {
+                let text = match &only.once_claim {
+                    Some(once) => can_claim_once_text(&only.amount(once.amount)),
+                    None => pending_claims_text(1),
+                };
+                ui.label(RichText::new(text).color(DashColors::success_color(dark)));
+                action |= render_claim_button(ui, app_context, only, &context);
+            });
+        } else if pending_claims > 1 {
+            ui.label(
+                RichText::new(pending_claims_text(pending_claims))
+                    .color(DashColors::success_color(dark)),
+            );
+        }
+    });
+    ui.add_space(Spacing::MD);
     (action, outcome)
 }
 
@@ -444,16 +540,24 @@ fn render_payments(ui: &mut Ui, app_context: &Arc<AppContext>, state: &HomeState
     action
 }
 
-fn render_receive(
+/// The Receive dialog. Opened from the Tokens tab (`receive_tokens_hint`) it
+/// also says how a received token shows up, since tokens reach an identity
+/// the same way Dash does.
+pub(super) fn render_receive(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut HomeState,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let tokens_hint = state.receive_tokens_hint;
     let response = egui::Modal::new(egui::Id::new("identity_receive")).show(ui.ctx(), |ui| {
         ui.set_max_width(400.0);
-        ui.heading("Receive Dash");
+        ui.heading(if tokens_hint {
+            "Receive"
+        } else {
+            "Receive Dash"
+        });
         let name = app_context.main_username(identity);
         let share = name
             .as_ref()
@@ -461,7 +565,11 @@ fn render_receive(
             .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
         if let Some(name) = name {
             ui.strong(format!("@{name}"));
-            ui.label("Share your username with someone sending to your identity.");
+            ui.label(if tokens_hint {
+                "Share your username with someone sending Dash or tokens to your identity."
+            } else {
+                "Share your username with someone sending to your identity."
+            });
             if ui.button("Copy username").clicked() {
                 ui.ctx().copy_text(share.clone());
             }
@@ -488,6 +596,16 @@ fn render_receive(
                     )
             })
             .show(ui, &share);
+        if tokens_hint {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RECEIVE_TOKENS_HINT);
+                if ui.link(ADD_TOKEN_LABEL).clicked() {
+                    action =
+                        AppAction::AddScreen(ScreenType::AddTokenById.create_screen(app_context));
+                    state.receive_open = false;
+                }
+            });
+        }
         if ui.button("Done").clicked() {
             state.receive_open = false;
         }
@@ -520,6 +638,7 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
         HomeOutcome::GoToSettings | HomeOutcome::GoToUsernames | HomeOutcome::GoToAdvanced => {
             Some(IdentityHubTab::Settings)
         }
+        HomeOutcome::GoToTokens => Some(IdentityHubTab::Tokens),
         HomeOutcome::DismissChecklist => {
             state.dismissed_checklist = true;
             None

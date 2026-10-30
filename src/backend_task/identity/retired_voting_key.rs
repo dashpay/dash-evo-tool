@@ -145,6 +145,10 @@ impl AppContext {
     /// and the node's record guard. A failure that leaves the record listed
     /// is returned; one after it was delisted is not, as the next start
     /// finishes that cleanup.
+    ///
+    /// The removal cancels vote targets filed under `voter_id` itself. That
+    /// touches no schedule the node can still cast: those are keyed by the
+    /// node's own id (its ProTxHash) and stay scheduled.
     fn remove_voter_record_locked(&self, voter_id: Identifier) -> Result<(), TaskError> {
         let lock = self.identity_record_lock(voter_id);
         let _record_guard = lock
@@ -174,14 +178,19 @@ mod tests {
     use crate::context::test_staging::{
         StagedIdentity, stage_identity_with_vaulted_keys, stage_identity_with_voter_twin,
     };
+    use crate::model::dpns_voting::{
+        DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    };
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::{Identity, IdentityPublicKey};
     use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
@@ -402,6 +411,52 @@ mod tests {
         assert_eq!(stored(&staged), reloaded);
         assert!(voting_secret_held(&staged, newer.id()));
         assert!(voting_secret_held(&staged, old.id()));
+    }
+
+    /// A schedule belongs to the node, keyed by its ProTxHash: it outlives the
+    /// voter record and is cast once the node's current voting key is added.
+    /// Only a target filed under the old voter record's own id is cancelled,
+    /// as nothing could ever cast it: that record has no voter of its own.
+    #[tokio::test]
+    async fn removing_an_old_voter_record_keeps_the_nodes_schedule() {
+        let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
+        let voter_id = staged.voter_id.unwrap();
+        let schedule = |voter_id: Identifier, poll: u8| {
+            let mut operation = AppContext::new_dpns_vote_operation(vec![DpnsVoteTarget {
+                key: DpnsVoteTargetKey {
+                    network: Network::Testnet,
+                    voter_id,
+                    vote_poll_id: Identifier::from([poll; 32]),
+                },
+                voter_alias: None,
+                contested_name: "contested".to_owned(),
+                requested_choice: ResourceVoteChoice::Lock,
+                current_choice: None,
+                timing: VoteTiming::Scheduled(42),
+            }]);
+            operation.targets[0].status = DpnsVoteTargetStatus::Scheduled;
+            staged
+                .ctx
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            operation.id
+        };
+        let node_schedule = schedule(staged.id, 1);
+        let voter_schedule = schedule(voter_id, 2);
+
+        staged
+            .ctx
+            .remove_retired_voting_key_against(
+                staged.id,
+                Some([0xEE; 20]),
+                &stored_voting_keys(&stored(&staged)),
+            )
+            .unwrap();
+
+        let status = |id| staged.ctx.dpns_vote_operation(id).unwrap().unwrap().targets[0].status;
+        assert!(!staged.ctx.is_identity_listed(&voter_id).unwrap());
+        assert_eq!(status(node_schedule), DpnsVoteTargetStatus::Scheduled);
+        assert_eq!(status(voter_schedule), DpnsVoteTargetStatus::Cancelled);
     }
 
     /// By the time of the click the list names the stored key again: nothing

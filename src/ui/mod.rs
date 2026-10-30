@@ -778,6 +778,11 @@ impl Screen {
                 screen.reset_for_network_switch();
                 return;
             }
+            Screen::DocumentActionScreen(screen) => {
+                // Selections and any fetch or broadcast in flight belong to the old network.
+                screen.reset_for_network_switch(app_context);
+                return;
+            }
             Screen::MasternodesScreen(screen) => {
                 screen.app_context = app_context;
                 // A network switch invalidates any open load form or detail view
@@ -805,7 +810,6 @@ impl Screen {
             UsernameRequestScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
-            DocumentActionScreen,
             GroupActionsScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
@@ -834,6 +838,7 @@ impl Screen {
             PauseTokensScreen,
             ResumeTokensScreen;
             skip:
+            DocumentActionScreen,
             MasternodesScreen,
             NetworkChooserScreen,
             AddNewWalletScreen,

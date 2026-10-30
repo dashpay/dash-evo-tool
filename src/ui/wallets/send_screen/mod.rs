@@ -3145,6 +3145,21 @@ impl WalletSendScreen {
         )))
     }
 
+    /// Whether the explicit payment goes from Core to Platform, the only route
+    /// that reads the fee strategy.
+    fn explicit_core_to_platform(&self) -> bool {
+        self.advanced_source_type == AdvancedSourceType::Core
+            && self.advanced_outputs.iter().any(|output| {
+                self.detect_address_kind(&output.address) == Some(AddressKind::Platform)
+            })
+    }
+
+    /// Whether the explicit payment takes the fee out of the recipient's
+    /// amount. A strategy chosen on another route has no effect here.
+    pub(super) fn explicit_fee_reduces_output(&self) -> bool {
+        self.explicit_core_to_platform() && self.fee_strategy.reduces_output()
+    }
+
     /// The confirmation for explicit inputs or several recipients, in the
     /// same From / To / Amount / Fee / Total lines as a single payment.
     fn advanced_send_confirmation_message(&self) -> String {
@@ -3185,12 +3200,8 @@ impl WalletSendScreen {
             "Amount: {amount}",
             amount = format_credits_as_dash(total_credits)
         ));
-        // The fee strategy changes only Core-to-Platform payments.
-        let core_to_platform = self.advanced_source_type == AdvancedSourceType::Core
-            && self.advanced_outputs.iter().any(|output| {
-                self.detect_address_kind(&output.address) == Some(AddressKind::Platform)
-            });
-        let reduces_output = core_to_platform && self.fee_strategy.reduces_output();
+        let core_to_platform = self.explicit_core_to_platform();
+        let reduces_output = self.explicit_fee_reduces_output();
         match self.advanced_fee_estimate_credits() {
             Some(fee) => {
                 lines.push(format!("Fee: ≈ {fee}", fee = format_credits_as_dash(fee)));
@@ -8535,5 +8546,103 @@ mod tests {
         harness.run();
         assert!(harness.query_by_label_contains(REFUSAL).is_none());
         assert!(harness.query_by_label_contains(PROMISE).is_some());
+    }
+
+    /// Renders the form with "Reduce first output" chosen on an Advanced
+    /// Core-to-Platform payment, then switches to `route`, a route that ignores
+    /// the strategy, and checks the rendered Summary against the confirmation.
+    fn assert_summary_ignores_a_stale_strategy(
+        route: impl FnOnce(&mut WalletSendScreen),
+        total_label: &str,
+    ) {
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .app_context
+            .set_user_role(crate::model::user_role::UserRole::Power);
+        let core = testnet_core_address(9).to_string();
+        screen.form.choose_pay_from(
+            PayFrom::Advanced,
+            crate::model::send_route::PayFromKind::Core,
+        );
+        screen.form.choose_advanced_type(AdvancedSourceType::Core);
+        screen.form.set_advanced_ticked(&core, true);
+        screen.form.set_advanced_amount(&core, "0.5".to_string());
+        screen
+            .form
+            .choose_fee_strategy(PlatformFeeStrategy::ReduceFirstOutput);
+        screen.typed_destination = Some(platform_destination());
+        let mut amount_input = WalletSendScreen::new_amount_input();
+        amount_input.set_value(Amount::new_dash(0.2));
+        screen.amount_input = Some(amount_input);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 1400.0))
+            .build_ui_state(
+                |ui, screen: &mut WalletSendScreen| {
+                    let _ = screen.render_form(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness.state().shows_fee_options(),
+            "precondition: this route reads the strategy"
+        );
+
+        route(harness.state_mut());
+        harness.run();
+
+        let message = harness.state().advanced_send_confirmation_message();
+        let total = message
+            .lines()
+            .find_map(|line| line.strip_prefix("Total: "))
+            .expect("the confirmation states a total");
+        assert!(
+            harness.query_by_label("Recipient gets").is_none(),
+            "this route charges the fee on top: {message}"
+        );
+        assert!(harness.query_by_label(total_label).is_some());
+        assert!(
+            harness.query_by_label(total).is_some(),
+            "the Summary total must be the confirmation's {total}"
+        );
+    }
+
+    #[test]
+    fn a_stale_strategy_leaves_several_core_recipients_on_top() {
+        assert_summary_ignores_a_stale_strategy(
+            |screen| {
+                screen
+                    .form
+                    .choose_pay_from(PayFrom::Core, crate::model::send_route::PayFromKind::Core);
+                screen
+                    .form
+                    .add_recipient(testnet_core_address(21).to_string(), "0.1".to_string());
+                screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+                    address: testnet_core_address(22).to_string(),
+                    amount: "0.1".to_string(),
+                };
+            },
+            "Total from Core",
+        );
+    }
+
+    #[test]
+    fn a_stale_strategy_leaves_several_platform_recipients_on_top() {
+        assert_summary_ignores_a_stale_strategy(
+            |screen| {
+                screen.form.choose_pay_from(
+                    PayFrom::Platform,
+                    crate::model::send_route::PayFromKind::Platform,
+                );
+                screen
+                    .form
+                    .add_recipient(testnet_platform_bech32m(21), "0.1".to_string());
+                screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+                    address: testnet_platform_bech32m(22),
+                    amount: "0.1".to_string(),
+                };
+            },
+            "Total from Platform",
+        );
     }
 }

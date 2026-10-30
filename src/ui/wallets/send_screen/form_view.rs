@@ -1623,7 +1623,7 @@ impl WalletSendScreen {
             self.current_fee_preview()
         };
         let preview = preview.map(|mut preview| {
-            if explicit && self.form.fee_strategy().reduces_output() {
+            if explicit && self.explicit_fee_reduces_output() {
                 preview = FeePreview::deducted_from_amount(amount_credits, preview.fee_credits);
             }
             preview

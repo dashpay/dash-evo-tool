@@ -1105,10 +1105,96 @@ fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
                 "the new refresh keeps its progress banner (in view: {in_view})"
             );
 
+            // Its mid-task result only reloads the data: this network's older
+            // refresh sends the same one, so it cannot end the wait.
             deliver(&mut harness, refreshed(current_network));
             assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "a mid-task result ends nothing (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: current,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
                 !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
-                "the active network's refresh still ends it (in view: {in_view})"
+                "the refresh's own result ends it (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and takes its progress banner down (in view: {in_view})"
+            );
+        });
+    }
+}
+
+/// Testnet to Mainnet and back, with the first Testnet refresh still running:
+/// its late result names the active network, so only the dispatch can tell the
+/// two refreshes apart. It must leave the new refresh running.
+#[test]
+fn a_late_contest_refresh_after_returning_to_a_network_leaves_the_new_refresh_running() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let network = harness.state().current_app_context().network();
+            let old = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&old);
+
+            switch_network(&mut harness);
+            switch_network(&mut harness);
+            assert_eq!(harness.state().current_app_context().network(), network);
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let new = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&new);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: BackendTaskContext::Unknown,
+                    result: Box::new(BackendTaskSuccessResult::RefreshedDpnsContests { network }),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the old refresh's late result leaves the new one running (in view: {in_view})"
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and its progress banner (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: old,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "so does the old refresh's own end (in view: {in_view})"
+            );
+
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: new,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the new refresh's own result ends it (in view: {in_view})"
             );
             assert!(
                 !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),

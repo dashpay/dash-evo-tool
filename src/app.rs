@@ -2226,6 +2226,13 @@ impl App for AppState {
                     // frame loop are handled here; every other result is the
                     // sender's, and its feedback was decided above.
                     match unboxed_message {
+                        // A contest refresh sends its data mid-task, so this
+                        // empty result is what ends its sender's wait.
+                        BackendTaskSuccessResult::None
+                            if context.is_dpns_contest_refresh() && route.owner().is_some() =>
+                        {
+                            self.deliver_result(route, &context, unboxed_message);
+                        }
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::CacheUpdated(update) => {
                             pending_refresh.0.insert(update);

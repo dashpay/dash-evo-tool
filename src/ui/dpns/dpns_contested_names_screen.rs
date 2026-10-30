@@ -15,7 +15,7 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Button, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{AppAction, scheduled_vote_sweep_is_quiet};
+use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contested_names::{DpnsVotingPreference, RelativeScheduleLabels};
 use crate::backend_task::error::TaskError;
@@ -2803,7 +2803,7 @@ impl ScreenLike for DPNSScreen {
         }
         self.rebuild_scheduled_vote_rows();
         self.rebuild_cards();
-        scheduled_vote_sweep_is_quiet(error)
+        super::task_feedback::is_quiet(error)
     }
 
     fn display_backend_task_result(
@@ -3108,6 +3108,35 @@ mod tests {
             state: ContestState::Locked,
             last_updated: Some(1),
             my_votes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn voting_observer_interest_matches_supported_results() {
+        for handled in [
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
+            },
+            BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: Network::Testnet,
+                preserve_eligibility_since_ms: None,
+            },
+            BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+            BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            BackendTaskSuccessResult::RefreshedDpnsContests,
+        ] {
+            assert!(DPNSScreen::handles_result(&handled));
+        }
+        for unrelated in [
+            BackendTaskSuccessResult::None,
+            BackendTaskSuccessResult::CacheUpdated(crate::backend_task::CacheUpdate {
+                network: Network::Testnet,
+                domain: crate::backend_task::CacheDomain::Dpns,
+            }),
+            BackendTaskSuccessResult::MyUsernameRequestsRefreshed,
+        ] {
+            assert!(!DPNSScreen::handles_result(&unrelated));
         }
     }
 

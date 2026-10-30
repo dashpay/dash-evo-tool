@@ -4,15 +4,21 @@ use crate::backend_task::{
     await_network_request_with_timeout,
 };
 use crate::context::AppContext;
+use crate::model::fee_estimation::checked_action_fee_agreement;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
+use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
 use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
+use dash_sdk::dpp::{
+    data_contract::document_type::DocumentType,
+    state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType,
+};
 use dash_sdk::drive::query::SelectProjection;
 use dash_sdk::platform::documents::transitions::DocumentCreateResult;
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
@@ -43,6 +49,10 @@ pub enum DocumentTask {
         data_contract: Arc<DataContract>,
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     DeleteDocument {
         document_id: Identifier,
@@ -51,6 +61,10 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     ReplaceDocument {
         document: Document,
@@ -59,6 +73,10 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     TransferDocument {
         document_id: Identifier,
@@ -68,6 +86,10 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     PurchaseDocument {
         price: Credits,
@@ -77,6 +99,10 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     SetDocumentPrice {
         price: Credits,
@@ -86,6 +112,10 @@ pub enum DocumentTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         token_payment_info: Option<TokenPaymentInfo>,
+        /// The document action fee the user was shown and agreed to (protocol
+        /// version 14). Required when the document type charges a fee for
+        /// the action: the backend never agrees on the user's behalf.
+        action_fee_agreement: Option<DocumentActionFeeAgreement>,
     },
     FetchDocuments(DocumentQuery),
     FetchDocumentsPage(DocumentQuery),
@@ -130,6 +160,22 @@ impl AppContext {
     }
 
     pub async fn run_document_task(
+        &self,
+        task: DocumentTask,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        match self.run_document_task_inner(task, sdk).await {
+            // The multiplier the refusal names is unproven node data: it only
+            // triggers a proved epoch refresh, never feeds the cache itself.
+            Err(refusal @ TaskError::DocumentActionFeeMultiplierRose { .. }) => {
+                let refreshed = self.refresh_current_epoch(sdk).await.map(|_| ());
+                Err(fee_refusal_after_refresh(refusal, refreshed))
+            }
+            result => result,
+        }
+    }
+
+    async fn run_document_task_inner(
         &self,
         task: DocumentTask,
         sdk: &Sdk,
@@ -192,6 +238,7 @@ impl AppContext {
                 data_contract,
                 qualified_identity,
                 identity_key,
+                action_fee_agreement,
             } => {
                 let contest_fund = crate::model::fee_estimation::document_create_contest_fund_cap(
                     document_type.as_ref(),
@@ -219,6 +266,15 @@ impl AppContext {
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
                 }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Create,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
+                }
 
                 let result = sdk
                     .document_create(builder, &identity_key, &qualified_identity)
@@ -241,6 +297,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let mut builder = DocumentDeleteTransitionBuilder::new(
                     data_contract,
@@ -256,6 +313,15 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Delete,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -281,6 +347,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let mut builder = DocumentReplaceTransitionBuilder::new(
                     data_contract,
@@ -295,6 +362,15 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Replace,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -321,6 +397,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -345,6 +422,15 @@ impl AppContext {
                 let maybe_options = self.state_transition_options();
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
+                }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Transfer,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
                 }
 
                 let result = sdk
@@ -371,6 +457,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -397,6 +484,15 @@ impl AppContext {
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
                 }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::Purchase,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
+                }
 
                 let result = sdk
                     .document_purchase(builder, &identity_key, &qualified_identity)
@@ -422,6 +518,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 token_payment_info,
+                action_fee_agreement,
             } => {
                 let document = self
                     .fetch_document_for_mutation(
@@ -447,6 +544,15 @@ impl AppContext {
                 if let Some(options) = maybe_options {
                     builder = builder.with_state_transition_creation_options(options);
                 }
+                // After the options: setting them replaces the struct the
+                // agreement is kept in.
+                if let Some(agreement) = checked_action_fee_agreement(
+                    document_type.as_ref(),
+                    DocumentTransitionActionType::UpdatePrice,
+                    action_fee_agreement,
+                )? {
+                    builder = builder.with_action_fee_agreement(agreement);
+                }
 
                 let result = sdk
                     .document_set_price(builder, &identity_key, &qualified_identity)
@@ -468,8 +574,78 @@ impl AppContext {
     }
 }
 
+/// The error to report for a fee multiplier refusal once the proved epoch
+/// refresh it triggered has finished: the refusal itself when the cache now
+/// holds the network's multiplier, otherwise a variant saying the contract
+/// fee could not be updated (the cache keeps its previous value).
+fn fee_refusal_after_refresh(
+    refusal: TaskError,
+    refreshed: Result<(), Box<SdkError>>,
+) -> TaskError {
+    match (refusal, refreshed) {
+        (refusal, Ok(())) => refusal,
+        (
+            TaskError::DocumentActionFeeMultiplierRose {
+                increase_tolerance_percent,
+                source_error,
+                ..
+            },
+            Err(refresh_error),
+        ) => {
+            tracing::warn!(
+                refusal = ?source_error,
+                "Network refused a document action for a risen fee multiplier"
+            );
+            TaskError::DocumentActionFeeMultiplierNotRefreshed {
+                increase_tolerance_percent,
+                source_error: refresh_error,
+            }
+        }
+        (other, Err(_)) => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    fn fee_refusal() -> TaskError {
+        TaskError::DocumentActionFeeMultiplierRose {
+            known_fee_multiplier_permille: 1000,
+            current_fee_multiplier_permille: 1500,
+            increase_tolerance_percent: 20,
+            source_error: Box::new(dash_sdk::Error::Generic("rose".to_string())),
+        }
+    }
+
+    /// After a proved refresh the refusal is reported as is: the cache holds
+    /// the network's multiplier, so trying again quotes the current fee.
+    #[test]
+    fn a_fee_refusal_stands_once_the_epoch_is_refreshed() {
+        let error = fee_refusal_after_refresh(fee_refusal(), Ok(()));
+        assert!(matches!(
+            error,
+            TaskError::DocumentActionFeeMultiplierRose { .. }
+        ));
+        assert!(error.to_string().contains("has been updated"));
+    }
+
+    /// When the proved refresh fails, the user is told the contract fee
+    /// could not be updated rather than that it was.
+    #[test]
+    fn a_failed_epoch_refresh_says_the_fee_was_not_updated() {
+        let error = fee_refusal_after_refresh(
+            fee_refusal(),
+            Err(Box::new(dash_sdk::Error::Generic("offline".to_string()))),
+        );
+        assert!(matches!(
+            error,
+            TaskError::DocumentActionFeeMultiplierNotRefreshed {
+                increase_tolerance_percent: 20,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("could not be updated"));
+    }
+
     use super::*;
 
     #[tokio::test]

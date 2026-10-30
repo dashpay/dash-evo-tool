@@ -7,11 +7,17 @@ use crate::backend_task::{BackendTask, document::DocumentTask};
 use crate::context::AppContext;
 use crate::model::document::new_document_for_creation;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{
+    ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT, DocumentActionFeeQuote,
+    document_action_fee_quote,
+};
 use crate::model::identity_key_usability::{KeyRequirements, SigningScope};
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
@@ -38,6 +44,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::data_contract::document_type::accessors::{
     DocumentTypeV0Getters, DocumentTypeV1Getters,
 };
+use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::DocumentActionFeeAgreement;
 use dash_sdk::dpp::data_contract::document_type::{DocumentPropertyType, DocumentType};
 use dash_sdk::dpp::document::property_names::PRICE;
 use dash_sdk::dpp::document::{Document, DocumentV0, DocumentV0Getters, DocumentV0Setters};
@@ -49,6 +56,7 @@ use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
 use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
+use dash_sdk::dpp::state_transition::batch_transition::batched_transition::document_transition_action_type::DocumentTransitionActionType;
 use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
@@ -68,6 +76,19 @@ pub enum DocumentActionType {
 }
 
 impl DocumentActionType {
+    /// The document transition this action broadcasts, as action fees are
+    /// declared per transition type.
+    fn transition_action(&self) -> DocumentTransitionActionType {
+        match self {
+            DocumentActionType::Create => DocumentTransitionActionType::Create,
+            DocumentActionType::Delete => DocumentTransitionActionType::Delete,
+            DocumentActionType::Purchase => DocumentTransitionActionType::Purchase,
+            DocumentActionType::Replace => DocumentTransitionActionType::Replace,
+            DocumentActionType::SetPrice => DocumentTransitionActionType::UpdatePrice,
+            DocumentActionType::Transfer => DocumentTransitionActionType::Transfer,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             DocumentActionType::Create => "Create Document",
@@ -166,6 +187,10 @@ pub struct DocumentActionScreen {
     // Banner for in-progress operations
     refresh_banner: Option<BannerHandle>,
 
+    /// The confirmation of a document action fee, open while the user decides.
+    action_fee_confirmation: Option<PendingActionFeeConfirmation>,
+    /// The action fee agreement the next built action carries.
+    agreed_action_fee: Option<DocumentActionFeeAgreement>,
     // The document fetch whose result the form waits for
     pending_fetch: PendingRequest,
 
@@ -177,6 +202,14 @@ pub struct DocumentActionScreen {
 /// Shown when the selected identity holds no key this device can sign the
 /// chosen document action with.
 const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+
+/// An open contract fee confirmation and the action it was opened for: the
+/// action is built, fee agreement included, when the dialog opens, and that
+/// exact action is sent on confirm.
+struct PendingActionFeeConfirmation {
+    dialog: ConfirmationDialog,
+    task: BackendTask,
+}
 
 impl DocumentActionScreen {
     pub fn new(
@@ -232,6 +265,8 @@ impl DocumentActionScreen {
             fetched_documents: IndexMap::new(),
             completed_fee_result: None,
             refresh_banner: None,
+            action_fee_confirmation: None,
+            agreed_action_fee: None,
             pending_fetch: PendingRequest::default(),
             pending_broadcast: PendingRequest::default(),
         }
@@ -346,6 +381,7 @@ impl DocumentActionScreen {
         self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
+        self.action_fee_confirmation = None;
         self.selected_contract = None;
         self.selected_document_type = None;
         self.contract_search.clear();
@@ -1021,6 +1057,17 @@ impl DocumentActionScreen {
         }
     }
 
+    /// The action fee the selected document type charges for this action at
+    /// the current fee multiplier, `None` when it charges none.
+    fn action_fee_quote(&self) -> Option<DocumentActionFeeQuote> {
+        let doc_type = self.selected_document_type.as_ref()?;
+        document_action_fee_quote(
+            doc_type.as_ref(),
+            self.action_type.transition_action(),
+            self.app_context.fee_multiplier_permille(),
+        )
+    }
+
     fn render_broadcast_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -1034,6 +1081,8 @@ impl DocumentActionScreen {
             DocumentActionType::Purchase => fee_estimator.estimate_document_purchase(),
             DocumentActionType::SetPrice => fee_estimator.estimate_document_set_price(),
         };
+
+        let action_fee = self.action_fee_quote();
 
         ui.add_space(10.0);
         let dark_mode = ui.style().visuals.dark_mode;
@@ -1054,6 +1103,20 @@ impl DocumentActionScreen {
                             .size(14.0),
                     );
                 });
+                if let Some(quote) = &action_fee {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Contract fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(action_fee_summary(quote))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                }
             });
 
         ui.add_space(10.0);
@@ -1071,9 +1134,29 @@ impl DocumentActionScreen {
         if ComponentStyles::add_primary_button_enabled(ui, idle, button_text).clicked()
             && self.can_broadcast()
         {
-            let task = self.create_document_action();
-            if task != BackendTask::None {
-                action = self.start_broadcast(ui.ctx(), task);
+            match action_fee {
+                // A contract fee is paid only with the user's explicit
+                // agreement to the amount shown.
+                Some(quote) => self.open_action_fee_confirmation(quote),
+                None => {
+                    self.agreed_action_fee = None;
+                    action = self.dispatch_document_action(ui.ctx());
+                }
+            }
+        }
+
+        let fee_response = self
+            .action_fee_confirmation
+            .as_mut()
+            .and_then(|pending| pending.dialog.show(ui).inner.dialog_response);
+        if let Some(response) = fee_response {
+            match response {
+                ConfirmationStatus::Confirmed => {
+                    action = self.confirm_action_fee(ui.ctx());
+                }
+                ConfirmationStatus::Canceled => {
+                    self.action_fee_confirmation = None;
+                }
             }
         }
 
@@ -1087,6 +1170,50 @@ impl DocumentActionScreen {
         }
 
         action
+    }
+
+    /// Ask the user to agree to the contract fee `quote` before the action is
+    /// sent.
+    /// The action is built now, carrying the quoted agreement, and the dialog
+    /// blocks the form behind it, so what the user confirms is what is sent.
+    fn open_action_fee_confirmation(&mut self, quote: DocumentActionFeeQuote) {
+        self.agreed_action_fee = Some(quote.agreement);
+        let task = self.create_document_action();
+        self.agreed_action_fee = None;
+        if task == BackendTask::None {
+            return;
+        }
+        self.action_fee_confirmation = Some(PendingActionFeeConfirmation {
+            dialog: ConfirmationDialog::new(
+                "Confirm contract fee".to_string(),
+                action_fee_confirmation_text(&quote),
+            )
+            .blocks_input(true),
+            task,
+        });
+    }
+
+    /// The user agreed to the contract fee: send the action the confirmation
+    /// was opened for.
+    fn confirm_action_fee(&mut self, ctx: &egui::Context) -> AppAction {
+        match self.action_fee_confirmation.take() {
+            Some(pending) => self.dispatch_task(ctx, pending.task),
+            None => AppAction::None,
+        }
+    }
+
+    /// Build and dispatch the document action, carrying the agreed action fee.
+    fn dispatch_document_action(&mut self, ctx: &egui::Context) -> AppAction {
+        let task = self.create_document_action();
+        self.dispatch_task(ctx, task)
+    }
+
+    /// Send `task`, a built document action, showing its progress.
+    fn dispatch_task(&mut self, ctx: &egui::Context, task: BackendTask) -> AppAction {
+        if task == BackendTask::None {
+            return AppAction::None;
+        }
+        self.start_broadcast(ctx, task)
     }
 
     /// Resolve the four selections every document action needs — document
@@ -1158,6 +1285,7 @@ impl DocumentActionScreen {
                         });
 
                 BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
+                    action_fee_agreement: self.agreed_action_fee,
                     document: doc,
                     token_payment_info,
                     entropy,
@@ -1209,6 +1337,7 @@ impl DocumentActionScreen {
                 });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
+            action_fee_agreement: self.agreed_action_fee,
             document_id,
             document_type: doc_type.clone(),
             data_contract: Arc::new(contract.contract.clone()),
@@ -1240,6 +1369,7 @@ impl DocumentActionScreen {
                 });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
+            action_fee_agreement: self.agreed_action_fee,
             price: self.fetched_price.unwrap_or(0),
             document_id,
             document_type: doc_type.clone(),
@@ -1274,6 +1404,7 @@ impl DocumentActionScreen {
                             });
 
                     BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                        action_fee_agreement: self.agreed_action_fee,
                         document: updated_doc,
                         document_type: doc_type.clone(),
                         data_contract: Arc::new(contract.contract.clone()),
@@ -1311,6 +1442,7 @@ impl DocumentActionScreen {
                     });
 
             BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                action_fee_agreement: self.agreed_action_fee,
                 document: DocumentV0::default().into(),
                 document_type: doc_type.clone(),
                 data_contract: Arc::new(contract.contract.clone()),
@@ -1344,6 +1476,7 @@ impl DocumentActionScreen {
                 });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
+            action_fee_agreement: self.agreed_action_fee,
             price,
             document_id,
             document_type: doc_type.clone(),
@@ -1378,6 +1511,7 @@ impl DocumentActionScreen {
                 });
 
         BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
+            action_fee_agreement: self.agreed_action_fee,
             document_id,
             new_owner_id: recipient_id,
             document_type: doc_type.clone(),
@@ -2145,9 +2279,62 @@ fn signing_scope<'a>(
     }
 }
 
+/// The contract fee as a label value: the total, and its split when both
+/// the owner and the moderators receive a part.
+fn action_fee_summary(quote: &DocumentActionFeeQuote) -> String {
+    let total = format_credits_as_dash(quote.total);
+    match (quote.owner, quote.moderators) {
+        (_, 0) => format!("{total} to the contract owner"),
+        (0, _) => format!("{total} to the contract's moderators"),
+        (owner, moderators) => format!(
+            "{total} ({owner} to the contract owner, {moderators} to its moderators)",
+            owner = format_credits_as_dash(owner),
+            moderators = format_credits_as_dash(moderators)
+        ),
+    }
+}
+
+/// The confirmation text for a contract fee, in complete sentences: who
+/// receives what, whether the fee follows network fees (and the most it can
+/// then reach), and that it comes on top of the network fee. The pricing is
+/// read from the agreement itself, so a fee too small to show the tolerance
+/// after rounding is still described as following network fees.
+fn action_fee_confirmation_text(quote: &DocumentActionFeeQuote) -> String {
+    let fee = format_credits_as_dash(quote.total);
+    let recipients = match (quote.owner, quote.moderators) {
+        (_, 0) => format!(
+            "This contract charges a fee of {fee} for this action, paid to the contract owner."
+        ),
+        (0, _) => format!(
+            "This contract charges a fee of {fee} for this action, paid to the contract's moderators."
+        ),
+        (owner, moderators) => format!(
+            "This contract charges a fee of {fee} for this action: {owner} to the contract owner and {moderators} to its moderators.",
+            owner = format_credits_as_dash(owner),
+            moderators = format_credits_as_dash(moderators)
+        ),
+    };
+    let pricing = if quote.agreement.fee_multiplier().is_some() {
+        format!(
+            "The fee follows network fees. If they rise before the action is processed, up to {max} can be charged. If they rise by more than {percent}%, the network refuses the action.",
+            max = format_credits_as_dash(quote.max_total),
+            percent = ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT
+        )
+    } else {
+        "The fee is fixed and does not change with network fees.".to_string()
+    };
+    format!(
+        "{recipients} {pricing} It is charged on top of the network fee. Do you want to continue?"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::data_contract::document_type::action_fees::agreement::AgreedFeeMultiplier;
+    use dash_sdk::dpp::data_contract::document_type::action_fees::{
+        ActionFeePricing, DocumentActionFee,
+    };
 
     fn editor_document_type(array: bool) -> DocumentType {
         use dash_sdk::dpp::data_contract::config::DataContractConfig;
@@ -3064,6 +3251,34 @@ mod tests {
         );
     }
 
+    fn quote(
+        pricing: ActionFeePricing,
+        owner: Credits,
+        moderators: Credits,
+    ) -> DocumentActionFeeQuote {
+        let total = owner + moderators;
+        let max_total = match pricing {
+            ActionFeePricing::FeeMultiplier => {
+                total * (100 + ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT as u64) / 100
+            }
+            ActionFeePricing::Fixed => total,
+        };
+        DocumentActionFeeQuote {
+            agreement: DocumentActionFeeAgreement::for_declared_fee(
+                pricing,
+                DocumentActionFee { owner, moderators },
+                AgreedFeeMultiplier {
+                    known_permille: 1000,
+                    increase_tolerance_percent: ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT,
+                },
+            ),
+            owner,
+            moderators,
+            total,
+            max_total,
+        }
+    }
+
     /// Regression: with an identity selected but no key that can sign the
     /// action, the screen stopped below the identity selector with no word
     /// of why (the key chooser is behind Advanced Options).
@@ -3093,5 +3308,134 @@ mod tests {
             harness.query_by_label(NO_SIGNING_KEY_NOTICE).is_some(),
             "the missing key is explained"
         );
+    }
+
+    /// Regression: Confirm rebuilt the action from the live form, so an input
+    /// changed while the fee confirmation was open was signed with the fee
+    /// agreed for the action shown. What is confirmed is what is sent.
+    #[test]
+    fn confirming_a_contract_fee_sends_the_action_it_was_shown_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let contract = dpns();
+        let domain = owned_document_type(&contract, "domain");
+        let key = auth_key(1, domain.security_level_requirement(), None);
+        let mut screen = DocumentActionScreen::new(context, None, DocumentActionType::Delete);
+        screen.selected_contract = Some(contract);
+        screen.selected_document_type = Some(domain);
+        screen.selected_identity = Some(identity_holding(std::slice::from_ref(&key)));
+        screen.selected_key = Some(key);
+        let shown = Identifier::new([0x11; 32]);
+        screen.document_id_input = shown.to_string(Encoding::Base58);
+
+        let quote = quote(ActionFeePricing::Fixed, 1_000, 0);
+        screen.open_action_fee_confirmation(quote);
+        // The form behind the dialog changes before the user confirms.
+        screen.document_id_input = Identifier::new([0x22; 32]).to_string(Encoding::Base58);
+
+        let sent = screen.confirm_action_fee(&egui::Context::default());
+        let AppAction::BackendTaskWithContext {
+            task: BackendTask::DocumentTask(task),
+            ..
+        } = sent
+        else {
+            panic!("the confirmed action is sent, got {sent:?}");
+        };
+        let DocumentTask::DeleteDocument {
+            document_id,
+            action_fee_agreement,
+            ..
+        } = *task
+        else {
+            panic!("a delete was confirmed");
+        };
+        assert_eq!(document_id, shown);
+        assert_eq!(action_fee_agreement, Some(quote.agreement));
+    }
+
+    /// The user agrees to the most that can be charged, so the confirmation
+    /// names that ceiling and the tolerance behind it, not only today's price.
+    #[test]
+    fn a_multiplier_priced_fee_confirmation_names_the_ceiling_and_the_tolerance() {
+        let quote = quote(ActionFeePricing::FeeMultiplier, 100_000_000_000, 0);
+        let text = action_fee_confirmation_text(&quote);
+        assert!(
+            text.contains(&format!(
+                "up to {}",
+                format_credits_as_dash(quote.max_total)
+            )),
+            "the ceiling must be shown, got: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "more than {ACTION_FEE_MULTIPLIER_INCREASE_TOLERANCE_PERCENT}%"
+            )),
+            "the tolerance must be shown, got: {text}"
+        );
+        assert!(text.contains(&format_credits_as_dash(quote.total)));
+    }
+
+    #[test]
+    fn a_fixed_fee_confirmation_promises_no_increase() {
+        let quote = quote(ActionFeePricing::Fixed, 50_000_000_000, 0);
+        let text = action_fee_confirmation_text(&quote);
+        assert!(text.contains("The fee is fixed"), "got: {text}");
+        assert!(
+            !text.contains("up to"),
+            "a fixed fee cannot rise, got: {text}"
+        );
+    }
+
+    /// Rounding can hide the tolerance of a tiny fee (4 credits * 1.2 floors
+    /// to 4): it still follows network fees and must say so.
+    #[test]
+    fn a_tiny_multiplier_priced_fee_is_not_called_fixed() {
+        let mut quote = quote(ActionFeePricing::FeeMultiplier, 4, 0);
+        quote.max_total = quote.total;
+        let text = action_fee_confirmation_text(&quote);
+        assert!(text.contains("follows network fees"), "got: {text}");
+        assert!(!text.contains("fixed"), "got: {text}");
+    }
+
+    #[test]
+    fn a_fee_for_moderators_only_names_them() {
+        let quote = quote(ActionFeePricing::Fixed, 0, 7_000);
+        assert!(action_fee_confirmation_text(&quote).contains("paid to the contract's moderators"));
+        assert!(action_fee_summary(&quote).contains("to the contract's moderators"));
+    }
+
+    #[test]
+    fn a_fee_split_with_moderators_names_both_parts() {
+        let quote = quote(
+            ActionFeePricing::FeeMultiplier,
+            60_000_000_000,
+            40_000_000_000,
+        );
+        let summary = action_fee_summary(&quote);
+        assert!(summary.contains(&format!(
+            "{} to the contract owner",
+            format_credits_as_dash(quote.owner)
+        )));
+        assert!(summary.contains(&format!(
+            "{} to its moderators",
+            format_credits_as_dash(quote.moderators)
+        )));
+    }
+
+    /// Action fees are declared per transition, so every
+    /// screen action must name the transition it broadcasts.
+    #[test]
+    fn every_action_maps_to_its_document_transition() {
+        use DocumentTransitionActionType as T;
+        for (action, expected) in [
+            (DocumentActionType::Create, T::Create),
+            (DocumentActionType::Delete, T::Delete),
+            (DocumentActionType::Purchase, T::Purchase),
+            (DocumentActionType::Replace, T::Replace),
+            (DocumentActionType::SetPrice, T::UpdatePrice),
+            (DocumentActionType::Transfer, T::Transfer),
+        ] {
+            assert_eq!(action.transition_action(), expected);
+        }
     }
 }

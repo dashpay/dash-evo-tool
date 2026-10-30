@@ -991,6 +991,52 @@ fn check_balance_now_waits_for_the_masternode_list() {
 }
 
 #[test]
+fn check_balance_now_says_why_it_waits_for_a_running_refresh() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xD3);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
+        assert!(
+            hub.get_by_label(token_copy::CHECK_NOW_LABEL)
+                .accesskit_node()
+                .is_disabled(),
+            "the check cannot run while a refresh does, so it must not look clickable"
+        );
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).hover();
+        // Tooltips appear after a short delay; step a few frames past it.
+        hub.run_steps(30);
+        assert!(
+            hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some(),
+            "the disabled item explains why it is disabled"
+        );
+
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        assert!(
+            hub.state().1.iter().any(|action| matches!(
+                action,
+                AppAction::BackendTaskWithContext { task: BackendTask::TokenTask(task), .. }
+                    if matches!(**task, TokenTask::QueryIdentityTokenBalance(_))
+            )),
+            "the check works again once the refresh ended"
+        );
+    });
+}
+
+#[test]
 fn a_pre_programmed_distribution_to_someone_else_is_not_a_pending_claim() {
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
     use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;

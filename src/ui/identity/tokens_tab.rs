@@ -634,10 +634,14 @@ fn render_row_menu(
     context: &RowContext,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let refreshing = state.refreshing(app_context);
     let response = ui.menu_button(MENU_LABEL, |ui| {
         if ui
-            .add_enabled(context.synced, egui::Button::new(CHECK_NOW_LABEL))
-            .disabled_tooltip(DISABLED_NOT_SYNCED)
+            .add_enabled(
+                context.synced && !refreshing,
+                egui::Button::new(CHECK_NOW_LABEL),
+            )
+            .disabled_tooltip(refresh_block_reason(context.synced))
             .clicked()
         {
             action |= state.check_pair_action(app_context, row.pair());

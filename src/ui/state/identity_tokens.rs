@@ -579,10 +579,11 @@ impl IdentityTokensState {
     }
 
     /// Whether the first-load line shows: every balance is still unknown, a
-    /// refresh is actually running, and nothing has failed. A failed or
-    /// impossible refresh shows its own message instead.
+    /// refresh has never finished, one is running, and nothing has failed.
+    /// A failed or impossible refresh shows its own message instead.
     pub fn first_load_shown(&self, rows: &[TokenRow], refreshing: bool) -> bool {
-        !rows.is_empty()
+        self.last_refreshed_at_ms.is_none()
+            && !rows.is_empty()
             && rows.iter().all(|row| row.balance().is_none())
             && refreshing
             && self.refresh_failure().is_none()
@@ -1071,6 +1072,16 @@ mod tests {
             context.identity_token_balances().unwrap().is_empty(),
             "the snapshot stays unchanged"
         );
+    }
+
+    #[test]
+    fn a_repeat_refresh_never_shows_first_load_copy() {
+        let mut state = IdentityTokensState::default();
+        let rows = [row("T", None)];
+        assert!(state.first_load_shown(&rows, true));
+        state.balances_refreshed_elsewhere(1);
+        let _ = state.dispatch_refresh();
+        assert!(!state.first_load_shown(&rows, true));
     }
 
     #[test]

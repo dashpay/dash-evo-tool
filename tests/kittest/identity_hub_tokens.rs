@@ -1009,11 +1009,16 @@ fn check_balance_now_says_why_it_waits_for_a_running_refresh() {
                 .is_disabled(),
             "the check cannot run while a refresh does, so it must not look clickable"
         );
+        let status_lines = hub
+            .query_all_by_label(token_copy::REFRESHING_TOOLTIP)
+            .count();
         hub.get_by_label(token_copy::CHECK_NOW_LABEL).hover();
         // Tooltips appear after a short delay; step a few frames past it.
         hub.run_steps(30);
         assert!(
-            hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some(),
+            hub.query_all_by_label(token_copy::REFRESHING_TOOLTIP)
+                .count()
+                > status_lines,
             "the disabled item explains why it is disabled"
         );
 
@@ -1023,6 +1028,11 @@ fn check_balance_now_says_why_it_waits_for_a_running_refresh() {
         );
         hub.run_steps(2);
         hub.state_mut().1.clear();
+        // The completed refresh changes row contents and can close the menu.
+        hub.key_press(egui::Key::Escape);
+        hub.run_steps(2);
+        hub.get_by_label("More actions for DashCoffee").click();
+        hub.run_steps(2);
         hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
         hub.run_steps(2);
         assert!(
@@ -1038,6 +1048,9 @@ fn check_balance_now_says_why_it_waits_for_a_running_refresh() {
 
 /// Every `label` control is disabled and its tooltip explains the running refresh.
 fn assert_refresh_blocks(hub: &mut HubHarness, label: &str) {
+    let status_lines = hub
+        .query_all_by_label(token_copy::REFRESHING_TOOLTIP)
+        .count();
     assert!(
         hub.query_all_by_label(label)
             .all(|node| node.accesskit_node().is_disabled()),
@@ -1050,7 +1063,9 @@ fn assert_refresh_blocks(hub: &mut HubHarness, label: &str) {
     // Tooltips appear after a short delay; step a few frames past it.
     hub.run_steps(30);
     assert!(
-        hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some(),
+        hub.query_all_by_label(token_copy::REFRESHING_TOOLTIP)
+            .count()
+            > status_lines,
         "the disabled control explains why it is disabled"
     );
 }
@@ -1849,5 +1864,32 @@ fn the_filter_is_saved_when_its_box_loses_focus_not_while_typing() {
             "alp",
             "leaving the box writes the filter once"
         );
+    });
+}
+
+#[test]
+fn a_repeat_refresh_shows_refreshing_copy_after_an_absent_balance_becomes_zero() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        seed_signing_identity(&app_context, 0xA1);
+        seed_contract(
+            &app_context,
+            0xC1,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("TKN", false)],
+        );
+        let mut hub = mount_tokens_tab(&app_context);
+        assert!(hub.query_by_label(token_copy::FIRST_LOAD).is_some());
+        let arrival = balance_refreshes(&hub).pop().expect("arrival refresh");
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        assert!(hub.query_by_label("0 TKN").is_some());
+        hub.get_by_label(token_copy::REFRESH_LABEL).click();
+        hub.run_steps(2);
+        assert!(hub.query_by_label(token_copy::FIRST_LOAD).is_none());
+        assert!(hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some());
     });
 }

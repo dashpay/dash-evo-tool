@@ -130,10 +130,15 @@ pub fn render(
     } else {
         render_controls(ui, app_context, state, &rows);
         ui.add_space(Spacing::SM);
-        if state.first_load_shown(&rows, state.refreshing(app_context)) {
+        let refreshing = state.refreshing(app_context);
+        if refreshing {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new());
-                ui.label(FIRST_LOAD);
+                ui.label(if state.first_load_shown(&rows, refreshing) {
+                    FIRST_LOAD
+                } else {
+                    REFRESHING_TOOLTIP
+                });
             });
             ui.add_space(Spacing::SM);
         }

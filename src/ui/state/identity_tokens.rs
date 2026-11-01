@@ -30,7 +30,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use std::borrow::Borrow;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -165,6 +165,8 @@ pub enum RowStatus {
     None,
     /// The identity's balance of this token has not been synced yet.
     Checking,
+    /// A successful refresh or check found no balance in the snapshot.
+    NoBalanceFound,
     /// The last check that would have found a balance failed; none is known.
     CouldNotCheck,
     /// The identity has no signing key on this device.
@@ -283,6 +285,13 @@ impl RefreshFailure {
     }
 }
 
+/// The outcome of an explicit pair check, used only for status text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairCheckResult {
+    Succeeded,
+    Failed,
+}
+
 /// What the Tokens tab shows and waits on for the selected identity.
 #[derive(Default)]
 pub struct IdentityTokensState {
@@ -291,13 +300,11 @@ pub struct IdentityTokensState {
     rows_read_at: Option<Instant>,
     /// Tokens exist in the registry even when every row is dismissed.
     registry_has_tokens: bool,
-    /// Pairs whose last explicit check failed with no balance to show.
-    failed_checks: BTreeSet<IdentityTokenIdentifier>,
+    /// Outcomes of explicit checks; full refreshes use their timestamp instead.
+    pair_check_results: BTreeMap<IdentityTokenIdentifier, PairCheckResult>,
     /// The last full refresh failed, so every unknown balance could not be checked.
     full_refresh_failed: bool,
-    /// Pairs covered by a successful check, including balances absent upstream.
-    checked_pairs: BTreeSet<IdentityTokenIdentifier>,
-    refresh: PendingRequest<Vec<IdentityTokenIdentifier>>,
+    refresh: PendingRequest,
     pair_checks: PendingRequests<IdentityTokenIdentifier>,
     stop_tracking: PendingRequests<IdentityTokenIdentifier>,
     track_again: PendingRequest<Vec<IdentityTokenIdentifier>>,
@@ -342,7 +349,6 @@ impl IdentityTokensState {
         *self = Self {
             prefs: self.prefs.take(),
             prefs_dirty: self.prefs_dirty,
-            checked_pairs: std::mem::take(&mut self.checked_pairs),
             refresh: std::mem::take(&mut self.refresh),
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
@@ -432,7 +438,7 @@ impl IdentityTokensState {
     }
 
     fn read_rows(
-        &mut self,
+        &self,
         app_context: &AppContext,
         identity: &QualifiedIdentity,
     ) -> Result<(Vec<TokenRow>, bool), TaskError> {
@@ -441,9 +447,6 @@ impl IdentityTokensState {
         let registry_has_tokens = !registry.is_empty();
         let dismissed = app_context.untracked_token_balances()?;
         let balances = app_context.identity_token_balances()?;
-        // A dismissal or registry removal can come from another screen.
-        self.checked_pairs
-            .retain(|pair| registry.contains_key(&pair.token_id) && !dismissed.contains(pair));
         let mut rows = Vec::with_capacity(registry.len());
         for (token_id, token) in registry {
             let pair = IdentityTokenIdentifier {
@@ -453,10 +456,7 @@ impl IdentityTokensState {
             if dismissed.contains(&pair) {
                 continue;
             }
-            let balance = balances
-                .get(&pair)
-                .map(|record| record.balance)
-                .or_else(|| self.checked_pairs.contains(&pair).then_some(0));
+            let balance = balances.get(&pair).map(|record| record.balance);
             let config = &token.token_configuration;
             // Computed without the developer display override, so the admin
             // flags below answer the real permission question (Q3).
@@ -482,7 +482,8 @@ impl IdentityTokensState {
                 issued_by_me: issuer_id == identity_id,
                 has_admin_permission: actions.has_admin_permission(),
                 check_failed: balance.is_none()
-                    && (self.full_refresh_failed || self.failed_checks.contains(&pair)),
+                    && (self.full_refresh_failed
+                        || self.pair_check_results.get(&pair) == Some(&PairCheckResult::Failed)),
                 once_claim,
                 token: IdentityTokenMaybeBalanceWithActions {
                     token_id,
@@ -592,6 +593,26 @@ impl IdentityTokensState {
             && self.refresh_failure().is_none()
     }
 
+    /// Resolve status each frame so an in-flight refresh never uses cached status.
+    pub fn row_status(
+        &self,
+        app_context: &AppContext,
+        row: &TokenRow,
+        view_only: bool,
+    ) -> RowStatus {
+        let status = row_status(row, view_only);
+        if status == RowStatus::Checking
+            && !self.refreshing(app_context)
+            && !self.pair_checks.is_pending()
+            && (self.last_refreshed_at_ms.is_some()
+                || self.pair_check_results.get(&row.pair()) == Some(&PairCheckResult::Succeeded))
+        {
+            // TODO(platform-wallet): report explicit zero balances for tokens never held.
+            return RowStatus::NoBalanceFound;
+        }
+        status
+    }
+
     /// Cached data changed under a task of any screen: re-read the rows on
     /// the next frame when they may be affected. Token balances and the
     /// identities that own them both feed the rows.
@@ -661,10 +682,9 @@ impl IdentityTokensState {
     }
 
     fn dispatch_refresh(&mut self) -> AppAction {
-        self.refresh.dispatch_with(
-            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            self.rows.iter().map(TokenRow::pair).collect(),
-        )
+        self.refresh.dispatch(BackendTask::TokenTask(Box::new(
+            TokenTask::QueryMyTokenBalances,
+        )))
     }
 
     /// Check one pair's balance now; also tracks the pair again. Waits for the
@@ -682,7 +702,6 @@ impl IdentityTokensState {
     }
 
     fn dispatch_pair_check(&mut self, pair: IdentityTokenIdentifier) -> AppAction {
-        self.checked_pairs.remove(&pair);
         self.invalidate_rows();
         self.pair_checks.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::QueryIdentityTokenBalance(pair))),
@@ -692,7 +711,6 @@ impl IdentityTokensState {
 
     /// Stop tracking `pair` for this identity; its row leaves at once.
     pub fn stop_tracking_action(&mut self, pair: IdentityTokenIdentifier) -> AppAction {
-        self.checked_pairs.remove(&pair);
         self.rows = self
             .rows
             .iter()
@@ -739,9 +757,6 @@ impl IdentityTokensState {
     }
 
     fn dispatch_track_again(&mut self, pairs: Vec<IdentityTokenIdentifier>) -> AppAction {
-        for pair in &pairs {
-            self.checked_pairs.remove(pair);
-        }
         self.invalidate_rows();
         self.track_again.dispatch_with(
             BackendTask::TokenTask(Box::new(TokenTask::TrackTokenBalancesAgain(pairs.clone()))),
@@ -758,9 +773,8 @@ impl IdentityTokensState {
     ) -> bool {
         // Only the full refresh fetched every identity's balances; "track
         // again" refreshed the selected identity's watch set alone.
-        if let Some(pairs) = self.refresh.settle(context) {
+        if self.refresh.settle(context).is_some() {
             if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-                self.checked_pairs.extend(pairs);
                 self.note_full_refresh(now_ms);
             }
             self.invalidate_rows();
@@ -768,24 +782,28 @@ impl IdentityTokensState {
         }
         if let Some(pairs) = self.track_again.settle(context) {
             for pair in &pairs {
-                self.failed_checks.remove(pair);
+                self.pair_check_results.remove(pair);
             }
             if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-                self.checked_pairs.extend(pairs);
+                self.pair_check_results.extend(
+                    pairs
+                        .into_iter()
+                        .map(|pair| (pair, PairCheckResult::Succeeded)),
+                );
             }
             self.invalidate_rows();
             return true;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
-            self.failed_checks.remove(&pair);
+            self.pair_check_results.remove(&pair);
             if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-                self.checked_pairs.insert(pair);
+                self.pair_check_results
+                    .insert(pair, PairCheckResult::Succeeded);
             }
             self.invalidate_rows();
             return true;
         }
-        if let Some(pair) = self.stop_tracking.settle(context) {
-            self.checked_pairs.remove(&pair);
+        if self.stop_tracking.settle(context).is_some() {
             self.invalidate_rows();
             return true;
         }
@@ -821,7 +839,11 @@ impl IdentityTokensState {
                     error = ?error,
                     "Tracking token balances again for the Identity Hub failed"
                 );
-                self.failed_checks.extend(pairs);
+                self.pair_check_results.extend(
+                    pairs
+                        .into_iter()
+                        .map(|pair| (pair, PairCheckResult::Failed)),
+                );
             }
             self.invalidate_rows();
             // A local storage failure may come before the dismissals were
@@ -849,7 +871,8 @@ impl IdentityTokensState {
                     token = %pair.token_id,
                     "Checking one token balance for the Identity Hub failed"
                 );
-                self.failed_checks.insert(pair);
+                self.pair_check_results
+                    .insert(pair, PairCheckResult::Failed);
                 self.invalidate_rows();
             }
             self.swallow_next_error = true;
@@ -884,8 +907,7 @@ impl IdentityTokensState {
         std::mem::take(&mut self.swallow_next_error)
     }
 
-    /// Another screen's full refresh satisfies the arrival rule. Its captured
-    /// watch set is unknown here, so it establishes no pair coverage.
+    /// Another screen's full refresh satisfies the arrival rule.
     pub fn balances_refreshed_elsewhere(&mut self, now_ms: u64) {
         self.note_full_refresh(now_ms);
         self.invalidate_rows();
@@ -940,299 +962,72 @@ mod tests {
         }
     }
 
-    fn seed_token_contract(context: &AppContext, byte: u8) {
-        use crate::model::qualified_contract::InsertTokensToo;
-        use dash_sdk::dpp::data_contract::associated_token::{
-            token_configuration_convention::{
-                TokenConfigurationConvention, v0::TokenConfigurationConventionV0,
-            },
-            token_configuration_localization::{
-                TokenConfigurationLocalization, v0::TokenConfigurationLocalizationV0,
-            },
-        };
-        use dash_sdk::dpp::data_contract::{config::DataContractConfig, v1::DataContractV1};
-        use dash_sdk::dpp::version::PlatformVersion;
-        use dash_sdk::platform::DataContract;
-        let mut config = TokenConfigurationV0::default_most_restrictive();
-        config.conventions = TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
-            localizations: [(
-                "en".into(),
-                TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
-                    should_capitalize: true,
-                    singular_form: "TKN".into(),
-                    plural_form: "TKN".into(),
-                }),
-            )]
-            .into(),
-            decimals: 0,
-        });
-        let contract = DataContract::V1(DataContractV1 {
-            id: Identifier::from([byte; 32]),
-            version: 1,
-            owner_id: Identifier::from([9; 32]),
-            document_types: Default::default(),
-            config: DataContractConfig::default_for_version(PlatformVersion::latest()).unwrap(),
-            schema_defs: None,
-            groups: Default::default(),
-            tokens: [(0, TokenConfiguration::V0(config))].into(),
-            keywords: vec![],
-            created_at: None,
-            updated_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            created_at_epoch: None,
-            updated_at_epoch: None,
-            description: None,
-        });
-        context
-            .insert_contract_if_not_exists(&contract, None, InsertTokensToo::AllTokensShouldBeAdded)
-            .unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn external_refresh_does_not_cover_a_token_added_while_it_runs() {
+    async fn a_successful_pair_check_changes_only_its_status_without_a_full_refresh() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let identity = crate::context::test_support::bare_user_identity(
-            Identifier::from([1; 32]),
-            Network::Testnet,
-        );
-        seed_token_contract(&context, 20);
         let mut state = IdentityTokensState::default();
-        let original_pair = state.rows(&context, &identity)[0].pair();
-        // My Tokens captured its watch set before this new token was imported.
-        seed_token_contract(&context, 21);
-        state.cached_data_changed(crate::backend_task::CacheDomain::Tokens);
-        assert_eq!(state.rows(&context, &identity).len(), 2);
-        state.balances_refreshed_elsewhere(1);
+        let token = row("T", None);
+        let other = row("Other", None);
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::Checking
+        );
+        let request = dispatched(state.dispatch_pair_check(token.pair()));
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::Checking
+        );
+        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
+        assert_eq!(state.last_refreshed_at_ms(), None);
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::NoBalanceFound
+        );
+        assert_eq!(
+            state.row_status(&context, &other, false),
+            RowStatus::Checking
+        );
+        assert_eq!(token.balance(), None);
+        assert!(token.balance_record().is_none());
 
-        let rows = state.rows(&context, &identity);
-        let added = rows.iter().find(|row| row.pair() != original_pair).unwrap();
-        assert_eq!(added.balance(), None);
-        assert_eq!(row_status(added, false), RowStatus::Checking);
-        assert!(row_is_listed(
-            added,
-            &IdentityTokensViewPrefs {
-                hide_zero_balances: true,
-                ..Default::default()
-            },
-            false,
-        ));
-        let request = dispatched(state.dispatch_pair_check(added.pair()));
+        let request = dispatched(state.dispatch_pair_check(token.pair()));
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::Checking
+        );
         state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 2);
         assert_eq!(
-            state
-                .rows(&context, &identity)
-                .iter()
-                .find(|row| row.pair() == added.pair())
-                .unwrap()
-                .balance(),
-            Some(0)
+            state.row_status(&context, &token, false),
+            RowStatus::NoBalanceFound
+        );
+        let _ = state.dispatch_track_again(vec![token.pair()]);
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::Checking
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn failed_retracking_never_turns_a_previous_holding_into_zero() {
+    async fn a_successful_external_refresh_changes_absent_status_but_failure_still_wins() {
         let dir = tempfile::tempdir().unwrap();
         let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let identity = crate::context::test_support::bare_user_identity(
-            Identifier::from([1; 32]),
-            Network::Testnet,
-        );
-        seed_token_contract(&context, 20);
         let mut state = IdentityTokensState::default();
-        let pair = state.rows(&context, &identity)[0].pair();
-        let backend = context.wallet_backend().unwrap();
-        backend
-            .register_identity_tokens(pair.identity_id, vec![pair.token_id])
-            .await;
-        backend.apply_known_token_balance(pair.identity_id, pair.token_id, 42);
-        let request = dispatched(state.dispatch_refresh());
-        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
-        assert_eq!(state.rows(&context, &identity)[0].balance(), Some(42));
-
-        let request = dispatched(state.stop_tracking_action(pair));
-        let result = context
-            .stop_tracking_token_balance(pair, context.frame_loop_sender())
-            .await
-            .unwrap();
-        state.record_result(&request, &result, 2);
-        assert!(state.rows(&context, &identity).is_empty());
-        assert!(
-            !context
-                .identity_token_balances()
-                .unwrap()
-                .contains_key(&pair)
+        let mut token = row("T", None);
+        state.balances_refreshed_elsewhere(1);
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::NoBalanceFound
         );
-
-        let request = dispatched(state.dispatch_track_again(vec![pair]));
-        // The backend clears dismissals before the network read can fail.
-        context.clear_untracked_token_balance(pair).unwrap();
-        state.record_error(&request, &TaskError::TokenBalanceSyncStillRunning);
-        let rows = state.rows(&context, &identity);
-        assert_eq!(rows[0].balance(), None);
-        assert!(rows[0].check_failed);
-        assert_eq!(row_status(&rows[0], false), RowStatus::CouldNotCheck);
-        assert!(row_is_listed(
-            &rows[0],
-            &IdentityTokensViewPrefs {
-                hide_zero_balances: true,
-                ..Default::default()
-            },
-            false,
-        ));
-        let request = dispatched(state.dispatch_pair_check(pair));
-        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 3);
-        assert_eq!(state.rows(&context, &identity)[0].balance(), Some(0));
-        assert!(!state.rows(&context, &identity)[0].check_failed);
-    }
-
-    #[test]
-    fn tracking_actions_discard_previous_pair_coverage() {
-        let pair = row("T", None).pair();
-        let other = row("Other", None).pair();
-        for action in 0..3 {
-            let mut state = IdentityTokensState {
-                checked_pairs: [pair, other].into(),
-                ..Default::default()
-            };
-            let _ = match action {
-                0 => state.stop_tracking_action(pair),
-                1 => state.dispatch_track_again(vec![pair]),
-                _ => state.dispatch_pair_check(pair),
-            };
-            assert!(
-                !state.checked_pairs.contains(&pair),
-                "tracking action {action}"
-            );
-            assert!(state.checked_pairs.contains(&other));
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cache_changes_prune_dismissed_coverage_after_switching_identity() {
-        use crate::backend_task::CacheDomain;
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let identity = crate::context::test_support::bare_user_identity(
-            Identifier::from([1; 32]),
-            Network::Testnet,
+        let _ = state.dispatch_refresh();
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::Checking
         );
-        let other = crate::context::test_support::bare_user_identity(
-            Identifier::from([2; 32]),
-            Network::Testnet,
-        );
-        seed_token_contract(&context, 20);
-        for domain in [
-            CacheDomain::Tokens,
-            CacheDomain::Identities,
-            CacheDomain::All,
-        ] {
-            let mut state = IdentityTokensState::default();
-            let pair = state.rows(&context, &identity)[0].pair();
-            let request = dispatched(state.dispatch_refresh());
-            state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
-            // Cache notifications can be delivered after their success result.
-            state.cached_data_changed(domain);
-            assert_eq!(state.rows(&context, &identity)[0].balance(), Some(0));
-            assert_eq!(state.rows(&context, &other)[0].balance(), None);
-
-            context.mark_token_balance_untracked(pair).unwrap();
-            state.cached_data_changed(domain);
-            assert_eq!(state.rows(&context, &other)[0].balance(), None);
-            context.clear_untracked_token_balance(pair).unwrap();
-            assert_eq!(state.rows(&context, &identity)[0].balance(), None);
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn successful_refreshes_show_absent_balances_as_zero_only_for_covered_pairs() {
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
-        let identity = crate::context::test_support::bare_user_identity(
-            Identifier::from([1; 32]),
-            Network::Testnet,
-        );
-        seed_token_contract(&context, 20);
-        let mut state = IdentityTokensState::default();
-        let pair = state.rows(&context, &identity)[0].pair();
-        assert_eq!(state.rows(&context, &identity)[0].balance(), None);
-        let request = dispatched(state.dispatch_refresh());
-        // A token added after dispatch is not covered by that refresh.
-        seed_token_contract(&context, 21);
-        state.invalidate_rows();
-        assert_eq!(state.rows(&context, &identity).len(), 2);
-        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
-        let rows = state.rows(&context, &identity);
-        let checked = rows.iter().find(|row| row.pair() == pair).unwrap();
-        assert_eq!(checked.balance(), Some(0));
-        assert_eq!(row_status(checked, false), RowStatus::None);
-        let prefs = IdentityTokensViewPrefs {
-            hide_zero_balances: true,
-            ..Default::default()
-        };
-        assert!(!row_is_listed(checked, &prefs, false));
-        let unchecked = rows.iter().find(|row| row.pair() != pair).unwrap();
-        assert_eq!(unchecked.balance(), None);
-        assert!(row_is_listed(unchecked, &prefs, false));
-        let unchecked_pair = unchecked.pair();
-
-        let request = dispatched(state.dispatch_pair_check(unchecked_pair));
-        state.record_error(&request, &TaskError::NoIdentitiesFound);
-        let rows = state.rows(&context, &identity);
-        let failed = rows
-            .iter()
-            .find(|row| row.pair() == unchecked_pair)
-            .unwrap();
-        assert_eq!(failed.balance(), None);
-        assert_eq!(row_status(failed, false), RowStatus::CouldNotCheck);
-        let request = dispatched(state.dispatch_pair_check(unchecked_pair));
-        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 2);
-        assert!(
-            state
-                .rows(&context, &identity)
-                .iter()
-                .all(|row| row.balance() == Some(0))
-        );
-
-        seed_token_contract(&context, 22);
-        state.invalidate_rows();
-        let other = crate::context::test_support::bare_user_identity(
-            Identifier::from([2; 32]),
-            Network::Testnet,
-        );
-        assert!(
-            state
-                .rows(&context, &other)
-                .iter()
-                .all(|row| row.balance().is_none())
-        );
-        let request = dispatched(state.dispatch_refresh());
-        state.record_error(&request, &TaskError::NoIdentitiesFound);
-        assert!(
-            state
-                .rows(&context, &other)
-                .iter()
-                .all(|row| row.balance().is_none() && row.check_failed)
-        );
-        let pairs: Vec<_> = state
-            .rows(&context, &other)
-            .iter()
-            .take(2)
-            .map(TokenRow::pair)
-            .collect();
-        let request = dispatched(state.dispatch_track_again(pairs.clone()));
-        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 3);
-        for row in state.rows(&context, &other).iter() {
-            assert_eq!(row.balance(), pairs.contains(&row.pair()).then_some(0));
-        }
-        state.balances_refreshed_elsewhere(4);
-        for row in state.rows(&context, &other).iter() {
-            assert_eq!(row.balance(), pairs.contains(&row.pair()).then_some(0));
-        }
-        assert!(
-            context.identity_token_balances().unwrap().is_empty(),
-            "the snapshot stays unchanged"
+        token.check_failed = true;
+        assert_eq!(
+            state.row_status(&context, &token, false),
+            RowStatus::CouldNotCheck
         );
     }
 
@@ -1565,12 +1360,18 @@ mod tests {
         let pair = row("T", None).pair();
         let context = dispatched(state.dispatch_pair_check(pair));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
-        assert!(state.failed_checks.contains(&pair));
+        assert_eq!(
+            state.pair_check_results.get(&pair),
+            Some(&PairCheckResult::Failed)
+        );
         assert!(state.take_swallowed_error());
 
         let context = dispatched(state.dispatch_pair_check(pair));
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1));
-        assert!(!state.failed_checks.contains(&pair));
+        assert_eq!(
+            state.pair_check_results.get(&pair),
+            Some(&PairCheckResult::Succeeded)
+        );
     }
 
     #[test]
@@ -1713,18 +1514,32 @@ mod tests {
         assert!(state.take_swallowed_error());
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
-        assert!(pairs.iter().all(|pair| state.failed_checks.contains(pair)));
+        assert!(
+            pairs
+                .iter()
+                .all(|pair| state.pair_check_results.get(pair) == Some(&PairCheckResult::Failed))
+        );
 
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 3));
-        assert!(state.failed_checks.is_empty());
+        assert!(
+            state
+                .pair_check_results
+                .values()
+                .all(|result| *result != PairCheckResult::Failed)
+        );
 
         let context = dispatched(state.dispatch_track_again(pairs));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
         state.reset_for_identity_change();
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
-        assert!(state.failed_checks.is_empty());
+        assert!(
+            state
+                .pair_check_results
+                .values()
+                .all(|result| *result != PairCheckResult::Failed)
+        );
     }
 
     /// A "track again" that failed reading or writing local storage may have
@@ -1749,9 +1564,18 @@ mod tests {
             );
             assert!(!state.full_refresh_failed);
             assert_eq!(state.refresh_failure(), None);
-            assert!(pairs.iter().all(|pair| state.failed_checks.contains(pair)));
+            assert!(
+                pairs.iter().all(
+                    |pair| state.pair_check_results.get(pair) == Some(&PairCheckResult::Failed)
+                )
+            );
             state.reset_for_identity_change();
-            assert!(state.failed_checks.is_empty());
+            assert!(
+                state
+                    .pair_check_results
+                    .values()
+                    .all(|result| *result != PairCheckResult::Failed)
+            );
         }
     }
 

@@ -21,7 +21,7 @@ use crate::ui::components::pill::accent_pill;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::identity_tokens::{
     IdentityTokensState, RefreshFailure, RowStatus, TokenRow, filter_shown, row_is_listed,
-    row_status, sort_rows,
+    sort_rows,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -386,7 +386,7 @@ fn render_row(
 ) -> AppAction {
     let mut action = AppAction::None;
     let dark = ui.visuals().dark_mode;
-    let status = row_status(row, context.view_only);
+    let status = state.row_status(app_context, row, context.view_only);
     let wide = ui.available_width() >= WIDE_ROW_MIN_WIDTH;
     // The whole row opens the detail page; its own buttons and menu keep
     // their clicks, while plain text lets the click through.
@@ -509,6 +509,13 @@ pub(super) fn render_row_status(
         RowStatus::None => {}
         RowStatus::Checking => {
             ui.label(RichText::new(STATUS_CHECKING).small().color(secondary));
+        }
+        RowStatus::NoBalanceFound => {
+            ui.label(
+                RichText::new(STATUS_NO_BALANCE_FOUND)
+                    .small()
+                    .color(secondary),
+            );
         }
         RowStatus::CouldNotCheck => {
             let refreshing = state.refreshing(app_context);

@@ -43,6 +43,7 @@ pub const TRACK_AGAIN_LABEL: &str = "Track tokens again";
 // Row badges and status lines.
 pub const ISSUED_BY_YOU_BADGE: &str = "Issued by you";
 pub const CANT_BE_SENT_BADGE: &str = "Can't be sent";
+pub const STATUS_NO_BALANCE_FOUND: &str = "No balance found.";
 pub const STATUS_CHECKING: &str = "Checking balance…";
 pub const STATUS_COULD_NOT_CHECK: &str = "Couldn't check this balance.";
 pub const STATUS_REWARDS: &str = "Rewards may be waiting for you.";
@@ -177,6 +178,7 @@ mod tests {
         HIDE_ZERO_TOOLTIP,
         OPEN_DETAILS_TOOLTIP,
         STATUS_COULD_NOT_CHECK,
+        STATUS_NO_BALANCE_FOUND,
         STATUS_REWARDS,
         STATUS_ADD_KEY,
         DISABLED_NOT_TRANSFERABLE,

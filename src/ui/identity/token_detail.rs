@@ -13,7 +13,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::identity_name::shorten_id;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::state::identity_tokens::{IdentityTokensState, TokenRow, row_status};
+use crate::ui::state::identity_tokens::{IdentityTokensState, TokenRow};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui::{RichText, Ui};
@@ -62,7 +62,7 @@ pub fn render(
                             .monospace(),
                     );
                 }
-                let status = row_status(row, context.view_only);
+                let status = state.row_status(app_context, row, context.view_only);
                 action |= render_row_status(ui, app_context, row, &status, &context, state);
                 ui.add_space(Spacing::SM);
                 ui.horizontal_wrapped(|ui| {

@@ -7,6 +7,8 @@ action (mint, burn, freeze/unfreeze, destroy frozen funds, pause/resume, set
 price, update config, token creator, distributions) stays in the Tokens screen
 untouched.
 
+T1b’s `0 TKN` for a token never held waits for upstream to report zero; until then, a successful check shows “No balance found.”
+
 Companion wireframes: [`wireframes.html`](wireframes.html) (T0–T9, light and
 dark). Status: **implemented** (`src/ui/identity/tokens_tab.rs`,
 `token_detail.rs`, `token_copy.rs`, `src/ui/state/identity_tokens.rs`); where

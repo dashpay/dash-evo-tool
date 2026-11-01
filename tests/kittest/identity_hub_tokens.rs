@@ -1868,7 +1868,7 @@ fn the_filter_is_saved_when_its_box_loses_focus_not_while_typing() {
 }
 
 #[test]
-fn a_repeat_refresh_shows_refreshing_copy_after_an_absent_balance_becomes_zero() {
+fn absent_balance_after_success_shows_no_balance_found_and_no_send() {
     with_isolated_data_dir(|| {
         let (_runtime, app_context) = fresh_app_context();
         seed_signing_identity(&app_context, 0xA1);
@@ -1886,10 +1886,81 @@ fn a_repeat_refresh_shows_refreshing_copy_after_an_absent_balance_becomes_zero()
             dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
         );
         hub.run_steps(2);
-        assert!(hub.query_by_label("0 TKN").is_some());
+        assert!(hub.query_by_label("No balance found.").is_some());
+        assert!(hub.query_by_label("0 TKN").is_none());
+        assert!(
+            hub.query_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
+                .is_none()
+        );
         hub.get_by_label(token_copy::REFRESH_LABEL).click();
         hub.run_steps(2);
         assert!(hub.query_by_label(token_copy::FIRST_LOAD).is_none());
         assert!(hub.query_by_label(token_copy::REFRESHING_TOOLTIP).is_some());
     });
+}
+
+fn balance_after_refresh(balance: Option<u64>, checking: bool, hide_zero: bool) {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xA1);
+        let tokens = seed_contract(
+            &app_context,
+            0xC1,
+            Identifier::from([0xEE; 32]),
+            vec![token_config("TKN", false)],
+        );
+        if let Some(balance) = balance {
+            set_balance(&app_context, identity, tokens[0], balance);
+        }
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub).pop().expect("arrival refresh");
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+        if checking {
+            hub.get_by_label(token_copy::REFRESH_LABEL).click();
+            hub.run_steps(2);
+        }
+        if balance == Some(0) {
+            assert!(hub.query_by_label("0 TKN").is_some());
+        }
+        if hide_zero {
+            hub.get_by_label(token_copy::HIDE_ZERO_LABEL).click();
+            hub.run_steps(2);
+        }
+        match balance {
+            None => {
+                let status = if checking {
+                    token_copy::STATUS_CHECKING
+                } else {
+                    "No balance found."
+                };
+                assert!(hub.query_by_label(status).is_some());
+                assert!(hub.query_by_label("0 TKN").is_none());
+                assert!(
+                    hub.query_by_role_and_label(Role::Button, token_copy::SEND_LABEL)
+                        .is_none()
+                );
+            }
+            Some(0) => assert_eq!(hub.query_by_label("0 TKN").is_some(), !hide_zero),
+            _ => unreachable!(),
+        }
+    });
+}
+
+#[test]
+fn absent_balance_during_repeat_refresh_keeps_checking() {
+    balance_after_refresh(None, true, false);
+}
+
+#[test]
+fn absent_balance_after_success_is_kept_by_hide_zero() {
+    balance_after_refresh(None, false, true);
+}
+
+#[test]
+fn reported_zero_is_shown_and_hidden_by_hide_zero() {
+    balance_after_refresh(Some(0), false, true);
 }

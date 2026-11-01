@@ -800,9 +800,10 @@ impl IdentityTokensState {
             error,
             TaskError::TokenBalanceRefreshInProgress | TaskError::MasternodeListSyncPending
         );
-        if let Some(pairs) = self.track_again.settle(context) {
+        if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
-                self.track_again_owed = Some(pairs);
+                pairs.retain(|pair| self.owner.is_some_and(|(_, id)| id == pair.identity_id));
+                self.track_again_owed = (!pairs.is_empty()).then_some(pairs);
             } else {
                 // Only the selected identity's pairs were refreshed: mark
                 // those, never every identity's unknown balances.
@@ -1082,6 +1083,45 @@ mod tests {
         state.balances_refreshed_elsewhere(1);
         let _ = state.dispatch_refresh();
         assert!(!state.first_load_shown(&rows, true));
+    }
+
+    #[test]
+    fn a_late_track_again_refusal_never_retries_another_identity() {
+        for error in [
+            TaskError::TokenBalanceRefreshInProgress,
+            TaskError::MasternodeListSyncPending,
+        ] {
+            let pair = row("T", None).pair();
+            let mut state = IdentityTokensState {
+                owner: Some((Network::Testnet, pair.identity_id)),
+                ..Default::default()
+            };
+            state.balances_refreshed_elsewhere(1_000);
+            let request = dispatched(state.dispatch_track_again(vec![pair]));
+            state.reset_for_identity_change();
+            state.owner = Some((Network::Testnet, Identifier::from([2; 32])));
+            state.record_error(&request, &error);
+            assert!(!state.track_again.is_pending());
+            assert!(state.take_swallowed_error());
+            assert_eq!(state.track_again_owed, None);
+            assert_eq!(state.arrival(1_001, true, false), Arrival::NotDue);
+        }
+    }
+
+    #[test]
+    fn a_track_again_refusal_defers_only_pairs_of_the_current_owner() {
+        let pair = row("T", None).pair();
+        let other = IdentityTokenIdentifier {
+            identity_id: Identifier::from([2; 32]),
+            ..pair
+        };
+        let mut state = IdentityTokensState {
+            owner: Some((Network::Testnet, pair.identity_id)),
+            ..Default::default()
+        };
+        let request = dispatched(state.dispatch_track_again(vec![pair, other]));
+        state.record_error(&request, &TaskError::TokenBalanceRefreshInProgress);
+        assert_eq!(state.track_again_owed, Some(vec![pair]));
     }
 
     #[test]
@@ -1444,7 +1484,10 @@ mod tests {
     /// the same pairs, once the refresh ends.
     #[test]
     fn a_refused_track_again_is_sent_again_with_its_pairs() {
-        let mut state = IdentityTokensState::default();
+        let mut state = IdentityTokensState {
+            owner: Some((Network::Testnet, row("A", None).pair().identity_id)),
+            ..Default::default()
+        };
         state.balances_refreshed_elsewhere(1_000);
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
@@ -1555,7 +1598,10 @@ mod tests {
     /// identity drops them instead of retrying them for the wrong identity.
     #[test]
     fn an_identity_switch_drops_an_owed_track_again() {
-        let mut state = IdentityTokensState::default();
+        let mut state = IdentityTokensState {
+            owner: Some((Network::Testnet, row("A", None).pair().identity_id)),
+            ..Default::default()
+        };
         state.balances_refreshed_elsewhere(1_000);
         let context = dispatched(state.dispatch_track_again(vec![row("A", None).pair()]));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);

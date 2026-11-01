@@ -295,7 +295,9 @@ pub struct IdentityTokensState {
     failed_checks: BTreeSet<IdentityTokenIdentifier>,
     /// The last full refresh failed, so every unknown balance could not be checked.
     full_refresh_failed: bool,
-    refresh: PendingRequest,
+    /// Pairs covered by a successful check, including balances absent upstream.
+    checked_pairs: BTreeSet<IdentityTokenIdentifier>,
+    refresh: PendingRequest<Vec<IdentityTokenIdentifier>>,
     pair_checks: PendingRequests<IdentityTokenIdentifier>,
     stop_tracking: PendingRequests<IdentityTokenIdentifier>,
     track_again: PendingRequest<Vec<IdentityTokenIdentifier>>,
@@ -340,6 +342,7 @@ impl IdentityTokensState {
         *self = Self {
             prefs: self.prefs.take(),
             prefs_dirty: self.prefs_dirty,
+            checked_pairs: std::mem::take(&mut self.checked_pairs),
             refresh: std::mem::take(&mut self.refresh),
             pair_checks: std::mem::take(&mut self.pair_checks),
             stop_tracking: std::mem::take(&mut self.stop_tracking),
@@ -447,7 +450,10 @@ impl IdentityTokensState {
             if dismissed.contains(&pair) {
                 continue;
             }
-            let balance = balances.get(&pair).map(|record| record.balance);
+            let balance = balances
+                .get(&pair)
+                .map(|record| record.balance)
+                .or_else(|| self.checked_pairs.contains(&pair).then_some(0));
             let config = &token.token_configuration;
             // Computed without the developer display override, so the admin
             // flags below answer the real permission question (Q3).
@@ -651,9 +657,10 @@ impl IdentityTokensState {
     }
 
     fn dispatch_refresh(&mut self) -> AppAction {
-        self.refresh.dispatch(BackendTask::TokenTask(Box::new(
-            TokenTask::QueryMyTokenBalances,
-        )))
+        self.refresh.dispatch_with(
+            BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            self.rows.iter().map(TokenRow::pair).collect(),
+        )
     }
 
     /// Check one pair's balance now; also tracks the pair again. Waits for the
@@ -741,8 +748,9 @@ impl IdentityTokensState {
     ) -> bool {
         // Only the full refresh fetched every identity's balances; "track
         // again" refreshed the selected identity's watch set alone.
-        if self.refresh.settle(context).is_some() {
+        if let Some(pairs) = self.refresh.settle(context) {
             if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+                self.checked_pairs.extend(pairs);
                 self.note_full_refresh(now_ms);
             }
             self.invalidate_rows();
@@ -752,11 +760,17 @@ impl IdentityTokensState {
             for pair in &pairs {
                 self.failed_checks.remove(pair);
             }
+            if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+                self.checked_pairs.extend(pairs);
+            }
             self.invalidate_rows();
             return true;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
             self.failed_checks.remove(&pair);
+            if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+                self.checked_pairs.insert(pair);
+            }
             self.invalidate_rows();
             return true;
         }
@@ -861,6 +875,8 @@ impl IdentityTokensState {
     /// Another screen's refresh fetched every balance just now: as fresh as
     /// one of this tab's own, so the arrival rule is satisfied too.
     pub fn balances_refreshed_elsewhere(&mut self, now_ms: u64) {
+        self.checked_pairs
+            .extend(self.rows.iter().map(TokenRow::pair));
         self.note_full_refresh(now_ms);
         self.invalidate_rows();
     }
@@ -912,6 +928,149 @@ mod tests {
             AppAction::BackendTaskWithContext { context, .. } => context,
             other => panic!("expected a dispatch with its own context, got {other:?}"),
         }
+    }
+
+    fn seed_token_contract(context: &AppContext, byte: u8) {
+        use crate::model::qualified_contract::InsertTokensToo;
+        use dash_sdk::dpp::data_contract::associated_token::{
+            token_configuration_convention::{
+                TokenConfigurationConvention, v0::TokenConfigurationConventionV0,
+            },
+            token_configuration_localization::{
+                TokenConfigurationLocalization, v0::TokenConfigurationLocalizationV0,
+            },
+        };
+        use dash_sdk::dpp::data_contract::{config::DataContractConfig, v1::DataContractV1};
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::DataContract;
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config.conventions = TokenConfigurationConvention::V0(TokenConfigurationConventionV0 {
+            localizations: [(
+                "en".into(),
+                TokenConfigurationLocalization::V0(TokenConfigurationLocalizationV0 {
+                    should_capitalize: true,
+                    singular_form: "TKN".into(),
+                    plural_form: "TKN".into(),
+                }),
+            )]
+            .into(),
+            decimals: 0,
+        });
+        let contract = DataContract::V1(DataContractV1 {
+            id: Identifier::from([byte; 32]),
+            version: 1,
+            owner_id: Identifier::from([9; 32]),
+            document_types: Default::default(),
+            config: DataContractConfig::default_for_version(PlatformVersion::latest()).unwrap(),
+            schema_defs: None,
+            groups: Default::default(),
+            tokens: [(0, TokenConfiguration::V0(config))].into(),
+            keywords: vec![],
+            created_at: None,
+            updated_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            created_at_epoch: None,
+            updated_at_epoch: None,
+            description: None,
+        });
+        context
+            .insert_contract_if_not_exists(&contract, None, InsertTokensToo::AllTokensShouldBeAdded)
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn successful_refreshes_show_absent_balances_as_zero_only_for_covered_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::wired_test_app_context(dir.path()).await;
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([1; 32]),
+            Network::Testnet,
+        );
+        seed_token_contract(&context, 20);
+        let mut state = IdentityTokensState::default();
+        let pair = state.rows(&context, &identity)[0].pair();
+        assert_eq!(state.rows(&context, &identity)[0].balance(), None);
+        let request = dispatched(state.dispatch_refresh());
+        // A token added after dispatch is not covered by that refresh.
+        seed_token_contract(&context, 21);
+        state.invalidate_rows();
+        assert_eq!(state.rows(&context, &identity).len(), 2);
+        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
+        let rows = state.rows(&context, &identity);
+        let checked = rows.iter().find(|row| row.pair() == pair).unwrap();
+        assert_eq!(checked.balance(), Some(0));
+        assert_eq!(row_status(checked, false), RowStatus::None);
+        let prefs = IdentityTokensViewPrefs {
+            hide_zero_balances: true,
+            ..Default::default()
+        };
+        assert!(!row_is_listed(checked, &prefs, false));
+        let unchecked = rows.iter().find(|row| row.pair() != pair).unwrap();
+        assert_eq!(unchecked.balance(), None);
+        assert!(row_is_listed(unchecked, &prefs, false));
+        let unchecked_pair = unchecked.pair();
+
+        let request = dispatched(state.dispatch_pair_check(unchecked_pair));
+        state.record_error(&request, &TaskError::NoIdentitiesFound);
+        let rows = state.rows(&context, &identity);
+        let failed = rows
+            .iter()
+            .find(|row| row.pair() == unchecked_pair)
+            .unwrap();
+        assert_eq!(failed.balance(), None);
+        assert_eq!(row_status(failed, false), RowStatus::CouldNotCheck);
+        let request = dispatched(state.dispatch_pair_check(unchecked_pair));
+        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 2);
+        assert!(
+            state
+                .rows(&context, &identity)
+                .iter()
+                .all(|row| row.balance() == Some(0))
+        );
+
+        seed_token_contract(&context, 22);
+        state.invalidate_rows();
+        let other = crate::context::test_support::bare_user_identity(
+            Identifier::from([2; 32]),
+            Network::Testnet,
+        );
+        assert!(
+            state
+                .rows(&context, &other)
+                .iter()
+                .all(|row| row.balance().is_none())
+        );
+        let request = dispatched(state.dispatch_refresh());
+        state.record_error(&request, &TaskError::NoIdentitiesFound);
+        assert!(
+            state
+                .rows(&context, &other)
+                .iter()
+                .all(|row| row.balance().is_none() && row.check_failed)
+        );
+        let pairs: Vec<_> = state
+            .rows(&context, &other)
+            .iter()
+            .take(2)
+            .map(TokenRow::pair)
+            .collect();
+        let request = dispatched(state.dispatch_track_again(pairs.clone()));
+        state.record_result(&request, &BackendTaskSuccessResult::FetchedTokenBalances, 3);
+        for row in state.rows(&context, &other).iter() {
+            assert_eq!(row.balance(), pairs.contains(&row.pair()).then_some(0));
+        }
+        state.balances_refreshed_elsewhere(4);
+        assert!(
+            state
+                .rows(&context, &other)
+                .iter()
+                .all(|row| row.balance() == Some(0))
+        );
+        assert!(
+            context.identity_token_balances().unwrap().is_empty(),
+            "the snapshot stays unchanged"
+        );
     }
 
     #[test]

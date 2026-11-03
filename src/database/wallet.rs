@@ -566,7 +566,7 @@ mod tests {
     }
 
     fn create_test_master_epk_bytes(network: Network) -> Vec<u8> {
-        let seed = [7u8; 64];
+        let seed = crate::test_support::keys::seed();
         let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },

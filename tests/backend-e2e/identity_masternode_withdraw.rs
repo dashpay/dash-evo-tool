@@ -307,6 +307,7 @@ async fn test_mn018_load_with_both_keys() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_mn020_load_wrong_key_rejected() {
+    let secret_11 = dash_evo_tool::test_support::keys::secret_bytes();
     let pro_tx_hash = required_mn_env(ENV_PROTX_HASH);
     let ctx = ctx().await;
 
@@ -314,7 +315,7 @@ async fn test_mn020_load_wrong_key_rejected() {
     // Capture the actual WIF value BEFORE moving it into the task so we can
     // check for key-material leakage in TC-MN-061 below.
     let wrong_key_wif = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
-        &[0x11u8; 32],
+        &secret_11,
         dash_sdk::dpp::dashcore::Network::Testnet,
     )
     .expect("valid private key")

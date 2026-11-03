@@ -100,6 +100,7 @@ fn open_key_info(harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app
 /// KeyInfoScreen re-reads stored keys without resetting an unrelated form.
 #[test]
 fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
+    let secret_22 = dash_evo_tool::test_support::keys::secret_bytes();
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -140,7 +141,7 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
                 (MAIN, restored.id()),
                 (
                     QualifiedIdentityPublicKey::from(restored.clone()),
-                    [0x22; 32],
+                    secret_22,
                 ),
             )
             .expect("the restored slot is free");

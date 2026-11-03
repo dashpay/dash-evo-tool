@@ -1496,6 +1496,7 @@ mod tests {
         use dash_sdk::dpp::identity::Identity;
         use dash_sdk::dpp::version::PlatformVersion;
         use dash_sdk::platform::{Identifier, IdentityPublicKey};
+        let secret_a0 = crate::test_support::keys::secret_bytes();
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let data_dir = temp_dir.path().to_path_buf();
@@ -1530,7 +1531,7 @@ mod tests {
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.id()),
             (
                 QualifiedIdentityPublicKey::from(owner),
-                PrivateKeyData::Clear([0xA0; 32]),
+                PrivateKeyData::Clear(secret_a0),
             ),
         );
         let identity =

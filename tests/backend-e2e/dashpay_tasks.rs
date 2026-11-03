@@ -19,9 +19,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::{
-    ContactInfoUpdate, ProfileSnapshot, UnreadableContactInfoPolicy,
-};
+use dash_evo_tool::model::dashpay::{ContactInfoUpdate, ProfileSnapshot};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
@@ -700,7 +698,6 @@ async fn step_update_contact_info(
             Some("Test Nickname".into()),
             Some("E2E note".into()),
             false,
-            vec![0],
         ),
     }));
 
@@ -712,6 +709,7 @@ async fn step_update_contact_info(
         BackendTaskSuccessResult::DashPayContactInfoUpdated {
             identity,
             contact_id: id,
+            ..
         } => {
             assert_eq!(identity, identity_b_id, "update should belong to B");
             assert_eq!(
@@ -1113,7 +1111,6 @@ async fn tc_043_reject_contact_request() {
     let reject_task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
         identity: qi_c,
         request_id,
-        unreadable: UnreadableContactInfoPolicy::Abort,
     }));
     let reject_result = run_task(&ctx.app_context, reject_task)
         .await

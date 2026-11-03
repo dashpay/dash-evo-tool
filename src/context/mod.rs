@@ -1,5 +1,6 @@
 pub mod connection_status;
 mod contact_info_writes;
+pub(crate) use contact_info_writes::ContactInfoWrites;
 mod contested_names_db;
 mod contract_token_db;
 mod dapi_addresses;

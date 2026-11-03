@@ -1,15 +1,13 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::{AcceptedAccounts, ContactInfoField, ContactInfoUpdate};
+use crate::model::dashpay::{ContactDetails, ContactInfoField, ContactInfoUpdate};
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::Component;
-use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -65,10 +63,18 @@ pub struct ContactDetailsScreen {
     edit_nickname: String,
     edit_note: String,
     edit_hidden: bool,
+    /// The details the editor opened with, so a save replaces only the
+    /// fields the user changed.
+    edit_opened: ContactDetails,
     loading: bool,
+    /// The details read is running; editing waits for it so the editor opens
+    /// from the published details rather than this device's copy.
+    details_loading: bool,
+    /// `contact_info`'s nickname, note and hidden flag came from the details
+    /// read, so a reread of this device's copy keeps them.
+    details_read: bool,
     show_info_popup: bool,
     needs_backend_fetch: bool,
-    overwrite_dialog: Option<ConfirmationDialog>,
     pending_update: Option<ContactInfoUpdate>,
 }
 
@@ -88,19 +94,23 @@ impl ContactDetailsScreen {
             edit_nickname: String::new(),
             edit_note: String::new(),
             edit_hidden: false,
+            edit_opened: ContactDetails::default(),
             loading: false,
+            details_loading: false,
+            details_read: false,
             show_info_popup: false,
             needs_backend_fetch: true,
-            overwrite_dialog: None,
             pending_update: None,
         };
         screen.load_from_database();
         screen
     }
 
-    /// Initialise `contact_info` from local-only data (private notes / hidden flag).
-    /// Public profile fields (username, display_name, avatar, bio) are populated
-    /// asynchronously by `FetchContactProfile` — see `display_task_result`.
+    /// Initialise `contact_info` from this device's copy of the nickname, note
+    /// and hidden flag, until `LoadContactDetails` returns the details shown
+    /// everywhere else. Public profile fields (username, display_name, avatar,
+    /// bio) are populated asynchronously by `FetchContactProfile` — see
+    /// `display_task_result`.
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
 
@@ -126,6 +136,15 @@ impl ContactDetailsScreen {
             Some(nickname)
         };
         let note = if note.is_empty() { None } else { Some(note) };
+        // Details read from the backend outrank this device's copy.
+        let (nickname, note, is_hidden) = match self.contact_info.as_ref() {
+            Some(existing) if self.details_read => (
+                existing.nickname.clone(),
+                existing.note.clone(),
+                existing.is_hidden,
+            ),
+            _ => (nickname, note, is_hidden),
+        };
 
         // Preserve any public profile fields already in `contact_info`; otherwise
         // start empty and let the async fetch fill them in.
@@ -154,43 +173,57 @@ impl ContactDetailsScreen {
         });
     }
 
-    /// Trigger a backend fetch to refresh contact profile data from Platform.
+    /// Trigger backend reads of the contact's public profile and of the
+    /// details shown for it (published first; see `LoadContactDetails`).
     fn trigger_backend_fetch(&mut self) -> AppAction {
         self.loading = true;
+        self.details_loading = true;
 
-        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::FetchContactProfile {
-                identity: self.identity.clone(),
-                contact_id: self.contact_id,
-            },
-        )))
+        let task = |task| BackendTask::DashPayTask(Box::new(task));
+        AppAction::BackendTasks(
+            vec![
+                task(DashPayTask::FetchContactProfile {
+                    identity: self.identity.clone(),
+                    contact_id: self.contact_id,
+                }),
+                task(DashPayTask::LoadContactDetails {
+                    identity: self.identity.clone(),
+                    contact_id: self.contact_id,
+                }),
+            ],
+            BackendTasksExecutionMode::Concurrent,
+        )
     }
 
     fn start_editing(&mut self) {
+        if self.details_loading {
+            return;
+        }
         if let Some(info) = &self.contact_info {
             self.edit_nickname = info.nickname.clone().unwrap_or_default();
             self.edit_note = info.note.clone().unwrap_or_default();
             self.edit_hidden = info.is_hidden;
+            self.edit_opened = ContactDetails {
+                nickname: info.nickname.clone(),
+                note: info.note.clone(),
+                hidden: info.is_hidden,
+            };
             self.editing_info = true;
         }
     }
 
     fn save_contact_info(&mut self) -> AppAction {
-        let update = ContactInfoUpdate {
-            nickname: ContactInfoField::Replace(if self.edit_nickname.is_empty() {
-                None
-            } else {
-                Some(self.edit_nickname.clone())
-            }),
-            note: ContactInfoField::Replace(if self.edit_note.is_empty() {
-                None
-            } else {
-                Some(self.edit_note.clone())
-            }),
-            display_hidden: ContactInfoField::Replace(self.edit_hidden),
-            accepted_accounts: AcceptedAccounts::Preserve,
-            unreadable: Default::default(),
-        };
+        let non_empty = |text: &str| (!text.is_empty()).then(|| text.to_string());
+        // The editor opens from this device's copy, which can be older than
+        // the published details; untouched fields keep the published ones.
+        let update = ContactInfoUpdate::edits(
+            &self.edit_opened,
+            ContactDetails {
+                nickname: non_empty(&self.edit_nickname),
+                note: non_empty(&self.edit_note),
+                hidden: self.edit_hidden,
+            },
+        );
         self.pending_update = Some(update.clone());
 
         self.loading = true;
@@ -365,7 +398,10 @@ impl ContactDetailsScreen {
                                 if ui.button("Save").clicked() {
                                     action = self.save_contact_info();
                                 }
-                            } else if ui.button("Edit").clicked() {
+                            } else if ui
+                                .add_enabled(!self.details_loading, egui::Button::new("Edit"))
+                                .clicked()
+                            {
                                 self.start_editing();
                             }
                         });
@@ -575,29 +611,6 @@ impl ScreenLike for ContactDetailsScreen {
 
         action |= island_central_panel(ui, |ui| self.render(ui));
 
-        if let Some(dialog) = &mut self.overwrite_dialog {
-            match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) => {
-                    if let Some(update) = self.pending_update.clone() {
-                        self.loading = true;
-                        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-                            DashPayTask::UpdateContactInfo {
-                                identity: self.identity.clone(),
-                                contact_id: self.contact_id,
-                                update: update.overwrite_unreadable(),
-                            },
-                        )));
-                    }
-                    self.overwrite_dialog = None;
-                }
-                Some(ConfirmationStatus::Canceled) => {
-                    self.pending_update = None;
-                    self.overwrite_dialog = None;
-                }
-                None => {}
-            }
-        }
-
         // Show info popup if requested
         if self.show_info_popup {
             egui::CentralPanel::default()
@@ -622,10 +635,37 @@ impl ScreenLike for ContactDetailsScreen {
         self.loading = false;
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        // Only this screen's own details read reopens the editor: a failed
+        // profile read must not unlock it from this device's older copy while
+        // the details read is still pending. A failed details read leaves that
+        // copy in place; a save from it still replaces only the edited fields.
+        if context.dashpay_contact_details_target()
+            == Some((self.identity.identity.id(), self.contact_id))
+        {
+            self.details_loading = false;
+        }
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.loading = false;
 
         match result {
+            BackendTaskSuccessResult::DashPayContactDetails {
+                identity,
+                contact_id,
+                details,
+            } => {
+                if identity == self.identity.identity.id() && contact_id == self.contact_id {
+                    self.details_loading = false;
+                    self.details_read = true;
+                    if let Some(info) = &mut self.contact_info {
+                        info.nickname = details.nickname;
+                        info.note = details.note;
+                        info.is_hidden = details.hidden;
+                    }
+                }
+            }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Update contact info with fresh profile data from Platform
                 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -680,14 +720,19 @@ impl ScreenLike for ContactDetailsScreen {
             BackendTaskSuccessResult::DashPayContactInfoUpdated {
                 identity,
                 contact_id,
+                published,
             } => {
                 if identity == self.identity.identity.id() && contact_id == self.contact_id {
                     self.commit_pending_update();
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Contact information saved.",
-                        MessageType::Success,
-                    );
+                    let (message, kind) = if published {
+                        ("Contact information saved.", MessageType::Success)
+                    } else {
+                        (
+                            crate::ui::identity::contacts::DETAILS_SAVED_ON_THIS_DEVICE,
+                            MessageType::Info,
+                        )
+                    };
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, kind);
                 }
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo {
@@ -732,27 +777,6 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         self.loading = false;
-        let is_matching_read_error = matches!(
-            error,
-            TaskError::DashPayContactInfoActionFailed {
-                identity_id,
-                contact_id,
-                source,
-            } if *identity_id == self.identity.identity.id()
-                && *contact_id == self.contact_id
-                && matches!(source.as_ref(), TaskError::DashPayContactInfoRead { .. })
-        );
-        if is_matching_read_error && self.pending_update.is_some() {
-            self.overwrite_dialog = Some(
-                ConfirmationDialog::new(
-                    "Replace saved contact details?",
-                    "This contact's saved details cannot be read. Continuing will save the nickname and note shown here and clear the accepted-account settings. You cannot undo this change.",
-                )
-                .confirm_text(Some("Replace saved details"))
-                .danger_mode(true),
-            );
-            return true;
-        }
         if matches!(
             error,
             TaskError::DashPayContactInfoActionFailed {
@@ -764,5 +788,175 @@ impl ScreenLike for ContactDetailsScreen {
             self.pending_update = None;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{bare_user_identity, test_app_context};
+    use dash_sdk::dpp::dashcore::Network;
+
+    fn dispatched_update(action: AppAction) -> ContactInfoUpdate {
+        match action {
+            AppAction::BackendTask(BackendTask::DashPayTask(task)) => match *task {
+                DashPayTask::UpdateContactInfo { update, .. } => update,
+                other => panic!("expected UpdateContactInfo, got {other:?}"),
+            },
+            _ => panic!("expected a DashPay backend task"),
+        }
+    }
+
+    /// This screen opens from this device's copy of the details, which can be
+    /// older than what another device or the Identity Hub published. Saving
+    /// an edited note must keep the published nickname and visibility rather
+    /// than republish the stale local ones.
+    #[test]
+    fn saving_one_edited_field_keeps_the_published_others() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+
+        screen.start_editing();
+        screen.edit_note = "Met at the meetup".to_string();
+        let update = dispatched_update(screen.save_contact_info());
+
+        assert_eq!(
+            update,
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Preserve,
+                note: ContactInfoField::Replace(Some("Met at the meetup".into())),
+                display_hidden: ContactInfoField::Preserve,
+            }
+        );
+    }
+
+    /// The editor opens from the details shown for the contact everywhere
+    /// else (published first), read by the backend when the screen opens,
+    /// not from this device's older copy. It stays closed until that read
+    /// returns.
+    #[test]
+    fn the_editor_opens_from_the_published_details() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let owner = Identifier::from([1; 32]);
+        let contact = Identifier::from([2; 32]);
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+
+        let AppAction::BackendTasks(tasks, _) = screen.trigger_backend_fetch() else {
+            panic!("expected the profile and details reads");
+        };
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::DashPayTask(task) if matches!(
+                task.as_ref(),
+                DashPayTask::LoadContactDetails { contact_id, .. } if *contact_id == contact
+            )
+        )));
+        screen.start_editing();
+        assert!(
+            !screen.editing_info,
+            "the editor waits for the details read"
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::DashPayContactDetails {
+            identity: owner,
+            contact_id: contact,
+            details: ContactDetails {
+                nickname: Some("Bao".into()),
+                note: Some("published".into()),
+                hidden: true,
+            },
+        });
+        // A refresh rereads this device's copy, which must not replace them.
+        screen.refresh();
+        screen.start_editing();
+
+        assert!(screen.editing_info);
+        assert_eq!(screen.edit_nickname, "Bao");
+        assert_eq!(screen.edit_note, "published");
+        assert!(screen.edit_hidden);
+    }
+
+    /// A failed profile read does not open the editor while the details read
+    /// is still pending; only the details read's own failure does, leaving
+    /// this device's copy in place.
+    #[test]
+    fn a_failed_profile_read_keeps_the_editor_closed_until_the_details_read_ends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let owner = Identifier::from([1; 32]);
+        let contact = Identifier::from([2; 32]);
+        let identity = bare_user_identity(owner, Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, contact);
+
+        let AppAction::BackendTasks(tasks, _) = screen.trigger_backend_fetch() else {
+            panic!("expected the profile and details reads");
+        };
+        let is_details_read = |task: &BackendTask| {
+            matches!(
+                task,
+                BackendTask::DashPayTask(task)
+                    if matches!(task.as_ref(), DashPayTask::LoadContactDetails { .. })
+            )
+        };
+        let profile = tasks
+            .iter()
+            .find(|task| !is_details_read(task))
+            .expect("profile read");
+        let details = tasks
+            .iter()
+            .find(|task| is_details_read(task))
+            .expect("details read");
+        // What AppState delivers for a failure the screen does not handle.
+        let fail = |screen: &mut ContactDetailsScreen, task: &BackendTask| {
+            let error = TaskError::ContactWalletSeedUnavailable;
+            screen.display_backend_task_error(&BackendTaskContext::for_dispatch(task), &error);
+            assert!(!screen.display_task_error(&error));
+            screen.display_message(&error.to_string(), MessageType::Error);
+        };
+
+        fail(&mut screen, profile);
+        screen.start_editing();
+        assert!(
+            !screen.editing_info,
+            "the editor still waits for the details read"
+        );
+
+        fail(&mut screen, details);
+        screen.start_editing();
+        assert!(
+            screen.editing_info,
+            "a failed details read opens the editor"
+        );
+    }
+
+    /// Clearing a field is an edit too: it is sent as a replacement with no
+    /// value, not dropped.
+    #[test]
+    fn clearing_and_hiding_are_sent_as_edits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let context = test_app_context(dir.path());
+        let identity = bare_user_identity(Identifier::from([1; 32]), Network::Testnet);
+        let mut screen = ContactDetailsScreen::new(context, identity, Identifier::from([2; 32]));
+        if let Some(info) = &mut screen.contact_info {
+            info.nickname = Some("Bao".into());
+        }
+
+        screen.start_editing();
+        screen.edit_nickname.clear();
+        screen.edit_hidden = true;
+        let update = dispatched_update(screen.save_contact_info());
+
+        assert_eq!(
+            update,
+            ContactInfoUpdate {
+                nickname: ContactInfoField::Replace(None),
+                note: ContactInfoField::Preserve,
+                display_hidden: ContactInfoField::Replace(true),
+            }
+        );
     }
 }

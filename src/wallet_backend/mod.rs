@@ -23,7 +23,9 @@
 pub mod auth_pubkey_cache;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod auth_pubkey_cache;
+mod auto_accept;
 mod avatar_cache;
+mod contact_info;
 mod contact_profile_cache;
 mod coordinator_gate;
 mod dashpay;
@@ -79,10 +81,11 @@ pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
 pub(crate) use dashpay::{
-    ContactRequestActionKind, ContactRequestActionPhase, derive_contact_info_encryption_keys,
+    ContactRequestActionKind, HeldPeerLock, derive_contact_info_encryption_keys,
     derive_contact_xpub_material,
 };
 
+pub(crate) use contact_info::PublishedContactInfos;
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;

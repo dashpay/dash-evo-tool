@@ -66,12 +66,30 @@ pub enum DashPayError {
     #[error("The contact request could not be verified. Please check the details and try again.")]
     ValidationFailed { errors: Vec<String> },
 
-    // Auto Accept Proof Errors
-    #[error("The QR code format is not recognized. Please scan a valid contact QR code.")]
-    InvalidQrCode { reason: String },
-
+    // Contact QR code (DIP-0015 auto-accept) errors
     #[error("This QR code has expired. Please ask for a new one.")]
     QrCodeExpired { expired_at: u64, current_time: u64 },
+
+    /// Contact QR codes are built from the identity's wallet, which an
+    /// identity added without its wallet does not have here.
+    #[error(
+        "Contact QR codes can be created only for an identity loaded from its wallet. Load this identity from the wallet that created it, then try again."
+    )]
+    ContactQrIdentityNotFromWallet,
+
+    /// The secret seam lent something other than the wallet's recovery
+    /// phrase for the identity's wallet.
+    #[error("Unlock the wallet for this identity, then create the contact QR code again.")]
+    ContactQrWalletSeedUnavailable,
+
+    /// platform-wallet could not build the contact QR code.
+    #[error(
+        "The contact QR code could not be created. Make sure this identity has a username, then try again."
+    )]
+    ContactQrBuildFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::PlatformWalletError>,
+    },
 
     // Network/SDK Errors
     #[error("Network connection failed. Please check your internet connection and retry.")]
@@ -177,7 +195,6 @@ impl DashPayError {
         matches!(
             self,
             DashPayError::UsernameResolutionFailed { .. }
-                | DashPayError::InvalidQrCode { .. }
                 | DashPayError::QrCodeExpired { .. }
                 | DashPayError::ValidationFailed { .. }
                 | DashPayError::AccountLabelTooLong { .. }

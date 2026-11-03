@@ -1,15 +1,16 @@
 //! Pure DashPay HD key derivation (DIP-14 / DIP-15).
 //!
-//! Stateless derivation of contact payment keys and auto-accept proof keys
-//! from a wallet seed. No `AppContext`, `Sdk`, database, or `BackendTask`
+//! Stateless derivation of contact payment keys from a wallet seed. The
+//! auto-accept (QR) key comes from platform-wallet; see
+//! `wallet_backend::auto_accept`. No `AppContext`, `Sdk`, database, or `BackendTask`
 //! dependency — the single source of truth for DashPay derivation math.
 
 pub mod dip14;
 pub mod hd;
 
 pub use hd::{
-    calculate_account_reference, derive_auto_accept_key, derive_dashpay_incoming_xpub,
-    derive_payment_address, generate_contact_xpub_data,
+    calculate_account_reference, derive_dashpay_incoming_xpub, derive_payment_address,
+    generate_contact_xpub_data,
 };
 
 use thiserror::Error;

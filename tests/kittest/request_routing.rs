@@ -461,6 +461,66 @@ fn a_closed_send_form_result_leaves_a_running_query_alone() {
     });
 }
 
+/// Starting a rescan must not replace the dispatch recorded for its screen.
+#[test]
+fn full_resync_preserves_its_recorded_owner_context() {
+    use dash_evo_tool::backend_task::core::CoreTask;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let task = BackendTask::CoreTask(CoreTask::FullResyncWallet { seed_hash: [0; 32] });
+        let dispatch = BackendTaskContext::for_dispatch_for_test(&task);
+        harness.state_mut().test_record_visible_dispatch(&dispatch);
+        let prepared = harness
+            .state_mut()
+            .test_prepare_backend_task_context(&task, dispatch.clone());
+        assert_eq!(prepared, dispatch, "rescan must keep the screen's dispatch");
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: prepared,
+                error: TaskError::NoIdentitiesFound,
+            },
+        );
+        assert_eq!(
+            harness.state().test_dispatch_owner_count(),
+            0,
+            "completion must retire the recorded owner"
+        );
+    });
+}
+
+/// A failed transfer assessment is a background read the Wallets screen
+/// reports itself, so it raises no global banner.
+#[test]
+fn a_failed_transfer_assessment_raises_no_banner() {
+    use dash_evo_tool::backend_task::wallet::WalletTask;
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
+        let task = BackendTask::WalletTask(WalletTask::AssessPlatformTransfers {
+            seed_hash: [0; 32],
+            request_id: 1,
+        });
+        let dispatch = BackendTaskContext::for_dispatch_for_test(&task);
+        harness.state_mut().test_record_visible_dispatch(&dispatch);
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: dispatch,
+                error: TaskError::NoIdentitiesFound,
+            },
+        );
+        assert_eq!(harness.state().test_dispatch_owner_count(), 0);
+        let message = TaskError::NoIdentitiesFound.to_string();
+        assert!(
+            harness
+                .query_all_by_label_contains(&message)
+                .next()
+                .is_none(),
+            "the assessment failure must not reach the global banner"
+        );
+    });
+}
+
 #[test]
 fn a_closed_batch_purchase_does_not_complete_the_next_form() {
     use dash_evo_tool::app::{AppAction, BackendTasksExecutionMode};

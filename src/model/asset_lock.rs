@@ -85,6 +85,7 @@ pub(crate) fn confirmed_funding_for_test(
     let out_point = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), 0);
     TrackedAssetLock {
         operation_id: None,
+        operation_revision: 0,
         out_point,
         transaction: Transaction {
             version: 3,

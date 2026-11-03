@@ -91,9 +91,14 @@ async fn tc_074_shielded_lifecycle() {
         Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {other:?}"),
     };
 
-    // Sync and assert the entered amount arrived in full (Phase-E push writer):
-    // the fee is paid on top of it, never out of it.
-    let after_shield = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    // Sync and assert the shielded balance increased (Phase-E push writer).
+    let after_shield = shielded_helpers::wait_for_balance_change(
+        app_context,
+        seed_hash,
+        baseline,
+        std::cmp::Ordering::Greater,
+    )
+    .await;
     let increase_credits = after_shield.saturating_sub(baseline);
     let entered_credits = amount_duffs * CREDITS_PER_DUFF;
     assert!(
@@ -188,7 +193,13 @@ async fn tc_074_shielded_lifecycle() {
     }
 
     // Sync and assert the shielded balance decreased after unshielding.
-    let after_unshield = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    let after_unshield = shielded_helpers::wait_for_balance_change(
+        app_context,
+        seed_hash,
+        after_shield,
+        std::cmp::Ordering::Less,
+    )
+    .await;
     assert!(
         after_unshield < after_shield,
         "unshielding must decrease the shielded balance: {after_unshield} !< {after_shield}"
@@ -205,9 +216,10 @@ async fn tc_074_shielded_lifecycle() {
         .parse::<dash_sdk::dpp::dashcore::Address<_>>()
         .expect("watched address parses")
         .assume_checked();
+    let withdrawal_amount = 50_000_000;
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedWithdrawal {
         seed_hash,
-        amount: 20_000,
+        amount: withdrawal_amount,
         to_core_address: core_address.clone(),
     });
     match run_task(app_context, task).await {
@@ -220,7 +232,7 @@ async fn tc_074_shielded_lifecycle() {
             amount,
         }) => {
             assert_eq!(sh, seed_hash);
-            assert_eq!(amount, 20_000);
+            assert_eq!(amount, withdrawal_amount);
             tracing::info!("tc_074: withdrew {amount} credits to {core_address}");
         }
         Ok(other) => panic!("Expected ShieldedWithdrawalComplete, got: {other:?}"),

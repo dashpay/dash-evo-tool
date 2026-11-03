@@ -9,6 +9,8 @@ const OLD_SCHEMA: &str = include_str!("fixtures/67d4ef3.sql");
 const TARGET_SCHEMA: &str = include_str!("fixtures/033ecae.sql");
 const HISTORY: &str = "refinery_schema_history";
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
+/// Upstream migration that rebuilds Core history through an SPV rescan.
+const CORE_ACCOUNTING_MIGRATION: &str = "core_transaction_accounting";
 
 /// A compatibility upgrade stopped before committing changes to the original database.
 #[derive(Debug, thiserror::Error)]
@@ -175,6 +177,27 @@ fn target_reference() -> Result<Connection, UpgradeError> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(TARGET_SCHEMA)?;
     Ok(conn)
+}
+
+/// Build the historical intermediate schema before copying any legacy rows.
+pub(super) fn initialize_stage(path: &Path) -> Result<(), UpgradeError> {
+    Connection::open(path)?.execute_batch(TARGET_SCHEMA)?;
+    Ok(())
+}
+
+/// Require the migrated stage to match an independently opened current persister.
+pub(super) fn verify_current_schema(path: &Path, reference: &Path) -> Result<(), UpgradeError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let target = Connection::open_with_flags(path, flags)?;
+    let reference = Connection::open_with_flags(reference, flags)?;
+    if objects(&target)? != objects(&reference)?
+        || history(&target)? != history(&reference)?
+        || target.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+            != reference.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0))?
+    {
+        return Err(UpgradeError::Unrecognized);
+    }
+    verify(&target)
 }
 
 fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeError> {
@@ -705,15 +728,122 @@ fn equal_rows(
     let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
     let sql = format!("SELECT {names} FROM {}", quote(table));
     let order = format!(" ORDER BY {names}");
-    let mut a = source.prepare(&format!("{sql}{filter}{order}"))?;
-    let mut b = target.prepare(&format!("{sql}{order}"))?;
+    equal_queries(
+        source,
+        target,
+        &format!("{sql}{filter}{order}"),
+        &format!("{sql}{order}"),
+        cols.len(),
+    )
+}
+
+/// SHA-256 over one row's `cols` values, read without copying them.
+///
+/// Each value is tagged with its storage class and length-prefixed, so two rows
+/// share a digest only if every value has the same class and the same stored
+/// bytes: `1`, `1.0` and `'1'` differ, reals compare by IEEE-754 bits (`-0.0`
+/// is not `0.0`) and text by its bytes, whatever the column's collation.
+fn row_digest(row: &rusqlite::Row<'_>, cols: usize) -> rusqlite::Result<[u8; 32]> {
+    use rusqlite::types::ValueRef;
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for i in 0..cols {
+        let mut tagged = |tag: u8, bytes: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        };
+        match row.get_ref(i)? {
+            ValueRef::Null => tagged(0, &[]),
+            ValueRef::Integer(v) => tagged(1, &v.to_be_bytes()),
+            ValueRef::Real(v) => tagged(2, &v.to_bits().to_be_bytes()),
+            ValueRef::Text(v) => tagged(3, v),
+            ValueRef::Blob(v) => tagged(4, v),
+        }
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Every `target` row matching `target_filter` must equal, on `cols`, a `source` row
+/// selected by `source_filter`. Rows may be dropped; none may be added or changed.
+fn rows_retained(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>();
+    rows_retained_as(
+        source,
+        target,
+        table,
+        &names,
+        cols,
+        source_filter,
+        target_filter,
+    )
+}
+
+/// [`rows_retained`] against the `source` rows as `source_exprs` shape them: each
+/// expression yields the value expected in the matching `cols` column.
+///
+/// Source rows are kept as [`row_digest`]s, so memory grows by 32 bytes per row
+/// rather than with record blobs, scripts and InstantLocks.
+fn rows_retained_as(
+    source: &Connection,
+    target: &Connection,
+    table: &str,
+    source_exprs: &[String],
+    cols: &[String],
+    source_filter: &str,
+    target_filter: &str,
+) -> Result<(), UpgradeError> {
+    if source_exprs.len() != cols.len() {
+        return Err(UpgradeError::Verification);
+    }
+    let names = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(",");
+    let exprs = source_exprs.join(",");
+    let mut original = std::collections::HashSet::new();
+    let mut stmt = source.prepare(&format!(
+        "SELECT {exprs} FROM {}{source_filter}",
+        quote(table)
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        original.insert(row_digest(row, cols.len())?);
+    }
+    let mut stmt = target.prepare(&format!(
+        "SELECT {names} FROM {} WHERE {target_filter}",
+        quote(table)
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if !original.contains(&row_digest(row, cols.len())?) {
+            return Err(UpgradeError::Verification);
+        }
+    }
+    Ok(())
+}
+
+fn equal_queries(
+    source: &Connection,
+    target: &Connection,
+    source_sql: &str,
+    target_sql: &str,
+    column_count: usize,
+) -> Result<(), UpgradeError> {
+    let mut a = source.prepare(source_sql)?;
+    let mut b = target.prepare(target_sql)?;
     let mut a = a.query([])?;
     let mut b = b.query([])?;
     loop {
         match (a.next()?, b.next()?) {
             (None, None) => return Ok(()),
             (Some(a), Some(b)) => {
-                for i in 0..cols.len() {
+                for i in 0..column_count {
                     if a.get_ref(i)? != b.get_ref(i)? {
                         return Err(UpgradeError::Verification);
                     }
@@ -872,6 +1002,7 @@ fn upgrade_with_hook_locked(
             return Err(UpgradeError::Unrecognized);
         }
     }
+    let mut copied = Vec::new();
     for table in old_tables.iter().filter(|t| **t != HISTORY) {
         let cols = allowed_columns(
             table,
@@ -881,6 +1012,7 @@ fn upgrade_with_hook_locked(
         let filter = selected_rows(table);
         copy_rows(&source, &target_tx, table, &cols, &filter)?;
         equal_rows(&source, &target_tx, table, &cols, &filter)?;
+        copied.push((*table, cols, filter));
     }
     for (old_domain, new_domain) in [
         ("wallet_metadata", "wallets"),
@@ -898,13 +1030,82 @@ fn upgrade_with_hook_locked(
     target_tx.commit()?;
     drop(target);
     validate(target_path)?;
-    // The source transaction has written only temp tables, so a separate reader still
-    // sees the committed original; earlier failures roll back and need no backup.
-    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     let target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    verify(&target)?;
+    // Matched by name: upstream renumbered this migration before it shipped.
+    let resets_core = history(&target)?
+        .iter()
+        .any(|(_, name, _)| name == CORE_ACCOUNTING_MIGRATION);
+    for (table, mut cols, filter) in copied {
+        match table {
+            "meta_data_versions" => {
+                equal_queries(&source, &target,
+                    "SELECT wallet_id, domain, MAX(seq) FROM (
+                        SELECT wallet_id, domain, seq FROM meta_data_versions
+                        UNION ALL SELECT wallet_id, 'wallets', seq FROM meta_data_versions WHERE domain = 'wallet_metadata'
+                        UNION ALL SELECT wallet_id, 'core_address_pool', seq FROM meta_data_versions WHERE domain = 'account_address_pools'
+                    ) GROUP BY wallet_id, domain ORDER BY wallet_id, domain",
+                    "SELECT wallet_id, domain, seq FROM meta_data_versions ORDER BY wallet_id, domain", 3)?;
+                continue;
+            }
+            // The accounting migration drops Core history that SPV rebuilds, keeps
+            // unsettled evidence, and strips block details from kept mined funding;
+            // loading may drop further unauthorized pending spends. What remains must
+            // come from the original: nothing is invented or altered otherwise.
+            "core_transactions" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "height IS NULL")?;
+                // A kept mined row is its original with exactly the migration's
+                // stripping applied; any other value means something else ran.
+                let stripped = cols
+                    .iter()
+                    .map(|c| match c.as_str() {
+                        "block_hash" | "block_time" | "record_blob" => "NULL".to_owned(),
+                        "finalized" => "0".to_owned(),
+                        c => quote(c),
+                    })
+                    .collect::<Vec<_>>();
+                rows_retained_as(
+                    &source,
+                    &target,
+                    table,
+                    &stripped,
+                    &cols,
+                    &filter,
+                    "height IS NOT NULL",
+                )?;
+                continue;
+            }
+            "core_utxos" | "core_instant_locks" if resets_core => {
+                rows_retained(&source, &target, table, &cols, &filter, "1")?;
+                continue;
+            }
+            "core_sync_state" if resets_core => {
+                equal_queries(
+                    &source,
+                    &target,
+                    "SELECT s.wallet_id, MIN(COALESCE(s.synced_height, MAX(w.birth_height - 1, 0)), MAX(w.birth_height - 1, 0)) FROM core_sync_state s JOIN wallets w USING(wallet_id) ORDER BY s.wallet_id",
+                    "SELECT wallet_id, synced_height FROM core_sync_state ORDER BY wallet_id",
+                    2,
+                )?;
+                cols.retain(|c| c != "synced_height");
+            }
+            _ => {}
+        }
+        equal_rows(&source, &target, table, &cols, &filter)?;
+    }
+    // Upstream migrations may add tables and triggers; publish their final schema.
+    let target_objects = objects(&target)?;
+    let new_tables = target_objects
+        .iter()
+        .filter(|o| o.kind == "table")
+        .map(|o| o.name.as_str())
+        .collect::<BTreeSet<_>>();
+    // The source transaction has written only temp tables, so a separate reader still
+    // sees the committed original; earlier failures roll back and need no backup.
+    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     // Rebuild under one SQLite transaction; power loss exposes either complete schema.
     for o in existing.iter().filter(|o| o.kind == "trigger") {
         source.execute_batch(&format!("DROP TRIGGER {}", quote(&o.name)))?;

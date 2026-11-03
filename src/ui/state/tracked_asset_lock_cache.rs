@@ -124,15 +124,19 @@ impl TrackedAssetLockCache {
         }
     }
 
-    /// Whether the wallet has at least one still-actionable tracked asset lock
-    /// (any status other than `Consumed`). Returns `false` in every state but
-    /// `Loaded`.
+    /// Whether the wallet has at least one tracked asset lock that can still
+    /// fund something (see [`Self::can_fund`]). Returns `false` in every state
+    /// but `Loaded`.
     pub fn has_unused(&self, seed_hash: &WalletSeedHash) -> bool {
-        self.get(seed_hash).is_some_and(|locks| {
-            locks
-                .iter()
-                .any(|l| !matches!(l.status, AssetLockStatus::Consumed))
-        })
+        self.get(seed_hash)
+            .is_some_and(|locks| locks.iter().any(|l| Self::can_fund(&l.status)))
+    }
+
+    /// Whether a lock in `status` can still fund an identity or a top-up. A
+    /// consumed lock and a completed drain are spent; a conflicted one lost
+    /// its coins to another payment.
+    pub fn can_fund(status: &AssetLockStatus) -> bool {
+        !status.is_consumed() && *status != AssetLockStatus::Conflicted
     }
 }
 
@@ -215,6 +219,36 @@ mod tests {
             cache.ensure_requested_many([SEED_A, SEED_B]).is_empty(),
             "a second pass over the same wallets dispatches nothing"
         );
+    }
+
+    /// A lock that cannot fund anything is not "unused": a consumed one or a
+    /// completed drain is spent, and a conflicted one lost its coins to another
+    /// payment and has no proof.
+    #[test]
+    fn has_unused_ignores_spent_and_conflicted_locks() {
+        let mut cache = TrackedAssetLockCache::new();
+        let locks: Vec<_> = [
+            AssetLockStatus::Consumed,
+            AssetLockStatus::DrainCompleted,
+            AssetLockStatus::Conflicted,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, status)| {
+            let mut lock = crate::model::asset_lock::confirmed_funding_for_test(i as u8, 1_000);
+            lock.status = status;
+            lock
+        })
+        .collect();
+        cache.store(SEED_A, locks.clone());
+        assert!(!cache.has_unused(&SEED_A));
+
+        let mut usable = locks;
+        usable.push(crate::model::asset_lock::confirmed_funding_for_test(
+            9, 1_000,
+        ));
+        cache.store(SEED_A, usable);
+        assert!(cache.has_unused(&SEED_A));
     }
 
     /// `invalidate` clears every wallet's state so an explicit refresh re-fetches.

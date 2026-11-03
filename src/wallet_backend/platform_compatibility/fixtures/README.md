@@ -36,6 +36,30 @@ Revisions `132ae31a1356d035cd8326f27c1109685090a71d` (5.0.0-rc.8),
 `063589bf0adbe1a8823a943cee95385b423b0e3f` and
 `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb` leave the migrations untouched.
 
+The production bridge recognizes only the exact `67d4ef3` history and schema.
+It creates the staging database from `033ecae.sql`, copies and verifies the
+recognized legacy rows, then opens that populated staging database with the
+current public `SqlitePersister::open`. Upstream migrations after V019 therefore
+run over the translated data instead of being skipped by copying old rows into an
+already migrated empty database. The final schema and history must match an
+independent fresh current persister before publication.
+
+At Platform `344e110a630a0ca8060e38299d777cee8d7232e3` (dashpay/platform#5528),
+V019 adds nullable asset-lock operation IDs and V020 (`core_transaction_accounting`)
+rebuilds Core history: it drops mined transactions, UTXOs and InstantLocks that an
+SPV rescan redelivers, keeps unmined transactions and spent coins whose spender is
+not known to be mined (stripping block details from the mined transactions funding
+them), and rewinds each filter checkpoint to at most birth height minus one
+(minimum zero). Loading may then drop pending spends whose authorization fails.
+V021 (`asset_lock_conflict_evidence`) rebuilds `asset_locks` with a `conflicted`
+status and an `operation_revision` column, copying every row unchanged. The bridge
+recognizes the Core migration by name, checks the checkpoint rewind, accepts any
+Core rows that remain unchanged from the original, except that each kept mined
+transaction must be stripped exactly as the migration does (no block hash, block
+time or record, not finalized), and requires every non-Core row to be preserved.
+The original backup retains the pre-rescan Core data; the app rebuilds confirmed
+Core history through SPV. A different V019 migration history, such as the unmerged
+`c0425f7` accounting schema, is not recognized by this bridge.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

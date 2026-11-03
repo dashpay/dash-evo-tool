@@ -566,9 +566,11 @@ mod tests {
         use crate::model::identity_discovery::DiscoveryIntent;
         use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
         use crate::model::secret::Secret;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
         const PW: &str = "identity-object-passwordpw";
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         // Keys 1 and 2 are manual keys; seal them Tier-2 behind a password.
         ctx.protect_identity_keys(staged.id, Secret::new(PW), None)
@@ -630,8 +632,10 @@ mod tests {
     async fn a_refresh_blocked_by_partial_protection_is_shown_to_the_user() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::ui::components::message_banner::global_banner_texts;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
 
         ctx.report_discovered_identity_store_failure(
@@ -660,8 +664,10 @@ mod tests {
     async fn automatic_discovery_still_refuses_an_unloaded_identity() {
         use crate::context::test_staging::stage_identity_with_vaulted_keys;
         use crate::model::identity_discovery::DiscoveryIntent;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
 
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let ctx = &staged.ctx;
         let before = ctx
             .get_local_qualified_identity(&staged.id)

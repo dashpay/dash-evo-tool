@@ -1064,7 +1064,7 @@ mod tests {
         }
     }
 
-    /// A recognizable 32-byte secret. Delegates to the shared
+    /// A random 32-byte secret. Delegates to the shared
     /// [`distinctive_secret_32`] so the seam / sidecar / QI-blob leak cases
     /// share one definition rather than forking it.
     fn distinctive_secret() -> [u8; 32] {
@@ -1183,8 +1183,8 @@ mod tests {
         let cfg = bincode::config::standard();
         // Each of the four pre-existing variants must round-trip unchanged.
         for original in [
-            PrivateKeyData::AlwaysClear([0x11; 32]),
-            PrivateKeyData::Clear([0x22; 32]),
+            PrivateKeyData::AlwaysClear(crate::test_support::keys::secret_bytes()),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
             PrivateKeyData::Encrypted(vec![0x33; 48]),
             PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
                 wallet_seed_hash: [0x44; 32],
@@ -1265,14 +1265,20 @@ mod tests {
         let mut ks = KeyStorage::default();
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(occupant), [0x11; 32]),
+            (
+                QualifiedIdentityPublicKey::from(occupant),
+                crate::test_support::keys::secret_bytes(),
+            ),
         )
         .expect("an empty slot accepts the first key");
         let before = ks.entry_at(&(MAIN, 0)).cloned().expect("occupant stored");
 
         let refused = ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(intruder), [0x22; 32]),
+            (
+                QualifiedIdentityPublicKey::from(intruder),
+                crate::test_support::keys::secret_bytes(),
+            ),
         );
 
         assert!(
@@ -1312,23 +1318,27 @@ mod tests {
     fn the_same_key_still_overwrites_itself() {
         let pv = PlatformVersion::latest();
         let key = IdentityPublicKey::random_key(0, Some(1), pv);
+        let replacement = crate::test_support::keys::secret_bytes();
         let mut ks = KeyStorage::default();
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(key.clone()), [0x11; 32]),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                crate::test_support::keys::secret_bytes(),
+            ),
         )
         .expect("an empty slot accepts the key");
 
         ks.insert_non_encrypted(
             (MAIN, 0),
-            (QualifiedIdentityPublicKey::from(key), [0x22; 32]),
+            (QualifiedIdentityPublicKey::from(key), replacement),
         )
         .expect("a key may replace itself at its own slot");
 
         assert_eq!(ks.len(), 1, "replacing in place adds no second entry");
         match ks.entry_at(&(MAIN, 0)).expect("entry present") {
             (_, PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes)) => {
-                assert_eq!(bytes, &[0x22; 32], "the re-entered bytes replaced the old")
+                assert_eq!(bytes, &replacement, "the re-entered bytes replaced the old")
             }
             (_, other) => panic!("expected plaintext bytes, got {other:?}"),
         }
@@ -1394,15 +1404,22 @@ mod tests {
             Some((_, PrivateKeyData::AtWalletDerivationPath(path))) if *path == derivation_path(0x01)
         ));
 
-        let mut held = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x44; 32]))]);
+        let held_secret = crate::test_support::keys::secret_bytes();
+        let mut held = filed_under(&key, &[(MAIN, PrivateKeyData::Clear(held_secret))]);
         held.insert_wallet_derived((MAIN, 4), qualified.clone(), derivation_path(0x01))
             .expect("the same key is already filed");
         assert!(
-            matches!(held.entry_at(&(MAIN, 4)), Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x44; 32]),
+            matches!(held.entry_at(&(MAIN, 4)), Some((_, PrivateKeyData::Clear(bytes))) if *bytes == held_secret),
             "a held private half is never replaced by a derivation path"
         );
 
-        let mut occupied = filed_under(&foreign, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        let mut occupied = filed_under(
+            &foreign,
+            &[(
+                MAIN,
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            )],
+        );
         assert!(matches!(
             occupied.insert_wallet_derived((MAIN, 4), qualified, derivation_path(0x01)),
             Err(TaskError::IdentityKeySlotOccupied)
@@ -1480,11 +1497,12 @@ mod tests {
     #[test]
     fn a_resident_placement_wins_over_a_vault_placeholder() {
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let resident = crate::test_support::keys::secret_bytes();
         let ks = filed_under(
             &key,
             &[
                 (MAIN, PrivateKeyData::InVault),
-                (VOTER, PrivateKeyData::Clear([0x33; 32])),
+                (VOTER, PrivateKeyData::Clear(resident)),
             ],
         );
 
@@ -1496,7 +1514,7 @@ mod tests {
         assert!(
             matches!(
                 ks.held_private_key_data(&key),
-                Some((PrivateKeyData::Clear(bytes), None)) if bytes == [0x33; 32]
+                Some((PrivateKeyData::Clear(bytes), None)) if bytes == resident
             ),
             "the material comes from the placement that was named"
         );
@@ -1508,7 +1526,10 @@ mod tests {
     fn a_lone_placement_is_named_whatever_it_holds() {
         let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
 
-        for data in [PrivateKeyData::InVault, PrivateKeyData::Clear([0x44; 32])] {
+        for data in [
+            PrivateKeyData::InVault,
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+        ] {
             let ks = filed_under(&key, &[(MAIN, data.clone())]);
             assert_eq!(
                 ks.first_live_candidate(&key),
@@ -1537,7 +1558,10 @@ mod tests {
         let ks = filed_under(
             &key,
             &[
-                (MAIN, PrivateKeyData::Clear([0x55; 32])),
+                (
+                    MAIN,
+                    PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+                ),
                 (
                     VOTER,
                     PrivateKeyData::AtWalletDerivationPath(derivation_path(0x66)),
@@ -1551,7 +1575,13 @@ mod tests {
             "the wallet is found under the placement that names it"
         );
 
-        let plaintext_only = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        let plaintext_only = filed_under(
+            &key,
+            &[(
+                MAIN,
+                PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            )],
+        );
         assert!(
             plaintext_only.wallet_derived_at(&key).is_none(),
             "a key no placement derives has no wallet"
@@ -1563,7 +1593,10 @@ mod tests {
     /// `false`.
     #[test]
     fn in_vault_and_public_key_probes() {
-        let mut ks = storage_with_plaintext_and_derived([0x01; 32], [0x02; 32]);
+        let mut ks = storage_with_plaintext_and_derived(
+            crate::test_support::keys::secret_bytes(),
+            crate::test_support::keys::secret_bytes(),
+        );
         let keys: Vec<_> = ks.private_keys.keys().cloned().collect();
         ks.take_plaintext_for_vault();
         // The two plaintext keys are now InVault; the derived one is not.
@@ -1586,6 +1619,7 @@ mod tests {
     fn a_wallet_rebuild_keeps_every_stored_key_it_did_not_recreate() {
         let pv = PlatformVersion::latest();
         let pasted = IdentityPublicKey::random_key(9, Some(9), pv);
+        let pasted_secret = crate::test_support::keys::secret_bytes();
         let sealed = IdentityPublicKey::random_key(4, Some(4), pv);
         let derived = IdentityPublicKey::random_key(0, Some(10), pv);
         let fresh_wallet_key = IdentityPublicKey::random_key(5, Some(5), pv);
@@ -1594,7 +1628,10 @@ mod tests {
         };
 
         let mut stored = KeyStorage::default();
-        stored.insert_at((MAIN, 9), entry(&pasted, PrivateKeyData::Clear([0x19; 32])));
+        stored.insert_at(
+            (MAIN, 9),
+            entry(&pasted, PrivateKeyData::Clear(pasted_secret)),
+        );
         // Held in the vault AND derivable from the wallet: the vault copy wins.
         stored.insert_at((MAIN, 4), entry(&sealed, PrivateKeyData::InVault));
         stored.insert_at(
@@ -1638,7 +1675,7 @@ mod tests {
         assert!(
             matches!(
                 rebuilt.entry_at(&(MAIN, 9)),
-                Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x19; 32]
+                Some((_, PrivateKeyData::Clear(bytes))) if *bytes == pasted_secret
             ),
             "a pasted key the wallet cannot derive is kept"
         );
@@ -1744,8 +1781,8 @@ mod tests {
         let stale = IdentityPublicKey::random_key(7, Some(71), pv);
         let on_chain = IdentityPublicKey::random_key(7, Some(72), pv);
         for data in [
-            PrivateKeyData::Clear([0x77; 32]),
-            PrivateKeyData::AlwaysClear([0x78; 32]),
+            PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+            PrivateKeyData::AlwaysClear(crate::test_support::keys::secret_bytes()),
             PrivateKeyData::Encrypted(vec![0x79; 48]),
         ] {
             let stored = filed_under(&stale, &[(MAIN, data.clone())]);

@@ -52,31 +52,23 @@ const WALLET_COUNTS: [usize; 3] = [1, 10, 100];
 /// — Testnet matches the dev-loop everyone runs locally.
 const BENCH_NETWORK: Network = Network::Testnet;
 
-/// Build a unique 64-byte seed for the i-th wallet. `i` lands in bytes
-/// 0..8 so every seed differs even when the high tail is constant.
+/// The 64-byte seed for the i-th wallet: generated at runtime, distinct per
+/// `i` and stable within one bench run.
 fn seed_for(i: usize) -> [u8; 64] {
-    let mut seed = [0u8; 64];
-    seed[..8].copy_from_slice(&(i as u64).to_be_bytes());
-    // Sprinkle the rest so successive entropy bytes are not all zero
-    // (defensive — `Wallet::new_from_seed` derives an xpub regardless).
-    for (idx, b) in seed.iter_mut().enumerate().skip(8) {
-        *b = (idx as u8).wrapping_mul(31).wrapping_add(0x5A);
-    }
-    seed
+    dash_evo_tool::test_support::keys::labelled_seed(
+        "benches::wallet_hydration::seed_for",
+        i as u64,
+    )
 }
 
-/// Generate the i-th deterministic 32-byte secp256k1 secret. Bytes
-/// 0..8 carry the index so each WIF derives a distinct P2PKH address.
-/// The constant tail keeps the bytes inside the secp256k1 group order
-/// — `PrivateKey::from_byte_array` rejects zero / out-of-range keys,
-/// so we sprinkle non-zero data.
+/// The 32-byte secp256k1 secret for the i-th single key: generated at
+/// runtime, distinct per `i` (so each WIF has its own P2PKH address) and
+/// stable within one bench run.
 fn priv_key_bytes_for(i: usize) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    bytes[..8].copy_from_slice(&((i as u64) + 1).to_be_bytes());
-    for (idx, b) in bytes.iter_mut().enumerate().skip(8) {
-        *b = (idx as u8).wrapping_mul(17).wrapping_add(0x33);
-    }
-    bytes
+    dash_evo_tool::test_support::keys::labelled_secret(
+        "benches::wallet_hydration::priv_key_bytes_for",
+        i as u64,
+    )
 }
 
 /// Open a fresh `DetKv` over a tempdir-backed `SqlitePersister`.

@@ -308,9 +308,10 @@ fn a_hidden_screen_handling_its_error_still_raises_the_banner() {
 fn send_form(harness: &App) -> dash_evo_tool::ui::wallets::send_screen::WalletSendScreen {
     use dash_evo_tool::model::wallet::Wallet;
     use std::sync::{Arc, RwLock};
+    let seed_57 = dash_evo_tool::test_support::keys::seed();
     let app_context = harness.state().current_app_context().clone();
-    let wallet = Wallet::new_from_seed([0x57; 64], app_context.network(), None, None)
-        .expect("wallet fixture");
+    let wallet =
+        Wallet::new_from_seed(seed_57, app_context.network(), None, None).expect("wallet fixture");
     dash_evo_tool::ui::wallets::send_screen::WalletSendScreen::new(
         &app_context,
         Arc::new(RwLock::new(wallet)),
@@ -1243,11 +1244,12 @@ fn a_balance_push_from_the_previous_network_updates_only_that_networks_wallet() 
     in_app(|| {
         let mut harness = mount_app(RootScreenType::RootScreenWalletsBalances);
         let previous = harness.state().current_app_context().clone();
-        let seed_hash = insert_wallet(&previous, [0x5a; 64]);
+        let seed = dash_evo_tool::test_support::keys::seed();
+        let seed_hash = insert_wallet(&previous, seed);
         switch_network(&mut harness);
         let current = harness.state().current_app_context().clone();
         assert_eq!(
-            insert_wallet(&current, [0x5a; 64]),
+            insert_wallet(&current, seed),
             seed_hash,
             "one wallet, loaded on both networks"
         );

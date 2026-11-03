@@ -321,7 +321,7 @@ mod tests {
     /// core_wallet_name, master xpub, and the un-encrypted seed all match.
     #[test]
     fn tc_w_001_reconstructs_non_password_wallet_from_sidecars() {
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
 
@@ -363,7 +363,7 @@ mod tests {
     /// so the unlock UI still has work to do.
     #[test]
     fn tc_w_009_password_wallet_metadata_preserved_locked() {
-        let seed = [0x77u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Mainnet;
         let xpub = xpub_bytes_for(seed, network);
 
@@ -401,7 +401,7 @@ mod tests {
     /// branches on.
     #[test]
     fn empty_alias_maps_to_none() {
-        let seed = [0xDDu8; 64];
+        let seed = crate::test_support::keys::seed();
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -440,7 +440,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0xABu8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
         let envelope = StoredSeedEnvelope {
@@ -482,7 +482,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0x5Au8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
         let hash = seed_hash_for(seed);
@@ -537,7 +537,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0x6Bu8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
         let hash = seed_hash_for(seed);
@@ -581,7 +581,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0xCDu8; 64];
+        let seed = crate::test_support::keys::seed();
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let meta = WalletMeta {
             alias: "orphan".into(),
@@ -603,7 +603,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0xEEu8; 64];
+        let seed = crate::test_support::keys::seed();
         let hash = seed_hash_for(seed);
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -632,7 +632,7 @@ mod tests {
     /// closed wallet.
     #[test]
     fn sec_008_non_64_byte_seed_surfaces_typed_error() {
-        let seed = [0xBEu8; 64];
+        let seed = crate::test_support::keys::seed();
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(vec![0x33; 16]), // wrong length on purpose
@@ -673,7 +673,7 @@ mod tests {
     /// Locks the "rename does not invalidate the wallet" invariant.
     #[test]
     fn tc_w_008_rename_only_touches_alias() {
-        let seed = [0x55u8; 64];
+        let seed = crate::test_support::keys::seed();
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -723,7 +723,7 @@ mod tests {
         let store = fresh_secret_store(dir.path());
         let view = WalletSeedView::new(&store);
 
-        let seed = [0x91u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
         let hash = seed_hash_for(seed);

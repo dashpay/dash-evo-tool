@@ -1012,9 +1012,10 @@ mod tests {
     }
 
     fn send_screen() -> (SingleKeyWalletSendScreen, tempfile::TempDir) {
+        let secret_1 = crate::test_support::keys::secret_bytes();
         let (ctx, temp_dir) = offline_ctx();
         let wallet =
-            SingleKeyWallet::new([1u8; 32], Network::Testnet, None, None).expect("single key");
+            SingleKeyWallet::new(secret_1, Network::Testnet, None, None).expect("single key");
         let screen = SingleKeyWalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
         (screen, temp_dir)
     }

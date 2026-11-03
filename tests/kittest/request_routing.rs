@@ -1050,3 +1050,66 @@ fn a_previous_network_contest_refresh_ending_leaves_the_new_refresh_running() {
         });
     }
 }
+
+/// A contest refresh the voting panel sent on the previous network reaches
+/// no screen of the new one. Neither its mid-task "contests refreshed"
+/// result nor its dispatch's final result ends the panel's own refresh on
+/// the new network, whether the panel is in view or hidden behind another
+/// root screen. The same mid-task result for the active network still ends
+/// that refresh.
+#[test]
+fn a_contest_refresh_from_the_previous_network_leaves_the_voting_panel_alone() {
+    for in_view in [true, false] {
+        in_app(|| {
+            let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+            let previous_network = harness.state().current_app_context().network();
+            let previous = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&previous);
+
+            switch_network(&mut harness);
+            let current_network = harness.state().current_app_context().network();
+            harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+            harness.run_steps(3);
+            let current = votes_panel(&mut harness).begin_contest_refresh_for_test();
+            harness.state_mut().test_record_visible_dispatch(&current);
+            if !in_view {
+                harness.state_mut().selected_main_screen =
+                    RootScreenType::RootScreenWalletsBalances;
+            }
+            harness.run_steps(3);
+
+            let refreshed = |network| TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::RefreshedDpnsContests { network }),
+            };
+            // The previous network's refresh ends as a refresh does: the
+            // mid-task result first, then the dispatch's final one.
+            deliver(&mut harness, refreshed(previous_network));
+            deliver(
+                &mut harness,
+                TaskResult::Success {
+                    context: previous,
+                    result: Box::new(BackendTaskSuccessResult::None),
+                },
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the previous network's refresh leaves the new one running (in view: {in_view})"
+            );
+            assert!(
+                votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "the new refresh keeps its progress banner (in view: {in_view})"
+            );
+
+            deliver(&mut harness, refreshed(current_network));
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+                "the active network's refresh still ends it (in view: {in_view})"
+            );
+            assert!(
+                !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+                "and takes its progress banner down (in view: {in_view})"
+            );
+        });
+    }
+}

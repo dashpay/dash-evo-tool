@@ -40,6 +40,10 @@ fn bao(note: Option<&str>) -> ContactData {
 }
 
 fn deliver(hub: &mut HubHarness, owner: Identifier, contact: ContactData) {
+    deliver_all(hub, owner, vec![contact]);
+}
+
+fn deliver_all(hub: &mut HubHarness, owner: Identifier, contacts: Vec<ContactData>) {
     let app_context = hub.state().0.app_context.clone();
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
         identity: app_context.resolve_selected_identity().expect("identity"),
@@ -48,7 +52,7 @@ fn deliver(hub: &mut HubHarness, owner: Identifier, contact: ContactData) {
         &BackendTaskContext::from(&task),
         BackendTaskSuccessResult::DashPayContactsWithInfo {
             identity: owner,
-            contacts: vec![contact],
+            contacts,
         },
     );
 }
@@ -800,4 +804,54 @@ fn failed_unhide_behind_another_screen_restores_the_hidden_row() {
             );
         });
     }
+}
+
+/// Opening another contact's details starts at the top of the pane, not at
+/// the offset the previous contact's details were scrolled to.
+#[test]
+fn another_contacts_details_open_at_the_top_of_the_pane() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let owner = seed_identity_with_usernames(&app_context);
+        let cam = ContactData {
+            identity_id: Identifier::from([0xC4; 32]),
+            username: Some("cam".into()),
+            display_name: Some("Cam Tran".into()),
+            ..bao(None)
+        };
+        let mut hub = hub_for(
+            &app_context,
+            owner,
+            WIDE,
+            IdentityHubTab::Contacts,
+            move |hub, owner| deliver_all(hub, owner, vec![bao(None), cam]),
+        );
+        // Short enough that the details overflow their pane.
+        hub.set_size(egui::vec2(WIDE, 640.0));
+        hub.get_by_role_and_label(Role::Button, "Bao Nguyen")
+            .click();
+        hub.run_steps(4);
+        let top = hub.get_by_label(DETAIL_HEADING).rect().top();
+
+        hub.hover_at(hub.get_by_label(DETAIL_HEADING).rect().center());
+        hub.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        hub.run_steps(12);
+        assert!(
+            hub.get_by_label(DETAIL_HEADING).rect().top() < top - EPSILON,
+            "precondition: Bao's details are scrolled down"
+        );
+
+        hub.get_by_role_and_label(Role::Button, "Cam Tran").click();
+        hub.run_steps(4);
+        let heading = hub.get_by_label(DETAIL_HEADING).rect().top();
+        assert!(
+            (heading - top).abs() <= EPSILON,
+            "Cam's details must open at the top of the pane: heading at {heading}, top at {top}"
+        );
+    });
 }

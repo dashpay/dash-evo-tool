@@ -4,6 +4,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::key_input::decode_hex_secret;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
@@ -33,6 +34,7 @@ use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 #[derive(PartialEq)]
 pub enum AddKeyStatus {
@@ -310,6 +312,7 @@ impl AddKeyScreen {
             let Some(index) = self.derivation.submit() else {
                 return app_action;
             };
+            // A literal: the key setters cannot bind a key to a contract.
             let new_key = IdentityPublicKeyV0 {
                 id: 0,
                 key_type: self.key_type,
@@ -331,12 +334,12 @@ impl AddKeyScreen {
                 },
             ));
         }
-        // Convert the input string to bytes (hex decoding)
-        match hex::decode(self.private_key_input.text()) {
+        // Convert the input string to bytes (hex decoding). Every copy of the
+        // key is held in `Zeroizing`, so it is wiped when it is dropped.
+        match decode_hex_secret(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                // From a slice: the error then holds no key bytes to print.
-                let private_key_bytes = <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
-                    .expect("invariant: length checked to be 32 in the match guard");
+                let mut private_key_bytes = Zeroizing::new([0u8; 32]);
+                private_key_bytes.copy_from_slice(&private_key_bytes_vec);
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,
                     self.app_context.network,
@@ -350,6 +353,7 @@ impl AddKeyScreen {
                     )
                     .with_details(error);
                 } else {
+                    // A literal: the key setters cannot bind a key to a contract.
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -377,17 +381,16 @@ impl AddKeyScreen {
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
-                        let new_qualified_key = QualifiedIdentityPublicKey {
-                            identity_public_key: new_key.into(),
-                            in_wallet_at_derivation_path: None,
-                        };
+                        let new_qualified_key = QualifiedIdentityPublicKey::from(
+                            dash_sdk::platform::IdentityPublicKey::from(new_key),
+                        );
                         self.submitted_private_key
-                            .set_text(hex::encode(private_key_bytes));
+                            .set_text(hex::encode(private_key_bytes.as_slice()));
                         app_action = self.dispatch_add(BackendTask::IdentityTask(
                             IdentityTask::AddKeyToIdentity(
                                 self.identity.clone(),
                                 new_qualified_key,
-                                private_key_bytes,
+                                *private_key_bytes,
                             ),
                         ));
                     } else {
@@ -1236,7 +1239,9 @@ mod derived_key_tests {
     /// A staged context plus the derivation fixture's identity; the public-key
     /// cache is warm when `warm` is set.
     async fn staged_screen_parts(warm: bool) -> (StagedIdentity, QualifiedIdentity) {
-        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let secret_aa = crate::test_support::keys::secret_bytes();
+        let secret_bb = crate::test_support::keys::secret_bytes();
+        let staged = stage_identity_with_vaulted_keys(secret_aa, secret_bb).await;
         let (identity, cache, seed_hash, _) = fixture();
         if warm {
             staged
@@ -1258,7 +1263,7 @@ mod derived_key_tests {
         let task = BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
             screen.identity.clone(),
             key,
-            [0x11; 32],
+            crate::test_support::keys::secret_bytes(),
         ));
         let AppAction::BackendTaskWithContext { context, .. } = screen.dispatch_add(task) else {
             unreachable!("an add is always dispatched with its context");
@@ -1378,30 +1383,24 @@ mod derived_key_tests {
     /// when a lower slot is free.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_key_default_slot_matches_the_new_key_id() {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         let (staged, mut identity) = staged_screen_parts(true).await;
         // A manually entered key takes id 2; the new key will get id 3.
-        identity.identity.add_public_key(
-            IdentityPublicKeyV0 {
-                id: 2,
-                key_type: KeyType::ECDSA_SECP256K1,
-                purpose: Purpose::AUTHENTICATION,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                read_only: false,
-                disabled_at: None,
-                data: dash_sdk::dpp::secp256k1::PublicKey::from_slice(&[
+        identity
+            .identity
+            .add_public_key(crate::context::test_support::identity_public_key(
+                2,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                dash_sdk::dpp::secp256k1::PublicKey::from_slice(&[
                     0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95,
                     0xCE, 0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59,
                     0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17, 0x98,
                 ])
                 .unwrap()
                 .serialize()
-                .to_vec()
-                .into(),
-            }
-            .into(),
-        );
+                .to_vec(),
+            ));
         let screen = AddKeyScreen::new(identity, &staged.ctx);
         assert_eq!(screen.derivation.selected_index(), Some(3));
         assert_eq!(screen.derivation.suggested_index(), None);
@@ -1685,6 +1684,7 @@ mod derived_key_tests {
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
         use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
+        let secret_9 = crate::test_support::keys::secret_bytes();
 
         let (staged, mut identity) = staged_screen_parts(true).await;
         identity.identity.set_id(staged.id);
@@ -1715,7 +1715,7 @@ mod derived_key_tests {
         let mut refreshed = identity.clone();
         let mut foreign = identity.identity.public_keys()[&0].clone();
         foreign.set_id(1);
-        let secret = SecretKey::from_secret_bytes([9; 32]).unwrap();
+        let secret = SecretKey::from_secret_bytes(secret_9).unwrap();
         foreign.set_data(
             PublicKey::from_secret_key(&secret)
                 .serialize()
@@ -1742,6 +1742,8 @@ mod derived_key_tests {
     /// the form field afterwards cannot change the key the user copies.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_rescued_key_is_the_submitted_key_not_the_live_field() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut harness = source_harness(AddKeyScreen::new(identity, &staged.ctx));
         harness.run();
@@ -1750,7 +1752,7 @@ mod derived_key_tests {
         let mut screen = harness.into_state();
         assert!(!screen.derivation.derived());
 
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         screen.private_key_input.set_text(submitted.clone());
         let AppAction::BackendTaskWithContext {
             task: BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(..)),
@@ -1761,7 +1763,7 @@ mod derived_key_tests {
         };
         screen.add_key_status = AddKeyStatus::WaitingForResult;
         // A stray edit lands in the form after the submit.
-        screen.private_key_input.set_text(hex::encode([0x22; 32]));
+        screen.private_key_input.set_text(hex::encode(secret_22));
 
         // An unrelated task fails while the add is still running.
         let unrelated = TaskError::WalletLocked;
@@ -1818,10 +1820,11 @@ mod derived_key_tests {
     /// drop the key it would rescue if its own add then fails.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_foreign_add_success_does_not_complete_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
         let own_add = pending_add(&mut screen);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         screen.submitted_private_key.set_text(submitted.clone());
 
         for foreign in [
@@ -1868,13 +1871,15 @@ mod derived_key_tests {
     /// pending submission nor clear the key its rescue view offers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_same_identity_add_success_does_not_settle_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut closed = AddKeyScreen::new(identity.clone(), &staged.ctx);
-        let stale_context = submit_entered_key(&mut closed, &hex::encode([0x33; 32]));
+        let stale_context = submit_entered_key(&mut closed, &hex::encode(secret_33));
         drop(closed);
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         let own_context = submit_entered_key(&mut screen, &submitted);
         let stale_success = || BackendTaskSuccessResult::AddedKeyToIdentity(FeeResult::new(1, 1));
 
@@ -1903,13 +1908,15 @@ mod derived_key_tests {
     /// neither while its add is pending nor once its rescue view is shown.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stale_same_identity_add_error_does_not_settle_this_add() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (staged, identity) = staged_screen_parts(true).await;
         let mut closed = AddKeyScreen::new(identity.clone(), &staged.ctx);
-        let stale_context = submit_entered_key(&mut closed, &hex::encode([0x33; 32]));
+        let stale_context = submit_entered_key(&mut closed, &hex::encode(secret_33));
         drop(closed);
 
         let mut screen = AddKeyScreen::new(identity, &staged.ctx);
-        let submitted = hex::encode([0x11; 32]);
+        let submitted = hex::encode(secret_11);
         let own_context = submit_entered_key(&mut screen, &submitted);
         let derived_not_saved = || TaskError::DerivedIdentityKeyAddedButNotSaved {
             source: Box::new(TaskError::IdentityKeySlotOccupied),

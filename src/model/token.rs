@@ -10,6 +10,8 @@ use dash_sdk::dpp::data_contract::associated_token::token_once_per_identity_dist
     TokenOncePerIdentityDistribution, accessors::v0::TokenOncePerIdentityDistributionV0Methods,
     v0::TokenOncePerIdentityDistributionV0,
 };
+use dash_sdk::dpp::platform_value::Identifier;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
 /// Minimum number of characters in a searchable contract keyword.
 pub const MIN_CONTRACT_KEYWORD_CHARS: usize = 3;
@@ -67,8 +69,13 @@ pub fn parse_once_per_identity_amount(
 /// The amount every identity may claim once from `config`, when the token has
 /// a once-per-identity distribution (protocol version 14).
 pub fn once_per_identity_amount(config: &TokenConfiguration) -> Option<TokenAmount> {
-    config
-        .distribution_rules()
+    once_per_identity_amount_in_rules(config.distribution_rules())
+}
+
+/// The amount every identity may claim once under `rules`, when they include
+/// a once-per-identity distribution.
+pub fn once_per_identity_amount_in_rules(rules: &TokenDistributionRules) -> Option<TokenAmount> {
+    rules
         .once_per_identity_distribution()
         .map(|distribution| distribution.amount())
 }
@@ -108,9 +115,109 @@ pub(crate) fn token_change_item_is_supported(
     )
 }
 
+/// Why a value typed into the token configuration editor is not acceptable.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TokenConfigInputError {
+    /// The maximum supply is not a whole number.
+    #[error("Enter the maximum supply as a whole number, or leave it empty for no limit.")]
+    MaxSupplyNotANumber,
+    /// The maximum supply is larger than any token amount.
+    #[error(
+        "The maximum supply is too large. Enter at most {max}, or leave it empty for no limit."
+    )]
+    MaxSupplyTooLarge { max: TokenAmount },
+    /// The new-tokens destination is not an identity ID.
+    #[error(
+        "Enter the destination as an identity ID, or leave it empty so new tokens have no default destination."
+    )]
+    DestinationNotAnIdentity,
+}
+
+/// Parse the maximum supply (in the token's smallest units) typed into the
+/// configuration editor. An empty field means no limit.
+pub fn parse_max_supply_input(input: &str) -> Result<Option<TokenAmount>, TokenConfigInputError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    input
+        .parse::<TokenAmount>()
+        .map(Some)
+        .map_err(|e| match e.kind() {
+            std::num::IntErrorKind::PosOverflow => TokenConfigInputError::MaxSupplyTooLarge {
+                max: TokenAmount::MAX,
+            },
+            _ => TokenConfigInputError::MaxSupplyNotANumber,
+        })
+}
+
+/// Parse the identity new tokens go to by default, Base58 or hex. An empty
+/// field means the token has no default destination.
+pub fn parse_new_tokens_destination_input(
+    input: &str,
+) -> Result<Option<Identifier>, TokenConfigInputError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    Identifier::from_string_try_encodings(input, &[Encoding::Base58, Encoding::Hex])
+        .map(Some)
+        .map_err(|_| TokenConfigInputError::DestinationNotAnIdentity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn max_supply_input_is_empty_or_a_whole_number() {
+        assert_eq!(parse_max_supply_input(""), Ok(None));
+        assert_eq!(parse_max_supply_input("  "), Ok(None));
+        assert_eq!(parse_max_supply_input(" 1000 "), Ok(Some(1000)));
+        assert_eq!(
+            parse_max_supply_input(&TokenAmount::MAX.to_string()),
+            Ok(Some(TokenAmount::MAX))
+        );
+        assert_eq!(
+            parse_max_supply_input("18446744073709551616"),
+            Err(TokenConfigInputError::MaxSupplyTooLarge {
+                max: TokenAmount::MAX
+            }),
+            "a number that is too large is not a typo"
+        );
+        for typo in ["12a", "1.5", "-3", "ten"] {
+            assert_eq!(
+                parse_max_supply_input(typo),
+                Err(TokenConfigInputError::MaxSupplyNotANumber),
+                "{typo:?} must not become \"no limit\""
+            );
+        }
+    }
+
+    #[test]
+    fn destination_input_is_empty_or_an_identity_id() {
+        let id = Identifier::from(rand::random::<[u8; 32]>());
+        assert_eq!(parse_new_tokens_destination_input(""), Ok(None));
+        assert_eq!(
+            parse_new_tokens_destination_input(&format!(" {} ", id.to_string(Encoding::Base58))),
+            Ok(Some(id))
+        );
+        assert_eq!(
+            parse_new_tokens_destination_input(&id.to_string(Encoding::Hex)),
+            Ok(Some(id))
+        );
+        // A mistyped `0` is not in the Base58 alphabet, and the rest is not hex.
+        let mut typo = id.to_string(Encoding::Base58);
+        typo.pop();
+        typo.push('0');
+        for typo in [typo.as_str(), "not an id"] {
+            assert_eq!(
+                parse_new_tokens_destination_input(typo),
+                Err(TokenConfigInputError::DestinationNotAnIdentity),
+                "{typo:?} must not become \"no destination\""
+            );
+        }
+    }
 
     #[test]
     fn once_per_identity_amount_is_bounded_like_a_token_balance() {

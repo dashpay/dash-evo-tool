@@ -6,6 +6,7 @@ use crate::model::dashpay::{
     AcceptedAccounts, ContactInfoField, ContactInfoUpdate, UnreadableContactInfoPolicy,
     validate_contact_note,
 };
+use crate::model::document::new_document_for_creation;
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
 use aes_gcm::aes::cipher::{BlockCipherEncrypt, KeyInit};
@@ -13,9 +14,7 @@ use bip39::rand::{SeedableRng, rngs::StdRng};
 use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{
-    Document as DppDocument, DocumentV0, DocumentV0Getters, DocumentV0Setters,
-};
+use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -830,48 +829,26 @@ pub(super) async fn create_or_update_contact_info_locked(
     } else {
         // Create new contactInfo document
         let mut rng = StdRng::from_entropy();
-        let entropy = Bytes32::random_with_rng(&mut rng);
-
-        // Before protocol version 14 this entropy-only id is the document's id,
-        // which Platform recomputes from the entropy. From protocol version 14
-        // (`Document::document_id_depends_on_nonce`) the id also commits to the
-        // identity contract nonce, so this one is only a placeholder that building
-        // the create transition replaces. Read the id from the confirmed document.
-        let document_id = Document::generate_document_id_v0(
-            &dashpay_contract.id(),
-            &identity_id,
-            "contactInfo",
-            entropy.as_slice(),
-        );
-
-        let document = DppDocument::V0(DocumentV0 {
-            moderated_at: None,
-            moderated_by: None,
-            id: document_id,
-            owner_id: identity_id,
-            creator_id: None,
+        let entropy = Bytes32::random_with_rng(&mut rng).to_buffer();
+        let document_type = dashpay_contract
+            .document_type_for_name("contactInfo")
+            .map_err(|e| TaskError::DocumentPreparationFailed {
+                source: Box::new(e.into()),
+            })?;
+        let document = new_document_for_creation(
+            document_type,
+            identity_id,
             properties,
-            revision: Some(1),
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
+            &entropy,
+            sdk.version(),
+        )
+        .map_err(|source| TaskError::DocumentPreparationFailed { source })?;
 
         let mut builder = DocumentCreateTransitionBuilder::new(
             dashpay_contract,
             "contactInfo".to_string(),
             document,
-            entropy
-                .as_slice()
-                .try_into()
-                .expect("entropy should be 32 bytes"),
+            entropy,
         );
 
         // Add state transition options if available
@@ -903,14 +880,22 @@ pub(super) async fn create_or_update_contact_info_locked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0};
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
     use std::cell::Cell;
     use std::collections::VecDeque;
     use std::future::ready;
 
-    const KEY: [u8; 32] = [7u8; 32];
-    const OTHER_KEY: [u8; 32] = [9u8; 32];
+    /// The contact-info encryption keys the tests encrypt and decrypt with:
+    /// generated at runtime, stable for the whole test process.
+    fn key() -> [u8; 32] {
+        crate::test_support::keys::labelled_secret("dashpay::contact_info::tests::key", 0)
+    }
+
+    fn other_key() -> [u8; 32] {
+        crate::test_support::keys::labelled_secret("dashpay::contact_info::tests::key", 1)
+    }
 
     /// DIP-15 `encToUserId` known-answer vector: AES-256-ECB(key = 00..1f,
     /// pt = 40..5f), generated independently with Python `cryptography` 46
@@ -1028,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn contact_info_scan_uses_one_secret_session_for_many_documents() {
         let contact_user_id = id(200);
-        let encrypted_other_id = encrypt_to_user_id(&id(201).to_buffer(), &KEY).expect("encrypt");
+        let encrypted_other_id = encrypt_to_user_id(&id(201).to_buffer(), &key()).expect("encrypt");
         let documents = (0..=CONTACT_INFO_PAGE_SIZE)
             .map(|index| {
                 lookup_contact_info_document(index as u8, index as u32, encrypted_other_id)
@@ -1042,7 +1027,7 @@ mod tests {
                 sessions.set(sessions.get() + 1);
                 ready(Ok(find_existing_contact_info(documents, target, |_| {
                     derivations.set(derivations.get() + 1);
-                    Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+                    Ok((Zeroizing::new(key()), Zeroizing::new(other_key())))
                 })))
             })
             .await
@@ -1058,9 +1043,9 @@ mod tests {
     fn contact_info_scan_stops_deriving_after_target_match() {
         let contact_user_id = id(210);
         let encrypted_target =
-            encrypt_to_user_id(&contact_user_id.to_buffer(), &KEY).expect("encrypt target");
+            encrypt_to_user_id(&contact_user_id.to_buffer(), &key()).expect("encrypt target");
         let encrypted_other =
-            encrypt_to_user_id(&id(211).to_buffer(), &KEY).expect("encrypt other");
+            encrypt_to_user_id(&id(211).to_buffer(), &key()).expect("encrypt other");
         // Newest last: the scan starts from the newest document.
         let documents = vec![
             lookup_contact_info_document(2, 4, encrypted_other),
@@ -1070,7 +1055,7 @@ mod tests {
 
         let existing = find_existing_contact_info(documents, contact_user_id, |index| {
             derived_indices.push(index);
-            Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+            Ok((Zeroizing::new(key()), Zeroizing::new(other_key())))
         });
 
         assert!(existing.is_some());
@@ -1079,13 +1064,13 @@ mod tests {
 
     #[tokio::test]
     async fn contact_info_scan_skips_late_hardened_index_and_keeps_high_water_mark() {
-        const SEED: [u8; 64] = [42; 64];
+        let seed = crate::test_support::keys::seed();
         const MATCH_INDEX: u32 = 7;
         const UNDERIVABLE_INDEX: u32 = 1 << 31;
 
         let contact_user_id = id(220);
         let (target_key, _) = crate::wallet_backend::derive_contact_info_encryption_keys(
-            &SEED,
+            &seed,
             dash_sdk::dpp::dashcore::Network::Testnet,
             MATCH_INDEX,
         )
@@ -1103,7 +1088,7 @@ mod tests {
                 sessions.set(sessions.get() + 1);
                 ready(Ok(find_existing_contact_info(documents, target, |index| {
                     crate::wallet_backend::derive_contact_info_encryption_keys(
-                        &SEED,
+                        &seed,
                         dash_sdk::dpp::dashcore::Network::Testnet,
                         index,
                     )
@@ -1218,7 +1203,7 @@ mod tests {
                 let Ok(encoded) = data.serialize() else {
                     continue;
                 };
-                let encrypted = encrypt_private_data(&encoded, &KEY).unwrap();
+                let encrypted = encrypt_private_data(&encoded, &key()).unwrap();
                 assert!(
                     estimator.estimate_contact_info_write()
                         >= estimator.estimate_document_create_with_size(112 + encrypted.len()),
@@ -1238,13 +1223,13 @@ mod tests {
     /// A stored contactInfo for `contact` whose note platform-wallet wrote.
     fn saved_note_document(document_id: u8, contact: Identifier, note: &str) -> Document {
         use platform_wallet::wallet::identity::crypto as upstream;
-        let user_id = encrypt_to_user_id(&contact.to_buffer(), &KEY).expect("encrypt");
+        let user_id = encrypt_to_user_id(&contact.to_buffer(), &key()).expect("encrypt");
         let mut document = lookup_contact_info_document(document_id, document_id.into(), user_id);
         let plaintext = upstream::encode_private_data(&upstream::ContactInfoPrivateData {
             note: Some(note.to_string()),
             ..Default::default()
         });
-        let private_data = encrypt_private_data(&plaintext, &KEY).expect("encrypt");
+        let private_data = encrypt_private_data(&plaintext, &key()).expect("encrypt");
         document.set("privateData", Value::Bytes(private_data));
         document
     }
@@ -1272,7 +1257,7 @@ mod tests {
                     .any(|clause| clause.field == "$updatedAt" && clause.ascending);
                 ready(Ok::<_, TaskError>(pages.pop_front().unwrap_or_default()))
             },
-            |_| ready(Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))),
+            |_| ready(Ok((Zeroizing::new(key()), Zeroizing::new(key())))),
         )
         .await
         .expect("contact details load");
@@ -1284,7 +1269,7 @@ mod tests {
     #[tokio::test]
     async fn the_contact_details_load_reads_every_page() {
         let contact = id(201);
-        let other = encrypt_to_user_id(&id(202).to_buffer(), &KEY).expect("encrypt");
+        let other = encrypt_to_user_id(&id(202).to_buffer(), &key()).expect("encrypt");
         let first_page = contact_details_page(
             (1..=100).map(|byte| lookup_contact_info_document(byte, byte.into(), other)),
         );
@@ -1348,17 +1333,17 @@ mod tests {
         let mut first = lookup_contact_info_document(
             1,
             1,
-            encrypt_to_user_id(&undecryptable.to_buffer(), &KEY).expect("encrypt"),
+            encrypt_to_user_id(&undecryptable.to_buffer(), &key()).expect("encrypt"),
         );
         first.set("privateData", Value::Bytes(vec![0xA5; 48]));
         let mut second = lookup_contact_info_document(
             2,
             2,
-            encrypt_to_user_id(&undecodable.to_buffer(), &KEY).expect("encrypt"),
+            encrypt_to_user_id(&undecodable.to_buffer(), &key()).expect("encrypt"),
         );
         second.set(
             "privateData",
-            Value::Bytes(encrypt_private_data(&[0xFF; 40], &KEY).expect("encrypt")),
+            Value::Bytes(encrypt_private_data(&[0xFF; 40], &key()).expect("encrypt")),
         );
 
         let (details, _) = load_details(vec![contact_details_page([first, second])]).await;
@@ -1407,7 +1392,7 @@ mod tests {
             saved_note_document(2, contact, "kept"),
         ];
         let existing = find_existing_contact_info(documents, contact, |_| {
-            Ok((Zeroizing::new(KEY), Zeroizing::new(KEY)))
+            Ok((Zeroizing::new(key()), Zeroizing::new(key())))
         });
         assert_eq!(existing.map(|existing| existing.derivation_index), Some(2));
     }
@@ -1418,13 +1403,13 @@ mod tests {
     #[tokio::test]
     async fn a_save_finds_a_document_as_platform_returns_it() {
         let contact = id(230);
-        let encrypted = encrypt_to_user_id(&contact.to_buffer(), &KEY).expect("encrypt");
+        let encrypted = encrypt_to_user_id(&contact.to_buffer(), &key()).expect("encrypt");
         let mut document = lookup_contact_info_document(1, 5, encrypted);
         document.set("encToUserId", Value::Bytes32(encrypted));
 
         let lookup = scan_contact_info_documents(vec![document], contact, |documents, target| {
             ready(Ok(find_existing_contact_info(documents, target, |_| {
-                Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+                Ok((Zeroizing::new(key()), Zeroizing::new(other_key())))
             })))
         })
         .await
@@ -1635,12 +1620,12 @@ mod tests {
                     ContactInfoPrivateData::LEGACY_PLAINTEXT_SIZE
                 );
                 let stored = contact_info_document(Some(Value::Bytes(
-                    encrypt_private_data(&plaintext, &KEY).expect("encrypt"),
+                    encrypt_private_data(&plaintext, &key()).expect("encrypt"),
                 )));
 
                 let parsed = read_contact_info_private_data(
                     Some(&stored),
-                    &KEY,
+                    &key(),
                     UnreadableContactInfoPolicy::Abort,
                 )
                 .unwrap_or_else(|error| panic!("{expected:?} padded with {fill:#x}: {error:?}"));
@@ -1649,7 +1634,7 @@ mod tests {
                 let unhidden = apply_contact_info_update(
                     ContactInfoUpdate::visibility(false),
                     Some(&stored),
-                    &KEY,
+                    &key(),
                 )
                 .expect("unhiding keeps the saved details");
                 assert!(!unhidden.display_hidden);
@@ -1888,12 +1873,12 @@ mod tests {
             );
 
             let stored = contact_info_document(Some(Value::Bytes(
-                encrypt_private_data(&payload, &KEY).expect("encrypt"),
+                encrypt_private_data(&payload, &key()).expect("encrypt"),
             )));
             assert!(matches!(
                 read_contact_info_private_data(
                     Some(&stored),
-                    &KEY,
+                    &key(),
                     UnreadableContactInfoPolicy::Abort,
                 ),
                 Err(TaskError::DashPayContactInfoRead {
@@ -1970,11 +1955,11 @@ mod tests {
 
     #[test]
     fn contact_info_note_preserves_a_concurrent_visibility_change() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+        let existing = stored_contact_info(vec![0, 4, 9], &key());
         let data = apply_contact_info_update(
             ContactInfoUpdate::note(Some("New note".into())),
             Some(&existing),
-            &KEY,
+            &key(),
         )
         .unwrap();
         assert!(
@@ -1988,10 +1973,13 @@ mod tests {
 
     #[test]
     fn visibility_update_preserves_every_unrelated_stored_field() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
-        let data =
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY)
-                .expect("stored details must be readable");
+        let existing = stored_contact_info(vec![0, 4, 9], &key());
+        let data = apply_contact_info_update(
+            ContactInfoUpdate::visibility(false),
+            Some(&existing),
+            &key(),
+        )
+        .expect("stored details must be readable");
 
         assert_eq!(data.alias_name.as_deref(), Some("Bao"));
         assert_eq!(data.note, None);
@@ -2001,12 +1989,12 @@ mod tests {
 
     #[test]
     fn replace_overwrites_whatever_the_document_stored() {
-        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+        let existing = stored_contact_info(vec![0, 4, 9], &key());
 
         let data = apply_contact_info_update(
             ContactInfoUpdate::replace_all(None, None, false, vec![2]),
             Some(&existing),
-            &OTHER_KEY,
+            &other_key(),
         )
         .expect("an explicit full replacement does not read stored data");
 
@@ -2016,7 +2004,7 @@ mod tests {
 
     #[test]
     fn preserving_a_contact_with_no_stored_document_yields_no_accounts() {
-        let data = apply_contact_info_update(ContactInfoUpdate::visibility(false), None, &KEY)
+        let data = apply_contact_info_update(ContactInfoUpdate::visibility(false), None, &key())
             .expect("a first-ever contactInfo has nothing to preserve");
 
         assert!(data.accepted_accounts.is_empty());
@@ -2024,7 +2012,7 @@ mod tests {
 
     #[test]
     fn unreadable_private_data_aborts_the_write() {
-        let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
+        let existing = stored_contact_info(vec![0, 4, 9], &other_key());
 
         // A wrong-key AES-CBC decrypt is unauthenticated: PKCS7 unpadding usually
         // rejects it (DecryptFailed), but ~1/256 the random IV yields valid
@@ -2035,7 +2023,7 @@ mod tests {
                 apply_contact_info_update(
                     ContactInfoUpdate::visibility(false),
                     Some(&existing),
-                    &KEY,
+                    &key(),
                 ),
                 Err(TaskError::DashPayContactInfoRead {
                     source: ContactInfoReadError::DecryptFailed
@@ -2050,13 +2038,13 @@ mod tests {
     fn confirmed_overwrite_is_the_only_escape_hatch_for_unreadable_private_data() {
         use crate::model::dashpay::ContactInfoUpdate;
 
-        let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
+        let existing = stored_contact_info(vec![0, 4, 9], &other_key());
         let update = ContactInfoUpdate::visibility(false);
 
         // Wrong-key decrypt aborts as either DecryptFailed or (≈1/256, on a
         // random IV that passes PKCS7 unpadding) DeserializeFailed.
         assert!(matches!(
-            apply_contact_info_update(update.clone(), Some(&existing), &KEY),
+            apply_contact_info_update(update.clone(), Some(&existing), &key()),
             Err(TaskError::DashPayContactInfoRead {
                 source: ContactInfoReadError::DecryptFailed
                     | ContactInfoReadError::DeserializeFailed,
@@ -2064,7 +2052,7 @@ mod tests {
         ));
 
         let replaced =
-            apply_contact_info_update(update.overwrite_unreadable(), Some(&existing), &KEY)
+            apply_contact_info_update(update.overwrite_unreadable(), Some(&existing), &key())
                 .expect("a confirmed overwrite must let the contact be unhidden");
         assert_eq!(replaced.alias_name, None);
         assert_eq!(replaced.note, None);
@@ -2075,9 +2063,12 @@ mod tests {
     #[test]
     fn missing_private_data_is_safe_to_treat_as_empty() {
         let existing = contact_info_document(None);
-        let data =
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY)
-                .expect("an absent payload contains no details to lose");
+        let data = apply_contact_info_update(
+            ContactInfoUpdate::visibility(false),
+            Some(&existing),
+            &key(),
+        )
+        .expect("an absent payload contains no details to lose");
 
         assert!(data.accepted_accounts.is_empty());
     }
@@ -2087,7 +2078,11 @@ mod tests {
         let existing = contact_info_document(Some(Value::Text("unknown".to_string())));
 
         assert!(matches!(
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY,),
+            apply_contact_info_update(
+                ContactInfoUpdate::visibility(false),
+                Some(&existing),
+                &key(),
+            ),
             Err(TaskError::DashPayContactInfoRead {
                 source: ContactInfoReadError::UnexpectedPrivateDataType,
             })
@@ -2096,11 +2091,16 @@ mod tests {
 
     #[test]
     fn undecodable_private_data_aborts_the_write() {
-        let encrypted = encrypt_private_data(&[0, 0, 0, 0], &KEY).expect("encrypt malformed data");
+        let encrypted =
+            encrypt_private_data(&[0, 0, 0, 0], &key()).expect("encrypt malformed data");
         let existing = contact_info_document(Some(Value::Bytes(encrypted)));
 
         assert!(matches!(
-            apply_contact_info_update(ContactInfoUpdate::visibility(false), Some(&existing), &KEY,),
+            apply_contact_info_update(
+                ContactInfoUpdate::visibility(false),
+                Some(&existing),
+                &key(),
+            ),
             Err(TaskError::DashPayContactInfoRead {
                 source: ContactInfoReadError::DeserializeFailed,
             })

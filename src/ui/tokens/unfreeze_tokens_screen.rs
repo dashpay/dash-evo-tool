@@ -1,4 +1,6 @@
-use super::token_action_screen::{StepCounter, TokenAction, TokenActionCtx, TokenActionScreen};
+use super::token_action_screen::{
+    StepCounter, TokenAction, TokenActionCtx, TokenActionScreen, parse_identity_id,
+};
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
 use crate::backend_task::tokens::TokenTask;
@@ -12,8 +14,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenCo
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::Ui;
 use std::sync::Arc;
 
@@ -76,6 +77,10 @@ impl TokenAction for UnfreezeAction {
         }
     }
 
+    fn inputs_ready(&self) -> bool {
+        parse_identity_id(&self.unfreeze_identity_id).is_some()
+    }
+
     fn build_action(
         &mut self,
         ctx: &TokenActionCtx,
@@ -83,10 +88,7 @@ impl TokenAction for UnfreezeAction {
         public_note: Option<String>,
         group_info: Option<GroupStateTransitionInfoStatus>,
     ) -> Option<AppAction> {
-        let Ok(unfreeze_identity) = Identifier::from_string_try_encodings(
-            &self.unfreeze_identity_id,
-            &[Encoding::Base58, Encoding::Hex],
-        ) else {
+        let Some(unfreeze_identity) = parse_identity_id(&self.unfreeze_identity_id) else {
             MessageBanner::set_global(
                 ctx.app_context.egui_ctx(),
                 "Please enter a valid identity ID.",

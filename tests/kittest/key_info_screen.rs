@@ -33,20 +33,17 @@ const AUTH_ROW: &str = "Authentication key ›";
 /// A key with a chosen id and purpose. Deterministic data, because the row
 /// label this test navigates by is derived from the purpose.
 fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-    use dash_sdk::dpp::platform_value::BinaryData;
-    IdentityPublicKeyV0 {
-        id,
-        key_type: KeyType::ECDSA_HASH160,
-        purpose,
-        security_level: SecurityLevel::CRITICAL,
-        read_only: false,
-        data: BinaryData::new(vec![id as u8; 20]),
-        disabled_at: None,
-        contract_bounds: None,
-    }
-    .into()
+    use dash_sdk::dpp::version::PlatformVersion;
+    let mut key = IdentityPublicKey::default_versioned(PlatformVersion::latest())
+        .expect("identity key structure");
+    key.set_id(id);
+    key.set_purpose(purpose);
+    key.set_security_level(SecurityLevel::CRITICAL);
+    key.set_key_type(KeyType::ECDSA_HASH160);
+    key.set_data(vec![id as u8; 20].into());
+    key
 }
 
 /// A plain user identity carrying `purposes` as public keys and no private key
@@ -103,6 +100,7 @@ fn open_key_info(harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app
 /// KeyInfoScreen re-reads stored keys without resetting an unrelated form.
 #[test]
 fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
+    let secret_22 = dash_evo_tool::test_support::keys::secret_bytes();
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -143,7 +141,7 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
                 (MAIN, restored.id()),
                 (
                     QualifiedIdentityPublicKey::from(restored.clone()),
-                    [0x22; 32],
+                    secret_22,
                 ),
             )
             .expect("the restored slot is free");

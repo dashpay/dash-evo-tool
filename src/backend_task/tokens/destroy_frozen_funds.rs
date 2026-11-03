@@ -49,7 +49,7 @@ impl AppContext {
         self.execute_token_op(
             async {
                 let state_transition = builder
-                    .sign(sdk, &signing_key, actor_identity, self.platform_version())
+                    .sign(sdk, &signing_key, actor_identity, sdk.version())
                     .await
                     .map_err(TaskError::from)?;
                 state_transition

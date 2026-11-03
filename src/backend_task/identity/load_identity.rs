@@ -4,6 +4,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::model::derived_identity_key::recovery_scan_bound;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::masternode_input::decode_identity_id;
@@ -32,6 +33,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
@@ -182,21 +184,21 @@ impl AppContext {
         };
 
         // Fetch the identity using the SDK
-        let identity = match await_network_request_with_timeout(
+        let (identity, fetched) = match await_network_request_with_timeout(
             NETWORK_REQUEST_TIMEOUT,
-            Identity::fetch_by_identifier(sdk, identity_id),
+            Identity::fetch_with_metadata(sdk, identity_id, None),
             |source| TaskError::IdentityLoadTimeout { source },
         )
         .await?
         {
-            Ok(Some(identity)) => identity,
+            Ok((Some(identity), metadata)) => (identity, metadata),
             // For masternode/evonode loads the input is a ProTxHash, so surface a
             // node-specific message instead of the generic identity-not-found copy
             // (which talks about an "ID or name" the user never entered here).
-            Ok(None) if identity_type != IdentityType::User => {
+            Ok((None, _)) if identity_type != IdentityType::User => {
                 return Err(TaskError::MasternodeNotFound { identity_id });
             }
-            Ok(None) => return Err(TaskError::IdentityNotFound),
+            Ok((None, _)) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
 
@@ -233,7 +235,7 @@ impl AppContext {
                 (PrivateKeyOnMainIdentity, key_id),
                 (
                     qualified_key,
-                    PrivateKeyData::Clear(owner_private_key_bytes),
+                    PrivateKeyData::Clear(*owner_private_key_bytes),
                 ),
             );
         }
@@ -256,7 +258,7 @@ impl AppContext {
                 (PrivateKeyOnMainIdentity, key_id),
                 (
                     qualified_key,
-                    PrivateKeyData::Clear(payout_address_private_key_bytes),
+                    PrivateKeyData::Clear(*payout_address_private_key_bytes),
                 ),
             );
         }
@@ -298,7 +300,7 @@ impl AppContext {
                         (PrivateKeyOnVoterIdentity, key.id()),
                         (
                             qualified_key,
-                            PrivateKeyData::Clear(voting_private_key_bytes),
+                            PrivateKeyData::Clear(*voting_private_key_bytes),
                         ),
                     );
                     Some((voter_identity, key))
@@ -315,25 +317,22 @@ impl AppContext {
         // let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
 
         if identity_type == IdentityType::User {
-            let input_private_keys = keys_input
-                .into_iter()
-                .filter_map(|key_string| {
-                    Some(
-                        verify_key_input(key_string, "User Key")
-                            .map_err(TaskError::from)
-                            .transpose()?
-                            .and_then(|sk| {
-                                PrivateKey::from_byte_array(&sk, self.network)
-                                    .map_err(|_| TaskError::InvalidPrivateKey)
-                            }),
-                    )
-                })
-                .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
+            // Reserved up front: a growing `Vec` moves its keys to a new
+            // buffer and frees the old one without wiping it.
+            let mut input_private_keys: Vec<PrivateKey> = Vec::with_capacity(keys_input.len());
+            for key_string in keys_input {
+                if let Some(sk) = verify_key_input(key_string, "User Key")? {
+                    input_private_keys.push(
+                        PrivateKey::from_byte_array(&sk, self.network)
+                            .map_err(|_| TaskError::InvalidPrivateKey)?,
+                    );
+                }
+            }
 
             #[allow(clippy::type_complexity)]
             let (public_key_lookup, public_key_hash_lookup): (
-                HashMap<Vec<u8>, [u8; 32]>,
-                HashMap<[u8; 20], [u8; 32]>,
+                HashMap<Vec<u8>, Zeroizing<[u8; 32]>>,
+                HashMap<[u8; 20], Zeroizing<[u8; 32]>>,
             ) = input_private_keys
                 .into_iter()
                 .map(|private_key| {
@@ -341,8 +340,8 @@ impl AppContext {
                     let public_key_bytes = public_key.to_bytes();
                     let pub_key_hash = public_key.pubkey_hash().to_byte_array();
                     (
-                        (public_key_bytes, *private_key.inner.to_bytes()),
-                        (pub_key_hash, *private_key.inner.to_bytes()),
+                        (public_key_bytes, private_key.inner.to_bytes()),
+                        (pub_key_hash, private_key.inner.to_bytes()),
                     )
                 })
                 .unzip();
@@ -359,8 +358,8 @@ impl AppContext {
                     public_key_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
-                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
-                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(**private_key_bytes),
+                        _ => PrivateKeyData::Clear(**private_key_bytes),
                     };
                     encrypted_private_keys
                         .insert(key_map_key, (qualified_key.clone(), private_data));
@@ -371,8 +370,8 @@ impl AppContext {
                     public_key_hash_lookup.get(public_key.data().0.as_slice())
                 {
                     let private_data = match public_key.security_level() {
-                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(*private_key_bytes),
-                        _ => PrivateKeyData::Clear(*private_key_bytes),
+                        SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(**private_key_bytes),
+                        _ => PrivateKeyData::Clear(**private_key_bytes),
                     };
                     encrypted_private_keys
                         .insert(key_map_key, (qualified_key.clone(), private_data));
@@ -438,6 +437,7 @@ impl AppContext {
             merge_seal_password.as_ref(),
             &load_guard,
             encryption_password.as_ref(),
+            BalanceProvenance::ObservedAt(fetched.height),
         )?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
@@ -460,6 +460,9 @@ impl AppContext {
     /// Store a fetched identity under its record lock, after confirming that
     /// this load is still current: removal, a fresh import and protection
     /// changes may have happened while the network requests were in flight.
+    ///
+    /// The fetched balance, from `balance_provenance`, is reconciled first
+    /// against a stored record's newer one.
     fn finish_identity_load_storage(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -467,6 +470,7 @@ impl AppContext {
         merge_password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
         load_guard: &crate::context::identity_load_registry::IdentityLoadGuard,
         encryption_password: Option<&crate::model::secret::Secret>,
+        balance_provenance: BalanceProvenance,
     ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
         if let Some(password) = encryption_password {
             validate_protection_password(password)?;
@@ -477,15 +481,19 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         load_guard.ensure_current()?;
+        let pending =
+            self.adopt_balance_observation_locked(qualified_identity, balance_provenance)?;
         if load_mode != IdentityLoadMode::MergeIntoExisting {
             let existing = self.get_local_qualified_identity(&identity_id)?;
-            return self.persist_loaded_identity_locked(
+            let stored = self.persist_loaded_identity_locked(
                 qualified_identity,
                 existing,
                 encryption_password,
                 load_mode,
                 IdentityRecordWrite::Import,
-            );
+            )?;
+            self.seed_balance_watermark_locked(pending)?;
+            return Ok(stored);
         }
         // A scoped merge is a key fix-up of a listed identity; it must never
         // restore an identity removed while the network requests were in flight.
@@ -518,7 +526,7 @@ impl AppContext {
         qualified_identity.wallet_index = existing.wallet_index;
         qualified_identity.top_ups = existing.top_ups.clone();
         qualified_identity.status = existing.status;
-        match encryption_password {
+        let stored = match encryption_password {
             None => self.persist_merged_identity_locked(
                 qualified_identity,
                 Some(existing),
@@ -532,7 +540,9 @@ impl AppContext {
                 load_mode,
                 IdentityRecordWrite::UpdateListed,
             ),
-        }
+        }?;
+        self.seed_balance_watermark_locked(pending)?;
+        Ok(stored)
     }
 
     /// Merge `qi` into its stored record, taking the record lock itself.
@@ -1004,6 +1014,7 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -1016,6 +1027,7 @@ mod tests {
     use dash_sdk::dpp::identifier::MasternodeIdentifiers;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -1051,17 +1063,12 @@ mod tests {
             .unwrap();
         let mut other_identity =
             Identity::create_basic_identity(other_voter, PlatformVersion::latest()).unwrap();
-        other_identity.add_public_keys([IdentityPublicKey::V0(
-            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                id: 0,
-                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_HASH160,
-                read_only: false,
-                data: address.to_byte_array().to_vec().into(),
-                disabled_at: None,
-            },
+        other_identity.add_public_keys([identity_public_key(
+            0,
+            dash_sdk::dpp::identity::Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            address.to_byte_array().to_vec(),
         )]);
         select_voting_key(&other_identity, &address.to_byte_array())
             .expect("the key is a usable voting key of the other node");
@@ -1124,18 +1131,15 @@ mod tests {
         let voter = Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
         let mut voter_identity =
             Identity::create_basic_identity(voter, PlatformVersion::latest()).unwrap();
-        voter_identity.add_public_keys([IdentityPublicKey::V0(
-            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
-                id: 0,
-                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_HASH160,
-                read_only: false,
-                data: address.to_byte_array().to_vec().into(),
-                disabled_at: Some(1),
-            },
-        )]);
+        let mut voting_key = identity_public_key(
+            0,
+            dash_sdk::dpp::identity::Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            address.to_byte_array().to_vec(),
+        );
+        voting_key.set_disabled_at(1);
+        voter_identity.add_public_keys([voting_key]);
         let mut sdk = Sdk::new_mock();
         sdk.mock()
             .expect_fetch(staged.id, Some(before.identity.clone()))
@@ -1179,8 +1183,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_merge_cannot_restore_an_identity_removed_during_loading() {
+        let secret_77 = crate::test_support::keys::secret_bytes();
+        let secret_88 = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_77, secret_88)
                 .await;
         let mut loaded = staged
             .ctx
@@ -1198,6 +1204,7 @@ mod tests {
             None,
             &claim,
             None,
+            BalanceProvenance::Unobserved,
         );
         assert!(result.is_err(), "a scoped merge must not undo a removal");
         assert!(!staged.ctx.is_identity_listed(&staged.id).unwrap());
@@ -1212,8 +1219,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_merge_cannot_modify_a_reimported_identity() {
+        let secret_79 = crate::test_support::keys::secret_bytes();
+        let secret_89 = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x79; 32], [0x89; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_79, secret_89)
                 .await;
         let mut loaded = staged
             .ctx
@@ -1237,7 +1246,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -1259,8 +1269,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removal_cancels_older_imports_but_allows_a_fresh_explicit_import() {
+        let secret_7c = crate::test_support::keys::secret_bytes();
+        let secret_8c = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7c; 32], [0x8c; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_7c, secret_8c)
                 .await;
         let mut loaded = staged
             .ctx
@@ -1283,7 +1295,8 @@ mod tests {
                         mode,
                         None,
                         &old_claim,
-                        None
+                        None,
+                        BalanceProvenance::Unobserved,
                     ),
                     Err(TaskError::IdentityLoadSuperseded { .. })
                 ),
@@ -1300,6 +1313,7 @@ mod tests {
                 None,
                 &fresh_claim,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .unwrap();
         fresh_claim.loaded();
@@ -1313,8 +1327,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_merge_preserves_changes_made_while_loading() {
+        let secret_7a = crate::test_support::keys::secret_bytes();
+        let secret_8a = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7a; 32], [0x8a; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_7a, secret_8a)
                 .await;
         let mut loaded = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
         let claim = staged.ctx.begin_identity_load(staged.id, None).unwrap();
@@ -1340,6 +1356,7 @@ mod tests {
                 None,
                 &claim,
                 None,
+                BalanceProvenance::Unobserved,
             )
             .unwrap();
         let stored = staged.ctx.get_identity_by_id(&staged.id).unwrap().unwrap();
@@ -1354,8 +1371,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_merge_rejects_protection_changed_while_loading() {
+        let secret_7b = crate::test_support::keys::secret_bytes();
+        let secret_8b = crate::test_support::keys::secret_bytes();
         let staged =
-            crate::context::test_staging::stage_identity_with_vaulted_keys([0x7b; 32], [0x8b; 32])
+            crate::context::test_staging::stage_identity_with_vaulted_keys(secret_7b, secret_8b)
                 .await;
         let mut loaded = staged
             .ctx
@@ -1373,7 +1392,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 None,
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -1411,6 +1431,9 @@ mod tests {
     /// `load_identity` builds for a Masternode. Returns the qi and its
     /// `(target, key_id)` triple.
     fn masternode_shaped_qi() -> (QualifiedIdentity, [(PrivateKeyTarget, KeyID); 3]) {
+        let secret_a0 = crate::test_support::keys::secret_bytes();
+        let secret_b0 = crate::test_support::keys::secret_bytes();
+        let secret_c0 = crate::test_support::keys::secret_bytes();
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let owner = IdentityPublicKey::random_key(1, Some(1), pv);
@@ -1421,21 +1444,21 @@ mod tests {
             (M, owner.id()),
             (
                 QualifiedIdentityPublicKey::from(owner),
-                PrivateKeyData::Clear([0xA0; 32]),
+                PrivateKeyData::Clear(secret_a0),
             ),
         );
         ks.insert_at(
             (V, voter.id()),
             (
                 QualifiedIdentityPublicKey::from(voter),
-                PrivateKeyData::Clear([0xB0; 32]),
+                PrivateKeyData::Clear(secret_b0),
             ),
         );
         ks.insert_at(
             (M, id_key.id()),
             (
                 QualifiedIdentityPublicKey::from(id_key),
-                PrivateKeyData::Clear([0xC0; 32]),
+                PrivateKeyData::Clear(secret_c0),
             ),
         );
         let identity =
@@ -1584,6 +1607,7 @@ mod tests {
     async fn protected_merge_rechecks_password_and_uses_current_protection() {
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
         use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let secret_9 = crate::test_support::keys::secret_bytes();
         for reprotected in [true, false] {
             let dir = tempfile::tempdir().unwrap();
             let ctx = open_import_context(
@@ -1623,7 +1647,7 @@ mod tests {
                 (V, 9),
                 (
                     QualifiedIdentityPublicKey::from(key),
-                    PrivateKeyData::Clear([9; 32]),
+                    PrivateKeyData::Clear(secret_9),
                 ),
             );
             let fault = WriteFault::arm(0);
@@ -2200,6 +2224,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_import_merge_preserves_existing_keys_and_checks_omitted_labels() {
         use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let secret_e9 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = protected_import_context().await;
         let (mut existing, triple) = masternode_shaped_qi();
         let password = Secret::new("synthetic-import-password");
@@ -2218,7 +2243,7 @@ mod tests {
             (M, added.id()),
             (
                 QualifiedIdentityPublicKey::from(added),
-                PrivateKeyData::AlwaysClear([0xE9; 32]),
+                PrivateKeyData::AlwaysClear(secret_e9),
             ),
         );
         let fault = WriteFault::arm(0);
@@ -2342,9 +2367,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_import_preserves_wallet_derived_keys_without_storing_them() {
+        let secret_91 = crate::test_support::keys::secret_bytes();
+        let secret_92 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = protected_import_context().await;
         let mut qi =
-            crate::context::test_staging::qi_with_plaintext_and_derived([0x91; 32], [0x92; 32]);
+            crate::context::test_staging::qi_with_plaintext_and_derived(secret_91, secret_92);
         ctx.persist_loaded_identity(
             &mut qi,
             Some(&Secret::new("synthetic-import-password")),
@@ -2367,9 +2394,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_import_seals_an_existing_copy_of_a_wallet_derived_key() {
+        let secret_91 = crate::test_support::keys::secret_bytes();
+        let secret_92 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = protected_import_context().await;
         let mut qi =
-            crate::context::test_staging::qi_with_plaintext_and_derived([0x91; 32], [0x92; 32]);
+            crate::context::test_staging::qi_with_plaintext_and_derived(secret_91, secret_92);
         let derived = qi
             .private_keys
             .iter()
@@ -2427,6 +2456,7 @@ mod tests {
     /// key wins on collision.
     #[test]
     fn merge_preserves_owner_and_payout_when_only_voting_key_resupplied() {
+        let secret_ee = crate::test_support::keys::secret_bytes();
         // `existing`: a fully-loaded masternode (owner + voter + identity keys).
         let (existing, triple) = masternode_shaped_qi();
         let [owner_key, voter_key, idkey_key] = triple;
@@ -2448,7 +2478,7 @@ mod tests {
             .clone();
         new.private_keys.insert_at(
             voter_key.clone(),
-            (voter_pk, PrivateKeyData::Clear([0xEE; 32])),
+            (voter_pk, PrivateKeyData::Clear(secret_ee)),
         );
 
         merge_existing_keys_into(&mut new, existing);
@@ -2468,7 +2498,7 @@ mod tests {
             .entry_at(&voter_key)
             .expect("voter key present after merge");
         assert!(
-            matches!(merged_voter, PrivateKeyData::Clear(b) if *b == [0xEE; 32]),
+            matches!(merged_voter, PrivateKeyData::Clear(b) if *b == secret_ee),
             "the resupplied voting key must win on collision",
         );
     }
@@ -2551,6 +2581,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn merge_into_tier2_node_seals_new_key_and_insert_succeeds() {
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        let secret_dd = crate::test_support::keys::secret_bytes();
 
         const PW: &str = "one-identity-password";
 
@@ -2604,7 +2635,7 @@ mod tests {
             new_key.clone(),
             (
                 QualifiedIdentityPublicKey::from(new_voter),
-                PrivateKeyData::Clear([0xDD; 32]),
+                PrivateKeyData::Clear(secret_dd),
             ),
         );
 
@@ -2634,7 +2665,8 @@ mod tests {
                 IdentityLoadMode::MergeIntoExisting,
                 Some(&password),
                 &claim,
-                None
+                None,
+                BalanceProvenance::Unobserved,
             ),
             Err(TaskError::IdentityLoadSuperseded { .. })
         ));
@@ -2651,6 +2683,7 @@ mod tests {
             Some(&password),
             &claim,
             None,
+            BalanceProvenance::Unobserved,
         )
         .expect("seal and persist a merged key under the current password");
 
@@ -2770,6 +2803,8 @@ mod tests {
     async fn protected_merge_rejects_surviving_legacy_encrypted_key() {
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
         use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let secret_dd = crate::test_support::keys::secret_bytes();
+        let secret_ee = crate::test_support::keys::secret_bytes();
         const PW: &str = "synthetic-legacy-merge-password";
         for resupplied in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -2803,7 +2838,7 @@ mod tests {
                 (V, new_voter.id()),
                 (
                     QualifiedIdentityPublicKey::from(new_voter),
-                    PrivateKeyData::Clear([0xDD; 32]),
+                    PrivateKeyData::Clear(secret_dd),
                 ),
             );
             if resupplied {
@@ -2811,7 +2846,7 @@ mod tests {
                     legacy_key.clone(),
                     (
                         QualifiedIdentityPublicKey::from(legacy),
-                        PrivateKeyData::Clear([0xEE; 32]),
+                        PrivateKeyData::Clear(secret_ee),
                     ),
                 );
             }
@@ -2865,6 +2900,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn password_import_validates_legacy_keys_after_replacement() {
         use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let secret_dd = crate::test_support::keys::secret_bytes();
+        let secret_ee = crate::test_support::keys::secret_bytes();
         const PW: &str = "synthetic-legacy-import-password";
         let cases = [
             (IdentityLoadMode::MergeIntoExisting, false),
@@ -2899,7 +2936,7 @@ mod tests {
                 (V, new_voter.id()),
                 (
                     QualifiedIdentityPublicKey::from(new_voter),
-                    PrivateKeyData::Clear([0xDD; 32]),
+                    PrivateKeyData::Clear(secret_dd),
                 ),
             );
             if resupplied {
@@ -2907,7 +2944,7 @@ mod tests {
                     legacy_key.clone(),
                     (
                         QualifiedIdentityPublicKey::from(legacy),
-                        PrivateKeyData::Clear([0xEE; 32]),
+                        PrivateKeyData::Clear(secret_ee),
                     ),
                 );
             }

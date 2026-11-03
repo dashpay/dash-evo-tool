@@ -48,6 +48,7 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 use zxcvbn::zxcvbn;
 
 pub struct KeyInfoScreen {
@@ -1103,14 +1104,16 @@ impl KeyInfoScreen {
     }
 
     fn validate_and_store_private_key(&mut self) {
-        // Convert the input string to bytes (hex decoding)
-        let private_key_bytes = match hex::decode(self.private_key_input.text()) {
-            Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                // From a slice: the error then holds no key bytes to print.
-                <[u8; 32]>::try_from(private_key_bytes_vec.as_slice())
-                    .expect("invariant: length checked to be 32 in the match guard")
-            }
-            Ok(_) => {
+        // Convert the input string to bytes (hex, then WIF). The parsed key is
+        // held in `Zeroizing`, so it is wiped when this function returns.
+        let input = self.private_key_input.text();
+        let is_hex =
+            input.len().is_multiple_of(2) && input.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let private_key_bytes = if is_hex {
+            // Decoded straight into the zeroizing buffer, so no plain copy of
+            // the key is left behind; the only error left is a wrong length.
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            if hex::decode_to_slice(input, bytes.as_mut_slice()).is_err() {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Private key not 32 bytes",
@@ -1118,8 +1121,10 @@ impl KeyInfoScreen {
                 );
                 return;
             }
-            Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
-                Ok(key) => *key.inner.to_bytes(),
+            bytes
+        } else {
+            match PrivateKey::from_wif(input) {
+                Ok(key) => key.inner.to_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -1128,7 +1133,7 @@ impl KeyInfoScreen {
                     );
                     return;
                 }
-            },
+            }
         };
 
         let validation_result = self
@@ -1161,7 +1166,7 @@ impl KeyInfoScreen {
                     let target = Self::filed_at_in(fresh, &self.key)?;
                     fresh.private_keys.insert_non_encrypted(
                         (target, self.key.id()),
-                        (self.key.clone().into(), private_key_bytes),
+                        (self.key.clone().into(), *private_key_bytes),
                     )
                 });
             match updated {
@@ -1784,6 +1789,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::legacy_recovery::RecoveryPlan;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
@@ -1793,7 +1799,6 @@ mod tests {
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
@@ -1850,16 +1855,13 @@ mod tests {
     }
 
     fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        identity_public_key(
             id,
             purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![id as u8; 20]),
+        )
     }
 
     fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
@@ -1897,6 +1899,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protection_status_includes_retained_import_keys() {
+        let secret_9 = crate::test_support::keys::secret_bytes();
         let (ctx, _dir) = offline_ctx().await;
         let key = public_key(9, Purpose::AUTHENTICATION);
         let qi = identity_with(0x5C, &[]);
@@ -1912,7 +1915,7 @@ mod tests {
                 .store_protected(
                     &MAIN,
                     9,
-                    &[9; 32],
+                    &secret_9,
                     &platform_wallet_storage::secrets::SecretString::new(
                         "synthetic-protection-password",
                     ),
@@ -1990,27 +1993,26 @@ mod tests {
     /// private half, leaving the key the user asked about still on the device.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_one_key_leaves_a_different_key_sharing_its_id_alone() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Same id, different keys: purpose is what tells them apart.
         let on_screen = public_key(0, Purpose::VOTING);
-        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![0xEE; 20]),
-            disabled_at: None,
-        });
+        let other = identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            BinaryData::new(vec![0xEE; 20]),
+        );
 
-        let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
+        let mut stored = identity_with(0x5A, &[(on_screen.clone(), secret_11)]);
         stored.private_keys.insert_at(
             (VOTER, other.id()),
             (
                 QualifiedIdentityPublicKey::from(other.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
+                PrivateKeyData::Clear(secret_22),
             ),
         );
         app_context
@@ -2051,10 +2053,11 @@ mod tests {
     /// reads its delete set from that same map.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn removing_a_key_also_removes_its_vault_secret() {
+        let secret_33 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(3, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x7C, &[(on_screen.clone(), [0x33; 32])]);
+        let stored = identity_with(0x7C, &[(on_screen.clone(), secret_33)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2068,7 +2071,7 @@ mod tests {
                 .expect("vault read")
                 .as_deref()
                 .copied(),
-            Some([0x33; 32]),
+            Some(secret_33),
             "saving the key put its bytes in the vault",
         );
 
@@ -2119,10 +2122,11 @@ mod tests {
     /// right after a banner said they were back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_finished_restore_refreshes_the_identity_this_screen_writes_back() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2161,10 +2165,11 @@ mod tests {
     /// with no error to show for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_restore_that_landed_off_screen_survives_the_next_key_edit() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2254,15 +2259,73 @@ mod tests {
             .await;
     }
 
+    /// Pastes `input(secret)` as the private key of a key the identity
+    /// publishes, and reports whether the record on disk then holds that key.
+    async fn held_after_paste(id_byte: u8, input: impl FnOnce(&[u8; 32]) -> String) -> bool {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(id_byte, &[]);
+        stored.identity = Identity::new_with_id_and_keys(
+            Identifier::from([id_byte; 32]),
+            BTreeMap::from([(pasted.id(), pasted.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing the pasted key");
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+
+        screen.private_key_input.set_text(input(&secret));
+        screen.validate_and_store_private_key();
+
+        let held = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored")
+            .private_keys
+            .candidates(&pasted)
+            .next()
+            .is_some();
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+        held
+    }
+
+    /// A key pasted as WIF is read and saved, like one pasted as hex.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_pasted_as_wif_is_saved() {
+        let held = held_after_paste(0x5A, |secret| {
+            PrivateKey::from_byte_array(secret, Network::Testnet)
+                .expect("valid secret key")
+                .to_wif()
+        })
+        .await;
+        assert!(held, "a valid WIF key must be saved");
+    }
+
+    /// Valid hex that is not 32 bytes long is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hex_key_of_the_wrong_length_is_not_saved() {
+        let held = held_after_paste(0x5B, |secret| hex::encode(&secret[..31])).await;
+        assert!(!held, "a 31-byte hex key must not be saved");
+    }
+
     /// The removal's mirror of `a_write_behind_the_screen_survives_a_paste`:
     /// removing one key must not write away a key another writer landed while
     /// the screen was open — for a private key, silently and irreversibly.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_write_behind_the_screen_survives_a_removal() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(0x52, &[(on_screen.clone(), [0x11; 32])]);
+        let stored = identity_with(0x52, &[(on_screen.clone(), secret_11)]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
@@ -2299,23 +2362,20 @@ mod tests {
     /// A key and the private key that opens it, so the paste path's validation
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
-        let secret_bytes = [0x2A; 32];
+        let secret_bytes = crate::test_support::keys::secret_bytes();
         let secret = SecretKey::from_secret_bytes(secret_bytes).expect("a valid secret key");
         let data = PrivateKey::from_byte_array(secret.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key")
             .public_key()
             .to_bytes();
         (
-            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            identity_public_key(
                 id,
                 purpose,
-                security_level: SecurityLevel::HIGH,
-                contract_bounds: None,
-                key_type: KeyType::ECDSA_SECP256K1,
-                read_only: false,
-                data: BinaryData::new(data),
-                disabled_at: None,
-            }),
+                SecurityLevel::HIGH,
+                KeyType::ECDSA_SECP256K1,
+                BinaryData::new(data),
+            ),
             secret_bytes,
         )
     }
@@ -2371,12 +2431,13 @@ mod tests {
         sealed: &IdentityPublicKey,
         also_published: &[IdentityPublicKey],
     ) -> QualifiedIdentity {
+        let secret_31 = crate::test_support::keys::secret_bytes();
         let identifier = Identifier::from([id_byte; 32]);
         crate::wallet_backend::SecretSeam::new(&app_context.secret_store())
             .put_secret_protected(
                 &platform_wallet_storage::secrets::WalletId::from(identifier.to_buffer()),
                 &crate::wallet_backend::SecretScope::identity_key_label(&MAIN, sealed.id()),
-                &platform_wallet_storage::secrets::SecretBytes::from_slice(&[0x31; 32]),
+                &platform_wallet_storage::secrets::SecretBytes::from_slice(&secret_31),
                 &platform_wallet_storage::secrets::SecretString::new("identity-object-password"),
             )
             .expect("seal the existing key Tier-2");
@@ -2459,17 +2520,18 @@ mod tests {
     /// it still holds rather than declaring anything removed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_removal_that_cannot_persist_keeps_the_key_held() {
+        let secret_22 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         // Deliberately never inserted: the record is gone by the time the
         // removal runs, the way another screen's identity removal leaves it.
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let identity = identity_with(0x7D, &[(on_screen.clone(), [0x22; 32])]);
+        let identity = identity_with(0x7D, &[(on_screen.clone(), secret_22)]);
 
         let mut screen = KeyInfoScreen::new(
             identity,
             on_screen.clone(),
-            Some((PrivateKeyData::Clear([0x22; 32]), None)),
+            Some((PrivateKeyData::Clear(secret_22), None)),
             &app_context,
         );
         let error = screen
@@ -2579,10 +2641,11 @@ mod tests {
     /// "restored to this identity" about an identity that is not on screen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_completion_for_another_identity_is_ignored() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)
@@ -2633,10 +2696,11 @@ mod tests {
     /// failure may return the offer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let secret_11 = crate::test_support::keys::secret_bytes();
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), secret_11)]);
         let on_screen_id = on_screen.identity.id();
         app_context
             .insert_local_qualified_identity(&on_screen, &None)
@@ -2667,6 +2731,44 @@ mod tests {
             !screen.recovery.is_restoring(),
             "this restore's own failure must return the offer so it can be retried",
         );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Pins the hex-or-WIF split of the Key Info paste: input that is valid
+    /// hex is decoded as hex, so a hex key of the wrong length says so rather
+    /// than being blamed on WIF, while anything else is tried as WIF.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paste_is_read_as_hex_when_it_is_hex_and_as_wif_otherwise() {
+        let (app_context, _dir) = offline_ctx().await;
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x5C, &[]);
+        let mut screen = KeyInfoScreen::new(stored, pasted, None, &app_context);
+
+        let not_32_bytes = "Private key not 32 bytes";
+        let not_hex_or_wif = "Invalid hex string or WIF for private key.";
+        for (input, expected) in [
+            // Valid hex, one byte short.
+            (hex::encode(&secret[..31]), not_32_bytes),
+            // Valid hex of a WIF key's length. It is not a valid WIF either,
+            // so this does not prove hex is tried first; it pins the message.
+            ("ab".repeat(26), not_32_bytes),
+            // Odd length and non-hex input fall through to WIF.
+            ("abc".to_owned(), not_hex_or_wif),
+            ("z".repeat(52), not_hex_or_wif),
+        ] {
+            MessageBanner::clear_all_global(app_context.egui_ctx());
+            screen.private_key_input.set_text(input.clone());
+            screen.validate_and_store_private_key();
+
+            let banner_texts =
+                crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+            assert_eq!(banner_texts, [expected], "input {input:?}");
+        }
 
         app_context
             .wallet_backend()

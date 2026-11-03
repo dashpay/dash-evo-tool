@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey};
 use rusqlite::{Connection, OpenFlags};
 use zeroize::Zeroizing;
 
@@ -332,10 +332,7 @@ pub(super) fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String
     let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
         source: Box::new(source),
     })?;
-    let pub_key = PublicKey {
-        compressed: priv_key.compressed,
-        inner: priv_key.inner.public_key(),
-    };
+    let pub_key = priv_key.public_key();
     Ok(Address::p2pkh(&pub_key, network).to_string())
 }
 
@@ -387,10 +384,7 @@ mod tests {
             nonce,
         } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
         let priv_key = PrivateKey::from_byte_array(raw_key, network).expect("priv");
-        let pub_key = PublicKey {
-            compressed: priv_key.compressed,
-            inner: priv_key.inner.public_key(),
-        };
+        let pub_key = priv_key.public_key();
         let address = Address::p2pkh(&pub_key, network).to_string();
         let key_hash = ClosedSingleKey::compute_key_hash(raw_key);
         conn.execute(
@@ -420,8 +414,7 @@ mod tests {
     fn correct_password_recovers_compressed_wif_with_stable_address() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("db");
-        let mut raw = [0u8; 32];
-        raw[31] = 7;
+        let raw = crate::test_support::keys::secret_bytes();
         let address = seed_protected_row(
             &conn,
             &raw,
@@ -457,7 +450,7 @@ mod tests {
     fn wrong_password_is_generic_failure_no_oracle() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("db");
-        let raw = [0x11u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let address = seed_protected_row(&conn, &raw, "right-password", None, Network::Testnet);
 
         let blob = read_protected_blob(&conn, &address, Network::Testnet)
@@ -490,7 +483,7 @@ mod tests {
     fn pending_list_returns_protected_rows_for_network_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("db");
-        let raw = [0x22u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let address = seed_protected_row(&conn, &raw, "pw", Some("nick"), Network::Testnet);
 
         let pending = read_pending_protected_rows(&conn, Network::Testnet).expect("list");
@@ -512,7 +505,7 @@ mod tests {
     fn mainnet_rows_saved_with_the_dash_spelling_are_found() {
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("db");
-        let raw = [0x33u8; 32];
+        let raw = crate::test_support::keys::secret_bytes();
         let address = seed_protected_row(&conn, &raw, "pw", None, Network::Mainnet);
         conn.execute("UPDATE single_key_wallet SET network = 'dash'", [])
             .expect("use the pre-v29 spelling");
@@ -562,8 +555,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let conn = Connection::open(dir.path().join("data.db")).expect("db");
-        let mut raw = [0u8; 32];
-        raw[30] = 5;
+        let raw = crate::test_support::keys::secret_bytes();
         let address = seed_protected_row(&conn, &raw, "legacy-pw", Some("vault"), Network::Testnet);
 
         let blob = read_protected_blob(&conn, &address, Network::Testnet)

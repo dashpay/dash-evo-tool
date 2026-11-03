@@ -1523,7 +1523,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([seed_byte; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(
+                crate::test_support::keys::labelled_seed(
+                    "ui::identity::top_up_identity_screen::wallet",
+                    seed_byte.into(),
+                ),
+                Network::Testnet,
+                None,
+                None,
+            )
+            .expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1612,6 +1621,7 @@ mod tests {
 
     #[test]
     fn receive_deposit_dispatch_rejects_amount_above_deposit_address_balance() {
+        let seed_32 = crate::test_support::keys::seed();
         const DEPOSIT_ADDRESS_DUFFS: u64 = 10_000_000;
         const REQUESTED_DUFFS: u64 = 20_000_000;
         const WALLET_CEILING_DUFFS: u64 = 100_000_000;
@@ -1619,7 +1629,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x32; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_32, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1874,7 +1884,7 @@ mod tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x61, "Alpha"), (0x62, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("top_up_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,
@@ -2063,6 +2073,7 @@ mod tests {
     async fn funding_transactions_are_read_only_from_wallets_ready_to_answer() {
         use crate::context::test_support::wired_test_app_context;
         use crate::model::secret::Secret;
+        let seed_73 = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = wired_test_app_context(temp_dir.path()).await;
@@ -2072,19 +2083,19 @@ mod tests {
                 .expect("wallet")
         };
 
-        let ready_seed = [0x71; 64];
+        let ready_seed = crate::test_support::keys::seed();
         let ready = add_wallet_to_registry(&app_context, open_wallet(ready_seed, "Everyday"));
         backend
             .register_wallet_from_seed(&ready, &ready_seed, None)
             .await
             .expect("register the ready wallet");
 
-        let registering_seed = [0x72; 64];
+        let registering_seed = crate::test_support::keys::seed();
         let registering =
             add_wallet_to_registry(&app_context, open_wallet(registering_seed, "Savings"));
 
         let mut locked_wallet = Wallet::new_from_seed(
-            [0x73; 64],
+            seed_73,
             Network::Testnet,
             Some("Vault".to_string()),
             Some(&Secret::new("a long enough password")),
@@ -2202,6 +2213,59 @@ mod tests {
         screen.display_backend_task_error(&context, &TaskError::NoIdentitiesFound);
         assert!(!ProgressOverlay::has_global(&ctx));
         assert_eq!(screen.current_step(), WalletFundedScreenStep::ReadyToCreate);
+    }
+
+    /// A top-up sent from elsewhere changes the balance this screen shows:
+    /// the identity cache notification brings it in without touching the
+    /// form. Other domains and other networks leave it alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_cache_notification_reloads_the_identity_shown() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        use crate::context::test_support::wired_test_app_context;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = wired_test_app_context(temp_dir.path()).await;
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        screen.funding_amount_exact = Some(100_000);
+        let identity_id = screen.identity.identity.id();
+        let mut topped_up = screen.identity.clone();
+        topped_up.identity.set_balance(200_000_000_000);
+        screen
+            .app_context
+            .insert_local_qualified_identity(&topped_up, &None)
+            .expect("store the topped-up identity");
+        let network = screen.app_context.network;
+        let other_network = if network == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+
+        for ignored in [
+            CacheUpdate {
+                network: other_network,
+                domain: CacheDomain::Identities,
+            },
+            CacheUpdate {
+                network,
+                domain: CacheDomain::Tokens,
+            },
+        ] {
+            screen.cached_data_changed(ignored);
+            assert_eq!(screen.identity.identity.balance(), 0, "{ignored:?}");
+        }
+
+        screen.cached_data_changed(CacheUpdate {
+            network,
+            domain: CacheDomain::Identities,
+        });
+        assert_eq!(screen.identity.identity.id(), identity_id);
+        assert_eq!(screen.identity.identity.balance(), 200_000_000_000);
+        assert_eq!(
+            screen.funding_amount_exact,
+            Some(100_000),
+            "the form keeps what the user entered"
+        );
     }
 
     /// Wallet Send can add funds to the same identity without blocking the
@@ -2821,12 +2885,13 @@ mod tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_34 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x34; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_34, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &old_context);

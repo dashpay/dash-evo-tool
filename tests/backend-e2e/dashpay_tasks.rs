@@ -24,7 +24,7 @@ use dash_evo_tool::model::dashpay::{
 };
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -619,14 +619,13 @@ async fn step_update_contact_info(
             "Step 5: identity B lacks ECDSA_SECP256K1 AUTHENTICATION key, adding one..."
         );
         let private_key_bytes: [u8; 32] = rand::random();
-        let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0, // placeholder, AddKeyToIdentity reassigns
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: {
+        // Its id stays the placeholder 0: AddKeyToIdentity reassigns it.
+        let mut new_ipk = IdentityPublicKey::default_versioned(ctx.app_context.platform_version())
+            .expect("identity key structure");
+        new_ipk.set_purpose(Purpose::AUTHENTICATION);
+        new_ipk.set_security_level(SecurityLevel::HIGH);
+        new_ipk.set_key_type(KeyType::ECDSA_SECP256K1);
+        new_ipk.set_data({
                 use dash_sdk::dpp::dashcore::PrivateKey;
                 let secret_key =
                     dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(private_key_bytes)
@@ -637,8 +636,6 @@ async fn step_update_contact_info(
                 )
                 .expect("valid secret key");
                 pk.public_key().to_bytes().into()
-            },
-            disabled_at: None,
         });
 
         let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
@@ -847,18 +844,16 @@ async fn tc_045_detect_incoming_contact_payment() {
     // map, and `LoadPaymentHistory` surfaces an unknown counterparty by id.
     let contact_1 = Identifier::from([0x5a; 32]);
 
-    // Two deterministic, network-valid receiving addresses (distinct pubkeys)
-    // standing in for two freshly-derived contact addresses. Derived from fixed
-    // secret keys so the addresses stay stable across runs while remaining valid
-    // curve points — secp256k1 now rejects raw bytes that are not on the curve,
-    // so a hand-written `[0x02; 33]` is no longer a usable public key.
-    let derive_pubkey = |seed: [u8; 32]| {
-        let secret_key = dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes(seed)
-            .expect("fixed test secret key is a valid scalar");
-        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key())
+    // Two network-valid receiving addresses (distinct pubkeys) standing in for
+    // two freshly-derived contact addresses. Derived from runtime-generated
+    // secret keys so they are valid curve points — secp256k1 rejects raw bytes
+    // that are not on the curve, so a hand-written `[0x02; 33]` is no longer a
+    // usable public key.
+    let derive_pubkey = || {
+        dash_sdk::dpp::dashcore::PublicKey::new(dash_evo_tool::test_support::keys::secret_key().public_key())
     };
-    let pubkey_0 = derive_pubkey([0x01; 32]);
-    let pubkey_1 = derive_pubkey([0x02; 32]);
+    let pubkey_0 = derive_pubkey();
+    let pubkey_1 = derive_pubkey();
     let address_0 =
         dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_0, ctx.app_context.network()).to_string();
     let address_1 =

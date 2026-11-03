@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn test_dip14_derivation_compatibility() {
         // Test that derivation with index < 2^32 matches standard BIP32
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         let master = ExtendedPrivKey::new_master(network, &seed).unwrap();
@@ -235,7 +235,6 @@ mod tests {
     #[test]
     fn test_dip14_test_vector_1() {
         // Test Vector 1 from DIP-14
-        // Mnemonic: birth kingdom trash renew flavor utility donkey gasp regular alert pave layer
         let seed_hex = "b16d3782e714da7c55a397d5f19104cfed7ffa8036ac514509bbb50807f8ac598eeb26f0797bd8cc221a6cbff2168d90a5e9ee025a5bd977977b9eccd97894bb";
         let seed = hex::decode(seed_hex).unwrap();
         let network = Network::Testnet;
@@ -268,7 +267,7 @@ mod tests {
     #[test]
     fn test_dashpay_identity_derivation() {
         // Test DashPay contact relationship derivation
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         // Create two test identity IDs

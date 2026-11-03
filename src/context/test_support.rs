@@ -43,6 +43,30 @@ pub(crate) fn bare_user_identity(id: Identifier, network: Network) -> QualifiedI
     }
 }
 
+/// An identity public key built by dpp's versioned factory: writable, enabled
+/// and not bound to a contract. Tests that need a read-only or disabled key set
+/// that on the result.
+pub(crate) fn identity_public_key(
+    id: dash_sdk::dpp::identity::KeyID,
+    purpose: dash_sdk::dpp::identity::Purpose,
+    security_level: dash_sdk::dpp::identity::SecurityLevel,
+    key_type: dash_sdk::dpp::identity::KeyType,
+    data: impl Into<dash_sdk::dpp::platform_value::BinaryData>,
+) -> dash_sdk::platform::IdentityPublicKey {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+    let mut key = dash_sdk::platform::IdentityPublicKey::default_versioned(
+        dash_sdk::dpp::version::PlatformVersion::latest(),
+    )
+    .expect("identity key structure");
+    key.set_id(id);
+    key.set_purpose(purpose);
+    key.set_security_level(security_level);
+    key.set_key_type(key_type);
+    key.set_data(data.into());
+    key
+}
+
 /// A user identity publishing one key that can register usernames (key id 1),
 /// held on this device only when `held`.
 pub(crate) fn user_identity_with_signing_key(

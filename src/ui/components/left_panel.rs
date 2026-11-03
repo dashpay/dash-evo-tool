@@ -174,6 +174,10 @@ pub fn add_left_panel(
                         .vertical(|mut strip| {
                             // Top cell: scrollable list of buttons
                             strip.cell(|ui| {
+                                // On short windows the lower entries (e.g. Settings) sit
+                                // below the fold; a thin bar that stays visible shows the
+                                // list scrolls, unlike the default hover-only bar.
+                                ui.spacing_mut().scroll = egui::style::ScrollStyle::thin();
                                 egui::ScrollArea::vertical()
                                     .id_salt("left_panel_buttons_scroll")
                                     .auto_shrink([false, false])

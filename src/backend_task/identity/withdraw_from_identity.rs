@@ -1,6 +1,7 @@
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -8,7 +9,7 @@ use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
+use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentityWithMetadata;
 use dash_sdk::platform::{Fetch, Identity};
 
 use super::BackendTaskSuccessResult;
@@ -92,10 +93,10 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_credit_withdrawal();
 
-        let remaining_balance = qualified_identity
+        let (remaining_balance, metadata) = qualified_identity
             .identity
             .clone()
-            .withdraw(
+            .withdraw_with_metadata(
                 &sdk,
                 to_address,
                 credits,
@@ -128,7 +129,10 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+        self.update_local_qualified_identity_observed(
+            &mut qualified_identity,
+            BalanceProvenance::ObservedAt(metadata.height),
+        )
+        .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
     }
 }

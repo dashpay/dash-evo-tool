@@ -402,9 +402,10 @@ impl GroupActionsScreen {
         action: &mut AppAction,
     ) {
         match token_event {
-            TokenEvent::Mint(amount, _identifier, note_opt) => {
+            TokenEvent::Mint(amount, recipient, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.common.group_action_id = Some(action_id);
+                mint_screen.action.recipient_identity_id = recipient.to_string(Encoding::Base58);
                 mint_screen.action.amount = Some(Amount::from_token(
                     &mint_screen.common.identity_token_info,
                     *amount,
@@ -703,5 +704,162 @@ mod sdk_adapter_tests {
         assert!(GroupActionsScreen::supports_token_event_action(
             &TokenEvent::Mint(12, identity, None)
         ));
+    }
+
+    /// Co-signing a group Mint must reuse the proposer's recipient: the field
+    /// is read-only while co-signing, so leaving it empty made the screen
+    /// unable to sign at all.
+    #[test]
+    fn co_signing_a_mint_keeps_the_proposed_recipient() {
+        use crate::ui::tokens::token_action_screen::TokenAction;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let recipient = Identifier::from([9; 32]);
+        let mut screen = GroupActionsScreen::new(&context);
+        let mut action = AppAction::None;
+        screen.handle_token_event_action(
+            &TokenEvent::Mint(12, recipient, None),
+            Identifier::from([8; 32]),
+            info,
+            &mut action,
+        );
+
+        let AppAction::AddScreen(Screen::MintTokensScreen(mint)) = action else {
+            panic!("co-signing a mint must open the Mint screen");
+        };
+        assert_eq!(
+            mint.action.recipient_identity_id,
+            recipient.to_string(Encoding::Base58)
+        );
+        assert!(mint.action.inputs_ready());
+        assert_eq!(
+            co_signed_mint_recipient(&context, mint),
+            Some(recipient),
+            "a token that lets minters choose keeps the proposed recipient"
+        );
+    }
+
+    /// Token info for an owned token with the given mint destination rules.
+    fn mint_token_info(
+        context: &Arc<AppContext>,
+        destination: Option<Identifier>,
+        allow_choosing: bool,
+    ) -> IdentityTokenInfo {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
+
+        let identity = QualifiedIdentity::from_bytes(
+            &crate::database::test_helpers::basic_legacy_identity_blob(
+                [3; 32],
+                None,
+                context.network,
+            ),
+        )
+        .unwrap();
+        let mut config = TokenConfigurationV0::default_most_restrictive();
+        config
+            .distribution_rules
+            .set_new_tokens_destination_identity(destination);
+        config
+            .distribution_rules
+            .set_minting_allow_choosing_destination(allow_choosing);
+        IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity,
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: config.into(),
+            token_position: 0,
+        }
+    }
+
+    /// The recipient the co-signing Mint screen sends to Platform.
+    fn co_signed_mint_recipient(
+        context: &Arc<AppContext>,
+        mut mint: MintTokensScreen,
+    ) -> Option<Identifier> {
+        use crate::backend_task::tokens::TokenTask;
+        use crate::ui::tokens::token_action_screen::{TokenAction, TokenActionCtx};
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+        use dash_sdk::dpp::platform_value::BinaryData;
+
+        let signing_key = IdentityPublicKeyV0 {
+            id: 0,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: false,
+            data: BinaryData::new(vec![1; 20]),
+            disabled_at: None,
+            contract_bounds: None,
+        }
+        .into();
+        let info = mint.common.identity_token_info.clone();
+        let ctx = TokenActionCtx {
+            info: &info,
+            app_context: context,
+            is_group_signing: true,
+        };
+        match mint.action.build_action(&ctx, signing_key, None, None) {
+            Some(AppAction::BackendTask(BackendTask::TokenTask(task))) => match *task {
+                TokenTask::MintTokens { recipient_id, .. } => recipient_id,
+                other => panic!("unexpected task {other:?}"),
+            },
+            other => panic!("expected a mint task, got {other:?}"),
+        }
+    }
+
+    /// The usual treasury setup: new tokens always go to a configured
+    /// identity and minters may not choose. Platform refuses a mint that names
+    /// a recipient there, and checks the co-signer's resolved recipient against
+    /// the proposal's, so co-signing must send no recipient and let the
+    /// configured destination apply.
+    #[test]
+    fn co_signing_a_treasury_mint_sends_no_recipient() {
+        use crate::ui::tokens::token_action_screen::TokenAction;
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let treasury = Identifier::from([9; 32]);
+        let info = mint_token_info(&context, Some(treasury), false);
+        let mut screen = GroupActionsScreen::new(&context);
+        let mut action = AppAction::None;
+        screen.handle_token_event_action(
+            &TokenEvent::Mint(12, treasury, None),
+            Identifier::from([8; 32]),
+            info,
+            &mut action,
+        );
+
+        let AppAction::AddScreen(Screen::MintTokensScreen(mint)) = action else {
+            panic!("co-signing a mint must open the Mint screen");
+        };
+        assert!(mint.action.inputs_ready());
+        assert_eq!(co_signed_mint_recipient(&context, mint), None);
     }
 }

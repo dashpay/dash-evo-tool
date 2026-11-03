@@ -331,6 +331,7 @@ pub fn decrypt_account_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use bip39::rand::{self, RngCore};
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
 
@@ -339,7 +340,7 @@ mod tests {
     /// its drop has run is not allowed.
     #[test]
     fn ecdh_secret_key_zeroize_overwrites_the_key() {
-        let scalar = [0x5a; 32];
+        let scalar = crate::test_support::keys::secret_bytes();
         let mut key = EcdhSecretKey::from_secret_bytes(&scalar).expect("valid scalar");
         assert_eq!(key.0.to_secret_bytes(), scalar);
 
@@ -362,12 +363,7 @@ mod tests {
     }
 
     fn generate_test_key_pair() -> (SecretKey, PublicKey) {
-        let secret_key = SecretKey::from_secret_bytes([
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
-            0x1D, 0x1E, 0x1F, 0x20,
-        ])
-        .unwrap();
+        let secret_key = crate::test_support::keys::secret_key();
         let public_key = PublicKey::from_secret_key(&secret_key);
         (secret_key, public_key)
     }
@@ -375,18 +371,14 @@ mod tests {
     /// Build an `IdentityPublicKey` carrying a raw ECDSA_SECP256K1 public key
     /// in its `data` field — the shape `generate_ecdh_shared_key` expects.
     fn ecdsa_identity_public_key(public_key: &PublicKey) -> IdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
         use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::ENCRYPTION,
-            security_level: SecurityLevel::MEDIUM,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: public_key.serialize().to_vec().into(),
-            disabled_at: None,
-        })
+        identity_public_key(
+            0,
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM,
+            KeyType::ECDSA_SECP256K1,
+            public_key.serialize().to_vec(),
+        )
     }
 
     /// DIP-15 CBC known-answer key/IV. The blobs below were generated
@@ -437,7 +429,9 @@ mod tests {
     /// wipes the sha2 digest) cannot silently alter the derived material.
     #[test]
     fn ecdh_shared_key_matches_pinned_vector() {
-        // Our private key: 0x01..=0x20 (same fixed vector the suite uses).
+        // Our private key: 0x01..=0x20. Fixed on purpose: the expected shared
+        // key depends on it, so it is a golden vector, exempt from runtime key
+        // generation.
         let private_key = [
             0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
             0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,

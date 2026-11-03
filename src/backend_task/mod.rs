@@ -376,6 +376,8 @@ pub enum BackendTaskContext {
     RestoreFromPreviousVersion,
     /// Saving the upgrade-backup retention policy.
     UpdateBackupRetention,
+    /// The Settings "Refresh DAPI endpoints" run.
+    DapiNodeDiscovery,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// The background contest + vote-state refresh; its failures are logged,
@@ -422,6 +424,10 @@ pub enum BackendTaskContext {
         network: Network,
         operation: Box<BackendTaskContext>,
     },
+    /// Building the context of a network the app switches to. Every failure
+    /// of the switch, including a task that stops without a result, must
+    /// release the app the switch is blocking.
+    NetworkSwitch { network: Network },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -754,6 +760,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_index: *identity_index,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::DiscoverDapiNodes { .. } => Self::DapiNodeDiscovery,
             BackendTask::ContestedResourceTask(
                 ContestedResourceTask::SubmitDpnsVoteOperation {
                     operation, network, ..
@@ -795,6 +802,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
             ) => Self::WalletRename(task.clone()),
+            BackendTask::SwitchNetwork { network, .. } => Self::NetworkSwitch { network: *network },
             _ => Self::Other,
         }
     }
@@ -1319,6 +1327,25 @@ impl BackendTaskSuccessResult {
 }
 
 impl AppContext {
+    /// Tell screens that cached data of `domain` changed on this network.
+    /// Never fails the task behind it: the task's own result follows whatever
+    /// happens here, and a frame loop gone at shutdown or after a network
+    /// switch is no reason to report work the network has already accepted
+    /// as failed. A lost notification is logged.
+    pub(crate) async fn notify_cache_changed(
+        &self,
+        domain: CacheDomain,
+        sender: &SenderAsync<TaskResult>,
+    ) {
+        let update = CacheUpdate {
+            network: self.network,
+            domain,
+        };
+        if sender.send(TaskResult::CacheUpdated(update)).await.is_err() {
+            tracing::warn!(?update, "No frame loop took the cache notification");
+        }
+    }
+
     /// Run backend tasks sequentially
     pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,
@@ -1598,6 +1625,10 @@ impl AppContext {
         })
         .ok_or(TaskError::NetworkContextCreationFailed { network })?;
         new_ctx.install_secret_prompt(self.secret_prompt());
+        // The switch runs on the frame loop of the context it leaves; the new
+        // context reports to the same one, and its backend is built on it
+        // below, before anyone else is handed the context.
+        new_ctx.install_frame_loop(sender.clone());
 
         let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
             Ok(()) => {
@@ -1851,11 +1882,86 @@ mod tests {
             .await;
     }
 
+    /// A cache notification goes to the frame loop when one listens, and is
+    /// dropped without error when none does: the result of the task behind
+    /// it must never be lost to the notification.
+    #[tokio::test]
+    async fn a_cache_notification_never_fails_the_task_behind_it() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let listening = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Identities, &listening)
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(TaskResult::CacheUpdated(CacheUpdate {
+                network,
+                domain: CacheDomain::Identities,
+            })) if network == context.network
+        ));
+
+        let (tx, _) = tokio::sync::mpsc::channel(1);
+        let unheard = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .notify_cache_changed(CacheDomain::Tokens, &unheard)
+            .await;
+    }
+
+    /// A network switch installs the frame loop it runs on as the new
+    /// context's, and builds the context's wallet backend on it, before the
+    /// context is registered or returned: a request reaching the new context
+    /// through MCP reports to the same frame loop as the GUI.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_installs_the_frame_loop_on_the_new_context() {
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context.install_frame_loop(SenderAsync::new(tx, context.egui_ctx().clone()));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                context.frame_loop_sender(),
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected completed network context");
+        };
+        while rx.try_recv().is_ok() {}
+
+        new_context
+            .frame_loop_sender()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the new context reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(TaskResult::Repaint)
+            .await
+            .expect("the backend reports to the frame loop");
+        assert!(matches!(rx.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
         use crate::context::test_support::test_app_context;
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
         use zeroize::Zeroizing;
+        let seed_7b = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = test_app_context(temp_dir.path());
@@ -1899,7 +2005,7 @@ mod tests {
         };
         secret_access.remember_session(
             &scope,
-            SecretPlaintext::HdSeed(&Zeroizing::new([0x7b; 64])),
+            SecretPlaintext::HdSeed(&Zeroizing::new(seed_7b)),
             RememberPolicy::UntilAppClose,
         );
         assert!(secret_access.is_session_cached(&scope));
@@ -2035,7 +2141,7 @@ mod tests {
         let identity_id = [0x91; 32];
         let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
         let key_id = 7;
-        let key = [0xa5; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let password = "network-switch-password";
         let secret_store = ctx.secret_store();
         IdentityKeyView::new(&secret_store, identity_id)
@@ -2234,6 +2340,7 @@ mod tests {
         use crate::backend_task::core::{PaymentRecipient, WalletPaymentRequest};
         use crate::model::wallet::Wallet;
         use std::sync::RwLock;
+        let seed_7 = crate::test_support::keys::seed();
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
@@ -2242,8 +2349,7 @@ mod tests {
             }],
             override_fee: None,
         };
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, None, None).expect("wallet");
         let direct = BackendTask::CoreTask(CoreTask::SendWalletPayment {
             wallet: Arc::new(RwLock::new(wallet)),
             request,

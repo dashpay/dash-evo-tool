@@ -381,6 +381,7 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::backend_task::TaskResult;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::test_support::identity_public_key;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -393,13 +394,11 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::dashcore::sign_message::{self, signed_msg_hash};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::{PublicKey, SecretKey};
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::IdentityPublicKey;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::Receiver;
 
@@ -436,7 +435,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
 
-        let seed = [0x5Au8; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet =
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
         let seed_hash = wallet.seed_hash();
@@ -522,9 +521,10 @@ mod tests {
     /// hardcoded recovery header would fail ~50% of the time here. Both the
     /// wallet-key and identity-key signers call this one helper.
     fn assert_recovers(compressed: bool) {
-        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
+        let secret_42 = crate::test_support::keys::secret_bytes();
+        let secret_key = EcdsaSecretKey::from_bytes(&secret_42).expect("valid secret");
         let expected_pubkey = PublicKey::from_secret_key(
-            &SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret"),
+            &SecretKey::from_secret_bytes(secret_42).expect("valid secret"),
         );
         let message = "Bilby was here";
 
@@ -547,9 +547,10 @@ mod tests {
     fn the_envelope_keeps_its_byte_layout() {
         use dash_sdk::dpp::secp256k1::Message;
         use dash_sdk::dpp::secp256k1::ecdsa::RecoverableSignature;
+        let secret_42 = crate::test_support::keys::secret_bytes();
         let message = "Bilby was here";
-        let reference_key = SecretKey::from_secret_bytes([0x42u8; 32]).expect("valid secret");
-        let secret_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).expect("valid secret");
+        let reference_key = SecretKey::from_secret_bytes(secret_42).expect("valid secret");
+        let secret_key = EcdsaSecretKey::from_bytes(&secret_42).expect("valid secret");
         let digest = Message::from_digest(*signed_msg_hash(message).as_byte_array());
         let (recovery_id, compact) =
             RecoverableSignature::sign_ecdsa_recoverable(digest, &reference_key)
@@ -589,20 +590,17 @@ mod tests {
         secret: [u8; 32],
     ) -> Identifier {
         let platform_version = PlatformVersion::latest();
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: key_id,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let public_key = identity_public_key(
+            key_id,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         let mut private_keys = KeyStorage::default();
         private_keys.insert_at(
             (MAIN, key_id),
@@ -642,7 +640,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_secret_matching_its_recorded_key_still_resolves() {
         let fixture = wallet_fixture().await;
-        let secret = [0x21; 32];
+        let secret = crate::test_support::keys::secret_bytes();
         let identity_id = store_identity_holding(&fixture.ctx, 0x90, 7, secret);
 
         let bytes = fixture
@@ -661,11 +659,12 @@ mod tests {
     /// so the chokepoint must refuse them rather than hand them over.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_vault_secret_that_is_not_the_recorded_key_is_refused() {
+        let secret_99 = crate::test_support::keys::secret_bytes();
         let fixture = wallet_fixture().await;
         let identity_id = store_identity_holding(&fixture.ctx, 0x91, 7, [0x21; 32]);
         let backend = fixture.ctx.wallet_backend().expect("backend");
         IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer())
-            .store(&MAIN, 7, &[0x99; 32])
+            .store(&MAIN, 7, &secret_99)
             .expect("plant a different key at the same label");
 
         let reached_key = Arc::new(AtomicBool::new(false));
@@ -694,11 +693,12 @@ mod tests {
     /// asked for it by name.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_placement_the_identity_does_not_record_is_refused() {
+        let secret_88 = crate::test_support::keys::secret_bytes();
         let fixture = wallet_fixture().await;
         let identity_id = store_identity_holding(&fixture.ctx, 0x92, 7, [0x21; 32]);
         let backend = fixture.ctx.wallet_backend().expect("backend");
         IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer())
-            .store(&VOTER, 7, &[0x88; 32])
+            .store(&VOTER, 7, &secret_88)
             .expect("plant an orphan where the record names nothing");
 
         let reached_key = Arc::new(AtomicBool::new(false));
@@ -729,21 +729,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_dead_placeholder_at_the_named_placement_falls_through_to_a_live_sibling() {
         let fixture = wallet_fixture().await;
-        let secret = [0x27; 32];
-        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 7,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: BinaryData::new(
+        let secret = crate::test_support::keys::secret_bytes();
+        let public_key = identity_public_key(
+            7,
+            Purpose::VOTING,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_SECP256K1,
+            BinaryData::new(
                 KeyType::ECDSA_SECP256K1
                     .public_key_data_from_private_key_data(&secret, Network::Testnet)
                     .expect("derive the public half"),
             ),
-            disabled_at: None,
-        });
+        );
         // One key, filed `InVault` under both stores — the dual-filed shape a
         // blob written under two conventions carries.
         let mut private_keys = KeyStorage::default();

@@ -206,7 +206,7 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
         (
             QualifiedIdentityPublicKey::from(key),
-            PrivateKeyData::Clear([byte; 32]),
+            PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
         ),
     )]));
     let node_qi = QualifiedIdentity {
@@ -1587,7 +1587,7 @@ fn seed_node_with_non_voting_purpose_voter_key(
             (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
             (
                 QualifiedIdentityPublicKey::from(voter_key),
-                PrivateKeyData::Clear([byte; 32]),
+                PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
             ),
         )])),
         dpns_names: vec![],
@@ -1690,20 +1690,14 @@ fn key_info_names_a_voter_key_as_the_masternode_key_list_does() {
 fn seed_node_with_purpose_filed_voting_key(app_context: &Arc<AppContext>, byte: u8, alias: &str) {
     let pv = PlatformVersion::latest();
     let voting_key: IdentityPublicKey = {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
         use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-        use dash_sdk::dpp::platform_value::BinaryData;
-        IdentityPublicKeyV0 {
-            id: 0,
-            key_type: KeyType::ECDSA_HASH160,
-            purpose: Purpose::VOTING,
-            security_level: SecurityLevel::HIGH,
-            read_only: false,
-            data: BinaryData::new(vec![byte; 20]),
-            disabled_at: None,
-            contract_bounds: None,
-        }
-        .into()
+        let mut key = IdentityPublicKey::default_versioned(pv).expect("identity key structure");
+        key.set_purpose(Purpose::VOTING);
+        key.set_security_level(SecurityLevel::HIGH);
+        key.set_key_type(KeyType::ECDSA_HASH160);
+        key.set_data(vec![byte; 20].into());
+        key
     };
 
     let node_identity = Identity::new_with_id_and_keys(
@@ -1725,7 +1719,7 @@ fn seed_node_with_purpose_filed_voting_key(app_context: &Arc<AppContext>, byte: 
             (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting_key.id()),
             (
                 QualifiedIdentityPublicKey::from(voting_key),
-                PrivateKeyData::Clear([byte; 32]),
+                PrivateKeyData::Clear(dash_evo_tool::test_support::keys::secret_bytes()),
             ),
         )])),
         dpns_names: vec![],

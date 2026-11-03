@@ -131,20 +131,20 @@ fn find_wallet_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::identity_public_key;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::secp256k1::SecretKey;
 
-    const TEST_SEED: [u8; 64] = [7u8; 64];
-
     /// A real curve public key keyed off `n`, so its p2pkh address is a valid
     /// point (not a fabricated hash).
     fn pubkey(n: u8) -> PublicKey {
-        let mut sk_bytes = [3u8; 32];
-        sk_bytes[31] = n.max(1);
+        let sk_bytes = crate::test_support::keys::labelled_secret(
+            "qualified_identity_public_key::pubkey",
+            n.into(),
+        );
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         PublicKey::new(sk.public_key())
     }
@@ -152,24 +152,23 @@ mod tests {
     /// An identity public key of `key_type` carrying `data`. `id`/`purpose`/
     /// `security_level` are immaterial to address resolution.
     fn identity_key(key_type: KeyType, data: Vec<u8>) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
+        identity_public_key(
+            0,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
             key_type,
-            read_only: false,
-            data: BinaryData::new(data),
-            disabled_at: None,
-        })
+            BinaryData::new(data),
+        )
     }
 
     /// A wallet holding exactly `entries` in `known_addresses`, plus the fresh
     /// receive address `new_from_seed` seeds. Uses a distinct seed per `salt`
     /// so multi-wallet tests get distinct `seed_hash`es.
     fn wallet_with(salt: u8, entries: &[(Address, DerivationPath)]) -> Arc<RwLock<Wallet>> {
-        let mut seed = TEST_SEED;
-        seed[0] = salt;
+        let seed = crate::test_support::keys::labelled_seed(
+            "qualified_identity_public_key::wallet_with",
+            salt.into(),
+        );
         let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         for (address, path) in entries {
             wallet.known_addresses.insert(address.clone(), path.clone());

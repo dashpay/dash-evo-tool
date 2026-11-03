@@ -571,7 +571,10 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::DashPayProfileUpdated(_)
             | BackendTaskSuccessResult::DashPayContactsWithInfo { .. }
             | BackendTaskSuccessResult::DashPayContactRequests { .. }
-            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. } => true,
+            | BackendTaskSuccessResult::DashPayContactInfoUpdated { .. }
+            // An identity removed from another screen may be the one the hub
+            // shows, in view or not.
+            | BackendTaskSuccessResult::RemovedIdentities { .. } => true,
             BackendTaskSuccessResult::DashPayAvatar { url, .. } => self.is_waiting_for_avatar(url),
             _ => false,
         };
@@ -1040,7 +1043,8 @@ impl ScreenLike for IdentityHubScreen {
                     );
                 }
             }
-            // AppState delivers removals even while this root is hidden and owns the banner.
+            // Reaches this root as its own result or as an observer of another
+            // screen's removal; the banner is the identity feedback's.
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
                 identity_ids,
@@ -2099,21 +2103,22 @@ mod tests {
     }
 
     async fn seed_cached_profile(context: &Arc<AppContext>) -> QualifiedIdentity {
+        let seed_42 = crate::test_support::keys::seed();
         let id = seed_user_identity(context, 42);
         let identity = context.load_local_user_identities().unwrap().remove(0);
         let backend = context.wallet_backend().unwrap();
         let wallet =
-            crate::model::wallet::Wallet::new_from_seed([42; 64], Network::Testnet, None, None)
+            crate::model::wallet::Wallet::new_from_seed(seed_42, Network::Testnet, None, None)
                 .unwrap();
         let (hash, _) = context
             .register_wallet(
                 wallet,
-                &[42; 64],
+                &seed_42,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .unwrap();
         backend
-            .register_wallet_from_seed(&hash, &[42; 64], None)
+            .register_wallet_from_seed(&hash, &seed_42, None)
             .await
             .unwrap();
         backend

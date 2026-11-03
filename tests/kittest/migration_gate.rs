@@ -1367,6 +1367,49 @@ fn a_connect_during_a_pending_switch_is_refused() {
     });
 }
 
+/// Closing the app while a first-visit switch is still building the new
+/// network's context stops the switch instead of waiting for it. The exit
+/// otherwise sat out the whole background-task budget (two 10 s phases)
+/// before the window could close.
+///
+/// Drives the exit through `on_exit`, the blocking fallback; the window-close
+/// path drains the same task manager.
+#[test]
+fn closing_the_app_during_a_pending_switch_does_not_wait_for_it() {
+    // Well under one 10 s shutdown phase, so a switch that ignores the exit
+    // still fails, with headroom for a slow CI runner.
+    const EXIT_BOUND: Duration = Duration::from_secs(5);
+
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let (mut harness, first, second) = mount_on_chooser_with_auto_start();
+
+        // Pin the switch before it builds the new network's context: it stays
+        // in flight for as long as the guard lives.
+        let outgoing_context = harness.state().current_app_context().clone();
+        let pending_switch = rt.block_on(outgoing_context.test_hold_network_switch());
+        harness.state_mut().change_network(second);
+        harness.step();
+        assert_eq!(
+            harness.state().current_app_context().network(),
+            first,
+            "precondition: the switch is still pending",
+        );
+
+        let started = Instant::now();
+        eframe::App::on_exit(harness.state_mut());
+        let exit_took = started.elapsed();
+        drop(pending_switch);
+
+        assert!(
+            exit_took < EXIT_BOUND,
+            "closing the app waited {exit_took:?} for the pending switch (bound {EXIT_BOUND:?})",
+        );
+    });
+}
+
 /// Pump frames until every chain-sync start the app dispatched has finished,
 /// failing if chain sync comes up on `context` on the way or once they have.
 /// For a start that was already dispatched when the user disconnected. Only its

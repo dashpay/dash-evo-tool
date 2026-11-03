@@ -766,6 +766,12 @@ impl AppContext {
         let status = self.migration_status();
         let total = wallets.len() as u32;
         for (index, wallet) in wallets.iter().enumerate() {
+            // Closing the app stops the pass between wallets, never inside
+            // one: a wallet's bootstrap writes upstream registration and key
+            // bindings, and the next start runs the whole pass again.
+            if self.subtasks.cancellation_token.is_cancelled() {
+                break;
+            }
             status.set_wallet_load(Some((index as u32 + 1, total)));
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }

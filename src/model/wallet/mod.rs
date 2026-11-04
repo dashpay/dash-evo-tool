@@ -2586,7 +2586,8 @@ mod tests {
     }
 
     /// An explicit refresh that started before a spend and finishes after it
-    /// must not bring back the pre-spend figure.
+    /// must not bring back the pre-spend figure; one newer than the spend is
+    /// applied with its own height.
     #[test]
     fn a_refresh_older_than_a_pinned_spend_does_not_undo_it() {
         let network = Network::Testnet;
@@ -2595,18 +2596,42 @@ mod tests {
         let address = wallet
             .generate_platform_receive_address_with_seed(&seed, network)
             .expect("platform address");
-        let mut provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
-        provider.update_balance(&address, 80_000);
+        let canonical = Wallet::canonical_address(&address, network);
+        let scan = |balance: u64, nonce: u32, as_of_height: u64| {
+            let mut provider =
+                WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+            provider.found_balances.insert(
+                canonical.clone(),
+                AddressFunds {
+                    nonce,
+                    balance,
+                    as_of_height,
+                },
+            );
+            provider
+        };
+        let figure = |wallet: &Wallet| {
+            let info = wallet
+                .get_platform_address_info(&address)
+                .expect("address info");
+            (info.balance, info.nonce, info.as_of_height)
+        };
+        let older = scan(80_000, 2, 400);
+        let newer = scan(45_000, 4, 650);
 
         wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
-        provider.apply_results_to_wallet(&mut wallet);
-
-        let info = wallet
-            .get_platform_address_info(&address)
-            .expect("address info");
+        older.apply_results_to_wallet(&mut wallet);
         assert_eq!(
-            (info.balance, info.nonce, info.as_of_height),
-            (41_000, 3, 500)
+            figure(&wallet),
+            (41_000, 3, 500),
+            "the older scan is ignored"
+        );
+
+        newer.apply_results_to_wallet(&mut wallet);
+        assert_eq!(
+            figure(&wallet),
+            (45_000, 4, 650),
+            "the newer scan is applied"
         );
     }
 

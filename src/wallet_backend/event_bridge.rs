@@ -1422,6 +1422,58 @@ mod tests {
         assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
     }
 
+    /// A proven-absent address whose zero push was dropped (full channel) is
+    /// zeroed again by the next pass, after its total already reads zero.
+    #[test]
+    fn a_dropped_absence_push_is_resent_by_the_next_pass() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::AddressSyncResult;
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+        use std::collections::BTreeMap;
+
+        let (wallet_id, seed_hash) = ([6u8; 32], [6u8; 32]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            seed_hash,
+            BTreeMap::from([([0xBB; 20], (30 * CREDITS_PER_DUFF, 600))]),
+        )]);
+        let mut balances = HashMap::from([(seed_hash, 30)]);
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult {
+                checkpoint_height: 700,
+                ..Default::default()
+            };
+        result
+            .absent
+            .insert(((wallet_id, 0, 1), PlatformP2PKHAddress::new([0xBB; 20])));
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+        let pass = |ledger: &PlatformBalanceLedger| -> PlatformAddressUpdates {
+            summary_ok_platform_entries(&summary, |_, hash| ledger_tracks(ledger, &seed_hash, hash))
+                .into_iter()
+                .map(|(_, entries)| (seed_hash, entries))
+                .collect()
+        };
+
+        // First pass: the total goes to zero, but its push is dropped.
+        let first = pass(&ledger);
+        write_pass_totals(&mut balances, Some(&mut ledger), &first);
+        assert_eq!(balances.get(&seed_hash), Some(&0));
+
+        // The next pass still carries the zero for the per-address view.
+        let second = pass(&ledger);
+        let zero = second[0].1.iter().find(|e| e.hash == [0xBB; 20]);
+        assert_eq!(
+            zero.map(|e| (e.balance, e.nonce, e.as_of_height)),
+            Some((0, 0, 700))
+        );
+    }
+
     /// An address already zeroed stays tracked, so a pass after a dropped
     /// push zeroes it again; an address the ledger never held is not tracked.
     #[test]

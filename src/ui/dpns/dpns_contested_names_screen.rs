@@ -591,6 +591,11 @@ impl DPNSScreen {
 
     /// End the wait for the contest refresh `context` belongs to, if this panel
     /// is waiting on that one. Any other refresh leaves the wait running.
+    ///
+    /// Besides a newer refresh or a network switch, the only teardown of
+    /// `refresh_banner`: an error message names no request, and a failed
+    /// sub-query of a running or older refresh must not take this refresh's
+    /// progress banner down.
     fn finish_contest_refresh(&mut self, context: &BackendTaskContext) {
         if context.is_dpns_contest_refresh() && self.contest_refresh.settle(context).is_some() {
             self.refreshing_status = RefreshingStatus::NotRefreshing;
@@ -2761,13 +2766,6 @@ impl ScreenLike for DPNSScreen {
             }
         }
         self.refresh();
-    }
-
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
-        }
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {

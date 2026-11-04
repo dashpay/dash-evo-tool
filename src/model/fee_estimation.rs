@@ -304,10 +304,13 @@ impl PlatformFeeEstimator {
 
     /// Apply the fee multiplier to a base fee amount.
     /// Multiplier is in permille: 1000 = 1x, 1500 = 1.5x, 2000 = 2x
+    ///
+    /// The product is formed in `u128` (it cannot overflow there) and only the
+    /// final result is clamped to `u64::MAX`, so an overflowing product never
+    /// scales a fee below its base.
     fn apply_multiplier(&self, base_fee: u64) -> u64 {
-        base_fee
-            .saturating_mul(self.fee_multiplier_permille)
-            .saturating_div(1000)
+        let scaled = u128::from(base_fee) * u128::from(self.fee_multiplier_permille) / 1000;
+        u64::try_from(scaled).unwrap_or(u64::MAX)
     }
 
     /// Get the current fee multiplier permille
@@ -1500,6 +1503,28 @@ fn shield_fee_reserve(platform_version: &PlatformVersion) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scaling a fee never lowers it once the product overflows `u64`: the
+    /// multiply runs wide and only the final result is clamped, so a higher
+    /// network multiplier always yields an estimate at least as high.
+    #[test]
+    fn fee_multiplier_clamps_only_the_final_result() {
+        let at = |multiplier: u64, base: u64| {
+            PlatformFeeEstimator::latest_with_fee_multiplier(multiplier).apply_multiplier(base)
+        };
+
+        assert_eq!(at(1000, 12_345), 12_345);
+        assert_eq!(at(1500, 12_345), 18_517);
+        assert_eq!(at(2000, 12_345), 24_690);
+        assert_eq!(at(1000, u64::MAX), u64::MAX);
+        assert_eq!(at(1001, u64::MAX), u64::MAX);
+        assert_eq!(at(2000, u64::MAX), u64::MAX);
+        assert_eq!(at(u64::MAX, u64::MAX), u64::MAX);
+        // The product overflows `u64`, but the scaled fee still fits.
+        assert_eq!(at(2000, u64::MAX / 4), u64::MAX / 4 * 2);
+        // Below 1x the overflowing product is still divided exactly.
+        assert_eq!(at(500, u64::MAX), u64::MAX / 2);
+    }
 
     /// The upstream-derived Platform and shielded fee helpers go through the
     /// tolerance hook, and a shield Max is lowered by exactly what the hook

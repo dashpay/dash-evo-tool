@@ -118,13 +118,52 @@ fn node_type_from_env() -> IdentityType {
     }
 }
 
-/// Build the load task exactly as `masternode_identity_load` would.
+/// Build the load task exactly as `masternode_identity_load` would. The
+/// harness shares one context, so a repeat load keeps keys an earlier case
+/// stored.
 fn load_task(
     pro_tx_hash: String,
     node_type: IdentityType,
     owner_wif: Option<String>,
     payout_wif: Option<String>,
     voting_wif: Option<String>,
+) -> BackendTask {
+    load_task_with_mode(
+        pro_tx_hash,
+        node_type,
+        owner_wif,
+        payout_wif,
+        voting_wif,
+        IdentityLoadMode::MergeOrInsert,
+    )
+}
+
+/// A load that replaces whatever an earlier case stored, for a case asserting
+/// that a key it did not supply is absent.
+fn replacing_load_task(
+    pro_tx_hash: String,
+    node_type: IdentityType,
+    owner_wif: Option<String>,
+    payout_wif: Option<String>,
+    voting_wif: Option<String>,
+) -> BackendTask {
+    load_task_with_mode(
+        pro_tx_hash,
+        node_type,
+        owner_wif,
+        payout_wif,
+        voting_wif,
+        IdentityLoadMode::Overwrite,
+    )
+}
+
+fn load_task_with_mode(
+    pro_tx_hash: String,
+    node_type: IdentityType,
+    owner_wif: Option<String>,
+    payout_wif: Option<String>,
+    voting_wif: Option<String>,
+    load_mode: IdentityLoadMode,
 ) -> BackendTask {
     let input = IdentityInputToLoad {
         identity_id_input: pro_tx_hash,
@@ -137,7 +176,7 @@ fn load_task(
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
         encryption_password: None,
-        load_mode: IdentityLoadMode::MergeOrInsert,
+        load_mode,
         load_token: None,
     };
     BackendTask::IdentityTask(IdentityTask::LoadIdentity(input))
@@ -145,7 +184,7 @@ fn load_task(
 
 /// Resolve the KeyID for a withdrawal purpose, as the withdraw tool does.
 fn withdrawal_key_id(qi: &QualifiedIdentity, purpose: Purpose) -> Option<u32> {
-    qi.available_withdrawal_keys()
+    qi.signable_withdrawal_keys()
         .into_iter()
         .find(|k| k.identity_public_key.purpose() == purpose)
         .map(|k| k.identity_public_key.id())
@@ -211,7 +250,7 @@ async fn test_mn016_load_with_payout_key() {
     let ctx = ctx().await;
     let node_type = node_type_from_env();
 
-    let task = load_task(pro_tx_hash, node_type, None, Some(payout_wif), None);
+    let task = replacing_load_task(pro_tx_hash, node_type, None, Some(payout_wif), None);
     let result = run_task(&ctx.app_context, task)
         .await
         .expect("masternode load with payout key should succeed");
@@ -547,7 +586,7 @@ async fn test_mn054_owner_mode_key_not_loaded() {
     let ctx = ctx().await;
 
     // Load with ONLY the payout key.
-    let load = load_task(
+    let load = replacing_load_task(
         pro_tx_hash,
         node_type_from_env(),
         None,
@@ -614,7 +653,7 @@ async fn test_mn019_load_with_voting_key() {
     let voting_wif = required_mn_env(ENV_VOTING_KEY);
     let ctx = ctx().await;
 
-    let task = load_task(
+    let task = replacing_load_task(
         pro_tx_hash,
         node_type_from_env(),
         None,

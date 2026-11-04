@@ -1201,6 +1201,16 @@ impl QualifiedIdentity {
         keys
     }
 
+    /// The [`available_withdrawal_keys`](Self::available_withdrawal_keys)
+    /// whose private half this device can obtain now, so a withdrawal can be
+    /// signed with them.
+    pub fn signable_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
+        self.available_withdrawal_keys()
+            .into_iter()
+            .filter(|qk| self.holds_obtainable_key(&qk.identity_public_key))
+            .collect()
+    }
+
     /// Whether the active role can attempt a withdrawal with this identity.
     ///
     /// Uniform across every role: a withdrawal is only ever executable with a
@@ -1257,19 +1267,18 @@ impl QualifiedIdentity {
         &self,
         requested: Option<KeyID>,
     ) -> Result<KeyID, NoUsableWithdrawalKey> {
-        // Locally-held TRANSFER/OWNER keys that are also active in the current
-        // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
-        // the stored copy's disabled flag; the extra checks catch a key that was
-        // disabled on-chain after this identity was loaded, and one whose
-        // private half this device cannot obtain.
+        // Signable TRANSFER/OWNER keys that are also active in the current
+        // (refreshed) identity snapshot. `signable_withdrawal_keys` filters on
+        // the stored copy's disabled flag; the extra check catches a key that
+        // was disabled on-chain after this identity was loaded.
         let usable: Vec<&QualifiedIdentityPublicKey> = self
-            .available_withdrawal_keys()
+            .signable_withdrawal_keys()
             .into_iter()
             .filter(|qk| {
                 matches!(
                     self.identity.get_public_key_by_id(qk.identity_public_key.id()),
                     Some(current) if !current.is_disabled()
-                ) && self.holds_obtainable_key(&qk.identity_public_key)
+                )
             })
             .collect();
 
@@ -3060,6 +3069,28 @@ pub(crate) mod withdrawal_key_tests {
             none_usable.resolve_withdrawal_signing_key(None),
             Err(NoUsableWithdrawalKey)
         );
+    }
+
+    /// A node key that refers to a wallet this device no longer holds is not
+    /// offered for a withdrawal, while a key it can sign with still is.
+    #[test]
+    fn signable_withdrawal_keys_skip_a_key_whose_wallet_is_absent() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        let owner = key(1, Purpose::OWNER);
+        let payout = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner, payout.clone()],
+            vec![payout],
+        );
+        hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+
+        let signable: Vec<KeyID> = qi
+            .signable_withdrawal_keys()
+            .iter()
+            .map(|key| key.identity_public_key.id())
+            .collect();
+        assert_eq!(signable, vec![2]);
     }
 
     /// A key disabled on the network after its private half was stored here is

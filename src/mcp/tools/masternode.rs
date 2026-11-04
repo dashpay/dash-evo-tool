@@ -183,7 +183,7 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         let mut owner_key_loaded = false;
         let mut payout_key_loaded = false;
         let mut available_withdrawal_keys = Vec::new();
-        for key in qi.available_withdrawal_keys() {
+        for key in qi.signable_withdrawal_keys() {
             match key.identity_public_key.purpose() {
                 Purpose::OWNER => {
                     // Guard: push the mode string only on first OWNER key seen so
@@ -396,7 +396,7 @@ fn resolve_withdrawal_plan(
         KeyMode::Transfer => Purpose::TRANSFER,
     };
     let key_id = qi
-        .available_withdrawal_keys()
+        .signable_withdrawal_keys()
         .into_iter()
         .find(|k| k.identity_public_key.purpose() == purpose)
         .map(|k| k.identity_public_key.id())

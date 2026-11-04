@@ -778,9 +778,24 @@ impl WalletBackend {
                     .await?;
                 let (proven_duffs, fee_at_max_duffs) = search.proven.unwrap_or_default();
                 let duffs = core_send_search_outcome(proven_duffs, search.timed_out)?;
-                match crate::model::fee_estimation::core_send_max_duffs(duffs, fee_at_max_duffs) {
-                    0 => Err(TaskError::CoreSendMaxUnavailable {
-                        reason: CoreSendShortfall::BelowFee,
+                let max_duffs =
+                    crate::model::fee_estimation::core_send_max_duffs(duffs, fee_at_max_duffs);
+                // The search proves the build, not relay policy: a payment
+                // below its script's dust threshold builds but is never
+                // relayed. Upstream's quote already refuses a pool that nets
+                // below dust, so a Max narrowed below it is held back by
+                // another build's reservation.
+                let dust_duffs = core_quote_recipient(self.inner.network, destination)
+                    .script_pubkey()
+                    .dust_value()
+                    .to_sat();
+                match max_duffs {
+                    max_duffs if max_duffs < dust_duffs => Err(TaskError::CoreSendMaxUnavailable {
+                        reason: if duffs < upper_duffs {
+                            CoreSendShortfall::HeldByPendingTransaction
+                        } else {
+                            CoreSendShortfall::BelowFee
+                        },
                     }),
                     max_duffs => Ok(SpendLimitQuote {
                         max_credits: max_duffs.saturating_mul(CREDITS_PER_DUFF),
@@ -3613,6 +3628,68 @@ mod tests {
         assert!(
             matches!(over, Err(TaskError::InsufficientFunds { .. })),
             "one duff above Max must be a shortfall: {over:?}"
+        );
+    }
+
+    /// When the coins left after another build's reservation net less than
+    /// the payment script's dust threshold, no Max is offered: a payment that
+    /// small builds, but the network will not relay it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn core_send_max_is_not_offered_below_dust_after_a_reservation() {
+        use crate::model::spend_limit::{CoreSendShortfall, SpendLimitKind};
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        const RESERVED_DUFFS: u64 = 1_234_567;
+        // Above its own input's fee, but nets below the P2PKH dust threshold.
+        const FREE_DUFFS: u64 = 700;
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        let (_dir, _ctx, backend, seed_hash, platform_wallet) =
+            backend_with_registered_wallet().await;
+        fund_account(&platform_wallet, bip44, 0x75, &[FREE_DUFFS, RESERVED_DUFFS]).await;
+        {
+            let wallet_id = platform_wallet.wallet_id();
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let account = manager
+                .get_wallet_and_info(&wallet_id)
+                .and_then(|(key_wallet, _)| key_wallet.accounts.account_of_type(bip44))
+                .expect("funding account keys")
+                .clone();
+            let managed = manager
+                .get_wallet_info_mut(&wallet_id)
+                .and_then(|info| info.core_wallet.accounts.funds_account_mut(&bip44))
+                .expect("managed funding account");
+            let (_, _, reservation) = TransactionBuilder::new()
+                .set_current_height(200)
+                .set_selection_strategy(SelectionStrategy::LargestFirst)
+                .add_output(&payment_recipient(), 1_000_000)
+                .add_funding(managed, &account)
+                .build_unsigned_reserved()
+                .expect("in-flight build");
+            assert!(
+                reservation.is_some(),
+                "the in-flight build holds the large coin"
+            );
+        }
+
+        let quote = backend
+            .spend_limit_credits(
+                &seed_hash,
+                SpendLimitKind::CoreSend {
+                    destination: CoreDestinationScript::PubkeyHash,
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                quote,
+                Err(TaskError::CoreSendMaxUnavailable {
+                    reason: CoreSendShortfall::HeldByPendingTransaction
+                })
+            ),
+            "{quote:?}"
         );
     }
 

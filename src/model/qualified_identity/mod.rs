@@ -1177,6 +1177,21 @@ impl QualifiedIdentity {
             })
     }
 
+    /// The MASTER key to sign an identity update (adding or disabling keys)
+    /// with, picked as [`Self::signing_key_now`] picks, so a disabled or
+    /// expired master, or one whose private half is not here, is passed over.
+    /// Only user identities hold a master key.
+    pub fn identity_update_signing_key(&self) -> Option<&IdentityPublicKey> {
+        if self.identity_type != IdentityType::User {
+            return None;
+        }
+        self.signing_key_now(KeyRequirements::new(
+            Purpose::AUTHENTICATION,
+            &[SecurityLevel::MASTER],
+            SigningScope::NonBatch,
+        ))
+    }
+
     pub fn can_sign_with_master_key(&self) -> Option<&QualifiedIdentityPublicKey> {
         if self.identity_type != IdentityType::User {
             return None;
@@ -4207,6 +4222,26 @@ mod protocol_v14_compat_tests {
                 "{case}: a token action signs only with an authentication key"
             );
         }
+    }
+
+    /// Regression: an identity update signed with the first filed MASTER key,
+    /// so after a master rotation the disabled predecessor shadowed its
+    /// usable replacement and Platform refused the update.
+    #[test]
+    fn an_identity_update_signs_with_the_live_master_key() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+        let mut predecessor = auth_key(0, SecurityLevel::MASTER);
+        predecessor.set_disabled_at(1);
+        let qi = identity_holding(&[predecessor, auth_key(1, SecurityLevel::MASTER)]);
+        assert_eq!(
+            qi.identity_update_signing_key().map(|key| key.id()),
+            Some(1)
+        );
+
+        let mut node = qi.clone();
+        node.identity_type = IdentityType::Masternode;
+        assert!(node.identity_update_signing_key().is_none());
     }
 
     /// Regression: a key bound to a contract group, which only Platform can

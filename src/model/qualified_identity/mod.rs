@@ -1225,19 +1225,19 @@ impl QualifiedIdentity {
     /// backend enforces, so this predicate never lies about what the screen
     /// can actually do.
     pub fn can_attempt_withdrawal(&self, _role: UserRole) -> bool {
-        !self.available_withdrawal_keys().is_empty()
+        !self.signable_withdrawal_keys().is_empty()
     }
 
     /// Returns the key to pre-select for signing a withdrawal.
     ///
-    /// Only keys whose private material is held locally are considered (via
-    /// [`available_withdrawal_keys`](Self::available_withdrawal_keys)). A
+    /// Only keys whose private half this device can obtain are considered (via
+    /// [`signable_withdrawal_keys`](Self::signable_withdrawal_keys)). A
     /// `TRANSFER` key is preferred, falling back to an `OWNER` key — mirroring
     /// Platform's `TransferPreferred` signing-key selection. Returns `None` when
     /// no locally-signable withdrawal key exists, so callers never pre-select an
     /// on-chain key the signer cannot actually use.
     pub fn default_withdrawal_key(&self) -> Option<&QualifiedIdentityPublicKey> {
-        let keys = self.available_withdrawal_keys();
+        let keys = self.signable_withdrawal_keys();
         keys.iter()
             .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
             .or_else(|| {
@@ -3091,6 +3091,34 @@ pub(crate) mod withdrawal_key_tests {
             .map(|key| key.identity_public_key.id())
             .collect();
         assert_eq!(signable, vec![2]);
+    }
+
+    /// With the payout key held only by a wallet no longer loaded, the
+    /// withdrawal screen pre-selects the hand-entered owner key; with no key
+    /// it can sign with, the withdrawal is not offered at all.
+    #[test]
+    fn withdrawal_defaults_and_gate_skip_a_key_whose_wallet_is_absent() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        let owner = key(1, Purpose::OWNER);
+        let payout = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        hold_as_wallet_reference(&mut qi, 2, [0x5A; 32]);
+        assert_eq!(
+            qi.default_withdrawal_key()
+                .map(|key| key.identity_public_key.id()),
+            Some(1)
+        );
+
+        let mut none_signable = qi.clone();
+        hold_as_wallet_reference(&mut none_signable, 1, [0x5B; 32]);
+        assert!(none_signable.default_withdrawal_key().is_none());
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            assert!(!none_signable.can_attempt_withdrawal(role));
+        }
     }
 
     /// A key disabled on the network after its private half was stored here is

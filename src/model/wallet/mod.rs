@@ -1810,8 +1810,8 @@ impl Wallet {
         None
     }
 
-    /// Update Platform address info (balance and nonce). The stored height pin
-    /// is kept, since the caller does not know the figure's height.
+    /// Update Platform address info (balance and nonce) of unknown height: the
+    /// pin resets to `0`, so the figure never claims a newer write's height.
     ///
     /// Handles canonical address deduplication: if the same platform address is
     /// stored under a different `Address` key, the duplicate is removed first.
@@ -1821,10 +1821,7 @@ impl Wallet {
         balance: Credits,
         nonce: AddressNonce,
     ) {
-        let as_of_height = self
-            .get_platform_address_info(&address)
-            .map_or(0, |stored| stored.as_of_height);
-        self.insert_platform_address_info(address, balance, nonce, as_of_height);
+        self.insert_platform_address_info(address, balance, nonce, 0);
     }
 
     /// Store Platform address info under `address`, dropping any duplicate key
@@ -2235,7 +2232,12 @@ impl WalletAddressProvider {
             total_balance = total_balance.saturating_add(funds.balance);
 
             // Update wallet with synced balances
-            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
+            wallet.apply_pinned_platform_address_info(
+                canonical_address.clone(),
+                funds.balance,
+                funds.nonce,
+                funds.as_of_height,
+            );
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)
@@ -2583,9 +2585,33 @@ mod tests {
         assert_eq!(info.nonce, 4);
     }
 
+    /// An explicit refresh that started before a spend and finishes after it
+    /// must not bring back the pre-spend figure.
+    #[test]
+    fn a_refresh_older_than_a_pinned_spend_does_not_undo_it() {
+        let network = Network::Testnet;
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, network)
+            .expect("platform address");
+        let mut provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+        provider.update_balance(&address, 80_000);
+
+        wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
+        provider.apply_results_to_wallet(&mut wallet);
+
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!(
+            (info.balance, info.nonce, info.as_of_height),
+            (41_000, 3, 500)
+        );
+    }
+
     /// A balance pinned lower than the stored one is ignored; an equal or
-    /// higher pin replaces it. An unpinned refresh replaces the figure but
-    /// keeps the pin.
+    /// higher pin replaces it. A write of unknown height resets the pin.
     #[test]
     fn pinned_platform_address_info_keeps_the_newer_figure() {
         let mut wallet = test_wallet();
@@ -2608,10 +2634,9 @@ mod tests {
         wallet.apply_pinned_platform_address_info(addr.clone(), 46_000, 4, 600);
         assert_eq!(figure(&wallet), (46_000, 4, 600));
 
-        // An unpinned refresh keeps the pin, so an older pass stays ignored.
+        // A write of unknown height resets the pin rather than claiming 600.
         wallet.set_platform_address_info(addr.clone(), 47_000, 4);
-        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
-        assert_eq!(figure(&wallet), (47_000, 4, 600));
+        assert_eq!(figure(&wallet), (47_000, 4, 0));
     }
 
     /// Results merge by pin in any order; an address a result omits keeps its figure.

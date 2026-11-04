@@ -2975,11 +2975,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 // Schedule a refresh of platform address balances to update the UI
                 self.pending_platform_balance_refresh = Some(seed_hash);
             }
-            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
-                seed_hash,
-                balances,
-                network,
-            } => {
+            crate::ui::BackendTaskSuccessResult::PlatformAddressBalances { network, .. } => {
                 self.refreshing = false;
                 // Skip stale results from a different network
                 if network != self.app_context.network {
@@ -2990,17 +2986,9 @@ impl ScreenLike for WalletsBalancesScreen {
                     );
                     return;
                 }
-                // Update wallet's platform_address_info if this is for the selected wallet
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(mut wallet) = selected.write()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Convert PlatformAddress back to Core Address for wallet storage
-                    for (platform_addr, (balance, nonce)) in balances {
-                        let core_addr = platform_addr.to_address_with_network(network);
-                        wallet.set_platform_address_info(core_addr, balance, nonce);
-                    }
-                }
+                // The backend task already applied the scan to the wallet, by
+                // height; replaying this unversioned copy could undo a spend
+                // that landed since.
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Successfully synced Platform balances",

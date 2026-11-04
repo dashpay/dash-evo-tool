@@ -352,18 +352,15 @@ impl PlatformEventHandler for EventBridge {
         // any wallet whose id is not registered (no DET mapping) or has no found
         // addresses. Both outputs below reuse the resolved seed hash — no double
         // lookup (QA-B2-003).
-        // An address proven absent is zeroed only where the ledger still
-        // shows funds, so never-funded derived addresses stay out of the push.
+        // An address proven absent is zeroed only where the ledger tracks it,
+        // so never-funded derived addresses stay out of the push.
         let was_funded = |wallet_id: &[u8; 32], hash: &[u8; 20]| {
             self.snapshots
                 .seed_hash_for(wallet_id)
                 .is_some_and(|seed_hash| {
-                    self.platform_balance_ledger.lock().is_ok_and(|ledger| {
-                        ledger
-                            .get(&seed_hash)
-                            .and_then(|addresses| addresses.get(hash))
-                            .is_some_and(|&(balance, _)| balance > 0)
-                    })
+                    self.platform_balance_ledger
+                        .lock()
+                        .is_ok_and(|ledger| ledger_tracks(&ledger, &seed_hash, hash))
                 })
         };
         let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary, was_funded)
@@ -510,9 +507,9 @@ impl PlatformEventHandler for EventBridge {
 /// coordinates from the sync tag — so the receiver can register the address's
 /// derivation path exactly instead of reverse-deriving it.
 ///
-/// An address the pass proved absent (a chain reset) while `was_funded` says
-/// DET still shows funds for it gets a zero entry pinned at the scan's
-/// checkpoint, as upstream zeroes its own copy; the raw `found` set omits it.
+/// An address the pass proved absent (a chain reset) that `was_funded` says
+/// DET tracks gets a zero entry pinned at the scan's checkpoint, as upstream
+/// zeroes its own copy; the raw `found` set omits it.
 ///
 /// `Err` outcomes are skipped so their cached per-address data is left
 /// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
@@ -559,6 +556,19 @@ fn summary_ok_platform_entries(
             WalletSyncOutcome::Err(_) => None,
         })
         .collect()
+}
+
+/// Whether the ledger tracks `hash` for `seed_hash`, at any balance. A zeroed
+/// address stays tracked, so its zero is re-sent on every pass that proves it
+/// absent and a dropped push heals on the next one.
+fn ledger_tracks(
+    ledger: &PlatformBalanceLedger,
+    seed_hash: &WalletSeedHash,
+    hash: &[u8; 20],
+) -> bool {
+    ledger
+        .get(seed_hash)
+        .is_some_and(|addresses| addresses.contains_key(hash))
 }
 
 /// Merge each wallet's pass into the height-pinned `ledger` and publish the
@@ -1410,6 +1420,18 @@ mod tests {
         )];
         write_pass_totals(&mut balances, Some(&mut ledger), &delayed);
         assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
+    }
+
+    /// An address already zeroed stays tracked, so a pass after a dropped
+    /// push zeroes it again; an address the ledger never held is not tracked.
+    #[test]
+    fn a_zeroed_address_stays_tracked_for_the_next_pass() {
+        use std::collections::BTreeMap;
+        let seed_hash = [4u8; 32];
+        let ledger: PlatformBalanceLedger =
+            HashMap::from([(seed_hash, BTreeMap::from([([0xBB; 20], (0, 700))]))]);
+        assert!(ledger_tracks(&ledger, &seed_hash, &[0xBB; 20]));
+        assert!(!ledger_tracks(&ledger, &seed_hash, &[0xDD; 20]));
     }
 
     /// An address proven absent that DET still shows funds for is zeroed at

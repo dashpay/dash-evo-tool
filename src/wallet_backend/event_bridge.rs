@@ -1425,8 +1425,10 @@ mod tests {
 
         let wallet_id = [5u8; 32];
         let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
-            AddressSyncResult::default();
-        result.checkpoint_height = 700;
+            AddressSyncResult {
+                checkpoint_height: 700,
+                ..Default::default()
+            };
         result.found.insert(
             ((wallet_id, 0, 0), PlatformP2PKHAddress::new([0xCC; 20])),
             AddressFunds {

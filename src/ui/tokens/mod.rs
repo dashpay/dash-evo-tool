@@ -83,6 +83,10 @@ pub(crate) fn token_action_key_status(
     }
 }
 
+/// Why a token form opened with its key chooser shown
+/// ([`SigningKeyStatus::ManualChoiceOnly`]).
+pub(crate) const CONTRACT_GROUP_KEY_NOTE: &str = "No key can be chosen automatically for this action, because the only key that can sign it is limited to a contract group. Choose that key below if the group includes this token's contract.";
+
 /// Why a token action form stays closed for `identity` at `status`.
 pub(crate) fn token_action_key_message(
     status: SigningKeyStatus,

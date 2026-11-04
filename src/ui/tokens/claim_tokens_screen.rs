@@ -502,7 +502,11 @@ impl ScreenLike for ClaimTokensScreen {
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.
                 self.show_advanced_options = true;
-            } else if key_status != SigningKeyStatus::Usable {
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 let message = if key_status == SigningKeyStatus::HeldButUnusable {
                     "No key on this device can sign this token claim. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
                 } else {
@@ -581,6 +585,10 @@ impl ScreenLike for ClaimTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Claim transition");
                     ui.add_space(10.0);
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
                     add_key_chooser(
                         ui,
                         &self.app_context,
@@ -1109,6 +1117,42 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    /// Regression: a claim whose only key is bound to a contract group closed
+    /// before the key chooser. The form now opens its own Advanced Options
+    /// with a note saying why, and leaves the app's role as it was.
+    #[test]
+    fn a_contract_group_key_opens_the_claims_chooser_with_a_note() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+        use egui_kittest::kittest::Queryable;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        let role = screen.app_context.user_role();
+        screen.identity = Some(identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]));
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut ClaimTokensScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(harness.state().show_advanced_options);
+        assert!(
+            harness
+                .query_by_label(super::super::CONTRACT_GROUP_KEY_NOTE)
+                .is_some()
+        );
+        assert_eq!(harness.state().app_context.user_role(), role);
     }
 
     /// Regression: a node's claim gate counted any filed transfer key, while

@@ -931,7 +931,11 @@ impl ScreenLike for SetTokenPriceScreen {
             if key_status == SigningKeyStatus::ManualChoiceOnly {
                 // Only a contract-group key can sign it: the user picks it below.
                 self.show_advanced_options = true;
-            } else if key_status != SigningKeyStatus::Usable {
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 ui.colored_label(
                     Color32::DARK_RED,
                     super::token_action_key_message(key_status, &self.identity_token_info.identity),
@@ -997,6 +1001,10 @@ impl ScreenLike for SetTokenPriceScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Set Price transaction");
                     ui.add_space(10.0);
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
                     add_key_chooser(
                         ui,
                         &self.app_context,

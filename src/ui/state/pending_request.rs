@@ -129,6 +129,14 @@ impl<S> PendingRequests<S> {
         !self.slots.is_empty()
     }
 
+    /// Whether a request about `subject` is outstanding.
+    pub fn is_pending_for(&self, subject: &S) -> bool
+    where
+        S: PartialEq,
+    {
+        self.slots.iter().any(|(_, pending)| pending == subject)
+    }
+
     /// How many requests are outstanding.
     pub fn len(&self) -> usize {
         self.slots.len()

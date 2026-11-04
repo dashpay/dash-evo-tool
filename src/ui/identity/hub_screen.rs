@@ -989,8 +989,10 @@ impl ScreenLike for IdentityHubScreen {
         // only a full refresh ends a failure and satisfies the arrival rule.
         if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
             if matches!(context.operation(), BackendTaskContext::TokenBalanceRefresh) {
-                self.tokens_state
-                    .balances_refreshed_elsewhere(crate::utils::time::now_ms());
+                self.tokens_state.balances_refreshed_elsewhere(
+                    crate::utils::time::now_ms(),
+                    IdentityTokensState::roster(&self.app_context),
+                );
             } else {
                 self.tokens_state
                     .cached_data_changed(crate::backend_task::CacheDomain::Tokens);

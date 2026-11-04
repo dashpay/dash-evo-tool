@@ -148,9 +148,9 @@ pub fn render(
 /// What the token pays its holders, in plain words.
 fn rewards_text(row: &TokenRow) -> String {
     match (&row.once_claim, row.claimed_on_date()) {
-        (Some(_), Some(date)) => claimed_on_text(&date),
         (Some(once), None) => once_claim_text(&row.amount(once.amount)),
-        (None, _) if row.can_claim() => REWARDS_OVER_TIME.to_string(),
+        _ if row.recurring_claim => REWARDS_OVER_TIME.to_string(),
+        (Some(_), Some(date)) => claimed_on_text(&date),
         (None, _) => REWARDS_NONE.to_string(),
     }
 }
@@ -199,6 +199,7 @@ mod tests {
             issuer_id: Identifier::from([4; 32]),
             issued_by_me: false,
             once_claim: None,
+            recurring_claim: false,
             has_admin_permission: false,
             check_failed: false,
         }
@@ -224,8 +225,14 @@ mod tests {
             claimed_at_ms: Some(1_700_000_000_000),
         });
         assert!(rewards_text(&row).starts_with("Claimed on "));
+        row.recurring_claim = true;
+        assert_eq!(
+            rewards_text(&row),
+            REWARDS_OVER_TIME,
+            "a taken once claim never hides rewards still paid"
+        );
         let mut perpetual = self::row();
-        perpetual.token.available_actions.can_claim = true;
+        perpetual.recurring_claim = true;
         assert_eq!(rewards_text(&perpetual), REWARDS_OVER_TIME);
     }
 }

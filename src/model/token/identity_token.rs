@@ -365,6 +365,27 @@ fn is_pre_programmed_recipient(
         })
 }
 
+/// Whether the token's perpetual or pre-programmed distribution pays
+/// `identity`. Unlike a once-per-identity claim, these stay claimable after
+/// any one claim, and a token may offer them alongside it.
+pub fn is_recurring_distribution_recipient(
+    token_configuration: &TokenConfiguration,
+    contract_owner_id: Identifier,
+    identity: &QualifiedIdentity,
+) -> bool {
+    let perpetual_recipient = token_configuration
+        .distribution_rules()
+        .perpetual_distribution()
+        .is_some_and(|dist| {
+            is_perpetual_distribution_recipient(
+                contract_owner_id,
+                dist.distribution_recipient(),
+                identity,
+            )
+        });
+    perpetual_recipient || is_pre_programmed_recipient(token_configuration, &identity.identity.id())
+}
+
 /// The actions `identity` may take on a token, from its configuration rules,
 /// the contract's groups and ownership, and the identity's known balance.
 ///
@@ -406,19 +427,9 @@ pub fn get_available_token_actions_for_identity(
     // offers the claim (Platform refuses a second one).
     let can_claim_once_per_identity =
         super::once_per_identity_amount(token_configuration).is_some();
-    let can_claim = can_claim_once_per_identity || in_dev_mode || {
-        let perpetual_recipient = token_configuration
-            .distribution_rules()
-            .perpetual_distribution()
-            .is_some_and(|dist| {
-                is_perpetual_distribution_recipient(
-                    contract_owner_id,
-                    dist.distribution_recipient(),
-                    identity,
-                )
-            });
-        perpetual_recipient || is_pre_programmed_recipient(token_configuration, &identity_id)
-    };
+    let can_claim = can_claim_once_per_identity
+        || in_dev_mode
+        || is_recurring_distribution_recipient(token_configuration, contract_owner_id, identity);
 
     let can_estimate = {
         if let Some(dist) = token_configuration
@@ -740,6 +751,41 @@ mod tests {
         assert!(
             actions(&bystander, true).can_claim,
             "the developer display override still lights Claim"
+        );
+    }
+
+    #[test]
+    fn a_pre_programmed_distribution_beside_a_once_claim_stays_recurring() {
+        use crate::model::token::{
+            distribution_rules_with_once_per_identity, once_per_identity_amount,
+        };
+        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
+        use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
+        let recipient = identity(2);
+        let bystander = identity(3);
+        let owner_id = identity(1).identity.id();
+        let mut config = transferable();
+        let TokenDistributionRules::V0(mut rules) = config.distribution_rules().clone() else {
+            panic!("the most restrictive preset is version 0");
+        };
+        rules.pre_programmed_distribution = Some(TokenPreProgrammedDistribution::V0(
+            TokenPreProgrammedDistributionV0 {
+                distributions: BTreeMap::from([(
+                    1_000u64,
+                    BTreeMap::from([(recipient.identity.id(), 500u64)]),
+                )]),
+            },
+        ));
+        config.set_distribution_rules(distribution_rules_with_once_per_identity(rules, Some(10)));
+        assert_eq!(once_per_identity_amount(&config), Some(10));
+
+        assert!(is_recurring_distribution_recipient(
+            &config, owner_id, &recipient
+        ));
+        assert!(
+            !is_recurring_distribution_recipient(&config, owner_id, &bystander),
+            "the once-per-identity claim alone recurs for nobody"
         );
     }
 

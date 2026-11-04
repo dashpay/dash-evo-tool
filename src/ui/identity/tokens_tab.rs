@@ -808,7 +808,14 @@ fn render_all_dismissed(
                     .disabled_tooltip(refresh_block_reason(synced))
                     .clicked()
                 {
-                    action = state.track_again_action(app_context, identity);
+                    action = match state.track_again_action(app_context, identity) {
+                        Ok(action) => action,
+                        Err(error) => {
+                            MessageBanner::set_global(ui.ctx(), &error, MessageType::Error)
+                                .with_details(error);
+                            AppAction::None
+                        }
+                    };
                 }
                 action |= render_add_menu(ui, app_context);
             });

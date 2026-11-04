@@ -228,7 +228,8 @@ impl MasternodeLoadForm {
             owner_private_key_input: self.owner_key.secret().clone(),
             payout_address_private_key_input: self.payout_key.secret().clone(),
             keys_input: vec![],
-            // No auto-derive: masternode keys are never wallet-derived (§Locked-#4).
+            // This flag drives user-identity key matching only; blank node keys
+            // are looked up in this device's wallets by the backend.
             derive_keys_from_wallets: false,
             selected_wallet_seed_hash: None,
             encryption_password,

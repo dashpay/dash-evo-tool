@@ -3,6 +3,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::identity_balance::BalanceProvenance;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::wallet_backend::MasternodeWithdrawal;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
@@ -93,19 +94,51 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_credit_withdrawal();
 
-        let (remaining_balance, metadata) = qualified_identity
-            .identity
-            .clone()
-            .withdraw_with_metadata(
-                &sdk,
-                to_address,
-                credits,
-                Some(1),
-                signing_key,
-                qualified_identity.clone(),
-                None,
-            )
-            .await?;
+        // A masternode key held by one of this device's wallets is signed by
+        // that wallet's masternode withdrawal, which re-checks the key against
+        // the node and enforces the payout-address rule itself. Keys entered
+        // by hand keep the identity's own signer.
+        let (remaining_balance, provenance) = match qualified_identity
+            .wallet_masternode_withdrawal(signing_key_id)
+        {
+            Some(route) => {
+                tracing::info!(role = ?route.role, "Withdrawing through the wallet that holds the masternode key");
+                let remaining = self
+                    .wallet_backend()?
+                    .masternode_withdraw(
+                        &route.wallet_seed_hash,
+                        MasternodeWithdrawal {
+                            identity_id: qualified_identity.identity.id(),
+                            key_hashes: route.key_hashes,
+                            role: route.role,
+                            amount_credits: credits,
+                            destination: to_address,
+                            owner_key_index_hint: route.owner_key_index_hint,
+                        },
+                    )
+                    .await?;
+                // TODO(platform-wallet): `masternode_withdraw` returns only the
+                // credits, without a height, so a late refresh can bring back
+                // the balance from before this withdrawal (same gap as top-up).
+                (remaining, BalanceProvenance::ConfirmedUnordered)
+            }
+            None => {
+                let (remaining, metadata) = qualified_identity
+                    .identity
+                    .clone()
+                    .withdraw_with_metadata(
+                        &sdk,
+                        to_address,
+                        credits,
+                        Some(1),
+                        signing_key,
+                        qualified_identity.clone(),
+                        None,
+                    )
+                    .await?;
+                (remaining, BalanceProvenance::ObservedAt(metadata.height))
+            }
+        };
 
         let actual_fee = balance_before
             .saturating_sub(remaining_balance)
@@ -129,10 +162,67 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        self.update_local_qualified_identity_observed(
-            &mut qualified_identity,
-            BalanceProvenance::ObservedAt(metadata.height),
-        )
-        .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+        self.persist_withdrawn_identity(&qualified_identity, provenance);
+        Ok(BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+    }
+
+    /// Store the identity as fetched for a finished withdrawal, carrying its
+    /// remaining balance, into the record as stored now: a concurrent change
+    /// such as a removed voting key stays removed. The withdrawal already
+    /// happened, so a failed save is only logged; it never reads as a failed
+    /// withdrawal that the user might repeat.
+    fn persist_withdrawn_identity(
+        &self,
+        withdrawn: &QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) {
+        let id = withdrawn.identity.id();
+        if let Err(error) = self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+            stored.identity = withdrawn.identity.clone();
+            Ok(())
+        }) {
+            tracing::warn!(identity_id = %id, ?error, "Identity could not be saved locally after a withdrawal");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::test_staging::stage_identity_with_voter_twin;
+    use crate::model::identity_balance::BalanceProvenance;
+    use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+
+    /// A withdrawal's network work can outlast the removal of an old voting
+    /// key; its final write must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_withdrawal_keeps_a_change_made_while_it_ran() {
+        let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let mut withdrawn = read();
+        assert!(withdrawn.associated_voter_identity.is_some());
+        let mut removed = withdrawn.clone();
+        removed.associated_voter_identity = None;
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        withdrawn.identity.set_balance(4_321);
+        staged
+            .ctx
+            .persist_withdrawn_identity(&withdrawn, BalanceProvenance::ConfirmedUnordered);
+
+        let after = read();
+        assert!(
+            after.associated_voter_identity.is_none(),
+            "the withdrawal must not bring back what was removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 4_321);
     }
 }

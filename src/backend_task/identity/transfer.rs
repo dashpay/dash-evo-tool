@@ -82,13 +82,13 @@ impl AppContext {
             .find(|qi| qi.identity.id() == to_identifier)
         {
             receiver.identity.set_balance(receiver_balance);
-            self.update_local_qualified_identity_observed(receiver, observed)?;
+            self.store_paid_balance(receiver, observed);
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        self.update_local_qualified_identity_observed(&mut qualified_identity, observed)
-            .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
+        self.store_paid_balance(&qualified_identity, observed);
+        Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 }
 

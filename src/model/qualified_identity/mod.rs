@@ -8,6 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::{SigningKeyUnavailableCause, TaskError};
+use crate::model::masternode_keys::{
+    MasternodeKeyHashes, MasternodeWithdrawalRole, WalletMasternodeWithdrawal,
+};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
 };
@@ -1198,6 +1201,16 @@ impl QualifiedIdentity {
         keys
     }
 
+    /// The [`available_withdrawal_keys`](Self::available_withdrawal_keys)
+    /// whose private half this device can obtain now, so a withdrawal can be
+    /// signed with them.
+    pub fn signable_withdrawal_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
+        self.available_withdrawal_keys()
+            .into_iter()
+            .filter(|qk| self.holds_obtainable_key(&qk.identity_public_key))
+            .collect()
+    }
+
     /// Whether the active role can attempt a withdrawal with this identity.
     ///
     /// Uniform across every role: a withdrawal is only ever executable with a
@@ -1212,19 +1225,19 @@ impl QualifiedIdentity {
     /// backend enforces, so this predicate never lies about what the screen
     /// can actually do.
     pub fn can_attempt_withdrawal(&self, _role: UserRole) -> bool {
-        !self.available_withdrawal_keys().is_empty()
+        !self.signable_withdrawal_keys().is_empty()
     }
 
     /// Returns the key to pre-select for signing a withdrawal.
     ///
-    /// Only keys whose private material is held locally are considered (via
-    /// [`available_withdrawal_keys`](Self::available_withdrawal_keys)). A
+    /// Only keys whose private half this device can obtain are considered (via
+    /// [`signable_withdrawal_keys`](Self::signable_withdrawal_keys)). A
     /// `TRANSFER` key is preferred, falling back to an `OWNER` key — mirroring
     /// Platform's `TransferPreferred` signing-key selection. Returns `None` when
     /// no locally-signable withdrawal key exists, so callers never pre-select an
     /// on-chain key the signer cannot actually use.
     pub fn default_withdrawal_key(&self) -> Option<&QualifiedIdentityPublicKey> {
-        let keys = self.available_withdrawal_keys();
+        let keys = self.signable_withdrawal_keys();
         keys.iter()
             .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
             .or_else(|| {
@@ -1254,19 +1267,18 @@ impl QualifiedIdentity {
         &self,
         requested: Option<KeyID>,
     ) -> Result<KeyID, NoUsableWithdrawalKey> {
-        // Locally-held TRANSFER/OWNER keys that are also active in the current
-        // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
-        // the stored copy's disabled flag; the extra checks catch a key that was
-        // disabled on-chain after this identity was loaded, and one whose
-        // private half this device cannot obtain.
+        // Signable TRANSFER/OWNER keys that are also active in the current
+        // (refreshed) identity snapshot. `signable_withdrawal_keys` filters on
+        // the stored copy's disabled flag; the extra check catches a key that
+        // was disabled on-chain after this identity was loaded.
         let usable: Vec<&QualifiedIdentityPublicKey> = self
-            .available_withdrawal_keys()
+            .signable_withdrawal_keys()
             .into_iter()
             .filter(|qk| {
                 matches!(
                     self.identity.get_public_key_by_id(qk.identity_public_key.id()),
                     Some(current) if !current.is_disabled()
-                ) && self.holds_obtainable_key(&qk.identity_public_key)
+                )
             })
             .collect();
 
@@ -1320,6 +1332,54 @@ impl QualifiedIdentity {
                 }
             }
         }
+    }
+
+    /// How a masternode withdrawal signed with `signing_key_id` reaches the
+    /// network when one of this device's wallets holds that key: `Some` for a
+    /// masternode or evonode whose `OWNER` or `TRANSFER` key is stored as a
+    /// wallet derivation reference, so the wallet's masternode withdrawal
+    /// signs it. `None` sends it through the identity's own signer instead —
+    /// a user identity, or a key whose private half was entered by hand.
+    pub fn wallet_masternode_withdrawal(
+        &self,
+        signing_key_id: KeyID,
+    ) -> Option<WalletMasternodeWithdrawal> {
+        if self.identity_type == IdentityType::User {
+            return None;
+        }
+        let key = self.identity.get_public_key_by_id(signing_key_id)?;
+        let role = MasternodeWithdrawalRole::for_key(key)?;
+        // Upstream matches wallet keys by hash160, which is how Platform
+        // stores a node's owner and payout keys.
+        if key.key_type() != ECDSA_HASH160 {
+            return None;
+        }
+        let signing_hash = <[u8; 20]>::try_from(key.data().as_slice()).ok()?;
+        let stored_path = self.private_keys.wallet_derivation_path_for(&(
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key_id,
+        ))?;
+        let mut key_hashes = MasternodeKeyHashes::from_identity(&self.identity);
+        let owner_key_index_hint = match role {
+            MasternodeWithdrawalRole::Owner => {
+                key_hashes.owner = Some(signing_hash);
+                // DIP-3 owner keys sit at a non-hardened provider index.
+                match stored_path.derivation_path.as_ref().last() {
+                    Some(ChildNumber::Normal { index }) => Some(*index),
+                    _ => None,
+                }
+            }
+            MasternodeWithdrawalRole::Payout => {
+                key_hashes.payout = Some(signing_hash);
+                None
+            }
+        };
+        Some(WalletMasternodeWithdrawal {
+            wallet_seed_hash: stored_path.wallet_seed_hash,
+            role,
+            key_hashes,
+            owner_key_index_hint,
+        })
     }
 
     /// Index under which this identity's next top-up is recorded: one past the
@@ -3011,6 +3071,56 @@ pub(crate) mod withdrawal_key_tests {
         );
     }
 
+    /// A node key that refers to a wallet this device no longer holds is not
+    /// offered for a withdrawal, while a key it can sign with still is.
+    #[test]
+    fn signable_withdrawal_keys_skip_a_key_whose_wallet_is_absent() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        let owner = key(1, Purpose::OWNER);
+        let payout = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner, payout.clone()],
+            vec![payout],
+        );
+        hold_as_wallet_reference(&mut qi, 1, [0x5A; 32]);
+
+        let signable: Vec<KeyID> = qi
+            .signable_withdrawal_keys()
+            .iter()
+            .map(|key| key.identity_public_key.id())
+            .collect();
+        assert_eq!(signable, vec![2]);
+    }
+
+    /// With the payout key held only by a wallet no longer loaded, the
+    /// withdrawal screen pre-selects the hand-entered owner key; with no key
+    /// it can sign with, the withdrawal is not offered at all.
+    #[test]
+    fn withdrawal_defaults_and_gate_skip_a_key_whose_wallet_is_absent() {
+        use crate::context::test_support::hold_as_wallet_reference;
+        let owner = key(1, Purpose::OWNER);
+        let payout = key(2, Purpose::TRANSFER);
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        hold_as_wallet_reference(&mut qi, 2, [0x5A; 32]);
+        assert_eq!(
+            qi.default_withdrawal_key()
+                .map(|key| key.identity_public_key.id()),
+            Some(1)
+        );
+
+        let mut none_signable = qi.clone();
+        hold_as_wallet_reference(&mut none_signable, 1, [0x5B; 32]);
+        assert!(none_signable.default_withdrawal_key().is_none());
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            assert!(!none_signable.can_attempt_withdrawal(role));
+        }
+    }
+
     /// A key disabled on the network after its private half was stored here is
     /// not usable, even though the stored copy still looks active.
     #[test]
@@ -3143,6 +3253,149 @@ pub(crate) mod withdrawal_key_tests {
             ),
             Err(OwnerKeyWithdrawalNotAllowed),
         );
+    }
+
+    /// Store `key`'s private half as a reference into wallet `seed`.
+    fn hold_in_wallet(qi: &mut QualifiedIdentity, key: &IdentityPublicKey, seed: WalletSeedHash) {
+        hold_in_wallet_at(qi, key, seed, "m/9'/1'/3'/2'/0");
+    }
+
+    fn hold_in_wallet_at(
+        qi: &mut QualifiedIdentity,
+        key: &IdentityPublicKey,
+        seed: WalletSeedHash,
+        path: &str,
+    ) {
+        let path = encrypted_key_storage::WalletDerivationPath {
+            wallet_seed_hash: seed,
+            derivation_path: path.parse().unwrap(),
+        };
+        qi.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    key.clone(),
+                    Some(path.clone()),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(path),
+            ),
+        );
+    }
+
+    /// A user identity's wallet-derived identity key still files it under
+    /// its wallet and identity index, and its key screens still report the
+    /// recorded wallet path — node key references change neither.
+    #[test]
+    fn user_identity_wallet_info_is_unchanged() {
+        let auth = key(4, Purpose::AUTHENTICATION);
+        let mut qi = build_identity(IdentityType::User, vec![auth.clone()], vec![]);
+        let path = encrypted_key_storage::WalletDerivationPath {
+            wallet_seed_hash: [0x6A; 32],
+            derivation_path: "m/9'/1'/5'/0'/0'/3'/4'".parse().unwrap(),
+        };
+        qi.private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, auth.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    auth.clone(),
+                    Some(path.clone()),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(path.clone()),
+            ),
+        );
+        assert_eq!(qi.determine_wallet_info().unwrap(), Some(([0x6A; 32], 3)));
+        assert!(matches!(
+            qi.private_keys.held_private_key_data(&auth),
+            Some((_, Some(found))) if found == path
+        ));
+        assert_eq!(qi.wallet_masternode_withdrawal(auth.id()), None);
+    }
+
+    #[test]
+    fn wallet_held_owner_key_withdraws_through_the_wallet() {
+        let mut owner = key(1, Purpose::OWNER);
+        owner.set_key_type(KeyType::ECDSA_HASH160);
+        owner.set_data(BinaryData::new(vec![0x31; 20]));
+        let payout = payout_key(2, [0x11; 20]);
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![],
+        );
+        hold_in_wallet_at(&mut qi, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37");
+
+        assert_eq!(
+            qi.wallet_masternode_withdrawal(1),
+            Some(WalletMasternodeWithdrawal {
+                wallet_seed_hash: [0x5E; 32],
+                role: MasternodeWithdrawalRole::Owner,
+                key_hashes: MasternodeKeyHashes {
+                    owner: Some([0x31; 20]),
+                    payout: Some([0x11; 20]),
+                    voting: None,
+                },
+                owner_key_index_hint: Some(37),
+            })
+        );
+    }
+
+    /// Only an owner-key withdrawal carries the owner key's stored index,
+    /// and only a non-hardened one: DIP-3 owner keys use normal indices.
+    #[test]
+    fn owner_key_index_hint_comes_from_a_normal_owner_path_only() {
+        let mut owner = key(1, Purpose::OWNER);
+        owner.set_key_type(KeyType::ECDSA_HASH160);
+        owner.set_data(BinaryData::new(vec![0x31; 20]));
+        let payout = payout_key(2, [0x11; 20]);
+
+        let mut qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout.clone()],
+            vec![],
+        );
+        hold_in_wallet_at(&mut qi, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37");
+        hold_in_wallet_at(&mut qi, &payout, [0x5E; 32], "m/44'/1'/0'/0/2");
+        let payout_route = qi.wallet_masternode_withdrawal(2).expect("wallet route");
+        assert_eq!(payout_route.owner_key_index_hint, None);
+
+        let mut hardened = build_identity(IdentityType::Masternode, vec![owner.clone()], vec![]);
+        hold_in_wallet_at(&mut hardened, &owner, [0x5E; 32], "m/9'/1'/3'/2'/37'");
+        let route = hardened
+            .wallet_masternode_withdrawal(1)
+            .expect("wallet route");
+        assert_eq!(route.owner_key_index_hint, None);
+    }
+
+    #[test]
+    fn wallet_held_payout_key_withdraws_through_the_wallet() {
+        let payout = payout_key(2, [0x11; 20]);
+        let mut qi = build_identity(IdentityType::Evonode, vec![payout.clone()], vec![]);
+        hold_in_wallet(&mut qi, &payout, [0x5E; 32]);
+        let route = qi.wallet_masternode_withdrawal(2).expect("wallet route");
+        assert_eq!(route.role, MasternodeWithdrawalRole::Payout);
+        assert_eq!(route.key_hashes.payout, Some([0x11; 20]));
+    }
+
+    /// Keys typed in by hand, and user identities, keep the identity's own
+    /// signer — their withdrawals are unchanged.
+    #[test]
+    fn hand_entered_keys_and_user_identities_keep_the_identity_signer() {
+        let payout = payout_key(2, [0x11; 20]);
+        let manual = build_identity(
+            IdentityType::Masternode,
+            vec![payout.clone()],
+            vec![payout.clone()],
+        );
+        assert_eq!(manual.wallet_masternode_withdrawal(2), None);
+
+        let mut user = build_identity(IdentityType::User, vec![payout.clone()], vec![]);
+        hold_in_wallet(&mut user, &payout, [0x5E; 32]);
+        assert_eq!(user.wallet_masternode_withdrawal(2), None);
+
+        let auth = key(3, Purpose::AUTHENTICATION);
+        let mut node = build_identity(IdentityType::Masternode, vec![auth.clone()], vec![]);
+        hold_in_wallet(&mut node, &auth, [0x5E; 32]);
+        assert_eq!(node.wallet_masternode_withdrawal(3), None);
     }
 
     #[test]

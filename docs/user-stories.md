@@ -1925,6 +1925,7 @@ As a masternode operator, I want to withdraw a node's Platform credits from its 
 
 - The detail view's actions row opens the existing Withdraw screen scoped to the selected node (Masternode or Evonode).
 - Withdrawing with the owner key forces the destination to the node's registered Core payout address; withdrawing with the transfer/payout key allows any address.
+- When a wallet on this device holds the signing key, the withdrawal is signed by that wallet, with the same payout-address rules.
 - The Top Up and Transfer actions were removed from this screen; those flows remain available for User identities on the Identities pages.
 
 ### MN-008: Manage a node's keys [Implemented]
@@ -1969,3 +1970,30 @@ As a masternode operator, I want the same page-scoped switcher on the Masternode
 - The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
 - The third segment is a page-scoped node pill listing every loaded masternode/evonode, two-way bound with the page: opening a card names that node on the pill, and picking a node from the pill opens its detail view. It reads `(no masternode yet)` when none is loaded and `(choose a masternode)` while the grid is open.
 - Picking a node there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter) — the node selection is page-scoped, never the app-global identity.
+
+### MN-013: Use node keys my wallet already holds [Implemented]
+**Persona:** Priya
+
+As a masternode operator who registered my node from a wallet I loaded here, I want the app to find the node's owner, voting and payout keys in that wallet, so that I don't have to export and paste them.
+
+- When I load a node and leave a key field blank, the key is taken from any wallet on this device that holds it; a key I type always wins.
+- The app keeps only a reference to the wallet key, never a copy of the private key.
+- Nodes registered from another wallet still load with pasted keys, as before.
+- Loading through `det-cli` or MCP uses the same lookup. A node with neither an owner nor a payout key on this device still loads, with `withdrawals_available: false` and a note.
+
+### MN-015: Clean up a node's old voting key after a rotation [Implemented]
+**Persona:** Priya
+
+As a masternode operator who rotated my node's voting key, I want the app to tell me that the saved voting key is no longer current and let me remove it, so that I never vote with a key the network no longer accepts and nothing is deleted behind my back.
+
+- When the synced masternode list names a different voting key than the one saved, the node's detail view says so and offers `Remove old voting key…` and `Keep it`. While the list is still updating, no notice appears.
+- Removing asks for confirmation first. It removes the old voting key, its stored private key and its voter identity, and keeps the node's other keys. If the saved key has become current again by then, it is kept and the app says so.
+- The app never removes a voting key or voter identity by itself, including when a node is reloaded.
+
+### MN-014: Revive a PoSe-banned node [Gap]
+**Persona:** Priya
+
+As a masternode operator, I want to unban my PoSe-banned node from its detail view, so that it can earn rewards again without using Dash Core.
+
+- An "Unban node" action appears only when the synced masternode list shows the node as banned.
+- The fee is paid from a wallet I choose, and the operator key is taken from that wallet when it holds it.

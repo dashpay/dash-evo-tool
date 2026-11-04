@@ -90,6 +90,40 @@ impl LockProbe {
     pub(crate) fn count(&self, site: LockSite) -> usize {
         self.counts.slot(site).load(Ordering::SeqCst)
     }
+
+    /// Wait until a thread of this test reaches `site`, then hand `worker`
+    /// back for the caller to release and join.
+    ///
+    /// Fails the test instead of hanging it: when `worker` finishes first
+    /// (its outcome goes into the panic message, so an early error shows), or
+    /// when nothing reaches `site` within `deadline`. The deadline only bounds
+    /// a failure; it never decides when a fixture may proceed, which stays
+    /// the count's job (see the module docs).
+    #[cfg(test)]
+    pub(crate) fn wait_for<T: std::fmt::Debug>(
+        &self,
+        site: LockSite,
+        worker: std::thread::JoinHandle<T>,
+        deadline: std::time::Duration,
+    ) -> std::thread::JoinHandle<T> {
+        let start = std::time::Instant::now();
+        while self.count(site) == 0 {
+            // Re-read the count: the worker may have reached `site` and then
+            // finished between the loop check and this one.
+            if worker.is_finished() && self.count(site) == 0 {
+                panic!(
+                    "the worker finished before it reached {site:?}: {:?}",
+                    worker.join()
+                );
+            }
+            assert!(
+                start.elapsed() < deadline,
+                "the worker did not reach {site:?} within {deadline:?}"
+            );
+            std::thread::yield_now();
+        }
+        worker
+    }
 }
 
 /// Detaches its thread from a [`LockProbe`] when dropped.
@@ -143,6 +177,7 @@ impl Drop for WaitGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// The whole point of the type: one test's probe must not see another
     /// test's threads. An unattached thread standing in for the busy
@@ -184,6 +219,43 @@ mod tests {
             0,
             "one probe's waiter must never be counted by another",
         );
+    }
+
+    /// The wait ends as soon as the worker asks for the lock.
+    #[test]
+    fn wait_for_request_returns_once_the_worker_asks() {
+        let probe = LockProbe::new();
+        let worker_probe = probe.clone();
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _attached = worker_probe.attach();
+            note_request(LockSite::RecordRequest);
+            parked.recv().ok();
+        });
+        let worker = probe.wait_for(LockSite::RecordRequest, worker, Duration::from_secs(30));
+        release.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    /// A worker that returns before it asks for the lock must fail the
+    /// wait, showing what it returned, instead of hanging the test.
+    #[test]
+    #[should_panic(expected = "finished before it reached RecordRequest: Ok(\"early exit\")")]
+    fn wait_for_request_fails_when_the_worker_finishes_first() {
+        let probe = LockProbe::new();
+        let worker = std::thread::spawn(|| "early exit");
+        probe.wait_for(LockSite::RecordRequest, worker, Duration::from_secs(30));
+    }
+
+    /// A worker that never asks and never finishes must fail the wait once
+    /// the deadline passes.
+    #[test]
+    #[should_panic(expected = "did not reach RecordRequest within")]
+    fn wait_for_request_fails_after_the_deadline() {
+        let probe = LockProbe::new();
+        let (_release, parked) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || parked.recv().ok());
+        probe.wait_for(LockSite::RecordRequest, worker, Duration::from_millis(50));
     }
 
     /// A pooled thread runs later tests. An attachment that outlived its test

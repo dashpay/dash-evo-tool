@@ -12,6 +12,7 @@ mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
 mod remove_identity;
+mod retired_voting_key;
 mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
@@ -58,7 +59,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IdentityLoadMode {
     /// Overwrite any existing stored identity (legacy behaviour; the User
-    /// re-load and headless flows that always resubmit their full key set).
+    /// re-load, which always resubmits its full key set).
     #[default]
     Overwrite,
     /// A fresh load: reject with [`TaskError::DuplicateProTxHash`] when an
@@ -68,6 +69,11 @@ pub enum IdentityLoadMode {
     /// stored identity's keys, preserving keys the caller did not resupply
     /// (§10.8 / the "Add voting key" fix-up). Exempt from duplicate rejection.
     MergeIntoExisting,
+    /// A repeatable load, for headless callers that cannot tell a first load
+    /// from a repeat: stores a new identity, and on a repeat behaves as
+    /// [`Self::MergeIntoExisting`], so a blank field never removes a stored key.
+    /// Unlike that scoped fix-up, a non-blank alias renames the identity.
+    MergeOrInsert,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,6 +554,22 @@ pub enum IdentityTask {
         /// The items the user chose, as listed by [`Self::CheckLegacyRecovery`].
         approved: Vec<crate::model::legacy_recovery::RecoveryItem>,
     },
+    /// Check whether this masternode stores a voting key or voter identity
+    /// the masternode list no longer names. Read-only, so a screen can
+    /// dispatch it on arrival; answers "not retired" whenever the list is not
+    /// current.
+    CheckRetiredVotingKey {
+        /// The masternode or evonode identity to check.
+        identity_id: Identifier,
+    },
+    /// Remove the voting keys (with their vault secrets) and the voter
+    /// identity this masternode stores that the masternode list no longer
+    /// names. Rechecks the list when it runs and keeps a key that is current
+    /// again; never removes anything without a current list.
+    RemoveRetiredVotingKey {
+        /// The masternode or evonode identity to clean up.
+        identity_id: Identifier,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -995,6 +1017,13 @@ impl AppContext {
             IdentityTask::CheckLegacyRecovery { identity_id } => {
                 self.check_legacy_recovery(identity_id)
             }
+            IdentityTask::CheckRetiredVotingKey { identity_id } => {
+                self.check_retired_voting_key(identity_id).await
+            }
+            IdentityTask::RemoveRetiredVotingKey { identity_id } => {
+                self.remove_retired_voting_key(sdk, identity_id, &sender)
+                    .await
+            }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,
                 approved,
@@ -1084,11 +1113,9 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        let updated_identity = self
+            .store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height))
+            .unwrap_or(updated_identity);
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1163,20 +1190,85 @@ impl AppContext {
             );
         }
 
-        // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        self.store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height));
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
+
+    /// Store the balance `paid` carries after a paid task into the record as
+    /// stored now, so a change made while the task ran (such as a removed
+    /// voting key) is kept. Returns the stored record, with the top-up history
+    /// `paid` carries (kept outside the record). The task already
+    /// happened, so a failed save is only logged; it never reads as a failed
+    /// task that the user might repeat.
+    fn store_paid_balance(
+        &self,
+        paid: &QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) -> Option<QualifiedIdentity> {
+        let id = paid.identity.id();
+        let credits = paid.identity.balance();
+        self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+            stored.identity.set_balance(credits);
+            Ok(())
+        })
+        .inspect_err(|error| {
+            tracing::warn!(identity_id = %id, ?error, "Balance after a paid task could not be stored locally");
+        })
+        .ok()
+        .map(|mut stored| {
+            stored.top_ups = paid.top_ups.clone();
+            stored
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paid task's network call can outlast the removal of an old voting
+    /// key; storing its new balance must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_balance_keeps_a_change_made_while_the_task_ran() {
+        let staged = crate::context::test_staging::stage_identity_with_voter_twin(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let mut paid = read();
+        assert!(paid.associated_voter_identity.is_some());
+        let mut removed = paid.clone();
+        removed.associated_voter_identity = None;
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        paid.identity.set_balance(1_234);
+        paid.top_ups.insert(3, 50_000);
+        let stored = staged
+            .ctx
+            .store_paid_balance(&paid, BalanceProvenance::ConfirmedUnordered)
+            .expect("the balance is stored");
+
+        assert!(stored.associated_voter_identity.is_none());
+        assert_eq!(stored.top_ups, paid.top_ups, "the caller keeps its top-ups");
+        let after = read();
+        assert!(
+            after.associated_voter_identity.is_none(),
+            "a paid task must not bring back what was removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 1_234);
+    }
 
     /// RUST-001: every seed-recovery scan must cover the highest derivation
     /// index the Add Key chooser can offer. Once the derived key is on-chain the

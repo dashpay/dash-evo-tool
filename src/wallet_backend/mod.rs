@@ -46,6 +46,7 @@ pub(crate) mod kv_test_support;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
+mod masternode;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
@@ -106,6 +107,7 @@ pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
+pub use masternode::{MasternodeWalletKeys, MasternodeWithdrawal};
 pub use payments::AssetLockMaxAmountQuote;
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
@@ -391,6 +393,9 @@ struct Inner {
     registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     #[cfg(test)]
     registration_test_failure: std::sync::atomic::AtomicBool,
+    /// Stands in for the masternode list, which needs a synced SPV client.
+    #[cfg(test)]
+    masternode_voting_hash_test_override: std::sync::Mutex<Option<[u8; 20]>>,
     #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -687,6 +692,8 @@ impl WalletBackend {
                 registration_test_barrier: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                masternode_voting_hash_test_override: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]

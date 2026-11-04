@@ -116,6 +116,9 @@ fn initialize_logger_internal() {
 
     // Installed even when another subscriber is already global: the hook
     // reports through whichever subscriber is active when a panic happens.
+    // Not in this crate's unit tests: a test that boots the app would
+    // otherwise redact the values of every later failed assertion.
+    #[cfg(not(test))]
     install_panic_hook();
 
     if !subscriber_set {
@@ -153,7 +156,8 @@ static INSTALL_PANIC_HOOK: Once = Once::new();
 /// terminal still get a crash marker. The default hook is replaced, not
 /// chained: it would print the unredacted message to stderr.
 ///
-/// Every entry point must call this ([`initialize_logger`] does). Idempotent.
+/// Every entry point must call this ([`initialize_logger`] does, except in
+/// this crate's unit tests). Idempotent.
 pub fn install_panic_hook() {
     INSTALL_PANIC_HOOK.call_once(|| panic::set_hook(Box::new(report_panic)));
 }
@@ -767,6 +771,8 @@ mod tests {
             .arg("--nocapture")
             .env(PANIC_CHILD_MODE, mode)
             .env(PANIC_CHILD_LOG, &log_path)
+            // Keeps a child that boots the real logger off the user's data dir.
+            .env("DASH_EVO_DATA_DIR", dir.path())
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUST_LIB_BACKTRACE")
             .output()
@@ -790,6 +796,13 @@ mod tests {
     /// then panic as the parent asked.
     fn panic_as_child() -> ! {
         let mode = std::env::var(PANIC_CHILD_MODE).expect("child mode");
+        if mode == "unit-test-boot" {
+            // A unit test that boots the app the way production does.
+            initialize_logger();
+            let secret = std::hint::black_box(SYNTHETIC_SECRET.to_owned());
+            assert_eq!(secret, "expected value");
+            unreachable!("the assertion above fails");
+        }
         let log_path = std::env::var_os(PANIC_CHILD_LOG).expect("child log path");
         let log_file = fs::File::create(log_path).expect("child log file");
         let subscriber = tracing_subscriber::fmt()
@@ -833,13 +846,15 @@ mod tests {
                 "{sink} must say the message was redacted:\n{text}"
             );
             assert!(
-                text.contains("src/logging.rs:"),
+                text.contains(concat!(file!(), ":")),
                 "{sink} must keep the panic location:\n{text}"
             );
         }
         // The crash marker the default hook used to write, without its payload.
         assert!(
-            child.terminal.contains("panicked at src/logging.rs:"),
+            child
+                .terminal
+                .contains(concat!("panicked at ", file!(), ":")),
             "stderr must keep the crash marker:\n{}",
             child.terminal
         );
@@ -868,6 +883,19 @@ mod tests {
             );
             assert!(!text.contains("<redacted"), "{sink}:\n{text}");
         }
+    }
+
+    #[test]
+    fn unit_tests_that_boot_the_logger_keep_assertion_values() {
+        let name = libtest_name("unit_tests_that_boot_the_logger_keep_assertion_values");
+        let Some(child) = run_panic_hook_child(&name, "unit-test-boot") else {
+            panic_as_child();
+        };
+        assert!(
+            child.terminal.contains(SYNTHETIC_SECRET) && !child.terminal.contains("<redacted"),
+            "the test harness must still report a failed assertion's values:\n{}",
+            child.terminal
+        );
     }
 
     #[test]

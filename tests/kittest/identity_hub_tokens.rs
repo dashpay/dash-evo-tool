@@ -2074,3 +2074,112 @@ fn a_refresh_failure_behind_the_picker_reaches_the_banner() {
         );
     });
 }
+
+/// The context of the pair check the last click dispatched.
+fn pair_check_context(hub: &HubHarness) -> BackendTaskContext {
+    hub.state()
+        .1
+        .iter()
+        .find_map(|action| match action {
+            AppAction::BackendTaskWithContext {
+                task: BackendTask::TokenTask(task),
+                context,
+            } if matches!(**task, TokenTask::QueryIdentityTokenBalance(_)) => Some(context.clone()),
+            _ => None,
+        })
+        .expect("the pair check was dispatched")
+}
+
+/// Settle the arrival refresh, then check `name`'s balance from its row menu.
+fn check_row_now(hub: &mut HubHarness, name: &str) -> BackendTaskContext {
+    let arrival = balance_refreshes(hub)
+        .pop()
+        .expect("the arrival refresh is running");
+    hub.state_mut().0.display_backend_task_result(
+        &arrival,
+        dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+    );
+    hub.run_steps(2);
+    hub.state_mut().1.clear();
+    hub.get_by_label(&format!("More actions for {name}"))
+        .click();
+    hub.run_steps(2);
+    hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+    hub.run_steps(2);
+    pair_check_context(hub)
+}
+
+/// A check of the previous identity's token fails after another identity
+/// was selected: its row is not on screen, so the banner reports it.
+#[test]
+fn a_pair_check_failure_after_an_identity_switch_reaches_the_banner() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let first = seed_signing_identity(&app_context, 0xE4);
+        let second = seed_signing_identity(&app_context, 0xE5);
+        seed_three_tokens(&app_context, first);
+        app_context.set_selected_identity(Some(first));
+        let mut hub = mount_tokens_tab(&app_context);
+        let check = check_row_now(&mut hub, "Tester");
+
+        app_context.set_selected_identity(Some(second));
+        hub.run_steps(3);
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut().0.display_backend_task_error(&check, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "the other identity's list cannot show this failure"
+        );
+    });
+}
+
+/// A check fails while the list filter hides its row: the banner reports it.
+#[test]
+fn a_pair_check_failure_of_a_filtered_out_row_reaches_the_banner() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xE6);
+        let names = [
+            "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+        ];
+        let tokens = seed_contract(
+            &app_context,
+            0xC9,
+            Identifier::from([0xEE; 32]),
+            names.iter().map(|name| token_config(name, false)).collect(),
+        );
+        // Hotel's balance is unknown, so a failed check is all its row can say.
+        for token in &tokens[..7] {
+            set_balance(&app_context, identity, *token, 100);
+        }
+        // Tall enough that every row is on screen.
+        let mut hub = mount_hub(&app_context, egui::vec2(1280.0, 2400.0));
+        let check = check_row_now(&mut hub, "Hotel");
+        assert!(
+            hub.query_by_label(token_copy::STATUS_CHECKING).is_some(),
+            "Hotel's balance is unknown and being checked"
+        );
+
+        let filter = hub
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .expect("the filter box");
+        filter.focus();
+        hub.run();
+        hub.get_all_by_role(Role::TextInput)
+            .next()
+            .expect("the filter box")
+            .type_text("alpha");
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label("Hotel").is_none(),
+            "the row is filtered out"
+        );
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut().0.display_backend_task_error(&check, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "a filtered-out row cannot show this failure"
+        );
+    });
+}

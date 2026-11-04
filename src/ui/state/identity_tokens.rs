@@ -355,14 +355,14 @@ pub struct IdentityTokensState {
 }
 
 /// Where a failure of the tab's own requests is reported without a banner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InlineError {
     /// A refusal while a refresh runs or the network syncs: nothing to report.
     Quiet,
     /// A failed full refresh: its notice on the Tokens list and on Home.
     Refresh,
-    /// A failed check of rows: their status on the Tokens list.
-    Rows,
+    /// A failed check of these pairs: their rows' status on the Tokens list.
+    Rows(Vec<IdentityTokenIdentifier>),
 }
 
 /// What the arrival rule asks for on a frame.
@@ -920,7 +920,7 @@ impl IdentityTokensState {
         if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
                 pairs.retain(|pair| self.owner.is_some_and(|(_, id)| id == pair.identity_id));
-                self.track_again_owed = (!pairs.is_empty()).then_some(pairs);
+                self.track_again_owed = (!pairs.is_empty()).then(|| std::mem::take(&mut pairs));
             } else {
                 // Only the selected identity's pairs were refreshed: mark
                 // those, never every identity's unknown balances.
@@ -928,11 +928,8 @@ impl IdentityTokensState {
                     error = ?error,
                     "Tracking token balances again for the Identity Hub failed"
                 );
-                self.pair_check_results.extend(
-                    pairs
-                        .into_iter()
-                        .map(|pair| (pair, PairCheckResult::Failed)),
-                );
+                self.pair_check_results
+                    .extend(pairs.iter().map(|pair| (*pair, PairCheckResult::Failed)));
             }
             self.invalidate_rows();
             // A local storage failure may come before the dismissals were
@@ -941,7 +938,7 @@ impl IdentityTokensState {
             self.inline_error = if in_progress {
                 Some(InlineError::Quiet)
             } else {
-                (!Self::may_leave_rows_dismissed(error)).then_some(InlineError::Rows)
+                (!Self::may_leave_rows_dismissed(error)).then_some(InlineError::Rows(pairs))
             };
             return;
         }
@@ -972,17 +969,11 @@ impl IdentityTokensState {
                     .insert(pair, PairCheckResult::Failed);
                 self.invalidate_rows();
             }
-            // Only a row with no known balance says it could not check; one
-            // showing a cached balance leaves the report to the banner.
-            let shows_balance = self
-                .rows
-                .iter()
-                .any(|row| row.pair() == pair && row.balance().is_some());
-            self.inline_error = if in_progress {
-                Some(InlineError::Quiet)
+            self.inline_error = Some(if in_progress {
+                InlineError::Quiet
             } else {
-                (!shows_balance).then_some(InlineError::Rows)
-            };
+                InlineError::Rows(vec![pair])
+            });
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
@@ -1026,7 +1017,25 @@ impl IdentityTokensState {
             Some(InlineError::Refresh) => {
                 tokens_list_shown || (home_shown && !self.rows.is_empty())
             }
-            Some(InlineError::Rows) => tokens_list_shown,
+            Some(InlineError::Rows(pairs)) => {
+                tokens_list_shown && pairs.iter().any(|pair| self.shows_failed_row(pair))
+            }
+        }
+    }
+
+    /// Whether the Tokens list shows `pair`'s failed check: the pair belongs
+    /// to the identity on screen, and its row has no known balance (only
+    /// then does it say it could not check) and passes the list controls.
+    fn shows_failed_row(&self, pair: &IdentityTokenIdentifier) -> bool {
+        if self.owner.map(|(_, identity_id)| identity_id) != Some(pair.identity_id) {
+            return false;
+        }
+        let prefs = self.prefs.clone().unwrap_or_default();
+        let shown = filter_shown(self.rows.len());
+        match self.rows.iter().find(|row| row.pair() == *pair) {
+            Some(row) => row.balance().is_none() && row_is_listed(row, &prefs, shown),
+            // A pair tracked again just now joins the list on its next read.
+            None => true,
         }
     }
 
@@ -1094,6 +1103,14 @@ mod tests {
             claimed_at_ms,
         });
         row
+    }
+
+    /// A state showing the identity the tests' rows belong to.
+    fn owned_state() -> IdentityTokensState {
+        IdentityTokensState {
+            owner: Some((Network::Testnet, Identifier::from([1; 32]))),
+            ..Default::default()
+        }
     }
 
     /// Every identity the tests' rows belong to, as a refresh roster.
@@ -1291,7 +1308,7 @@ mod tests {
         let unknown = row("Unknown", None);
         let mut state = IdentityTokensState {
             rows: vec![cached.clone(), unknown.clone()].into(),
-            ..Default::default()
+            ..owned_state()
         };
         let check = dispatched(state.dispatch_pair_check(cached.pair()));
         state.record_error(&check, &TaskError::NoIdentitiesFound);
@@ -1566,7 +1583,7 @@ mod tests {
 
     #[test]
     fn a_failed_pair_check_marks_the_row_until_it_succeeds() {
-        let mut state = IdentityTokensState::default();
+        let mut state = owned_state();
         let pair = row("T", None).pair();
         let context = dispatched(state.dispatch_pair_check(pair));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
@@ -1776,7 +1793,7 @@ mod tests {
     /// becomes a global banner and no check stays outstanding.
     #[test]
     fn a_second_pair_check_does_not_orphan_the_first() {
-        let mut state = IdentityTokensState::default();
+        let mut state = owned_state();
         let first_ctx = dispatched(state.dispatch_pair_check(row("First", None).pair()));
         let second_ctx = dispatched(state.dispatch_pair_check(row("Second", None).pair()));
         state.record_error(&first_ctx, &TaskError::NoIdentitiesFound);
@@ -1870,7 +1887,7 @@ mod tests {
     /// unmarked after a switch. A later success clears the pairs again.
     #[test]
     fn a_failed_track_again_marks_only_its_pairs() {
-        let mut state = IdentityTokensState::default();
+        let mut state = owned_state();
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         state.record_error(&context, &TaskError::NoIdentitiesFound);

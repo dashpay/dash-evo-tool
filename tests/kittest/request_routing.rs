@@ -1503,6 +1503,14 @@ fn a_progress_report_of_a_closed_form_raises_no_banner_and_ends_nothing() {
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         let request = searching_form(&mut harness);
+        deliver(
+            &mut harness,
+            search_progress(&request, app_context.network(), 1),
+        );
+        assert!(
+            search_progress_banner_shown(&harness),
+            "the open form shows the search's progress"
+        );
         harness.state_mut().screen_stack.pop();
         MessageBanner::clear_all_global(app_context.egui_ctx());
         harness.run_steps(3);
@@ -1537,6 +1545,11 @@ fn a_progress_report_from_the_previous_network_leaves_the_new_networks_form_alon
         let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let previous_network = harness.state().current_app_context().network();
         let request = searching_form(&mut harness);
+        deliver(&mut harness, search_progress(&request, previous_network, 1));
+        assert!(
+            search_progress_banner_shown(&harness),
+            "before the switch, the form shows the search's progress"
+        );
 
         switch_network(&mut harness);
         let app_context = harness.state().current_app_context().clone();

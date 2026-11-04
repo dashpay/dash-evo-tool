@@ -15,6 +15,7 @@ use crate::{
         qualified_identity::{DPNSNameInfo, QualifiedIdentity},
     },
 };
+use dash_sdk::query_types::IdentityBalance;
 use dash_sdk::{
     Error as SdkError, Sdk,
     dapi_grpc::platform::v0::ResponseMetadata,
@@ -236,7 +237,12 @@ impl AppContext {
             outcome == DpnsRegistrationOutcome::PendingCommunityVote,
             input.approved_contest_fee,
         );
-        let balance_before = qualified_identity.identity.balance();
+        // Read from Platform, not the request's copy of the identity: that copy
+        // can predate a payment whose new balance was never read back, and an
+        // optimistic balance would let the first document be paid for.
+        let balance_before = IdentityBalance::fetch(sdk, qualified_identity.identity.id())
+            .await?
+            .ok_or(TaskError::IdentityNotFound)?;
         // Refused here, not by the network: it would take the first document's
         // fee and only then turn the second document down. The admission
         // reserve is held, not charged, but the name document is refused
@@ -648,6 +654,9 @@ mod tests {
 
     /// An identity that cannot cover both documents, plus the community vote
     /// fee when the name needs one, is refused before anything is broadcast.
+    /// The balance checked is the one Platform reports now, not the one the
+    /// request carries: that copy can predate a payment whose new balance was
+    /// never read back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registration_is_refused_before_broadcast_when_the_balance_cannot_cover_it() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -690,9 +699,11 @@ mod tests {
                 + approved_contest_fee
                 + admission_reserve;
             let mut identity = identity_with_signing_key(3);
-            identity.identity.set_balance(required - short_by);
+            // The stored copy still covers everything; Platform's balance does not.
+            identity.identity.set_balance(required);
             let mut sdk = mock_sdk();
             expect_domain_lookup(&mut sdk, &ctx, label, false).await;
+            expect_live_balance(&mut sdk, identity.identity.id(), Some(required - short_by)).await;
             if needs_vote {
                 expect_vote_state(&mut sdk, &ctx, label, Contenders::default()).await;
                 expect_contender_count(&mut sdk, &ctx, label, 0).await;
@@ -730,6 +741,45 @@ mod tests {
         }
     }
 
+    /// An identity Platform does not report is refused before anything is
+    /// broadcast, however much the request's copy of it holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_is_refused_before_broadcast_when_platform_reports_no_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut identity = identity_with_signing_key(4);
+        identity.identity.set_balance(u64::MAX / 2);
+        let mut sdk = Sdk::new_mock();
+        expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(&mut sdk, identity.identity.id(), None).await;
+        let broadcast = AtomicBool::new(false);
+
+        let result = ctx
+            .register_dpns_name_through(
+                &sdk,
+                RegisterDpnsNameInput {
+                    qualified_identity: identity,
+                    name_input: "alice-123".to_owned(),
+                    approved_contest_fee: 0,
+                    signing_key_id: Some(1),
+                },
+                |_| {
+                    broadcast.store(true, Ordering::Release);
+                    async { Err::<ProvenRegistration, _>(unproven_broadcast_failure()) }
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::IdentityNotFound)),
+            "{result:?}"
+        );
+        assert!(
+            !broadcast.load(Ordering::Acquire),
+            "nothing may be broadcast"
+        );
+    }
+
     /// The date saved for a newly registered name is the one on the name
     /// document the network confirmed, carried there by the registration itself.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -751,6 +801,12 @@ mod tests {
         ctx.update_local_qualified_identity(&identity).unwrap();
         let mut sdk = Sdk::new_mock();
         expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
         let mut confirmed = domain_document(id, "alice-123");
         confirmed.set_created_at(Some(4_242));
 
@@ -854,6 +910,12 @@ mod tests {
         // No identity expectation: a read-back would fail.
         let mut sdk = Sdk::new_mock();
         expect_domain_lookup(&mut sdk, &ctx, "alice-123", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
         let confirmed = domain_document(id, "alice-123");
 
         let result = ctx
@@ -1198,6 +1260,12 @@ mod tests {
             identity.identity.set_balance(0);
             let mut sdk = mock_sdk();
             expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+            expect_live_balance(
+                &mut sdk,
+                identity.identity.id(),
+                Some(identity.identity.balance()),
+            )
+            .await;
             // The availability page reads no running vote; the count, read
             // page by page, finds 251 requests.
             expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
@@ -1267,6 +1335,12 @@ mod tests {
         ctx.update_local_qualified_identity(&identity).unwrap();
         let mut sdk = mock_sdk();
         expect_domain_lookup(&mut sdk, &ctx, "alice", false).await;
+        expect_live_balance(
+            &mut sdk,
+            identity.identity.id(),
+            Some(identity.identity.balance()),
+        )
+        .await;
         expect_vote_state(&mut sdk, &ctx, "alice", Contenders::default()).await;
         expect_contender_count(&mut sdk, &ctx, "alice", 0).await;
         let submitted = domain_document(id, "alice");
@@ -1351,6 +1425,15 @@ mod tests {
             )
             .await
             .expect("domain lookup expectation");
+    }
+
+    /// Mock the balance Platform reports for `id` now; `None` for an identity
+    /// Platform does not know.
+    async fn expect_live_balance(sdk: &mut Sdk, id: Identifier, balance: Option<u64>) {
+        sdk.mock()
+            .expect_fetch::<IdentityBalance, _>(id, balance)
+            .await
+            .expect("live balance expectation");
     }
 
     /// Mock the community-vote state for `label`.

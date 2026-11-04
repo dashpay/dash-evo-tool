@@ -2038,3 +2038,39 @@ fn a_pair_check_failure_on_the_detail_page_reaches_the_banner() {
         );
     });
 }
+
+/// A refresh that fails after the Identities breadcrumb opened the picker,
+/// with the Tokens tab still selected underneath, reaches the banner: the
+/// picker shows no token notice.
+#[test]
+fn a_refresh_failure_behind_the_picker_reaches_the_banner() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xE3);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+
+        // The breadcrumb's root segment is the first "Identities" label.
+        hub.query_all_by_label("Identities")
+            .next()
+            .expect("the breadcrumb root")
+            .click();
+        hub.run_steps(3);
+        assert!(
+            hub.query_by_label(token_copy::SUBTITLE).is_none(),
+            "the picker replaced the Tokens tab"
+        );
+        assert_eq!(hub.state().0.selected_tab(), IdentityHubTab::Tokens);
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "the picker does not show token failures, so the banner does"
+        );
+    });
+}

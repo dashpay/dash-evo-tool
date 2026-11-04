@@ -45,6 +45,9 @@ pub struct IdentityHubScreen {
     /// The currently selected tab. Persisted only in memory for now — start tab
     /// persistence across restarts is a follow-up.
     selected_tab: IdentityHubTab,
+    /// The tab whose content the last frame rendered; `None` while the picker
+    /// or onboarding shows instead, whatever tab stays selected underneath.
+    last_rendered_tab: Option<IdentityHubTab>,
     /// Cached landing-load error banner. Set by `landing()` when identity
     /// loading fails; cleared on `refresh`. Separating this from a real
     /// zero-identity state avoids inviting users to create identities when the
@@ -172,6 +175,7 @@ impl IdentityHubScreen {
         Self {
             app_context: app_context.clone(),
             selected_tab: IdentityHubTab::default(),
+            last_rendered_tab: None,
             load_error_banner: None,
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
@@ -905,6 +909,8 @@ impl ScreenLike for IdentityHubScreen {
             }
         }
 
+        self.last_rendered_tab = rendered_tab;
+
         // Every part of the frame above has had its say; this is where the
         // action that leaves the frame is settled. A data load claims its one
         // dispatch slot when it is asked for, so it is asked for only here and
@@ -1211,10 +1217,10 @@ impl ScreenLike for IdentityHubScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         // The Tokens list and Home's token slot show token failures inline,
-        // but only on the view in front of the user.
+        // but only on the view the user last saw — not the picker over them.
         if self.tokens_state.take_inline_error(
-            self.selected_tab == IdentityHubTab::Tokens,
-            self.selected_tab == IdentityHubTab::Home,
+            self.last_rendered_tab == Some(IdentityHubTab::Tokens),
+            self.last_rendered_tab == Some(IdentityHubTab::Home),
         ) {
             return true;
         }

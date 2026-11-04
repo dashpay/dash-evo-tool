@@ -1,5 +1,6 @@
 //! Spends from Platform addresses on [`WalletBackend`]: credit transfers,
-//! withdrawals to Core, and identity top-ups.
+//! withdrawals to Core, identity top-ups, and the proof of an address-funded
+//! identity registration.
 //!
 //! Every spend goes through platform-wallet, so platform-wallet's own
 //! per-address balances (the ones its shield preflight and input selection
@@ -169,6 +170,21 @@ impl WalletBackend {
             .await?;
         let entries = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
         Ok((new_balance, proof_height, entries))
+    }
+
+    /// Record a spend submitted outside platform-wallet (address-funded
+    /// identity registration) from its proof-attested `address_infos`, pinned
+    /// at `proof_height`, and return what platform-wallet committed.
+    /// Fails only when platform-wallet does not hold the wallet.
+    pub(crate) async fn reconcile_platform_address_proof(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address_infos: &AddressInfos,
+        proof_height: u64,
+        context: &'static str,
+    ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        Ok(reconcile_on(&wallet, address_infos, proof_height, context).await)
     }
 }
 
@@ -566,5 +582,127 @@ mod tests {
 
         let older = reconcile_on(&pw, &infos(&[(owned, 80_000, 2)]), 400, "older proof").await;
         assert!(older.is_empty(), "older proof is skipped: {older:?}");
+    }
+
+    /// A spend submitted outside platform-wallet (address-funded identity
+    /// registration) reaches platform-wallet, DET's model and the wallet
+    /// total from its proof alone. An older proof or pass applied later
+    /// changes none of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spend_proof_reaches_platform_wallet_det_model_and_total() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = wired_test_app_context(dir.path()).await;
+        let backend = ctx.wallet_backend().expect("wired backend");
+        let (seed_hash, wallet_arc, owned) =
+            wallet_with_platform_address(&ctx, rand::random::<[u8; 64]>()).await;
+        let foreign = PlatformAddress::P2pkh([0x99; 20]);
+        let PlatformAddress::P2pkh(owned_hash) = owned else {
+            panic!("p2pkh address expected");
+        };
+
+        ctx.record_platform_address_spend_proof(
+            seed_hash,
+            &infos(&[(owned, 41_000, 3), (foreign, 900, 1)]),
+            500,
+            "test registration",
+        )
+        .await;
+
+        // Older results arriving afterwards: a proof, then a coordinator pass.
+        ctx.record_platform_address_spend_proof(
+            seed_hash,
+            &infos(&[(owned, 80_000, 2)]),
+            400,
+            "older proof",
+        )
+        .await;
+        ctx.apply_platform_address_push(vec![(
+            seed_hash,
+            vec![PlatformAddressEntry {
+                hash: owned_hash,
+                balance: 80_000,
+                nonce: 2,
+                account: 0,
+                index: Some(0),
+                as_of_height: 400,
+            }],
+        )]);
+
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
+        let pinned = ctx
+            .platform_balance_ledger
+            .lock()
+            .expect("balance ledger")
+            .get(&seed_hash)
+            .and_then(|ledger| ledger.get(&owned_hash).copied());
+        assert_eq!(pinned, Some((41_000, 500)), "the bridge merges into this");
+
+        let pw = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("resolve wallet");
+        let upstream: BTreeMap<_, _> = pw
+            .platform()
+            .addresses_with_balances()
+            .await
+            .into_iter()
+            .collect();
+        assert_eq!(upstream.get(&owned), Some(&41_000));
+        assert!(!upstream.contains_key(&foreign));
+
+        let core_owned = owned.to_address_with_network(Network::Testnet);
+        let wallet = wallet_arc.read().expect("wallet lock");
+        let det = wallet
+            .platform_address_info
+            .get(&core_owned)
+            .expect("DET has the owned address");
+        assert_eq!((det.balance, det.nonce), (41_000, 3));
+        assert!(
+            !wallet
+                .platform_address_info
+                .contains_key(&foreign.to_address_with_network(Network::Testnet)),
+            "a foreign recipient stays out of DET's model"
+        );
+    }
+
+    /// Without platform-wallet holding the wallet, the proof still updates
+    /// DET's model, pinned at its height, as it did before platform-wallet
+    /// reconciled these spends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spend_proof_without_platform_wallet_still_updates_det_model() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let owned = PlatformAddress::try_from(address.clone()).expect("p2pkh address");
+        let seed_hash = wallet.seed_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet_arc));
+
+        ctx.record_platform_address_spend_proof(
+            seed_hash,
+            &infos(&[(owned, 41_000, 3)]),
+            500,
+            "test registration",
+        )
+        .await;
+        ctx.record_platform_address_spend_proof(
+            seed_hash,
+            &infos(&[(owned, 80_000, 2)]),
+            400,
+            "older proof",
+        )
+        .await;
+
+        let wallet = wallet_arc.read().expect("wallet lock");
+        let det = wallet
+            .get_platform_address_info(&address)
+            .expect("DET has the owned address");
+        assert_eq!((det.balance, det.nonce), (41_000, 3));
     }
 }

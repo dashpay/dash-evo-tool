@@ -1279,11 +1279,17 @@ impl QualifiedIdentity {
     /// with key limits updates, so the snapshot may be stale. Falls back to
     /// the snapshot when the identity no longer holds the same key.
     pub fn live_public_key<'a>(&'a self, snapshot: &'a IdentityPublicKey) -> &'a IdentityPublicKey {
+        self.current_public_key(snapshot).unwrap_or(snapshot)
+    }
+
+    /// The key as the identity holds it now for `snapshot`, or `None` when
+    /// the identity no longer holds the same key, so nothing it signs can
+    /// authorize a transition.
+    pub fn current_public_key(&self, snapshot: &IdentityPublicKey) -> Option<&IdentityPublicKey> {
         self.identity
             .public_keys()
             .get(&snapshot.id())
             .filter(|live| encrypted_key_storage::same_key(snapshot, live))
-            .unwrap_or(snapshot)
     }
 
     /// The key to sign with for `requirements` now: the automatic choice of

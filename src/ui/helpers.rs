@@ -489,8 +489,9 @@ fn listed_keys<'a>(
         .identity_public_keys()
         .into_iter()
         // The stored copy may predate a limits raise: judge, label and hand
-        // on the key as the identity holds it now.
-        .map(|key_ref| identity.live_public_key(&key_ref.1.identity_public_key))
+        // on the key as the identity holds it now, skipping one it no longer
+        // holds.
+        .filter_map(|key_ref| identity.current_public_key(&key_ref.1.identity_public_key))
         // Platform rejects signing with a disabled key or a key bound
         // elsewhere, and no signer here can produce a private half this
         // device cannot obtain, so never offer one — not even in dev mode,
@@ -1464,6 +1465,42 @@ mod tests {
                 0,
                 "{case}: not listed, not even in developer mode"
             );
+        }
+    }
+
+    /// Regression: a filed key the identity no longer holds, removed or
+    /// replaced under the same id, was listed by its stored copy, though
+    /// Platform verifies against the identity's current key.
+    #[test]
+    fn the_chooser_lists_no_key_the_identity_no_longer_holds() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let dashpay = Identifier::new([0xDA; 32]);
+        let purposes = TransactionType::ContactRequest.allowed_purposes();
+        let levels = TransactionType::ContactRequest.allowed_security_levels();
+        let filter = contact_request_filter(&purposes, &levels, dashpay);
+        let now = 1_000;
+
+        let mut removed = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        removed
+            .identity
+            .set_public_keys(std::collections::BTreeMap::new());
+        let mut replaced = identity_holding(&[auth_key(1, SecurityLevel::HIGH)]);
+        let mut other = auth_key(1, SecurityLevel::HIGH);
+        other.set_data(vec![3; 33].into());
+        replaced
+            .identity
+            .set_public_keys(std::collections::BTreeMap::from([(1, other)]));
+
+        for (case, identity) in [("removed", removed), ("replaced", replaced)] {
+            assert_eq!(
+                listed_keys(&identity, filter, true, now).count(),
+                0,
+                "{case}"
+            );
+            assert!(!key_eligibility(&identity, &filter, now).0, "{case}");
         }
     }
 

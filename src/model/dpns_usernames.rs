@@ -249,10 +249,10 @@ pub fn missing_registration_wallets(
         .values()
         .filter_map(move |(key, data)| match data {
             PrivateKeyData::AtWalletDerivationPath(path)
-                if key_can_sign_documents(
-                    identity.live_public_key(&key.identity_public_key),
-                    required,
-                ) && !identity.key_secret_is_obtainable(data) =>
+                if identity
+                    .current_public_key(&key.identity_public_key)
+                    .is_some_and(|live| key_can_sign_documents(live, required))
+                    && !identity.key_secret_is_obtainable(data) =>
             {
                 Some(&path.wallet_seed_hash)
             }
@@ -302,8 +302,11 @@ pub fn registration_key_status(
     let mut held_in_legacy_form = false;
     for (key, data) in identity.private_keys.values() {
         // The stored copy may predate a limits update: judge the key as the
-        // identity holds it now.
-        if !key_can_sign_documents(identity.live_public_key(&key.identity_public_key), required) {
+        // identity holds it now, and skip one it no longer holds.
+        if !identity
+            .current_public_key(&key.identity_public_key)
+            .is_some_and(|live| key_can_sign_documents(live, required))
+        {
             continue;
         }
         if identity.key_secret_is_obtainable(data) {
@@ -1536,6 +1539,32 @@ mod tests {
             .associated_wallets
             .insert(seed_hash, Arc::new(RwLock::new(wallet)));
         assert!(missing(&identity).is_empty());
+    }
+
+    /// Regression: a private key filed for a key the identity no longer holds
+    /// was judged by its stored copy, so readiness reported a key the
+    /// registration's key choice cannot pick, and asked for its wallet.
+    #[test]
+    fn a_filed_key_the_identity_no_longer_holds_cannot_register() {
+        use dash_sdk::dpp::identity::SecurityLevel;
+        use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+        let high = SecurityLevel::HIGH;
+        let drop_key_1 = |identity: &mut QualifiedIdentity| {
+            let mut keys = identity.identity.public_keys().clone();
+            keys.remove(&1);
+            identity.identity.set_public_keys(keys);
+        };
+        let mut identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[0, 1]);
+        drop_key_1(&mut identity);
+        assert_eq!(
+            registration_key_status(&identity, high),
+            RegistrationKeyStatus::NoSuitableKey
+        );
+
+        let mut identity = identity_with_keys(&[(0, SecurityLevel::MASTER), (1, high)], &[]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, [0x5A; 32]);
+        drop_key_1(&mut identity);
+        assert_eq!(missing_registration_wallets(&identity, high).count(), 0);
     }
 
     /// One usable key is enough: a second key stranded in a missing wallet

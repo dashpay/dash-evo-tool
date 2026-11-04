@@ -2257,6 +2257,12 @@ impl WalletBackend {
         self.inner.secret_access.clone()
     }
 
+    /// Test seam: the frame loop this backend reports to for its life.
+    #[cfg(test)]
+    pub(crate) fn frame_loop_for_test(&self) -> SenderAsync<TaskResult> {
+        self.inner.task_result_sender.clone()
+    }
+
     /// Clear every session-cached secret in the JIT chokepoint, zeroizing
     /// them. Called on network switch and teardown (the `AppContext` drops
     /// the per-network backend on switch, but this is the explicit, eager
@@ -3870,7 +3876,7 @@ mod tests {
 
         let network = Network::Testnet;
         let wallet = UpstreamWallet::from_seed_bytes(
-            [0x5Au8; 64],
+            crate::test_support::keys::seed(),
             network,
             WalletAccountCreationOptions::Default,
         )
@@ -4463,7 +4469,7 @@ mod tests {
         };
 
         let network = Network::Testnet;
-        let seed = [7u8; 64];
+        let seed = crate::test_support::keys::seed();
 
         // DIP-17 platform-payment account path: m/9'/coin'/17'/0'/0' (coin 1' on
         // testnet). The pool appends the non-hardened leaf, matching DET's
@@ -4518,7 +4524,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         // DET side: what DET persists as `xpub_encoded`.
@@ -4551,8 +4557,13 @@ mod tests {
             "matching account xpub must resolve to the DET seed hash"
         );
 
-        let other = crate::model::wallet::Wallet::new_from_seed([0x99u8; 64], network, None, None)
-            .expect("other wallet");
+        let other = crate::model::wallet::Wallet::new_from_seed(
+            crate::test_support::keys::seed(),
+            network,
+            None,
+            None,
+        )
+        .expect("other wallet");
         let other_xpub = other
             .master_bip44_ecdsa_extended_public_key
             .encode()
@@ -4573,7 +4584,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         let with_accounts =
@@ -4604,7 +4615,7 @@ mod tests {
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
 
         let find_bip44_0 = |w: &UpstreamWallet| {

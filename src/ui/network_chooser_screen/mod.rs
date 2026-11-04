@@ -110,6 +110,24 @@ impl NetworkChooserScreen {
         self.legacy_restore_in_progress
     }
 
+    /// Test seam: start a DAPI endpoint discovery as its button does, without
+    /// running its task. Returns the action the button returns.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn begin_discovery_for_test(&mut self) -> AppAction {
+        self.discovery_in_progress = true;
+        AppAction::BackendTask(BackendTask::DiscoverDapiNodes {
+            network: self.current_network,
+        })
+    }
+
+    /// Test seam: whether a DAPI endpoint discovery still runs.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn discovery_in_progress_for_test(&self) -> bool {
+        self.discovery_in_progress
+    }
+
     pub fn new(contexts: &BTreeMap<Network, Arc<AppContext>>, current_network: Network) -> Self {
         let any_context = contexts
             .values()
@@ -1846,6 +1864,7 @@ impl ScreenLike for NetworkChooserScreen {
             BackendTaskContext::RestoreFromPreviousVersion => {
                 self.legacy_restore_in_progress = false;
             }
+            BackendTaskContext::DapiNodeDiscovery => self.discovery_in_progress = false,
             _ => {}
         }
         if matches!(
@@ -1855,14 +1874,9 @@ impl ScreenLike for NetworkChooserScreen {
             self.backup_retention.save_failed();
         }
     }
-
-    fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
-        // Only reset discovery state on errors — other message types may be unrelated
-        if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
-            self.discovery_in_progress = false;
-        }
-    }
 }
+
+pub(crate) mod task_feedback;
 
 #[cfg(test)]
 mod tests {

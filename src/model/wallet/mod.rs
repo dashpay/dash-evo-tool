@@ -2317,17 +2317,20 @@ pub(crate) mod test_support {
     use super::*;
     use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 
-    /// The deterministic 64-byte seed every [`open_wallet`] is built from.
+    /// The 64-byte seed every [`open_wallet`] is built from: generated at
+    /// runtime, stable for the whole test process.
     ///
     /// Since R3 the seed is no longer parked in `WalletSeed::Open`, so tests
     /// that need the wallet's raw seed take it from here rather than from a
-    /// (removed) parked-seed accessor — the value is known by construction.
-    pub(crate) const TEST_SEED: [u8; 64] = [42u8; 64];
+    /// (removed) parked-seed accessor.
+    pub(crate) fn test_seed() -> [u8; 64] {
+        crate::test_support::keys::labelled_seed("model::wallet::test_support::test_seed", 0)
+    }
 
-    /// A minimal open wallet on [`TEST_SEED`], with its BIP44 master public key
+    /// A minimal open wallet on [`test_seed`], with its BIP44 master public key
     /// derived and every optional field left empty.
     pub(crate) fn open_wallet() -> Wallet {
-        open_wallet_on(TEST_SEED)
+        open_wallet_on(test_seed())
     }
 
     /// [`open_wallet`] on `seed`, for a test that needs two distinct wallets.
@@ -2384,21 +2387,16 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
 
-    use super::test_support::{TEST_SEED, open_wallet as test_wallet};
-
-    /// The known seed behind [`test_wallet`]. Test-only replacement for the
-    /// removed `Wallet::seed_bytes()` — derives nothing, just hands back the
-    /// constant the wallet was built from.
-    fn test_seed() -> [u8; 64] {
-        TEST_SEED
-    }
+    use super::test_support::{open_wallet as test_wallet, test_seed};
 
     /// Helper: create a test address on Testnet
     fn test_address(index: u8) -> Address {
         use dash_sdk::dpp::secp256k1::SecretKey;
 
-        let mut sk_bytes = [0u8; 32];
-        sk_bytes[0] = if index == 0 { 1 } else { index };
+        let sk_bytes = crate::test_support::keys::labelled_secret(
+            "model::wallet::tests::test_address",
+            index.into(),
+        );
         let sk = SecretKey::from_secret_bytes(sk_bytes).expect("valid secret key");
         let inner = dash_sdk::dpp::secp256k1::PublicKey::from_secret_key(&sk);
         let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
@@ -2418,7 +2416,7 @@ mod tests {
     /// — this pins the rejection.
     #[test]
     fn open_no_password_rejects_protected_envelope() {
-        let seed = [0x42u8; 64];
+        let seed = crate::test_support::keys::seed();
         let envelope = ClosedKeyItem::encrypt_seed(&seed, "a-passphrase").expect("encrypt");
         // Precondition: a protected blob is longer than a bare 64-byte seed.
         assert_ne!(
@@ -2450,7 +2448,7 @@ mod tests {
     /// 64-byte seed verbatim, so `open_no_password` flips it to `Open`.
     #[test]
     fn open_no_password_accepts_unprotected_envelope() {
-        let seed = [0x09u8; 64];
+        let seed = crate::test_support::keys::seed();
         let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -2864,22 +2862,18 @@ mod tests {
     ///
     /// For a no-password wallet `encrypted_seed` holds the raw 64-byte seed
     /// verbatim. `ClosedKeyItem` redacts it in `Debug`, and `WalletSeed`,
-    /// `OpenWalletSeed`, and `Wallet` all delegate to that impl. A known
-    /// distinctive seed (not all-equal, so byte fragments are unambiguous)
-    /// must appear in none of their `Debug` renderings.
+    /// `OpenWalletSeed`, and `Wallet` all delegate to that impl. A random
+    /// seed must appear in none of their `Debug` renderings.
     #[test]
     fn debug_output_never_leaks_plaintext_seed() {
-        let mut seed = [0u8; 64];
-        for (i, b) in seed.iter_mut().enumerate() {
-            *b = i as u8;
-        }
+        let seed = crate::test_support::keys::seed();
         let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None)
             .expect("build unprotected wallet");
 
         // The unprotected envelope stores the raw plaintext.
         assert_eq!(wallet.encrypted_seed_slice(), seed.as_slice());
 
-        let needle = hex::encode(seed);
+        let leaked_forms = crate::test_support::keys::rendered_forms(&seed);
         let closed = ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
             encrypted_seed: Zeroizing::new(seed.to_vec()),
@@ -2900,15 +2894,12 @@ mod tests {
             ("WalletSeed", format!("{wallet_seed:?}")),
             ("Wallet", format!("{wallet:?}")),
         ] {
-            assert!(
-                !rendered.contains(&needle),
-                "{label} Debug leaked hex seed bytes: {rendered}"
-            );
-            // Also catch the raw comma-separated `Vec<u8>` rendering.
-            assert!(
-                !rendered.contains("0, 1, 2, 3, 4, 5"),
-                "{label} Debug leaked raw seed byte sequence: {rendered}"
-            );
+            for form in &leaked_forms {
+                assert!(
+                    !rendered.contains(form),
+                    "{label} Debug leaked seed bytes: {rendered}"
+                );
+            }
             assert!(
                 rendered.contains("[redacted]"),
                 "{label} Debug should mark the seed redacted: {rendered}"
@@ -3189,7 +3180,7 @@ mod tests {
     /// derivation: a forced derivation failure carries no seed bytes.
     #[test]
     fn seed_param_derivation_error_does_not_leak_seed() {
-        const SENTINEL_SEED: [u8; 64] = [0x5A; 64];
+        let sentinel_seed = crate::test_support::keys::seed();
         let network = Network::Testnet;
         let wallet = test_wallet();
         // An empty path always derives successfully, so force the "wallet not
@@ -3200,14 +3191,14 @@ mod tests {
         let err = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
             &slice,
             [0xEE; 32],
-            &SENTINEL_SEED,
+            &sentinel_seed,
             &path,
             network,
         );
         // Non-matching hash returns Ok(None), not an error — assert the seed
         // never surfaces in the Debug of either arm.
         let rendered = format!("{err:?}");
-        let sentinel_hex = hex::encode(SENTINEL_SEED);
+        let sentinel_hex = hex::encode(sentinel_seed);
         assert!(
             !rendered.contains(&sentinel_hex),
             "seed leaked into slice-derive result: {rendered}"
@@ -3533,7 +3524,7 @@ mod tests {
     #[test]
     fn provider_xpub_matches_seed_derivation() {
         for network in [Network::Testnet, Network::Mainnet] {
-            let seed = [42u8; 64];
+            let seed = crate::test_support::keys::seed();
             let wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
             let provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
 
@@ -3677,7 +3668,7 @@ mod tests {
     /// change is a platform-payment address.
     #[test]
     fn platform_change_address_must_be_a_watched_platform_payment_address() {
-        let seed = TEST_SEED;
+        let seed = test_seed();
         let network = Network::Testnet;
 
         // The watched Platform set: the provider's DIP-17 platform-payment pool.
@@ -3731,7 +3722,7 @@ mod tests {
     /// every registered index, GREEN after.
     #[test]
     fn platform_payment_handout_stays_within_synced_window() {
-        let seed = TEST_SEED;
+        let seed = test_seed();
         let network = Network::Testnet;
 
         // Hand out platform-payment addresses 0..=DEFAULT_GAP_LIMIT — the last
@@ -3771,18 +3762,18 @@ mod tests {
     /// existed (the affected user's live state). Carries no platform-payment
     /// entries in its watched maps, exactly like the pre-reconciliation bug.
     fn legacy_wallet(network: Network) -> Wallet {
-        let mut wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+        let mut wallet = Wallet::new_from_seed(test_seed(), network, None, None).expect("wallet");
         wallet.platform_payment_account_xpub = None;
         wallet
     }
 
     /// The real platform-payment Core address at `index` derived from
-    /// `TEST_SEED` — the address the upstream coordinator would report a balance
+    /// [`test_seed`] — the address the upstream coordinator would report a balance
     /// for. Independent of the reconciliation path under test.
     fn platform_address_at(index: u32, network: Network) -> Address {
         let path = DerivationPath::platform_payment_path(network, 0, 0, index);
         let xprv = path
-            .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
+            .derive_priv_ecdsa_for_master_seed(&test_seed(), network)
             .expect("derive platform key");
         Address::p2pkh(&xprv.to_priv().public_key(), network)
     }
@@ -3793,14 +3784,14 @@ mod tests {
     #[test]
     fn new_from_seed_caches_platform_payment_account_xpub() {
         for network in [Network::Testnet, Network::Mainnet] {
-            let wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+            let wallet = Wallet::new_from_seed(test_seed(), network, None, None).expect("wallet");
             let eager = wallet
                 .platform_payment_account_xpub
                 .expect("new_from_seed must cache the platform-payment xpub");
 
             let mut old = legacy_wallet(network);
             assert!(old.platform_payment_account_xpub.is_none());
-            old.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+            old.ensure_platform_payment_account_xpub(&test_seed(), network);
             assert_eq!(
                 Some(eager),
                 old.platform_payment_account_xpub,
@@ -3814,7 +3805,7 @@ mod tests {
     #[test]
     fn ensure_platform_payment_account_xpub_is_idempotent() {
         let network = Network::Testnet;
-        let mut wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+        let mut wallet = Wallet::new_from_seed(test_seed(), network, None, None).expect("wallet");
         let first = wallet.platform_payment_account_xpub;
         assert!(first.is_some());
         wallet.ensure_platform_payment_account_xpub(&[0u8; 64], network);
@@ -3832,7 +3823,7 @@ mod tests {
         assert!(index > DEFAULT_GAP_LIMIT, "index must exceed the gap limit");
 
         let mut wallet = legacy_wallet(network);
-        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+        wallet.ensure_platform_payment_account_xpub(&test_seed(), network);
 
         let addr = platform_address_at(index, network);
         assert!(
@@ -3871,6 +3862,7 @@ mod tests {
         use dash_sdk::dpp::identity::signer::Signer;
 
         let network = Network::Testnet;
+        let seed = test_seed();
         let index = 25u32;
 
         let mut wallet = legacy_wallet(network);
@@ -3882,7 +3874,7 @@ mod tests {
         // Before self-heal: the signer has no path for it.
         {
             let before = PlatformPathIndex::from_wallet(&wallet, network);
-            let signer = DetPlatformSigner::from_held(&TEST_SEED, network, &before);
+            let signer = DetPlatformSigner::from_held(&seed, network, &before);
             assert!(
                 !signer.can_sign_with(&platform_addr),
                 "precondition: the balance is visible but not signable"
@@ -3890,12 +3882,12 @@ mod tests {
         }
 
         // Self-heal exactly as the withdrawal / push paths do.
-        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+        wallet.ensure_platform_payment_account_xpub(&test_seed(), network);
         assert!(wallet.reconcile_platform_address(&addr, network));
 
         // After self-heal: signable, and a real signature is produced.
         let after = PlatformPathIndex::from_wallet(&wallet, network);
-        let signer = DetPlatformSigner::from_held(&TEST_SEED, network, &after);
+        let signer = DetPlatformSigner::from_held(&seed, network, &after);
         assert!(
             signer.can_sign_with(&platform_addr),
             "reconciled address must be signable"
@@ -4003,9 +3995,9 @@ mod tests {
     fn reconcile_bounded_search_rejects_foreign_address() {
         let network = Network::Testnet;
         let mut wallet = legacy_wallet(network);
-        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+        wallet.ensure_platform_payment_account_xpub(&test_seed(), network);
 
-        let foreign_seed = [0x11u8; 64];
+        let foreign_seed = crate::test_support::keys::seed();
         let path = DerivationPath::platform_payment_path(network, 0, 0, 0);
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(&foreign_seed, network)

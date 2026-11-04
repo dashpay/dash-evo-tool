@@ -115,9 +115,9 @@ mod tests {
     #[test]
     fn test_account_reference_calculation() {
         // Test account reference calculation
-        let secret_key = [1u8; 32];
+        let secret_key = crate::test_support::keys::secret_bytes();
         let network = Network::Testnet;
-        let master_seed = [2u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
@@ -132,7 +132,7 @@ mod tests {
     fn test_derive_payment_address_deterministic() {
         // Test that deriving the same address index gives the same address
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         // Create two test identity IDs
         let sender_bytes = [0x11u8; 32];
@@ -163,7 +163,7 @@ mod tests {
     fn test_derive_payment_address_different_indices() {
         // Test that different indices produce different addresses
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -197,7 +197,7 @@ mod tests {
     fn test_generate_contact_xpub_data() {
         // Test generating contact xpub data
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -227,9 +227,9 @@ mod tests {
     #[test]
     fn test_account_reference_version_bits() {
         // Test that version bits are correctly placed
-        let secret_key = [1u8; 32];
+        let secret_key = crate::test_support::keys::secret_bytes();
         let network = Network::Testnet;
-        let master_seed = [2u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let master_xprv = ExtendedPrivKey::new_master(network, &master_seed).unwrap();
         let xpub = ExtendedPubKey::from_priv(&master_xprv);
@@ -251,7 +251,7 @@ mod tests {
     fn test_dashpay_xpub_different_accounts() {
         // Different accounts should produce different xpubs
         let network = Network::Testnet;
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn test_dashpay_xpub_different_networks() {
         // Different networks should produce different xpubs
-        let master_seed = [0x42u8; 64];
+        let master_seed = crate::test_support::keys::seed();
 
         let sender_bytes = [0x11u8; 32];
         let recipient_bytes = [0x22u8; 32];

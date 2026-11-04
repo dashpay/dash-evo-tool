@@ -1874,7 +1874,10 @@ mod key_placement_tests {
     }
 
     fn clear(bytes: u8) -> PrivateKeyData {
-        PrivateKeyData::Clear([bytes; 32])
+        PrivateKeyData::Clear(crate::test_support::keys::labelled_secret(
+            "qualified_identity::clear",
+            bytes.into(),
+        ))
     }
 
     /// T1 — the defect. A `VOTING` key on the main identity, its private half
@@ -2301,6 +2304,8 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn bls_signing_preserves_the_previous_sdk_basic_signature_bytes() {
         // Generated with the previous pin's blsful Basic signer using this synthetic key.
+        // The key is fixed because the expected signature below depends on it:
+        // a golden vector, exempt from runtime key generation.
         let secret = [0x11; 32];
         let public = bls::SecretKey::from_be_bytes(&secret).unwrap().public_key();
         let key = identity_public_key(
@@ -2331,7 +2336,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_held_voting_key_on_the_main_identity_is_signable_under_either_placement() {
         let key = voting_key(3);
-        let secret = [0x11; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         for filed_under in [MAIN, VOTER] {
             let identity = masternode_with(
@@ -2366,7 +2371,7 @@ mod key_resolution_tests {
     #[tokio::test]
     async fn a_dead_vault_placeholder_falls_through_to_a_live_placement() {
         let key = voting_key(0);
-        let secret = [0x77; 32];
+        let secret = crate::test_support::keys::secret_bytes();
         // Main is probed first and holds an InVault placeholder with no
         // chokepoint wired, so it cannot produce bytes.
         let identity = masternode_with(
@@ -2435,7 +2440,7 @@ mod key_resolution_tests {
                 .put_secret_protected(
                     &SecretWalletId::from(identity_id),
                     &SecretScope::identity_key_label(&target, key.id()),
-                    &SecretBytes::from_slice(&[0x99; 32]),
+                    &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                     &SecretString::new("the-object-password"),
                 )
                 .expect("seal the identity key");
@@ -2498,7 +2503,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&VOTER, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");
@@ -2547,7 +2552,7 @@ mod key_resolution_tests {
         let key = voting_key(0);
         // The id `masternode_with` builds its identity under.
         let identity_id = [1u8; 32];
-        let secret = [0x55; 32];
+        let secret = crate::test_support::keys::secret_bytes();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
@@ -2558,7 +2563,7 @@ mod key_resolution_tests {
             .put_secret_protected(
                 &SecretWalletId::from(identity_id),
                 &SecretScope::identity_key_label(&MAIN, key.id()),
-                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretBytes::from_slice(&crate::test_support::keys::secret_bytes()),
                 &SecretString::new("the-object-password"),
             )
             .expect("seal the identity key");

@@ -162,8 +162,67 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-        self.update_local_qualified_identity_observed(&mut qualified_identity, provenance)
-            .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+        self.persist_withdrawn_identity(&qualified_identity, provenance);
+        Ok(BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
+    }
+
+    /// Store the identity as fetched for a finished withdrawal, carrying its
+    /// remaining balance, into the record as stored now: a concurrent change
+    /// such as a removed voting key stays removed. The withdrawal already
+    /// happened, so a failed save is only logged; it never reads as a failed
+    /// withdrawal that the user might repeat.
+    fn persist_withdrawn_identity(
+        &self,
+        withdrawn: &QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) {
+        let id = withdrawn.identity.id();
+        if let Err(error) = self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+            stored.identity = withdrawn.identity.clone();
+            Ok(())
+        }) {
+            tracing::warn!(identity_id = %id, ?error, "Identity could not be saved locally after a withdrawal");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::test_staging::stage_identity_with_voter_twin;
+    use crate::model::identity_balance::BalanceProvenance;
+    use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+
+    /// A withdrawal's network work can outlast the removal of an old voting
+    /// key; its final write must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_withdrawal_keeps_a_change_made_while_it_ran() {
+        let staged = stage_identity_with_voter_twin(rand::random(), rand::random()).await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let mut withdrawn = read();
+        assert!(withdrawn.associated_voter_identity.is_some());
+        let mut removed = withdrawn.clone();
+        removed.associated_voter_identity = None;
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        withdrawn.identity.set_balance(4_321);
+        staged
+            .ctx
+            .persist_withdrawn_identity(&withdrawn, BalanceProvenance::ConfirmedUnordered);
+
+        let after = read();
+        assert!(
+            after.associated_voter_identity.is_none(),
+            "the withdrawal must not bring back what was removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 4_321);
     }
 }

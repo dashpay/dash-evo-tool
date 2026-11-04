@@ -75,12 +75,7 @@ async fn test_tc003_refresh_single_key_wallet_info() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    // Deterministic test private key (all-zero except last byte — valid on secp256k1)
-    let private_key_bytes: [u8; 32] = {
-        let mut k = [0u8; 32];
-        k[31] = 1;
-        k
-    };
+    let private_key_bytes = dash_evo_tool::test_support::keys::secret_bytes();
 
     let skw = SingleKeyWallet::new(
         private_key_bytes,
@@ -185,13 +180,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
-    // Use a deterministic private key for the single-key wallet
-    let private_key_bytes: [u8; 32] = {
-        let mut k = [0u8; 32];
-        k[0] = 0x09;
-        k[31] = 0x09;
-        k
-    };
+    let private_key_bytes = dash_evo_tool::test_support::keys::secret_bytes();
 
     let skw = SingleKeyWallet::new(
         private_key_bytes,

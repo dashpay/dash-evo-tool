@@ -355,7 +355,7 @@ mod tests {
         let identity_id = [0x92; 32];
         let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
         let key_id = 8;
-        let key = [0xb6; 32];
+        let key = crate::test_support::keys::secret_bytes();
         let password = "mcp-network-switch-password";
         let secret_store = ctx.secret_store();
         IdentityKeyView::new(&secret_store, identity_id)

@@ -3117,6 +3117,9 @@ mod tests {
     // inputs `(TEST_SEED, Testnet, account_index 0, sender 0x11, recipient
     // 0x22, TEST_SECRET)`. They guard the DashPay derivation seam against a
     // silent upstream drift; update only with a deliberate review.
+    // `TEST_SEED` and `TEST_SECRET` are fixed because these vectors depend on
+    // them: golden inputs, exempt from runtime key generation. Only the F3
+    // pinned-value tests use them; every other test generates its own.
     const ACCOUNT_REFERENCE_TESTNET_PINNED: u32 = 173_734_745;
     const CONTACT_INFO_KEY1_TESTNET_PINNED: [u8; 32] = [
         158, 54, 59, 142, 202, 216, 7, 142, 110, 245, 93, 36, 97, 242, 74, 190, 160, 34, 128, 221,
@@ -3160,23 +3163,25 @@ mod tests {
     /// against a regression that would make testnet and mainnet collide.
     #[test]
     fn f3_account_reference_testnet_differs_from_mainnet() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         let (sender, recipient) = contact_ids();
         let testnet = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("testnet");
         let mainnet = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Mainnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("mainnet");
         assert_ne!(
@@ -3214,33 +3219,36 @@ mod tests {
     /// same `(seed, index)`, because the coin-type path segment differs.
     #[test]
     fn f3_contact_info_encryption_keys_testnet_differs_from_mainnet() {
+        let test_seed = crate::test_support::keys::seed();
         let (t1, t2) =
-            derive_contact_info_encryption_keys(&TEST_SEED, Network::Testnet, 0).expect("testnet");
+            derive_contact_info_encryption_keys(&test_seed, Network::Testnet, 0).expect("testnet");
         let (m1, m2) =
-            derive_contact_info_encryption_keys(&TEST_SEED, Network::Mainnet, 0).expect("mainnet");
+            derive_contact_info_encryption_keys(&test_seed, Network::Mainnet, 0).expect("mainnet");
         assert_ne!(*t1, *m1, "key1 must differ across networks");
         assert_ne!(*t2, *m2, "key2 must differ across networks");
     }
 
     #[test]
     fn contact_xpub_material_is_deterministic() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         let (sender, recipient) = contact_ids();
         let a = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive");
         let b = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive");
         assert_eq!(a, b, "same inputs must yield the same material");
@@ -3248,23 +3256,25 @@ mod tests {
 
     #[test]
     fn contact_xpub_material_differs_by_relationship() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         let (sender, recipient) = contact_ids();
         let forward = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive forward");
         let reverse = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &recipient,
             &sender,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive reverse");
         assert_ne!(
@@ -3275,14 +3285,16 @@ mod tests {
 
     #[test]
     fn contact_xpub_public_key_is_valid_compressed() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         let (sender, recipient) = contact_ids();
         let m = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive");
         assert!(
@@ -3298,21 +3310,23 @@ mod tests {
     /// DET's local DIP-14 path where they agree (both use coin-type 5').
     #[test]
     fn seam_xpub_matches_receive_side_derivation_on_mainnet() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         let seam = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Mainnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("seam derive");
 
         let local =
-            derive_dashpay_incoming_xpub(&TEST_SEED, Network::Mainnet, 0, &sender, &recipient)
+            derive_dashpay_incoming_xpub(&test_seed, Network::Mainnet, 0, &sender, &recipient)
                 .expect("local derive");
 
         assert_eq!(
@@ -3339,21 +3353,23 @@ mod tests {
     /// pays into addresses the user's wallet actually scans.
     #[test]
     fn seam_xpub_matches_receive_side_on_testnet() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         let seam = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("seam derive");
 
         let local =
-            derive_dashpay_incoming_xpub(&TEST_SEED, Network::Testnet, 0, &sender, &recipient)
+            derive_dashpay_incoming_xpub(&test_seed, Network::Testnet, 0, &sender, &recipient)
                 .expect("local derive");
 
         assert_eq!(
@@ -3381,21 +3397,23 @@ mod tests {
     /// contact pays into addresses the recipient never scans.
     #[test]
     fn seam_matches_receive_side_full_fields_on_both_networks() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         for network in [Network::Mainnet, Network::Testnet] {
             let seam = derive_contact_xpub_material(
-                &TEST_SEED,
+                &test_seed,
                 network,
                 0,
                 &sender,
                 &recipient,
-                &TEST_SECRET,
+                &test_secret,
             )
             .expect("seam derive");
 
-            let local = derive_dashpay_incoming_xpub(&TEST_SEED, network, 0, &sender, &recipient)
+            let local = derive_dashpay_incoming_xpub(&test_seed, network, 0, &sender, &recipient)
                 .expect("local derive");
 
             assert_eq!(
@@ -3422,28 +3440,30 @@ mod tests {
     /// behavioural delta — the real HD seed must drive the derivation.
     #[test]
     fn hd_seed_drives_derivation_not_the_ecdh_secret() {
+        let test_seed = crate::test_support::keys::seed();
+        let test_secret = crate::test_support::keys::secret_bytes();
         let (sender, recipient) = contact_ids();
         let from_seed = derive_contact_xpub_material(
-            &TEST_SEED,
+            &test_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive from real seed");
 
         // Reproduce the old placeholder: 32-byte secret right-padded to a
         // 64-byte "seed". This must NOT match the real-seed derivation.
         let mut placeholder_seed = [0u8; 64];
-        placeholder_seed[..32].copy_from_slice(&TEST_SECRET);
+        placeholder_seed[..32].copy_from_slice(&test_secret);
         let from_placeholder = derive_contact_xpub_material(
             &placeholder_seed,
             Network::Testnet,
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("derive from placeholder");
 
@@ -3470,6 +3490,7 @@ mod tests {
     ///    wrong wallet would route funds astray, so the agreement is load-bearing.
     #[test]
     fn multi_wallet_send_and_receive_select_same_wallet() {
+        let test_secret = crate::test_support::keys::secret_bytes();
         use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
         use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
         use crate::model::wallet::Wallet;
@@ -3482,8 +3503,8 @@ mod tests {
         let (sender, recipient) = contact_ids();
 
         // Two distinct HD seeds → two wallets with distinct seed hashes.
-        let seed_a = [0x11u8; 64];
-        let seed_b = [0x99u8; 64];
+        let seed_a = crate::test_support::keys::seed();
+        let seed_b = crate::test_support::keys::seed();
         let wallet_a = Wallet::new_from_seed(seed_a, network, None, None).expect("wallet a");
         let wallet_b = Wallet::new_from_seed(seed_b, network, None, None).expect("wallet b");
         let hash_a = wallet_a.seed_hash();
@@ -3539,7 +3560,7 @@ mod tests {
             0,
             &sender,
             &recipient,
-            &TEST_SECRET,
+            &test_secret,
         )
         .expect("send-side material");
         let scanned = derive_dashpay_incoming_xpub(&selected_seed, network, 0, &sender, &recipient)

@@ -713,7 +713,7 @@ mod tests {
                             domain_document: confirmed,
                             full_domain_name: "alice-123.dash".to_owned(),
                         },
-                        None,
+                        Some(1),
                         ResponseMetadata::default(),
                     ))
                 },
@@ -735,6 +735,46 @@ mod tests {
             .map(|n| (n.name.as_str(), n.acquired_at))
             .collect();
         assert_eq!(names, [("alice-123", 4_242)]);
+        assert_eq!(saved.identity.balance(), 1, "the proven balance is stored");
+    }
+
+    /// The balance the name document's proof carries is stored as the
+    /// identity's new balance, and gives the actual fee, with no re-read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_proven_owner_balance_is_stored_without_a_re_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(crate::wallet_backend::kv_test_support::InMemoryKv::default()),
+        ));
+        let identity = bare_identity(3);
+        let id = identity.identity.id();
+        ctx.update_local_qualified_identity(&identity).unwrap();
+
+        // No expectations: a re-read would fail and leave the fee estimated.
+        let result = ctx
+            .finish_username_registration(
+                &Sdk::new_mock(),
+                identity,
+                "alice-123",
+                DpnsRegistrationOutcome::Registered,
+                None,
+                1_000,
+                100,
+                Some(4_242),
+                Some(BalanceWatermark {
+                    credits: 870,
+                    height: 5,
+                }),
+            )
+            .await;
+
+        let BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } = result else {
+            panic!("expected a successful registration, got {result:?}");
+        };
+        assert_eq!(fee_result.actual_fee, Some(130));
+        let saved = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert_eq!(saved.identity.balance(), 870);
     }
 
     /// From protocol version 14 the name document's proof carries the

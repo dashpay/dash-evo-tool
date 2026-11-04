@@ -21,25 +21,26 @@ use zeroize::Zeroizing;
 use super::{SecretScope, WalletBackend};
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 
 impl WalletBackend {
     /// The contact QR code of `identity` (`dash:?du=<username>&dapk=<key>`),
+    /// derived from the seed of `seed_hash`, the identity's owning wallet
+    /// (`AppContext::contact_qr_wallet_seed_hash`), and
     /// built by upstream's `DashPayView::build_auto_accept_qr`: valid for
     /// upstream's auto-accept lifetime, naming the identity's first cached
     /// username (or one upstream finds on Platform).
     ///
     /// # Errors
     ///
-    /// [`TaskError::ContactQrWalletMissing`] when the identity has no wallet
-    /// on this device, the seam's error when the seed cannot be read, and
+    /// The wallet lookup's error when that wallet is not loaded, the seam's
+    /// error when the seed cannot be read, and
     /// [`TaskError::ContactQrBuildFailed`] when upstream cannot build the code.
     pub(crate) async fn dashpay_build_auto_accept_qr(
         &self,
         identity: &QualifiedIdentity,
+        seed_hash: WalletSeedHash,
     ) -> Result<String, TaskError> {
-        let seed_hash = identity
-            .dashpay_wallet_seed_hash()
-            .ok_or(TaskError::ContactQrWalletMissing)?;
         let wallet = self.resolve_wallet(&seed_hash).await?;
         let owner = identity.identity.id();
         // Upstream resolves a name on Platform when given none.

@@ -369,9 +369,10 @@ impl AppContext {
                 }
             }
             DashPayTask::GenerateAutoAcceptQrCode { identity } => {
+                let seed_hash = self.contact_qr_wallet_seed_hash(&identity)?;
                 let uri = self
                     .wallet_backend()?
-                    .dashpay_build_auto_accept_qr(&identity)
+                    .dashpay_build_auto_accept_qr(&identity, seed_hash)
                     .await?;
                 Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(uri))
             }

@@ -31,8 +31,12 @@ const QR_CODE_INFO_TEXT: &str = "About Contact QR Codes:\n\n\
 
 /// The wallet whose recovery phrase derives `identity`'s contact QR code key,
 /// for the unlock prompt.
-fn qr_wallet(identity: &QualifiedIdentity) -> Option<Arc<RwLock<Wallet>>> {
-    identity.dashpay_wallet().map(|(_, wallet)| wallet.clone())
+fn qr_wallet(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+) -> Option<Arc<RwLock<Wallet>>> {
+    let seed_hash = app_context.contact_qr_wallet_seed_hash(identity).ok()?;
+    identity.associated_wallets.get(&seed_hash).cloned()
 }
 
 pub struct QRCodeGeneratorScreen {
@@ -80,7 +84,7 @@ impl QRCodeGeneratorScreen {
             new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet = qr_wallet(&preferred);
+            new_self.selected_wallet = qr_wallet(&new_self.app_context, &preferred);
         }
 
         new_self
@@ -89,7 +93,10 @@ impl QRCodeGeneratorScreen {
     /// React to a new `selected_identity`: follow its wallet and drop the QR
     /// code shown for the previous one.
     fn identity_changed(&mut self) {
-        self.selected_wallet = self.selected_identity.as_ref().and_then(qr_wallet);
+        self.selected_wallet = self
+            .selected_identity
+            .as_ref()
+            .and_then(|identity| qr_wallet(&self.app_context, identity));
         self.wallet_open_attempted = false;
         self.generated_qr_data = None;
         self.qr_request.clear();
@@ -434,5 +441,51 @@ mod tests {
         assert_eq!(screen.generated_qr_data, None, "a superseded request");
         screen.display_backend_task_result(&for_second, qr_result("second"));
         assert_eq!(screen.generated_qr_data.as_deref(), Some("second"));
+    }
+
+    /// Regression: hydration lists every loaded wallet with an identity, and
+    /// the contact QR code took the lowest-sorting one, so an unrelated
+    /// wallet could derive the code's key. It now comes from the wallet the
+    /// identity's record names as its owner, and none without that record.
+    #[test]
+    fn the_contact_qr_key_comes_from_the_identitys_own_wallet() {
+        use crate::model::wallet::test_support::open_wallet_on;
+        use crate::wallet_backend::DetKv;
+        use crate::wallet_backend::kv_test_support::InMemoryKv;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_det_kv_override_for_test(DetKv::from_store(Arc::new(InMemoryKv::default())));
+        let mut wallets = [
+            open_wallet_on(crate::test_support::keys::seed()),
+            open_wallet_on(crate::test_support::keys::seed()),
+        ];
+        wallets.sort_by_key(|wallet| wallet.seed_hash());
+        let [unrelated, owner] = wallets.map(|wallet| (wallet.seed_hash(), wallet));
+
+        let mut identity = bare_user_identity(Identifier::new([1; 32]), Network::Testnet);
+        for (hash, wallet) in [unrelated, owner.clone()] {
+            identity
+                .associated_wallets
+                .insert(hash, Arc::new(RwLock::new(wallet)));
+        }
+        ctx.insert_local_qualified_identity(&identity, &Some((owner.0, 0)))
+            .expect("store identity");
+        assert_ne!(identity.dashpay_wallet_seed_hash(), Some(owner.0));
+        assert_eq!(
+            ctx.contact_qr_wallet_seed_hash(&identity).ok(),
+            Some(owner.0)
+        );
+        let unlock = qr_wallet(&ctx, &identity).expect("the owner's wallet");
+        assert_eq!(unlock.read().expect("wallet").seed_hash(), owner.0);
+
+        // No record, so no owner on file.
+        let mut unlinked = identity.clone();
+        unlinked.identity.set_id(Identifier::new([2; 32]));
+        assert!(matches!(
+            ctx.contact_qr_wallet_seed_hash(&unlinked),
+            Err(TaskError::ContactQrWalletMissing)
+        ));
+        assert!(qr_wallet(&ctx, &unlinked).is_none());
     }
 }

@@ -1888,16 +1888,17 @@ impl Wallet {
 
     /// Seed Platform address info only when no entry exists for the canonical
     /// address — the at-rest warm-start equivalent of `or_insert`, so a live
-    /// push (which overwrites via [`Self::set_platform_address_info`]) is never
-    /// clobbered by staler persisted data.
+    /// push is never clobbered by staler persisted data. Keeps the persisted
+    /// height pin (`as_of_height`).
     pub fn seed_platform_address_info(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
+        as_of_height: u64,
     ) {
         if self.get_platform_address_info(&address).is_none() {
-            self.set_platform_address_info(address, balance, nonce);
+            self.insert_platform_address_info(address, balance, nonce, as_of_height);
         }
     }
 
@@ -2696,18 +2697,33 @@ mod tests {
         );
     }
 
+    /// A warm-start seed keeps the persisted height pin, so an older refresh
+    /// after a restart cannot restore a pre-spend figure.
+    #[test]
+    fn a_warm_start_seed_keeps_its_height_pin() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        wallet.seed_platform_address_info(addr.clone(), 41_000, 3, 500);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
+        let info = wallet.get_platform_address_info(&addr).unwrap();
+        assert_eq!(
+            (info.balance, info.nonce, info.as_of_height),
+            (41_000, 3, 500)
+        );
+    }
+
     #[test]
     fn test_seed_platform_address_info_is_insert_if_absent() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
         // Absent -> seeds the value.
-        wallet.seed_platform_address_info(addr.clone(), 500_000, 3);
+        wallet.seed_platform_address_info(addr.clone(), 500_000, 3, 0);
         let info = wallet.get_platform_address_info(&addr).unwrap();
         assert_eq!((info.balance, info.nonce), (500_000, 3));
 
         // Present -> no-op: a warm-start seed must not clobber a live value.
-        wallet.seed_platform_address_info(addr.clone(), 999_999, 9);
+        wallet.seed_platform_address_info(addr.clone(), 999_999, 9, 0);
         let info = wallet.get_platform_address_info(&addr).unwrap();
         assert_eq!(
             (info.balance, info.nonce),

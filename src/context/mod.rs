@@ -1084,7 +1084,12 @@ impl AppContext {
                 .filter(|(_, e, _)| !e.is_empty())
                 .map(|(seed_hash, entries, _)| (seed_hash, entries.as_slice())),
             |wallet, address, entry| {
-                wallet.seed_platform_address_info(address, entry.balance, entry.nonce)
+                wallet.seed_platform_address_info(
+                    address,
+                    entry.balance,
+                    entry.nonce,
+                    entry.as_of_height,
+                )
             },
         );
 

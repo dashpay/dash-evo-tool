@@ -365,6 +365,7 @@ impl BackendTask {
                 } => &identity_token_info.identity,
                 TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
+                | TokenTask::TrackTokenBalancesAgain(_)
                 | TokenTask::StopTrackingTokenBalance(_)
                 | TokenTask::ClearOncePerIdentityClaimHint(_)
                 | TokenTask::QueryDescriptionsByKeyword(..)
@@ -3036,6 +3037,12 @@ mod tests {
 
         let free = [
             token(TokenTask::QueryMyTokenBalances),
+            token(TokenTask::TrackTokenBalancesAgain(vec![
+                crate::model::token::IdentityTokenIdentifier {
+                    identity_id: payer_id,
+                    token_id: other,
+                },
+            ])),
             contract_task(ContractTask::FetchContracts(vec![contract.id()])),
             contract_task(ContractTask::FetchActiveGroupActions(
                 QualifiedContract {

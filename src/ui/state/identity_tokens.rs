@@ -953,6 +953,9 @@ impl IdentityTokensState {
         self.refresh_failure = Some(RefreshFailure::from_error(error));
         self.failure_dismissed = false;
         self.full_refresh_failed = true;
+        // The failed refresh is the latest check of every pair; an earlier
+        // pair outcome must not outrank it.
+        self.pair_check_results.clear();
     }
 
     /// Whether the error just recorded is shown by this tab rather than a banner.
@@ -1546,6 +1549,20 @@ mod tests {
 
         state.balances_refreshed_elsewhere(2_000, vec![covered, added]);
         assert_eq!(state.arrival(2_001, true, false), Arrival::NotDue);
+    }
+
+    /// A full refresh that fails after a pair's successful check is the
+    /// latest word: the row can no longer say "No balance found.".
+    #[test]
+    fn a_later_full_refresh_failure_outranks_an_earlier_pair_success() {
+        let mut state = IdentityTokensState::default();
+        let pair = row("T", None).pair();
+        let check = dispatched(state.dispatch_pair_check(pair));
+        state.record_result(&check, &BackendTaskSuccessResult::FetchedTokenBalances, 1);
+        assert!(!state.check_failed_for(pair));
+        let refresh = dispatched(state.dispatch_refresh(everyone()));
+        state.record_error(&refresh, &TaskError::NoIdentitiesFound);
+        assert!(state.check_failed_for(pair));
     }
 
     /// A successful full refresh answers the failed checks of the identities

@@ -272,7 +272,7 @@ mod tests {
         }
 
         let path = auto_accept_derivation_path(NETWORK, EXPIRY).expect("a path");
-        let peer = PublicKey::from_secret_key(&SecretKey::from_secret_bytes([7; 32]).expect("key"));
+        let peer = PublicKey::from_secret_key(&crate::test_support::keys::secret_key());
         assert!(provider.receiving_xpub(&path).await.is_err());
         assert!(provider.ecdh_shared_secret(&path, &peer).await.is_err());
         assert!(provider.account_reference(&path, &[], 0, 0).await.is_err());

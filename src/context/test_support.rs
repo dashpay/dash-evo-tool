@@ -335,7 +335,10 @@ pub(crate) fn identity_holding(
                         identity_public_key: key.clone(),
                         in_wallet_at_derivation_path: None,
                     },
-                    [key.id() as u8; 32],
+                    crate::test_support::keys::labelled_secret(
+                        "context::test_support::identity_holding",
+                        u64::from(key.id()),
+                    ),
                 ),
             )
             .expect("a free slot");

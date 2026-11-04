@@ -1923,7 +1923,9 @@ impl WalletBackend {
                         Ok(()) => Ok(()),
                         Err(source) => {
                             self.inner.start_latch.reset_if_current(&flight);
-                            Err(StartFlightError::Failed(Arc::new(source)))
+                            Err(StartFlightError::Failed(Arc::new(redact_wallet_error(
+                                source,
+                            ))))
                         }
                     }
                 })
@@ -2054,7 +2056,7 @@ impl WalletBackend {
         // teardown must proceed regardless.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
@@ -2113,7 +2115,7 @@ impl WalletBackend {
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during stop_in_place; continuing"
             );
         }
@@ -3819,9 +3821,47 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
     }
 }
 
+/// Withholds the text of `SpvProcessRestartRequired` before the error is
+/// logged or kept for banner details.
+///
+/// Upstream builds that text from a joined SPV task's result (`{result:?}`),
+/// so a panic there puts the runtime-formatted panic message in it. Only its
+/// length is kept, as the panic hook does; every other variant is unchanged.
+fn redact_wallet_error(error: PlatformWalletError) -> PlatformWalletError {
+    match error {
+        PlatformWalletError::SpvProcessRestartRequired(text) => {
+            PlatformWalletError::SpvProcessRestartRequired(format!(
+                "<redacted: SPV task failure, may hold a panic message, {} bytes>",
+                text.len()
+            ))
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_wallet_error_withholds_a_joined_spv_task_panic_message() {
+        let synthetic_secret = "synthetic-secret-7f3a9c0e";
+        let text = format!(
+            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {synthetic_secret}\", ..))"
+        );
+        let redacted =
+            redact_wallet_error(PlatformWalletError::SpvProcessRestartRequired(text.clone()));
+        let shown = format!("{redacted:?} {redacted}");
+        assert!(!shown.contains(synthetic_secret), "{shown}");
+        assert!(
+            matches!(redacted, PlatformWalletError::SpvProcessRestartRequired(_)),
+            "the variant must survive: {shown}"
+        );
+        assert!(shown.contains(&format!("{} bytes", text.len())), "{shown}");
+
+        let other = redact_wallet_error(PlatformWalletError::SpvError("peer lost".to_owned()));
+        assert!(format!("{other:?}").contains("peer lost"));
+    }
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;

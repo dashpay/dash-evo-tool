@@ -234,7 +234,7 @@ mod tests {
     fn wallet_with_platform_address(
         network: Network,
     ) -> (Wallet, PlatformAddress, Zeroizing<[u8; 64]>) {
-        let seed = Zeroizing::new([0x5Au8; 64]);
+        let seed = Zeroizing::new(crate::test_support::keys::seed());
         let mut wallet = Wallet::new_from_seed(*seed, network, None, None).expect("build wallet");
 
         let path = DerivationPath::platform_payment_path(network, 0, 0, 0);
@@ -367,6 +367,8 @@ mod tests {
         let det = DetPlatformSigner::from_held(&seed, network, &index);
         let dbg = format!("{det:?}");
         assert!(dbg.contains("Testnet"), "network present: {dbg}");
-        assert!(!dbg.contains("90, 90, 90"), "seed bytes leaked: {dbg}");
+        for form in crate::test_support::keys::rendered_forms(&*seed) {
+            assert!(!dbg.contains(&form), "seed bytes leaked: {dbg}");
+        }
     }
 }

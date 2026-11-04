@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn debug_output_does_not_expose_seed_bytes() {
-        let seed_bytes = [0x42u8; 64];
+        let seed_bytes = crate::test_support::keys::seed();
         let envelope = StoredSeedEnvelope {
             encrypted_seed: Zeroizing::new(seed_bytes.to_vec()),
             salt: Vec::new(),
@@ -95,10 +95,12 @@ mod tests {
             xpub_encoded: vec![0xCD; 78],
         };
         let dbg = format!("{envelope:?}");
-        assert!(
-            !dbg.contains("42, 42, 42"),
-            "debug output leaked seed bytes: {dbg}"
-        );
+        for form in crate::test_support::keys::rendered_forms(&seed_bytes) {
+            assert!(
+                !dbg.contains(&form),
+                "debug output leaked seed bytes: {dbg}"
+            );
+        }
         assert!(
             dbg.contains("[redacted]"),
             "expected [redacted] in debug output: {dbg}"
@@ -131,7 +133,7 @@ mod tests {
     #[test]
     fn non_password_envelope_round_trips() {
         let original = StoredSeedEnvelope {
-            encrypted_seed: Zeroizing::new(vec![0x11; 64]),
+            encrypted_seed: Zeroizing::new(crate::test_support::keys::seed().to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,

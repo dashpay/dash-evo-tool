@@ -1178,6 +1178,7 @@ fn rename_dialog_counter_counts_cleaned_characters() {
 fn wallet_header_names_the_network_instead_of_dev() {
     use dash_evo_tool::model::user_role::UserRole;
     use dash_sdk::dashcore_rpc::dashcore::Network as CoreNetwork;
+    let seed_7 = dash_evo_tool::test_support::keys::seed();
 
     with_isolated_data_dir(|| {
         let (runtime, app_context) = fresh_app_context();
@@ -1189,7 +1190,7 @@ fn wallet_header_names_the_network_instead_of_dev() {
             CoreNetwork::Regtest => "[local]",
         };
         let wallet = Wallet::new_from_seed(
-            [7u8; 64],
+            seed_7,
             app_context.network(),
             Some("Badge wallet".to_string()),
             None,

@@ -499,7 +499,10 @@ impl ScreenLike for ClaimTokensScreen {
                 claim_key_status(identity, self.identity_token_basic_info.contract_id)
             };
 
-            if key_status != SigningKeyStatus::Usable {
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            } else if key_status != SigningKeyStatus::Usable {
                 let message = if key_status == SigningKeyStatus::HeldButUnusable {
                     "No key on this device can sign this token claim. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string()
                 } else {

@@ -451,7 +451,10 @@ impl ScreenLike for TransferTokensScreen {
                 )
             };
 
-            if key_status != SigningKeyStatus::Usable {
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            } else if key_status != SigningKeyStatus::Usable {
                 let identity_type = identity.identity_type;
                 // Extract key data before releasing the borrow (needed for click handlers).
                 let key = [Purpose::AUTHENTICATION, Purpose::TRANSFER]

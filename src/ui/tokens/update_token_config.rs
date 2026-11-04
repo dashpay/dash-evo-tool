@@ -978,7 +978,10 @@ impl ScreenLike for UpdateTokenConfigScreen {
                     self.identity_token_info.data_contract.contract.id(),
                 );
 
-                if key_status != SigningKeyStatus::Usable {
+                if key_status == SigningKeyStatus::ManualChoiceOnly {
+                    // Only a contract-group key can sign it: the user picks it below.
+                    self.show_advanced_options = true;
+                } else if key_status != SigningKeyStatus::Usable {
                     ui.colored_label(
                         Color32::DARK_RED,
                         super::token_action_key_message(key_status, &self.identity),

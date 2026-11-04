@@ -503,7 +503,10 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 &self.common.identity_token_info.identity,
                 self.common.identity_token_info.data_contract.contract.id(),
             );
-            if key_status != SigningKeyStatus::Usable {
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.common.show_advanced_options = true;
+            } else if key_status != SigningKeyStatus::Usable {
                 ui.heading(A::PAGE_HEADING);
                 ui.add_space(10.0);
                 return self.render_no_keys(ui, key_status);

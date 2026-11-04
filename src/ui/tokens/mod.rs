@@ -65,7 +65,8 @@ pub fn validate_signing_key(
 /// The gate in front of a token action form (mint, burn, freeze, pause,
 /// pricing, purchase, configuration updates). Outside developer mode it opens
 /// exactly when [`QualifiedIdentity::token_action_key`] picks a key, the key
-/// the form's constructor selects, so an open form can always sign.
+/// the form's constructor selects, so an open form can always sign; with
+/// [`SigningKeyStatus::ManualChoiceOnly`] it opens onto the key chooser.
 pub(crate) fn token_action_key_status(
     app_context: &AppContext,
     identity: &QualifiedIdentity,
@@ -89,9 +90,40 @@ pub(crate) fn token_action_key_message(
 ) -> String {
     match status {
         SigningKeyStatus::HeldButUnusable => "No key on this device can sign this token action. The identity's keys are disabled, expired, reserved for another app or token, or not available on this device. Add a new key, or load the wallet that holds one, then try again.".to_string(),
-        SigningKeyStatus::Usable | SigningKeyStatus::NoneHeld => format!(
+        SigningKeyStatus::Usable
+        | SigningKeyStatus::ManualChoiceOnly
+        | SigningKeyStatus::NoneHeld => format!(
             "No authentication keys with CRITICAL security level found for this {identity_type} identity.",
             identity_type = identity.identity_type,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::{auth_key, bound_to, identity_holding};
+    use dash_sdk::dpp::identity::SecurityLevel;
+    use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+    use dash_sdk::platform::Identifier;
+
+    /// Regression: for a Power user whose only key is bound to a contract
+    /// group, the token action gate closed before the Advanced chooser that
+    /// offers that key.
+    #[test]
+    fn a_power_users_contract_group_key_opens_the_chooser() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        ctx.set_user_role(UserRole::Power);
+        let identity = identity_holding(&[bound_to(
+            auth_key(1, SecurityLevel::CRITICAL),
+            ContractBounds::ContractGroup {
+                id: Identifier::new([0x6A; 32]),
+            },
+        )]);
+        assert_eq!(
+            token_action_key_status(&ctx, &identity, Identifier::new([0x70; 32])),
+            SigningKeyStatus::ManualChoiceOnly
+        );
     }
 }

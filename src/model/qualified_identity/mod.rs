@@ -12,8 +12,8 @@ use crate::model::dpns_usernames::{
     DPNS_SIGNING_KEY_TYPES, dpns_security_levels, dpns_signing_requirement,
 };
 use crate::model::identity_key_usability::{
-    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, document_security_levels, now_ms,
-    select_identity_signing_key,
+    KeyRequirements, PLATFORM_SIGNING_KEY_TYPES, SigningScope, bounds_permit,
+    document_security_levels, now_ms, select_identity_signing_key,
 };
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, ResolvedPrivateKey, same_key,
@@ -600,6 +600,10 @@ const SINGLE_TOKEN_TRANSITION_PURPOSES: [Purpose; 2] = [Purpose::AUTHENTICATION,
 pub enum SigningKeyStatus {
     /// The transition's key choice picks a key.
     Usable,
+    /// The key choice picks none, but a live key this device holds is bound
+    /// to a contract group, which only Platform can match to the contract,
+    /// so the user may choose it.
+    ManualChoiceOnly,
     /// A private key of a purpose, level and key type the transition takes
     /// is filed, but none can sign it now: each is disabled or expired, bound
     /// to another contract, or its private half is not readable on this
@@ -1331,12 +1335,22 @@ impl QualifiedIdentity {
     /// [`Self::single_token_transition_key`] picks a key, so an open form can
     /// always sign; when closed, it tells a missing key apart from keys that
     /// cannot sign here, which need different guidance.
+    /// [`SigningKeyStatus::ManualChoiceOnly`] opens it onto the key chooser.
     pub fn single_token_transition_key_status(
         &self,
         contract_id: dash_sdk::platform::Identifier,
     ) -> SigningKeyStatus {
+        let scope = SigningScope::ContractWide { contract_id };
         if self.single_token_transition_key(contract_id).is_some() {
             SigningKeyStatus::Usable
+        } else if SINGLE_TOKEN_TRANSITION_PURPOSES.into_iter().any(|purpose| {
+            self.holds_contract_group_key_for(KeyRequirements::new(
+                purpose,
+                &[SecurityLevel::CRITICAL],
+                scope,
+            ))
+        }) {
+            SigningKeyStatus::ManualChoiceOnly
         } else if self.holds_single_token_transition_key() {
             SigningKeyStatus::HeldButUnusable
         } else {
@@ -1371,7 +1385,8 @@ impl QualifiedIdentity {
     /// in front of the token action forms. It opens exactly when
     /// [`Self::token_action_key`] picks a key, so an open form can always
     /// sign; when closed, it tells a missing key apart from keys that cannot
-    /// sign here.
+    /// sign here. [`SigningKeyStatus::ManualChoiceOnly`] opens it onto the key
+    /// chooser.
     pub fn token_action_key_status(
         &self,
         contract_id: dash_sdk::platform::Identifier,
@@ -1379,6 +1394,8 @@ impl QualifiedIdentity {
         let requirements = Self::token_action_requirements(contract_id);
         if self.signing_key_now(requirements).is_some() {
             SigningKeyStatus::Usable
+        } else if self.holds_contract_group_key_for(requirements) {
+            SigningKeyStatus::ManualChoiceOnly
         } else if self
             .private_keys
             .identity_public_keys()
@@ -1389,6 +1406,22 @@ impl QualifiedIdentity {
         } else {
             SigningKeyStatus::NoneHeld
         }
+    }
+
+    /// Whether a live key matching `requirements`, whose private half this
+    /// device can obtain, is bound to a contract group: never picked
+    /// automatically, as only Platform can tell whether the group covers the
+    /// contract, but the user may choose it.
+    fn holds_contract_group_key_for(&self, requirements: KeyRequirements<'_>) -> bool {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        let now = now_ms();
+        self.identity.public_keys().values().any(|key| {
+            requirements.matches(key)
+                && !key.is_disabled()
+                && !key.is_expired_at(now)
+                && bounds_permit(key.contract_bounds(), requirements.scope).is_none()
+                && self.holds_obtainable_key(key)
+        })
     }
 
     /// Whether a private key of a purpose, level and key type
@@ -4172,6 +4205,51 @@ mod protocol_v14_compat_tests {
                 qi.token_action_key_status(contract_id),
                 SigningKeyStatus::NoneHeld,
                 "{case}: a token action signs only with an authentication key"
+            );
+        }
+    }
+
+    /// Regression: a key bound to a contract group, which only Platform can
+    /// match to the token's contract, is never picked automatically, and the
+    /// token gates then closed before the Advanced chooser that offers it.
+    /// Such a key leaves the choice to the user; an expired one does not.
+    #[test]
+    fn a_contract_group_key_leaves_the_token_key_to_the_user() {
+        use crate::context::test_support::{auth_key, bound_to, identity_holding};
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let contract_id = Identifier::new([0x70; 32]);
+        let group = |key| {
+            bound_to(
+                key,
+                ContractBounds::ContractGroup {
+                    id: Identifier::new([0x6A; 32]),
+                },
+            )
+        };
+        let auth = group(auth_key(1, SecurityLevel::CRITICAL));
+        let mut transfer = auth.clone();
+        transfer.set_purpose(Purpose::TRANSFER);
+
+        let qi = identity_holding(std::slice::from_ref(&auth));
+        assert!(qi.token_action_key(contract_id).is_none());
+        assert_eq!(
+            qi.token_action_key_status(contract_id),
+            SigningKeyStatus::ManualChoiceOnly
+        );
+        for (case, key) in [("authentication", auth), ("transfer", transfer)] {
+            let qi = identity_holding(std::slice::from_ref(&key));
+            assert!(qi.single_token_transition_key(contract_id).is_none());
+            assert_eq!(
+                qi.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::ManualChoiceOnly,
+                "{case}"
+            );
+            let expired = identity_holding(&[key.with_limits(None, Some(1))]);
+            assert_eq!(
+                expired.single_token_transition_key_status(contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{case}, expired"
             );
         }
     }

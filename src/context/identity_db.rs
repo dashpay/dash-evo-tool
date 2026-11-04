@@ -911,7 +911,7 @@ impl AppContext {
     /// The write carries no block height, so a balance other than the newest
     /// one observed is replaced by that one (see `balance_watermark`). A
     /// write that changes the balance uses
-    /// `update_local_qualified_identity_observed`.
+    /// `edit_local_qualified_identity_observed`.
     ///
     /// TODO(platform-wallet): this writes the caller's whole snapshot, so a
     /// caller that read the record before a concurrent change (for example a

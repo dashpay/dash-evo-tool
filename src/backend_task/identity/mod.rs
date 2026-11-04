@@ -1112,12 +1112,9 @@ impl AppContext {
         let mut updated_identity = qualified_identity.clone();
         updated_identity.identity.set_balance(new_balance);
 
-        // Store the updated identity (use update to preserve wallet association)
-        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        let updated_identity = self
+            .store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height))
+            .unwrap_or(updated_identity);
 
         let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -1192,21 +1189,85 @@ impl AppContext {
             );
         }
 
-        // Store the updated identity (use update to preserve wallet association)
-        // TODO(platform-wallet): whole-snapshot write; see `AppContext::update_local_qualified_identity`.
-        self.update_local_qualified_identity_observed(
-            &mut updated_identity,
-            BalanceProvenance::ObservedAt(height),
-        )?;
+        self.store_paid_balance(&updated_identity, BalanceProvenance::ObservedAt(height));
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
+
+    /// Store the balance `paid` carries after a paid task into the record as
+    /// stored now, so a change made while the task ran (such as a removed
+    /// voting key) is kept. Returns the stored record, with the top-up history
+    /// `paid` carries (kept outside the record). The task already
+    /// happened, so a failed save is only logged; it never reads as a failed
+    /// task that the user might repeat.
+    fn store_paid_balance(
+        &self,
+        paid: &QualifiedIdentity,
+        provenance: BalanceProvenance,
+    ) -> Option<QualifiedIdentity> {
+        let id = paid.identity.id();
+        let credits = paid.identity.balance();
+        self.edit_local_qualified_identity_observed(&id, provenance, |stored| {
+            stored.identity.set_balance(credits);
+            Ok(())
+        })
+        .inspect_err(|error| {
+            tracing::warn!(identity_id = %id, ?error, "Balance after a paid task could not be stored locally");
+        })
+        .ok()
+        .map(|mut stored| {
+            stored.top_ups = paid.top_ups.clone();
+            stored
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paid task's network call can outlast the removal of an old voting
+    /// key; storing its new balance must not bring that key back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paid_balance_keeps_a_change_made_while_the_task_ran() {
+        let staged = crate::context::test_staging::stage_identity_with_voter_twin(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let read = || {
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .unwrap()
+                .unwrap()
+        };
+        let mut paid = read();
+        assert!(paid.associated_voter_identity.is_some());
+        let mut removed = paid.clone();
+        removed.associated_voter_identity = None;
+        staged
+            .ctx
+            .update_local_qualified_identity(&removed)
+            .unwrap();
+
+        paid.identity.set_balance(1_234);
+        paid.top_ups.insert(3, 50_000);
+        let stored = staged
+            .ctx
+            .store_paid_balance(&paid, BalanceProvenance::ConfirmedUnordered)
+            .expect("the balance is stored");
+
+        assert!(stored.associated_voter_identity.is_none());
+        assert_eq!(stored.top_ups, paid.top_ups, "the caller keeps its top-ups");
+        let after = read();
+        assert!(
+            after.associated_voter_identity.is_none(),
+            "a paid task must not bring back what was removed while it ran"
+        );
+        assert_eq!(after.identity.balance(), 1_234);
+    }
 
     /// RUST-001: every seed-recovery scan must cover the highest derivation
     /// index the Add Key chooser can offer. Once the derived key is on-chain the

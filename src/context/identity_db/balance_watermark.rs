@@ -130,26 +130,9 @@ impl AppContext {
         Ok(())
     }
 
-    /// [`Self::update_local_qualified_identity`] for a record whose balance
+    /// [`Self::insert_local_qualified_identity`] for a record whose balance
     /// comes from `provenance`. `qualified_identity` adopts the balance
     /// actually kept: the stored one when the carried balance is older.
-    pub(crate) fn update_local_qualified_identity_observed(
-        &self,
-        qualified_identity: &mut QualifiedIdentity,
-        provenance: BalanceProvenance,
-    ) -> std::result::Result<(), TaskError> {
-        let lock = self.identity_record_lock(qualified_identity.identity.id());
-        let _guard = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pending = self.adopt_balance_observation_locked(qualified_identity, provenance)?;
-        self.write_local_qualified_identity_locked(qualified_identity)?;
-        self.seed_balance_watermark_locked(pending)
-    }
-
-    /// [`Self::insert_local_qualified_identity`] for a record whose balance
-    /// comes from `provenance`; adopts the balance kept, as
-    /// [`Self::update_local_qualified_identity_observed`] does.
     pub(crate) fn insert_local_qualified_identity_observed(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -228,11 +211,13 @@ mod tests {
         credits: Credits,
         provenance: BalanceProvenance,
     ) -> Credits {
-        let mut copy = identity.clone();
-        copy.identity.set_balance(credits);
-        ctx.update_local_qualified_identity_observed(&mut copy, provenance)
-            .expect("store the observation");
-        copy.identity.balance()
+        ctx.edit_local_qualified_identity_observed(&identity.identity.id(), provenance, |stored| {
+            stored.identity.set_balance(credits);
+            Ok(())
+        })
+        .expect("store the observation")
+        .identity
+        .balance()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

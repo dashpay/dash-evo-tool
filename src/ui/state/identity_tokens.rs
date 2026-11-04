@@ -340,9 +340,9 @@ pub struct IdentityTokensState {
     refresh_covers: BTreeSet<Identifier>,
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
-    /// Set when the error just recorded belongs to a request of this tab, so
-    /// the hub shows no global banner for it.
-    swallow_next_error: bool,
+    /// Where the error just recorded, from a request of this tab, is shown
+    /// inline; the hub shows no global banner for it on those views.
+    inline_error: Option<InlineError>,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The list controls changed since they were last written to the device.
     prefs_dirty: bool,
@@ -352,6 +352,17 @@ pub struct IdentityTokensState {
     pub detail: Option<IdentityTokenIdentifier>,
     /// The refresh error banner was dismissed; rows keep their stale time.
     pub failure_dismissed: bool,
+}
+
+/// Where a failure of the tab's own requests is reported without a banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineError {
+    /// A refusal while a refresh runs or the network syncs: nothing to report.
+    Quiet,
+    /// A failed full refresh: its notice on the Tokens list and on Home.
+    Refresh,
+    /// A failed check of rows: their status on the Tokens list.
+    Rows,
 }
 
 /// What the arrival rule asks for on a frame.
@@ -927,7 +938,11 @@ impl IdentityTokensState {
             // A local storage failure may come before the dismissals were
             // cleared: those rows stay hidden and cannot show the failure, so
             // the default banner reports it.
-            self.swallow_next_error = in_progress || !Self::may_leave_rows_dismissed(error);
+            self.inline_error = if in_progress {
+                Some(InlineError::Quiet)
+            } else {
+                (!Self::may_leave_rows_dismissed(error)).then_some(InlineError::Rows)
+            };
             return;
         }
         if self.refresh.settle(context).is_some() {
@@ -937,7 +952,11 @@ impl IdentityTokensState {
                 self.note_full_refresh_failed(error);
             }
             self.invalidate_rows();
-            self.swallow_next_error = true;
+            self.inline_error = Some(if in_progress {
+                InlineError::Quiet
+            } else {
+                InlineError::Refresh
+            });
             return;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
@@ -959,7 +978,11 @@ impl IdentityTokensState {
                 .rows
                 .iter()
                 .any(|row| row.pair() == pair && row.balance().is_some());
-            self.swallow_next_error = in_progress || !shows_balance;
+            self.inline_error = if in_progress {
+                Some(InlineError::Quiet)
+            } else {
+                (!shows_balance).then_some(InlineError::Rows)
+            };
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
@@ -989,9 +1012,28 @@ impl IdentityTokensState {
         self.pair_check_results.clear();
     }
 
-    /// Whether the error just recorded is shown by this tab rather than a banner.
-    pub fn take_swallowed_error(&mut self) -> bool {
-        std::mem::take(&mut self.swallow_next_error)
+    /// Whether the error just recorded is shown inline on the view in front
+    /// of the user rather than as a banner: the Tokens list
+    /// (`tokens_list_shown`) or Home (`home_shown`). Elsewhere — another
+    /// tab, a token's detail page — the banner reports it; the inline state
+    /// stays for when the user comes back.
+    pub fn take_inline_error(&mut self, tokens_list_shown: bool, home_shown: bool) -> bool {
+        let tokens_list_shown = tokens_list_shown && self.detail.is_none();
+        match self.inline_error.take() {
+            None => false,
+            Some(InlineError::Quiet) => true,
+            // Home shows the refresh notice only beside some token.
+            Some(InlineError::Refresh) => {
+                tokens_list_shown || (home_shown && !self.rows.is_empty())
+            }
+            Some(InlineError::Rows) => tokens_list_shown,
+        }
+    }
+
+    /// [`take_inline_error`](Self::take_inline_error) as seen from the Tokens list.
+    #[cfg(test)]
+    fn take_swallowed_error(&mut self) -> bool {
+        self.take_inline_error(true, false)
     }
 
     /// Another screen's full refresh satisfies the arrival rule for the

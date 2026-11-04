@@ -1964,3 +1964,77 @@ fn absent_balance_after_success_is_kept_by_hide_zero() {
 fn reported_zero_is_shown_and_hidden_by_hide_zero() {
     balance_after_refresh(Some(0), false, true);
 }
+
+/// A refresh that fails while Contacts is shown has no inline surface there:
+/// the default banner reports it.
+#[test]
+fn a_refresh_failure_on_another_tab_reaches_the_banner() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xE1);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+
+        hub.state_mut().0.select_tab(IdentityHubTab::Contacts);
+        hub.run_steps(2);
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut()
+            .0
+            .display_backend_task_error(&arrival, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "Contacts does not show token failures, so the banner does"
+        );
+    });
+}
+
+/// A pair check that fails while its token's detail page is open has no
+/// inline surface there: the default banner reports it.
+#[test]
+fn a_pair_check_failure_on_the_detail_page_reaches_the_banner() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xE2);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let arrival = balance_refreshes(&hub)
+            .pop()
+            .expect("the arrival refresh is running");
+        hub.state_mut().0.display_backend_task_result(
+            &arrival,
+            dash_evo_tool::backend_task::BackendTaskSuccessResult::FetchedTokenBalances,
+        );
+        hub.run_steps(2);
+
+        hub.get_by_label("Tester").click();
+        hub.run_steps(3);
+        assert!(hub.query_by_label(token_copy::BACK_LABEL).is_some());
+        hub.state_mut().1.clear();
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        let check = hub
+            .state()
+            .1
+            .iter()
+            .find_map(|action| match action {
+                AppAction::BackendTaskWithContext {
+                    task: BackendTask::TokenTask(task),
+                    context,
+                } if matches!(**task, TokenTask::QueryIdentityTokenBalance(_)) => {
+                    Some(context.clone())
+                }
+                _ => None,
+            })
+            .expect("the pair check was dispatched");
+
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut().0.display_backend_task_error(&check, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "the detail page does not show the failure, so the banner does"
+        );
+    });
+}

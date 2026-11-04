@@ -1210,8 +1210,12 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        // The Tokens tab and Home's token slot show refresh failures inline.
-        if self.tokens_state.take_swallowed_error() {
+        // The Tokens list and Home's token slot show token failures inline,
+        // but only on the view in front of the user.
+        if self.tokens_state.take_inline_error(
+            self.selected_tab == IdentityHubTab::Tokens,
+            self.selected_tab == IdentityHubTab::Home,
+        ) {
             return true;
         }
         // The status refresh runs in the background; a failure keeps the stored

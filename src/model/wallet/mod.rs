@@ -740,20 +740,26 @@ pub struct PlatformAddressEntry {
     pub as_of_height: u64,
 }
 
-/// Per-address height of the newest spend result DET applied, by wallet.
-/// Lets the coordinator's frame-safe total skip a pass older than a spend.
-pub type PlatformSpendPins = HashMap<WalletSeedHash, BTreeMap<[u8; 20], u64>>;
+/// Per-address `(balance, as_of_height)` behind the frame-safe Platform total,
+/// by wallet. Coordinator passes and spends merge into it in any order; the
+/// total is always its sum, so a late, older result cannot undo a newer one.
+pub type PlatformBalanceLedger = HashMap<WalletSeedHash, BTreeMap<[u8; 20], (Credits, u64)>>;
 
-/// Whether any entry of a coordinator pass is older than the spend result
-/// pinned for its address, so the pass's total would undo that spend.
-pub fn is_older_than_spend(
+/// Merge `entries` into one wallet's ledger, keeping an address's stored figure
+/// when it is pinned higher, and return the wallet's total in credits.
+pub fn merge_platform_balances(
+    ledger: &mut BTreeMap<[u8; 20], (Credits, u64)>,
     entries: &[PlatformAddressEntry],
-    pins: &BTreeMap<[u8; 20], u64>,
-) -> bool {
-    entries.iter().any(|entry| {
-        pins.get(&entry.hash)
-            .is_some_and(|&pin| pin > entry.as_of_height)
-    })
+) -> Credits {
+    for entry in entries {
+        if ledger
+            .get(&entry.hash)
+            .is_none_or(|&(_, pin)| pin <= entry.as_of_height)
+        {
+            ledger.insert(entry.hash, (entry.balance, entry.as_of_height));
+        }
+    }
+    ledger.values().map(|&(balance, _)| balance).sum()
 }
 
 /// Batch of coordinator-push balance updates, grouped by wallet.
@@ -2608,28 +2614,35 @@ mod tests {
         assert_eq!(figure(&wallet), (47_000, 4, 600));
     }
 
+    /// Results merge by pin in any order; an address a result omits keeps its figure.
     #[test]
-    fn spend_pins_flag_only_a_pass_older_than_the_spend() {
-        let entry = |hash: u8, as_of_height: u64| PlatformAddressEntry {
+    fn platform_balances_merge_by_pin_in_any_order() {
+        let entry = |hash: u8, balance: u64, as_of_height: u64| PlatformAddressEntry {
             hash: [hash; 20],
-            balance: 1,
+            balance,
             nonce: 1,
             account: 0,
             index: Some(0),
             as_of_height,
         };
-        let pins = BTreeMap::from([([0xAA; 20], 500)]);
-        assert!(is_older_than_spend(
-            &[entry(0xAA, 400), entry(0xBB, 900)],
-            &pins
-        ));
-        assert!(!is_older_than_spend(
-            &[entry(0xAA, 500), entry(0xBB, 100)],
-            &pins
-        ));
-        assert!(
-            !is_older_than_spend(&[entry(0xBB, 100)], &pins),
-            "unpinned address"
+        let mut ledger = BTreeMap::new();
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 10, 500)]),
+            10
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 99, 400)]),
+            10,
+            "older figure"
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xBB, 5, 100)]),
+            15,
+            "omitted address kept"
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 7, 500)]),
+            12
         );
     }
 

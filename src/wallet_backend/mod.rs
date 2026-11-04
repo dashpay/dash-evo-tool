@@ -88,7 +88,6 @@ pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
-pub(crate) use platform_address_ops::PlatformAddressSpend;
 pub use secret_access::{
     PromptMeta, SecretAccess, SecretLease, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };
@@ -643,8 +642,8 @@ impl WalletBackend {
             // ...and the matching `(timestamp, height)` sync-cursor snapshot that
             // drives the "Addresses synced" status label.
             Arc::clone(&ctx.platform_sync_cursors),
-            // ...and the spend pins that keep an older pass off a spend's total.
-            Arc::clone(&ctx.platform_spend_pins),
+            // ...and the height-pinned ledger that total is summed from.
+            Arc::clone(&ctx.platform_balance_ledger),
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);

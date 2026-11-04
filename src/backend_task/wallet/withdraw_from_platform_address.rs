@@ -48,7 +48,7 @@ impl AppContext {
             }
             Ok(PlatformPathIndex::from_wallet(&wallet, network))
         };
-        let spend = backend
+        let entries = backend
             .withdraw_platform_address_credits(
                 &seed_hash,
                 prepare_path_index,
@@ -60,7 +60,7 @@ impl AppContext {
             .await?;
 
         // Show what platform-wallet committed, so both views agree.
-        self.apply_platform_address_spend(seed_hash, spend);
+        self.apply_platform_address_spend(seed_hash, entries);
 
         Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
     }

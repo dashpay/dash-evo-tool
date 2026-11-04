@@ -42,7 +42,7 @@ impl AppContext {
             let wallet = wallet.read()?;
             PlatformPathIndex::from_wallet(&wallet, self.network)
         };
-        let spend = backend
+        let entries = backend
             .transfer_platform_address_credits(
                 &seed_hash,
                 &path_index,
@@ -53,7 +53,7 @@ impl AppContext {
             .await?;
 
         // Show what platform-wallet committed, so both views agree.
-        self.apply_platform_address_spend(seed_hash, spend);
+        self.apply_platform_address_spend(seed_hash, entries);
 
         Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
     }

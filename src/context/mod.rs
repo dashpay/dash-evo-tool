@@ -362,11 +362,11 @@ pub struct AppContext {
     ///
     /// Must never be written from the frame loop (Nagatha ruling).
     pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
-    /// Height pins of the spend results written into `platform_balances`, so
-    /// the coordinator skips a pass older than a spend. Locked only while
-    /// `platform_balances` is held, which makes check-and-write atomic. Shares
+    /// Per-address, height-pinned figures `platform_balances` is summed from;
+    /// coordinator passes and spends merge into it in any order. Locked only
+    /// while `platform_balances` is held, so merge-and-publish is atomic. Shares
     /// `platform_balances`' wallet-removal leak (accepted, QA-B-004).
-    pub(crate) platform_spend_pins: Arc<Mutex<crate::model::wallet::PlatformSpendPins>>,
+    pub(crate) platform_balance_ledger: Arc<Mutex<crate::model::wallet::PlatformBalanceLedger>>,
     /// Frame-safe `(last_sync_timestamp, sync_height)` snapshot keyed by
     /// `WalletSeedHash`, written by the coordinator's platform-address sync pass
     /// (the same pass that fills `platform_balances`) and read each frame via
@@ -667,7 +667,7 @@ impl AppContext {
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            platform_spend_pins: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            platform_balance_ledger: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
@@ -1031,31 +1031,28 @@ impl AppContext {
     }
 
     /// Show a Platform-address spend everywhere at once: the per-address
-    /// entries platform-wallet committed and, in the frame-safe total, its
-    /// post-spend figure, pinned so an older coordinator pass cannot undo it.
-    /// When platform-wallet committed nothing its total is not trusted either,
-    /// and both views wait for the next coordinator pass.
+    /// entries platform-wallet committed, merged by height pin into the
+    /// frame-safe total's ledger, so no older result can undo it.
     pub(crate) fn apply_platform_address_spend(
         &self,
         seed_hash: WalletSeedHash,
-        spend: crate::wallet_backend::PlatformAddressSpend,
+        entries: Vec<PlatformAddressEntry>,
     ) {
         use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-        if spend.entries.is_empty() {
+        if entries.is_empty() {
             return;
         }
-        // Lock order: `platform_balances`, then the pins (as the bridge).
+        // Lock order: `platform_balances`, then the ledger (as the bridge).
         if let Ok(mut balances) = self.platform_balances.lock()
-            && let Ok(mut pins) = self.platform_spend_pins.lock()
+            && let Ok(mut ledger) = self.platform_balance_ledger.lock()
         {
-            let wallet_pins = pins.entry(seed_hash).or_default();
-            for entry in &spend.entries {
-                let pin = wallet_pins.entry(entry.hash).or_default();
-                *pin = (*pin).max(entry.as_of_height);
-            }
-            balances.insert(seed_hash, spend.total_credits / CREDITS_PER_DUFF);
+            let total = crate::model::wallet::merge_platform_balances(
+                ledger.entry(seed_hash).or_default(),
+                &entries,
+            );
+            balances.insert(seed_hash, total / CREDITS_PER_DUFF);
         }
-        self.apply_platform_address_push(vec![(seed_hash, spend.entries)]);
+        self.apply_platform_address_push(vec![(seed_hash, entries)]);
     }
 
     /// Warm-start the platform-address UI from persisted upstream state.
@@ -1091,8 +1088,18 @@ impl AppContext {
             },
         );
 
-        if let Ok(mut balances) = self.platform_balances.lock() {
+        if let Ok(mut balances) = self.platform_balances.lock()
+            && let Ok(mut ledger) = self.platform_balance_ledger.lock()
+        {
             for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
+                // Seed the ledger too, so a spend before the first pass sums
+                // every persisted address, not just the spent ones.
+                let wallet_ledger = ledger.entry(*seed_hash).or_default();
+                for e in entries {
+                    wallet_ledger
+                        .entry(e.hash)
+                        .or_insert((e.balance, e.as_of_height));
+                }
                 let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
                 balances
                     .entry(*seed_hash)
@@ -1962,7 +1969,6 @@ mod tests {
     #[test]
     fn a_pass_older_than_a_spend_does_not_undo_it() {
         use crate::model::wallet::{PlatformAddressEntry, Wallet};
-        use crate::wallet_backend::PlatformAddressSpend;
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 
@@ -1991,27 +1997,21 @@ mod tests {
             as_of_height,
         };
 
-        ctx.apply_platform_address_spend(
-            seed_hash,
-            PlatformAddressSpend {
-                entries: vec![entry(41_000, 3, 500)],
-                total_credits: 41_000,
-            },
-        );
+        ctx.apply_platform_address_spend(seed_hash, vec![entry(41_000, 3, 500)]);
         assert_eq!(
             ctx.platform_balance_duffs(&seed_hash),
             41,
             "the total follows the spend"
         );
 
-        // The bridge keeps an older pass off the total by these pins.
-        let pin = ctx
-            .platform_spend_pins
+        // The bridge merges later passes into this pinned ledger.
+        let pinned = ctx
+            .platform_balance_ledger
             .lock()
-            .expect("spend pins")
+            .expect("balance ledger")
             .get(&seed_hash)
-            .and_then(|pins| pins.get(&hash).copied());
-        assert_eq!(pin, Some(500));
+            .and_then(|ledger| ledger.get(&hash).copied());
+        assert_eq!(pinned, Some((41_000, 500)));
 
         // The frame loop applies the entries of a pass queued before the spend.
         ctx.apply_platform_address_push(vec![(seed_hash, vec![entry(80_000, 2, 400)])]);
@@ -2022,6 +2022,52 @@ mod tests {
             .get_platform_address_info(&address)
             .expect("address info");
         assert_eq!((info.balance, info.nonce), (41_000, 3));
+    }
+
+    /// Two spends completing out of order: the older result arriving last
+    /// changes neither the address nor the wallet total.
+    #[test]
+    fn an_older_spend_applied_last_does_not_undo_a_newer_one() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = [0x5Du8; 64];
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address.clone())
+                .expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let spend = |balance: u64, nonce: u32, as_of_height: u64| {
+            vec![PlatformAddressEntry {
+                hash,
+                balance,
+                nonce,
+                account: 0,
+                index: Some(0),
+                as_of_height,
+            }]
+        };
+
+        ctx.apply_platform_address_spend(seed_hash, spend(30_000, 4, 600));
+        ctx.apply_platform_address_spend(seed_hash, spend(41_000, 3, 500));
+
+        assert_eq!(ctx.platform_balance_duffs(&seed_hash), 30);
+        let wallet = wallet.read().expect("wallet");
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!((info.balance, info.nonce), (30_000, 4));
     }
 
     /// Regression: a connection rebuild gave the app a new SDK while the

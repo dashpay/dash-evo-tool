@@ -4,10 +4,9 @@
 //! Every spend goes through platform-wallet, so platform-wallet's own
 //! per-address balances (the ones its shield preflight and input selection
 //! read) take the proof-attested post-spend values at once, instead of
-//! waiting for the next platform-address sync. Each method returns a
-//! [`PlatformAddressSpend`]: the entries platform-wallet actually committed,
-//! as [`PlatformAddressEntry`]s pinned at the proof's height, and the wallet's
-//! Platform total afterwards, for the caller to apply to DET's model and
+//! waiting for the next platform-address sync. Each method returns the
+//! entries platform-wallet actually committed, as [`PlatformAddressEntry`]s
+//! pinned at the proof's height, for the caller to apply to DET's model and
 //! frame-safe total. DET reads the result back from platform-wallet and never
 //! writes its own copy from the proof, so the two cannot disagree.
 //!
@@ -34,17 +33,6 @@ use dash_sdk::query_types::AddressInfos;
 use platform_wallet::PlatformAddressChangeSet;
 use platform_wallet::wallet::platform_addresses::InputSelection;
 
-/// What a Platform-address spend left in platform-wallet.
-#[derive(Debug, Default)]
-pub(crate) struct PlatformAddressSpend {
-    /// The address entries platform-wallet committed; empty in the cases the
-    /// module docs list.
-    pub entries: Vec<PlatformAddressEntry>,
-    /// The wallet's Platform-address total in credits right after the commit,
-    /// as platform-wallet holds it.
-    pub total_credits: Credits,
-}
-
 /// DIP-17 platform-payment account the explicit-input spends name. Upstream
 /// reads the account only to auto-select inputs; DET always passes explicit
 /// inputs, so the value is informational.
@@ -65,7 +53,7 @@ impl WalletBackend {
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_strategy: AddressFundsFeeStrategy,
-    ) -> Result<PlatformAddressSpend, TaskError> {
+    ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         let changeset = self
@@ -89,7 +77,7 @@ impl WalletBackend {
                     .map_err(map_platform_address_spend_error)
             })
             .await?;
-        Ok(committed_spend(&wallet, &changeset).await)
+        Ok(changeset_platform_entries(&changeset))
     }
 
     /// Withdraw credits from Platform addresses to a Core script through
@@ -109,7 +97,7 @@ impl WalletBackend {
         output_script: CoreScript,
         core_fee_per_byte: u32,
         fee_strategy: AddressFundsFeeStrategy,
-    ) -> Result<PlatformAddressSpend, TaskError> {
+    ) -> Result<Vec<PlatformAddressEntry>, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let scope = Self::hd_scope(seed_hash);
         let changeset = self
@@ -135,7 +123,7 @@ impl WalletBackend {
                     .map_err(map_platform_address_spend_error)
             })
             .await?;
-        Ok(committed_spend(&wallet, &changeset).await)
+        Ok(changeset_platform_entries(&changeset))
     }
 
     /// Top up `identity` from this wallet's Platform addresses. Returns the
@@ -154,7 +142,7 @@ impl WalletBackend {
         path_index: &PlatformPathIndex,
         identity: &dash_sdk::platform::Identity,
         inputs: BTreeMap<PlatformAddress, Credits>,
-    ) -> Result<(Credits, u64, PlatformAddressSpend), TaskError> {
+    ) -> Result<(Credits, u64, Vec<PlatformAddressEntry>), TaskError> {
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
         // Resolve before the secret session so an unregistered wallet fails
@@ -179,8 +167,8 @@ impl WalletBackend {
                     .map_err(map_top_up_sdk_error)
             })
             .await?;
-        let spend = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
-        Ok((new_balance, proof_height, spend))
+        let entries = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
+        Ok((new_balance, proof_height, entries))
     }
 }
 
@@ -193,23 +181,12 @@ async fn reconcile_on(
     address_infos: &AddressInfos,
     proof_height: u64,
     context: &'static str,
-) -> PlatformAddressSpend {
+) -> Vec<PlatformAddressEntry> {
     let changeset = wallet
         .platform()
         .reconcile_address_infos(address_infos, proof_height, context)
         .await;
-    committed_spend(wallet, &changeset).await
-}
-
-/// Pair the entries platform-wallet committed with its post-commit total.
-async fn committed_spend(
-    wallet: &platform_wallet::PlatformWallet,
-    changeset: &PlatformAddressChangeSet,
-) -> PlatformAddressSpend {
-    PlatformAddressSpend {
-        entries: changeset_platform_entries(changeset),
-        total_credits: wallet.platform().total_credits().await,
-    }
+    changeset_platform_entries(&changeset)
 }
 
 /// Convert the changeset platform-wallet committed into DET's push entries.
@@ -527,15 +504,13 @@ mod tests {
             .await
             .expect("resolve wallet");
 
-        let spend = reconcile_on(
+        let entries = reconcile_on(
             &pw,
             &infos(&[(owned, 41_000, 3), (foreign, 900, 1)]),
             500,
             "test spend",
         )
         .await;
-        assert_eq!(spend.total_credits, 41_000, "the owned address only");
-        let entries = spend.entries;
         assert_eq!(entries.len(), 1, "only the owned address: {entries:?}");
         let PlatformAddress::P2pkh(owned_hash) = owned else {
             panic!("p2pkh address expected");
@@ -550,13 +525,7 @@ mod tests {
             (41_000, 3, 500)
         );
 
-        ctx.apply_platform_address_spend(
-            seed_hash,
-            PlatformAddressSpend {
-                entries,
-                total_credits: spend.total_credits,
-            },
-        );
+        ctx.apply_platform_address_spend(seed_hash, entries);
         assert_eq!(ctx.platform_balance_duffs(&seed_hash), 41);
 
         let upstream: BTreeMap<_, _> = pw
@@ -592,16 +561,9 @@ mod tests {
             .expect("resolve wallet");
 
         let first = reconcile_on(&pw, &infos(&[(owned, 41_000, 3)]), 500, "test spend").await;
-        assert_eq!(
-            first.entries.len(),
-            1,
-            "first proof is committed: {first:?}"
-        );
+        assert_eq!(first.len(), 1, "first proof is committed: {first:?}");
 
         let older = reconcile_on(&pw, &infos(&[(owned, 80_000, 2)]), 400, "older proof").await;
-        assert!(
-            older.entries.is_empty(),
-            "older proof is skipped: {older:?}"
-        );
+        assert!(older.is_empty(), "older proof is skipped: {older:?}");
     }
 }

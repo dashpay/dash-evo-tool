@@ -29,8 +29,8 @@ use crate::context::connection_status::{
 };
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{
-    PlatformAddressEntry, PlatformAddressUpdates, PlatformSpendPins, WalletSeedHash,
-    is_older_than_spend,
+    PlatformAddressEntry, PlatformAddressUpdates, PlatformBalanceLedger, WalletSeedHash,
+    merge_platform_balances,
 };
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
@@ -69,10 +69,10 @@ pub struct EventBridge {
     /// produces `platform_balances`; read synchronously in the frame loop via
     /// `AppContext::platform_sync_info` to drive the "Addresses synced" label.
     platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
-    /// AppContext's spend pins: a pass older than a spend applied to
-    /// `platform_balances` leaves that wallet's total alone. Locked only while
+    /// AppContext's height-pinned per-address ledger `platform_balances` is
+    /// summed from, shared with the spend path. Locked only while
     /// `platform_balances` is held.
-    platform_spend_pins: Arc<Mutex<PlatformSpendPins>>,
+    platform_balance_ledger: Arc<Mutex<PlatformBalanceLedger>>,
 }
 
 impl EventBridge {
@@ -85,7 +85,7 @@ impl EventBridge {
         shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
-        platform_spend_pins: Arc<Mutex<PlatformSpendPins>>,
+        platform_balance_ledger: Arc<Mutex<PlatformBalanceLedger>>,
     ) -> Self {
         Self {
             connection_status,
@@ -95,7 +95,7 @@ impl EventBridge {
             shielded_balances,
             platform_balances,
             platform_sync_cursors,
-            platform_spend_pins,
+            platform_balance_ledger,
         }
     }
 
@@ -379,9 +379,9 @@ impl PlatformEventHandler for EventBridge {
         // One duff of sub-duff remainder is accepted for the wallet total; the
         // precision loss is ≤ 0.001 DASH regardless of address count.
         if let Ok(mut balances) = self.platform_balances.lock() {
-            // Lock order: `platform_balances`, then the pins (as the spend path).
-            let pins = self.platform_spend_pins.lock().ok();
-            write_pass_totals(&mut balances, pins.as_deref(), &resolved);
+            // Lock order: `platform_balances`, then the ledger (as the spend path).
+            let mut ledger = self.platform_balance_ledger.lock().ok();
+            write_pass_totals(&mut balances, ledger.as_deref_mut(), &resolved);
         }
 
         // (1b) Update the frame-safe sync-cursor snapshot so the "Addresses
@@ -527,22 +527,21 @@ fn summary_ok_platform_entries(
         .collect()
 }
 
-/// Write each wallet's pass total into the frame-safe snapshot, except for a
-/// wallet whose pass is older than a spend already shown there (`pins`).
+/// Merge each wallet's pass into the height-pinned `ledger` and publish the
+/// ledger's sum, so a pass older than a spend, or one omitting a spent
+/// address, cannot undo it. Without a ledger (poisoned lock) the pass's own
+/// sum is published, as before the ledger existed.
 fn write_pass_totals(
     balances: &mut HashMap<WalletSeedHash, u64>,
-    pins: Option<&PlatformSpendPins>,
+    mut ledger: Option<&mut PlatformBalanceLedger>,
     resolved: &PlatformAddressUpdates,
 ) {
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     for (seed_hash, entries) in resolved {
-        if pins
-            .and_then(|pins| pins.get(seed_hash))
-            .is_some_and(|pins| is_older_than_spend(entries, pins))
-        {
-            continue;
-        }
-        let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
+        let total_credits = match ledger.as_deref_mut() {
+            Some(ledger) => merge_platform_balances(ledger.entry(*seed_hash).or_default(), entries),
+            None => entries.iter().map(|e| e.balance).sum(),
+        };
         balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
     }
 }
@@ -1334,19 +1333,49 @@ mod tests {
             as_of_height,
         };
         let mut balances = HashMap::from([(spent, 41)]);
-        let pins: PlatformSpendPins = HashMap::from([(spent, BTreeMap::from([([0xAA; 20], 500)]))]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            spent,
+            BTreeMap::from([([0xAA; 20], (41 * CREDITS_PER_DUFF, 500))]),
+        )]);
 
         let stale = vec![
             (spent, vec![entry(0xAA, 80 * CREDITS_PER_DUFF, 400)]),
             (other, vec![entry(0xCC, 7 * CREDITS_PER_DUFF, 400)]),
         ];
-        write_pass_totals(&mut balances, Some(&pins), &stale);
+        write_pass_totals(&mut balances, Some(&mut ledger), &stale);
         assert_eq!(balances.get(&spent), Some(&41), "the spend stays shown");
         assert_eq!(balances.get(&other), Some(&7));
 
         let caught_up = vec![(spent, vec![entry(0xAA, 45 * CREDITS_PER_DUFF, 520)])];
-        write_pass_totals(&mut balances, Some(&pins), &caught_up);
+        write_pass_totals(&mut balances, Some(&mut ledger), &caught_up);
         assert_eq!(balances.get(&spent), Some(&45));
+    }
+
+    /// A delayed pass that predates the funding of a spent address, and so
+    /// omits it, must not drop that address from the total.
+    #[test]
+    fn pass_totals_keep_a_spent_address_the_pass_omits() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use std::collections::BTreeMap;
+        let wallet = [3u8; 32];
+        let mut balances = HashMap::from([(wallet, 35)]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            wallet,
+            BTreeMap::from([([0xBB; 20], (30 * CREDITS_PER_DUFF, 600))]),
+        )]);
+        let delayed = vec![(
+            wallet,
+            vec![PlatformAddressEntry {
+                hash: [0xCC; 20],
+                balance: 5 * CREDITS_PER_DUFF,
+                nonce: 1,
+                account: 0,
+                index: Some(1),
+                as_of_height: 400,
+            }],
+        )];
+        write_pass_totals(&mut balances, Some(&mut ledger), &delayed);
+        assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
     }
 
     /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct

@@ -738,10 +738,9 @@ impl WalletSendScreen {
         output_type: Option<AddressKind>,
     ) -> Option<Credits> {
         let core_min = 5460_u64 * CREDITS_PER_DUFF;
-        // A Core payment's own minimum is its script's dust threshold, the
-        // rule the backend's Max quote is held to, so Max is always accepted.
-        let core_payment_min =
-            self.core_send_destination().dust_threshold_duffs() * CREDITS_PER_DUFF;
+        // Operations with a backend-quoted Max take their minimum from the
+        // same model rule the quote is held to, so Max is always accepted.
+        let core_payment_min = self.core_send_limit_kind().min_amount_credits();
         let platform_min = self
             .app_context
             .platform_version()
@@ -766,6 +765,9 @@ impl WalletSendScreen {
             (None, Some(Platform)) => Some(platform_min),
             (Some(Core), None) => Some(core_payment_min),
             (Some(Platform), None) => Some(platform_min),
+            (Some(Platform), Some(Shielded)) => {
+                Some(SpendLimitKind::ShieldFromPlatform.min_amount_credits())
+            }
             (Some(Shielded), Some(Shielded)) => Some(platform_min),
             (Some(Shielded), Some(Platform)) => Some(platform_min),
             (Some(Shielded), _) => Some(platform_min),
@@ -6828,6 +6830,56 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_CREDITS),
             "Max must be exactly what the planner accepts"
+        );
+    }
+
+    /// A planner quote below the 500,000-credit minimum of a transparent
+    /// Platform-address output is still accepted by the field: shielding only
+    /// requires a positive amount.
+    #[test]
+    fn shield_from_platform_max_below_the_address_output_minimum_is_accepted() {
+        const QUOTE_CREDITS: u64 = 100_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF * 100_000_000,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_CREDITS),
+            "the field must keep a positive planner quote"
         );
     }
 

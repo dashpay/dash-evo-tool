@@ -87,6 +87,21 @@ pub enum SpendLimitKind {
     ShieldFromPlatform,
 }
 
+impl SpendLimitKind {
+    /// Smallest amount, in credits, the operation behind this Max accepts,
+    /// so the amount field never refuses a Max the backend quotes.
+    pub fn min_amount_credits(self) -> dash_sdk::dpp::balances::credits::Credits {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        match self {
+            // The payment output must clear its script's dust threshold.
+            Self::CoreSend { destination } => destination.dust_threshold_duffs() * CREDITS_PER_DUFF,
+            // The shield transition and planner only require a positive
+            // amount; the Platform-address output minimum does not apply.
+            Self::ShieldFromPlatform => 1,
+        }
+    }
+}
+
 /// Why a Core send has no Max to offer although the wallet answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreSendShortfall {
@@ -134,5 +149,22 @@ mod tests {
             CoreDestinationScript::ScriptHash.dust_threshold_duffs(),
             540
         );
+    }
+
+    /// Each Max's operation has its own minimum: a Core payment's dust
+    /// threshold, and any positive amount for a shield from Platform.
+    #[test]
+    fn min_amount_follows_the_operation_behind_the_max() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        let core = |destination| SpendLimitKind::CoreSend { destination }.min_amount_credits();
+        assert_eq!(
+            core(CoreDestinationScript::PubkeyHash),
+            546 * CREDITS_PER_DUFF
+        );
+        assert_eq!(
+            core(CoreDestinationScript::ScriptHash),
+            540 * CREDITS_PER_DUFF
+        );
+        assert_eq!(SpendLimitKind::ShieldFromPlatform.min_amount_credits(), 1);
     }
 }

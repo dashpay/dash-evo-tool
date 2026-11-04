@@ -497,7 +497,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let ctx = wired_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
-        let (seed_hash, wallet_arc, owned) = wallet_with_platform_address(&ctx, [0x5Au8; 64]).await;
+        let (seed_hash, wallet_arc, owned) =
+            wallet_with_platform_address(&ctx, rand::random::<[u8; 64]>()).await;
         let foreign = PlatformAddress::P2pkh([0x99; 20]);
         let pw = backend
             .resolve_wallet(&seed_hash)
@@ -554,7 +555,7 @@ mod tests {
         let ctx = wired_test_app_context(dir.path()).await;
         let backend = ctx.wallet_backend().expect("wired backend");
         let (seed_hash, _wallet_arc, owned) =
-            wallet_with_platform_address(&ctx, [0x5Bu8; 64]).await;
+            wallet_with_platform_address(&ctx, rand::random::<[u8; 64]>()).await;
         let pw = backend
             .resolve_wallet(&seed_hash)
             .await

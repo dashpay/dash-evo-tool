@@ -1974,7 +1974,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let seed = [0x5Cu8; 64];
+        let seed = rand::random::<[u8; 64]>();
         let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         let address = wallet
             .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
@@ -2033,7 +2033,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::context::test_support::test_app_context(dir.path());
-        let seed = [0x5Du8; 64];
+        let seed = rand::random::<[u8; 64]>();
         let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         let address = wallet
             .generate_platform_receive_address_with_seed(&seed, Network::Testnet)

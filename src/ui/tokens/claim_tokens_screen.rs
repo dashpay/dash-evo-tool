@@ -33,7 +33,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity, SigningKeyStatus};
+use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::wallet::Wallet;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
@@ -777,22 +777,14 @@ impl ScreenLike for ClaimTokensScreen {
 }
 
 /// Whether `identity` can sign a claim on `contract_id`, the gate in front
-/// of the form outside developer mode: for a user identity, whether
-/// [`QualifiedIdentity::single_token_transition_key`] picks a key.
+/// of the form outside developer mode: whether
+/// [`QualifiedIdentity::single_token_transition_key`], the claim's key
+/// choice for every identity type, picks a key.
 fn claim_key_status(
     identity: &QualifiedIdentity,
     contract_id: dash_sdk::platform::Identifier,
 ) -> SigningKeyStatus {
-    match identity.identity_type {
-        IdentityType::User => identity.single_token_transition_key_status(contract_id),
-        IdentityType::Masternode | IdentityType::Evonode => {
-            if identity.available_transfer_keys().is_empty() {
-                SigningKeyStatus::NoneHeld
-            } else {
-                SigningKeyStatus::Usable
-            }
-        }
-    }
+    identity.single_token_transition_key_status(contract_id)
 }
 
 /// The claim confirmation text: which distribution of `token` is claimed and,
@@ -837,7 +829,7 @@ fn load_once_per_identity_claim(
 mod tests {
     use super::*;
     use crate::context::test_support::identity_public_key;
-    use crate::model::qualified_identity::IdentityStatus;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -1112,6 +1104,36 @@ mod tests {
                 claim_key_status(&identity, contract_id),
                 SigningKeyStatus::HeldButUnusable,
                 "{case}"
+            );
+        }
+    }
+
+    /// Regression: a node's claim gate counted any filed transfer key, while
+    /// the claim signs with the key `single_token_transition_key` picks, so a
+    /// node holding only an expired one got a form that could not sign.
+    #[test]
+    fn a_nodes_claim_gate_follows_the_claims_key_choice() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        let contract_id = Identifier::new([0x70; 32]);
+        let transfer = |expires_at| {
+            let mut key = auth_key(1, SecurityLevel::CRITICAL).with_limits(None, expires_at);
+            key.set_purpose(Purpose::TRANSFER);
+            key
+        };
+        for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
+            let mut expired = identity_holding(&[transfer(Some(1))]);
+            expired.identity_type = identity_type;
+            assert_eq!(
+                claim_key_status(&expired, contract_id),
+                SigningKeyStatus::HeldButUnusable,
+                "{identity_type:?}"
+            );
+            let mut live = identity_holding(&[transfer(None)]);
+            live.identity_type = identity_type;
+            assert_eq!(
+                claim_key_status(&live, contract_id),
+                SigningKeyStatus::Usable,
+                "{identity_type:?}"
             );
         }
     }

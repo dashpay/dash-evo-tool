@@ -73,6 +73,10 @@ pub struct EventBridge {
     /// summed from, shared with the spend path. Locked only while
     /// `platform_balances` is held.
     platform_balance_ledger: Arc<Mutex<PlatformBalanceLedger>>,
+    /// Per-address updates a full channel refused, re-sent with the next
+    /// pass: an incremental pass no longer mentions an address proven absent,
+    /// so its zero would otherwise never reach the per-address view.
+    undelivered_platform_updates: Mutex<PlatformAddressUpdates>,
 }
 
 impl EventBridge {
@@ -96,6 +100,7 @@ impl EventBridge {
             platform_balances,
             platform_sync_cursors,
             platform_balance_ledger,
+            undelivered_platform_updates: Mutex::new(Vec::new()),
         }
     }
 
@@ -117,6 +122,32 @@ impl EventBridge {
 
     /// Nudge the frame loop without clearing per-screen async caches such as DashPay profiles.
     /// The sender requests repaint on success; a full channel is harmless as events coalesce.
+    /// Send per-address updates, with any a full channel refused before, to
+    /// the frame loop without blocking; keep them for the next pass if the
+    /// channel is still full.
+    fn deliver_platform_updates(&self, updates: PlatformAddressUpdates) {
+        let mut undelivered = self.undelivered_platform_updates.lock().ok();
+        let mut batch = undelivered
+            .as_deref_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        batch.extend(updates);
+        if batch.is_empty() {
+            return;
+        }
+        let result = BackendTaskSuccessResult::PlatformAddressSyncPushed {
+            updates: batch.clone(),
+        };
+        if self
+            .task_result_sender
+            .try_send(TaskResult::unattributed_success(result))
+            .is_err()
+            && let Some(undelivered) = undelivered.as_deref_mut()
+        {
+            *undelivered = coalesce_platform_updates(batch);
+        }
+    }
+
     fn nudge_refresh(&self) {
         let _ = self.task_result_sender.try_send(TaskResult::Repaint);
     }
@@ -444,15 +475,9 @@ impl PlatformEventHandler for EventBridge {
         }
 
         // (2) Emit the per-address update so `wallet.platform_address_info` stays
-        // current without a manual Refresh. Non-blocking; a full channel means
-        // the coordinator retries on the next ~15 s pass. The frame-safe total
-        // (step 1) is already written.
-        if !resolved.is_empty() {
-            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
-            let _ = self
-                .task_result_sender
-                .try_send(TaskResult::unattributed_success(result));
-        }
+        // current without a manual Refresh. The frame-safe total (step 1) is
+        // already written.
+        self.deliver_platform_updates(resolved);
 
         self.nudge_refresh();
     }
@@ -555,6 +580,30 @@ fn summary_ok_platform_entries(
             }
             WalletSyncOutcome::Err(_) => None,
         })
+        .collect()
+}
+
+/// Keep one entry per wallet and address, the highest pin (the later on a
+/// tie), so retained updates stay bounded however long the channel is full.
+fn coalesce_platform_updates(updates: PlatformAddressUpdates) -> PlatformAddressUpdates {
+    let mut by_wallet: std::collections::BTreeMap<
+        WalletSeedHash,
+        std::collections::BTreeMap<[u8; 20], PlatformAddressEntry>,
+    > = std::collections::BTreeMap::new();
+    for (seed_hash, entries) in updates {
+        let wallet = by_wallet.entry(seed_hash).or_default();
+        for entry in entries {
+            if wallet
+                .get(&entry.hash)
+                .is_none_or(|kept| kept.as_of_height <= entry.as_of_height)
+            {
+                wallet.insert(entry.hash, entry);
+            }
+        }
+    }
+    by_wallet
+        .into_iter()
+        .map(|(seed_hash, entries)| (seed_hash, entries.into_values().collect()))
         .collect()
 }
 
@@ -1420,6 +1469,50 @@ mod tests {
         )];
         write_pass_totals(&mut balances, Some(&mut ledger), &delayed);
         assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
+    }
+
+    /// A push dropped on a full channel is delivered with the next pass, even
+    /// an incremental one that no longer mentions the address; retained
+    /// updates keep only the newest figure per address.
+    #[test]
+    fn a_dropped_platform_push_is_delivered_by_the_next_pass() {
+        let (bridge, _cs, mut rx, _balances, _cursors) = make_bridge_with_platform_balances();
+        let seed_hash = [7u8; 32];
+        let zero = PlatformAddressEntry {
+            hash: [0xBB; 20],
+            balance: 0,
+            nonce: 0,
+            account: 0,
+            index: Some(1),
+            as_of_height: 700,
+        };
+        while bridge
+            .task_result_sender
+            .try_send(TaskResult::Repaint)
+            .is_ok()
+        {}
+
+        let older = PlatformAddressEntry {
+            balance: 30_000,
+            nonce: 2,
+            as_of_height: 600,
+            ..zero
+        };
+        bridge.deliver_platform_updates(vec![(seed_hash, vec![older])]);
+        bridge.deliver_platform_updates(vec![(seed_hash, vec![zero])]);
+        while rx.try_recv().is_ok() {}
+        // The next pass is incremental: it carries nothing for the address.
+        bridge.deliver_platform_updates(Vec::new());
+
+        let mut delivered = Vec::new();
+        while let Ok(result) = rx.try_recv() {
+            if let TaskResult::Success { result, .. } = result
+                && let BackendTaskSuccessResult::PlatformAddressSyncPushed { updates } = *result
+            {
+                delivered.extend(updates);
+            }
+        }
+        assert_eq!(delivered, vec![(seed_hash, vec![zero])]);
     }
 
     /// A proven-absent address whose zero push was dropped (full channel) is

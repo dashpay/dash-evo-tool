@@ -195,7 +195,7 @@ impl WalletBackend {
         let lookup = Arc::clone(&wallet);
         let keys = tokio::task::spawn_blocking(move || withdrawal_keys(&lookup, &hashes, hint))
             .await?
-            .map_err(|error| map_masternode_withdraw_error(*error))?;
+            .map_err(map_withdrawal_key_lookup_error)?;
         let request = withdrawal_request(&withdrawal);
 
         self.inner
@@ -432,6 +432,14 @@ fn masternode_list_is_current_at(list_height: u32, progress: &SyncProgress) -> b
                 .tip_height()
                 .max(headers.target_height())
                 .max(masternodes.block_header_tip_height())
+}
+
+/// A failed lookup of the withdrawal keys, which runs before anything is
+/// sent, so it never reports a withdrawal that may have gone through.
+fn map_withdrawal_key_lookup_error(error: BoxedError) -> TaskError {
+    TaskError::WalletBackend {
+        source: Arc::new(*error),
+    }
 }
 
 /// Map an upstream masternode-withdrawal error to a typed [`TaskError`].
@@ -910,6 +918,20 @@ mod tests {
         let wire = wire_pro_tx_hash(Identifier::from(bytes));
         assert_eq!(wire[31], 1);
         assert_eq!(wire[0], 0);
+    }
+
+    /// The key lookup runs before anything is sent, so its failure must not
+    /// tell the user a withdrawal may already have gone through.
+    #[test]
+    fn a_failed_key_lookup_is_not_reported_as_a_possible_withdrawal() {
+        let error = map_withdrawal_key_lookup_error(Box::new(PlatformWalletError::WalletNotFound(
+            "absent".to_string(),
+        )));
+        assert!(
+            matches!(&error, TaskError::WalletBackend { source }
+                if matches!(**source, PlatformWalletError::WalletNotFound(_))),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]

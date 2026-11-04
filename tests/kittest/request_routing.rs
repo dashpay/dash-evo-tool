@@ -1438,6 +1438,15 @@ fn search_progress(request: &BackendTaskContext, network: Network, step: u32) ->
     }
 }
 
+/// Whether a banner shows a search progress report. Other banners, such as
+/// the connection banner that chain sync raises on its own after a switch,
+/// may come and go at any time and say nothing about progress routing.
+fn search_progress_banner_shown(harness: &App) -> bool {
+    harness
+        .query_by_label_contains("Searching wallet identity index")
+        .is_some()
+}
+
 fn search_found(request: BackendTaskContext) -> TaskResult {
     TaskResult::Success {
         context: request,
@@ -1503,7 +1512,7 @@ fn a_progress_report_of_a_closed_form_raises_no_banner_and_ends_nothing() {
             search_progress(&request, app_context.network(), 2),
         );
         assert!(
-            !MessageBanner::has_global(app_context.egui_ctx()),
+            !search_progress_banner_shown(&harness),
             "a closed form's progress raises no banner"
         );
         assert_eq!(
@@ -1550,7 +1559,7 @@ fn a_progress_report_from_the_previous_network_leaves_the_new_networks_form_alon
             "the new form shows no progress of the previous network's search"
         );
         assert!(
-            !MessageBanner::has_global(app_context.egui_ctx()),
+            !search_progress_banner_shown(&harness),
             "the previous network's progress raises no banner"
         );
         assert_eq!(
@@ -1619,6 +1628,10 @@ fn a_sub_query_failure_of_a_contest_refresh_ends_nothing_and_stays_on_its_networ
             votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
             "a failed step does not end the refresh"
         );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+            "a failed step leaves the refresh's progress banner up"
+        );
         assert_eq!(
             harness.state().test_dispatch_owner_count(),
             2,
@@ -1637,5 +1650,61 @@ fn a_sub_query_failure_of_a_contest_refresh_ends_nothing_and_stays_on_its_networ
             "the refresh's own failure ends it"
         );
         assert_eq!(harness.state().test_dispatch_owner_count(), 1);
+    });
+}
+
+/// A sub-query failure of an older contest refresh, arriving while a newer
+/// refresh on the same network runs, is reported and leaves the newer
+/// refresh's wait and progress banner alone. Only the newer refresh's own
+/// result takes its banner down.
+#[test]
+fn an_older_refreshs_failed_step_leaves_the_newer_refreshs_banner_up() {
+    in_app(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenMasternodes);
+        let network = harness.state().current_app_context().network();
+        let older = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&older);
+        let newer = votes_panel(&mut harness).begin_contest_refresh_for_test();
+        harness.state_mut().test_record_visible_dispatch(&newer);
+        harness.run_steps(3);
+        assert!(votes_panel(&mut harness).contest_refresh_banner_live_for_test());
+
+        deliver(
+            &mut harness,
+            TaskResult::Error {
+                context: BackendTaskContext::Interim {
+                    network,
+                    request: Box::new(older),
+                },
+                error: TaskError::NoIdentitiesFound,
+            },
+        );
+        assert!(
+            harness
+                .query_by_label_contains(&TaskError::NoIdentitiesFound.to_string())
+                .is_some(),
+            "the older refresh's failed step is reported"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_in_progress_for_test(),
+            "the newer refresh keeps running"
+        );
+        assert!(
+            votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+            "the newer refresh keeps its progress banner"
+        );
+
+        deliver(
+            &mut harness,
+            TaskResult::Success {
+                context: newer,
+                result: Box::new(BackendTaskSuccessResult::None),
+            },
+        );
+        assert!(!votes_panel(&mut harness).contest_refresh_in_progress_for_test());
+        assert!(
+            !votes_panel(&mut harness).contest_refresh_banner_live_for_test(),
+            "the newer refresh's own result takes its banner down"
+        );
     });
 }

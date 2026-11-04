@@ -533,6 +533,13 @@ impl ScreenLike for UpdateDataContractScreen {
             }
 
             if self.selected_key.is_none() {
+                if self.selected_qualified_identity.is_some() {
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(super::document_action_screen::NO_SIGNING_KEY_NOTICE)
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
+                }
                 return AppAction::None;
             }
 
@@ -655,5 +662,37 @@ mod tests {
         let screen = UpdateDataContractScreen::new(&ctx);
 
         assert!(screen.known_contracts.is_empty());
+    }
+
+    /// Regression: an identity holding only a key that cannot sign (here an
+    /// expired one) passed the screen's gate, and the form stopped with no
+    /// word once the key choice found nothing.
+    #[test]
+    fn an_identity_without_a_usable_key_is_told_so() {
+        use crate::context::test_support::{auth_key, identity_holding};
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let identity =
+            identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))]);
+        let mut screen = UpdateDataContractScreen::new(&ctx);
+        screen.qualified_identities = vec![identity.clone()];
+        screen.selected_qualified_identity = Some(identity);
+        screen.selected_key = None;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut UpdateDataContractScreen| {
+                    screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(super::super::document_action_screen::NO_SIGNING_KEY_NOTICE)
+                .is_some()
+        );
     }
 }

@@ -175,8 +175,8 @@ pub struct DocumentActionScreen {
 }
 
 /// Shown when the selected identity holds no key this device can sign the
-/// chosen document action with.
-const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
+/// chosen document or contract action with.
+pub(super) const NO_SIGNING_KEY_NOTICE: &str = "This identity has no key on this device that can sign this action. Add or load a suitable key from the identity's keys, or select another identity.";
 
 impl DocumentActionScreen {
     pub fn new(

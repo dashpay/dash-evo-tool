@@ -399,6 +399,15 @@ fn render_main_column(
 /// right here; more than one is listed on the Tokens tab. A failed balance
 /// refresh shows above it, as it may be why there is no card, unless the
 /// identity has no token the failure could be hiding.
+/// What Home says about the one token with something to claim: the
+/// once-per-identity amount only while that claim is still open.
+fn single_claim_text(row: &TokenRow) -> String {
+    match &row.once_claim {
+        Some(once) if once.claimed_at_ms.is_none() => can_claim_once_text(&row.amount(once.amount)),
+        _ => pending_claims_text(1),
+    }
+}
+
 fn render_tokens_card(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -406,6 +415,8 @@ fn render_tokens_card(
     tokens: &mut IdentityTokensState,
 ) -> (AppAction, HomeOutcome) {
     let rows = tokens.rows(app_context, identity);
+    // Shown whether or not the card is: unread tokens may be why it is not.
+    super::tokens_tab::render_row_load_failure(ui, tokens);
     let mut action = if rows.is_empty() {
         AppAction::None
     } else {
@@ -442,10 +453,7 @@ fn render_tokens_card(
         }
         if let [only] = claimable.as_slice() {
             ui.horizontal_wrapped(|ui| {
-                let text = match &only.once_claim {
-                    Some(once) => can_claim_once_text(&only.amount(once.amount)),
-                    None => pending_claims_text(1),
-                };
+                let text = single_claim_text(only);
                 ui.label(RichText::new(text).color(DashColors::success_color(dark)));
                 action |= render_claim_button(ui, app_context, only, &context);
             });
@@ -643,5 +651,90 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
             state.dismissed_checklist = true;
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::token::{
+        IdentityTokenAvailableActions, IdentityTokenMaybeBalanceWithActions,
+    };
+    use crate::ui::state::identity_tokens::OnceClaim;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::data_contract::TokenConfiguration;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    fn row(once_claim: Option<OnceClaim>, recurring_claim: bool) -> TokenRow {
+        TokenRow {
+            token: IdentityTokenMaybeBalanceWithActions {
+                token_id: Identifier::from([2; 32]),
+                token_alias: "AIR".into(),
+                token_config: TokenConfiguration::V0(
+                    TokenConfigurationV0::default_most_restrictive(),
+                ),
+                identity_id: Identifier::from([1; 32]),
+                identity_name: None,
+                balance: Some(5),
+                estimated_unclaimed_rewards: None,
+                data_contract_id: Identifier::from([3; 32]),
+                token_position: 0,
+                available_actions: IdentityTokenAvailableActions::default(),
+            },
+            issuer_id: Identifier::from([4; 32]),
+            issued_by_me: false,
+            once_claim,
+            recurring_claim,
+            has_admin_permission: false,
+            check_failed: false,
+        }
+    }
+
+    /// A taken airdrop beside ongoing rewards is not offered again.
+    #[test]
+    fn a_taken_once_claim_is_not_advertised_on_home() {
+        let open = row(
+            Some(OnceClaim {
+                amount: 100,
+                claimed_at_ms: None,
+            }),
+            true,
+        );
+        assert_eq!(
+            single_claim_text(&open),
+            can_claim_once_text(&open.amount(100))
+        );
+        let taken = row(
+            Some(OnceClaim {
+                amount: 100,
+                claimed_at_ms: Some(1),
+            }),
+            true,
+        );
+        assert_eq!(single_claim_text(&taken), pending_claims_text(1));
+    }
+
+    /// Unreadable saved tokens are explained on Home, though no card shows.
+    #[test]
+    fn home_reports_unreadable_saved_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unwired: the token store cannot be reached.
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([1; 32]),
+            Network::Testnet,
+        );
+        let mut tokens = IdentityTokensState::default();
+        let mut harness = Harness::new_ui(|ui| {
+            let _ = render_tokens_card(ui, &context, &identity, &mut tokens);
+        });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(crate::ui::identity::token_copy::TRY_AGAIN_LABEL)
+                .is_some()
+        );
     }
 }

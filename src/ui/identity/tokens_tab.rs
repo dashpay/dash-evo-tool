@@ -97,6 +97,7 @@ pub fn render(
     let rows = state.rows(app_context, identity);
 
     if let Some(pair) = state.detail {
+        render_row_load_failure(ui, state);
         // The row can leave while its page is open (stopped tracking elsewhere).
         action |= match rows.iter().find(|row| row.pair() == pair) {
             Some(row) => super::token_detail::render(ui, app_context, identity, row, state),
@@ -284,7 +285,7 @@ pub(super) fn render_failure(
 
 /// The inline error after the saved tokens could not be read, with a retry;
 /// last good rows stay on screen. Returns whether it showed.
-fn render_row_load_failure(ui: &mut Ui, state: &mut IdentityTokensState) -> bool {
+pub(super) fn render_row_load_failure(ui: &mut Ui, state: &mut IdentityTokensState) -> bool {
     let Some(error) = state.row_load_error() else {
         return false;
     };

@@ -12,7 +12,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::amount::Amount;
+use crate::model::amount::{Amount, cmp_displayed_quantity};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::token::{
     IdentityTokenBalance, IdentityTokenBasicInfo, IdentityTokenIdentifier,
@@ -26,7 +26,9 @@ use crate::ui::state::pending_request::PendingRequests;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
@@ -96,6 +98,11 @@ impl TokenRow {
     /// Holders may send this token to another identity.
     pub fn transferable(&self) -> bool {
         self.token.token_config.is_transferable()
+    }
+
+    /// How many decimal places the token's amounts have.
+    pub fn decimals(&self) -> u8 {
+        self.token.token_config.conventions().decimals()
     }
 
     /// `value` in the token's decimals, with the name as unit.
@@ -214,7 +221,7 @@ pub fn sort_rows<R: Borrow<TokenRow>>(rows: &mut [R], sort: TokenListSort) {
     rows.sort_by(|a, b| {
         let (a, b) = (a.borrow(), b.borrow());
         let by_name = || a.name().to_lowercase().cmp(&b.name().to_lowercase());
-        let by_balance = || balance_rank(b).cmp(&balance_rank(a));
+        let by_balance = || balance_order(b, a);
         match sort {
             TokenListSort::ClaimableFirst => b
                 .claim_available()
@@ -227,13 +234,20 @@ pub fn sort_rows<R: Borrow<TokenRow>>(rows: &mut [R], sort: TokenListSort) {
     });
 }
 
-/// Known positive balance above unknown above zero; among positives, larger first.
-fn balance_rank(row: &TokenRow) -> (u8, TokenAmount) {
-    match row.balance() {
-        Some(0) => (0, 0),
-        None => (1, 0),
-        Some(balance) => (2, balance),
-    }
+/// Known positive balance above unknown above zero; positives compare by
+/// the quantity shown, whatever each token's decimals.
+fn balance_order(a: &TokenRow, b: &TokenRow) -> std::cmp::Ordering {
+    let bucket = |row: &TokenRow| match row.balance() {
+        Some(0) => 0,
+        None => 1,
+        Some(_) => 2,
+    };
+    bucket(a)
+        .cmp(&bucket(b))
+        .then_with(|| match (a.balance(), b.balance()) {
+            (Some(x), Some(y)) => cmp_displayed_quantity(x, a.decimals(), y, b.decimals()),
+            _ => std::cmp::Ordering::Equal,
+        })
 }
 
 /// Whether the filter box and sort control are shown for a list of `rows`
@@ -939,7 +953,13 @@ impl IdentityTokensState {
                     .insert(pair, PairCheckResult::Failed);
                 self.invalidate_rows();
             }
-            self.swallow_next_error = true;
+            // Only a row with no known balance says it could not check; one
+            // showing a cached balance leaves the report to the banner.
+            let shows_balance = self
+                .rows
+                .iter()
+                .any(|row| row.pair() == pair && row.balance().is_some());
+            self.swallow_next_error = in_progress || !shows_balance;
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
@@ -1190,6 +1210,56 @@ mod tests {
         let mut rows = vec![taken, row("Bigger", Some(200))];
         sort_rows(&mut rows, TokenListSort::ClaimableFirst);
         assert_eq!(names(&rows), ["Bigger", "Taken"]);
+    }
+
+    /// Balances sort by what the user reads: 1 of an eight-decimal token is
+    /// less than 1000 of a whole-unit token.
+    #[test]
+    fn balance_sort_compares_displayed_quantities_across_decimals() {
+        let mut fine = row("Fine", Some(100_000_000));
+        fine.token.token_config = with_decimals(8);
+        let mut whole = row("Whole", Some(1_000));
+        whole.token.token_config = with_decimals(0);
+        let mut rows = vec![fine, whole];
+        sort_rows(&mut rows, TokenListSort::BalanceHighToLow);
+        assert_eq!(names(&rows), ["Whole", "Fine"]);
+        sort_rows(&mut rows, TokenListSort::ClaimableFirst);
+        assert_eq!(names(&rows), ["Whole", "Fine"]);
+    }
+
+    fn with_decimals(decimals: u8) -> TokenConfiguration {
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
+        use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::v0::TokenConfigurationConventionV0;
+        let mut config = TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+        config.set_conventions(TokenConfigurationConvention::V0(
+            TokenConfigurationConventionV0 {
+                localizations: Default::default(),
+                decimals,
+            },
+        ));
+        config
+    }
+
+    /// A failed check of a row that shows a cached balance has no inline
+    /// surface, so the default banner reports it.
+    #[test]
+    fn a_failed_check_of_a_cached_balance_reaches_the_banner() {
+        let cached = row("Cached", Some(5));
+        let unknown = row("Unknown", None);
+        let mut state = IdentityTokensState {
+            rows: vec![cached.clone(), unknown.clone()].into(),
+            ..Default::default()
+        };
+        let check = dispatched(state.dispatch_pair_check(cached.pair()));
+        state.record_error(&check, &TaskError::NoIdentitiesFound);
+        assert!(!state.take_swallowed_error());
+        let check = dispatched(state.dispatch_pair_check(unknown.pair()));
+        state.record_error(&check, &TaskError::NoIdentitiesFound);
+        assert!(
+            state.take_swallowed_error(),
+            "the row says it could not check"
+        );
     }
 
     #[test]

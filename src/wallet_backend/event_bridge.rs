@@ -352,7 +352,21 @@ impl PlatformEventHandler for EventBridge {
         // any wallet whose id is not registered (no DET mapping) or has no found
         // addresses. Both outputs below reuse the resolved seed hash — no double
         // lookup (QA-B2-003).
-        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary)
+        // An address proven absent is zeroed only where the ledger still
+        // shows funds, so never-funded derived addresses stay out of the push.
+        let was_funded = |wallet_id: &[u8; 32], hash: &[u8; 20]| {
+            self.snapshots
+                .seed_hash_for(wallet_id)
+                .is_some_and(|seed_hash| {
+                    self.platform_balance_ledger.lock().is_ok_and(|ledger| {
+                        ledger
+                            .get(&seed_hash)
+                            .and_then(|addresses| addresses.get(hash))
+                            .is_some_and(|&(balance, _)| balance > 0)
+                    })
+                })
+        };
+        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary, was_funded)
             .into_iter()
             .filter_map(|(wallet_id, entries)| {
                 if entries.is_empty() {
@@ -496,10 +510,15 @@ impl PlatformEventHandler for EventBridge {
 /// coordinates from the sync tag — so the receiver can register the address's
 /// derivation path exactly instead of reverse-deriving it.
 ///
+/// An address the pass proved absent (a chain reset) while `was_funded` says
+/// DET still shows funds for it gets a zero entry pinned at the scan's
+/// checkpoint, as upstream zeroes its own copy; the raw `found` set omits it.
+///
 /// `Err` outcomes are skipped so their cached per-address data is left
 /// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
 fn summary_ok_platform_entries(
     summary: &PlatformAddressSyncSummary,
+    was_funded: impl Fn(&[u8; 32], &[u8; 20]) -> bool,
 ) -> Vec<([u8; 32], Vec<PlatformAddressEntry>)> {
     summary
         .wallet_results
@@ -518,6 +537,21 @@ fn summary_ok_platform_entries(
                             index: Some(*index),
                             as_of_height: funds.as_of_height,
                         },
+                    )
+                    .chain(
+                        result
+                            .absent
+                            .iter()
+                            .filter(|key| !result.found.contains_key(key))
+                            .filter(|(_, p2pkh)| was_funded(wallet_id, &p2pkh.to_bytes()))
+                            .map(|&((_, account, index), p2pkh)| PlatformAddressEntry {
+                                hash: p2pkh.to_bytes(),
+                                balance: 0,
+                                nonce: 0,
+                                account,
+                                index: Some(index),
+                                as_of_height: result.checkpoint_height,
+                            }),
                     )
                     .collect();
                 Some((*wallet_id, entries))
@@ -1378,6 +1412,62 @@ mod tests {
         assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
     }
 
+    /// An address proven absent that DET still shows funds for is zeroed at
+    /// the checkpoint height; an absent address DET never funded is left out.
+    #[test]
+    fn summary_entries_zero_a_funded_address_proven_absent() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id = [5u8; 32];
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result.checkpoint_height = 700;
+        result.found.insert(
+            ((wallet_id, 0, 0), PlatformP2PKHAddress::new([0xCC; 20])),
+            AddressFunds {
+                nonce: 1,
+                balance: 5_000,
+                as_of_height: 700,
+            },
+        );
+        result
+            .absent
+            .insert(((wallet_id, 0, 1), PlatformP2PKHAddress::new([0xBB; 20])));
+        result
+            .absent
+            .insert(((wallet_id, 0, 2), PlatformP2PKHAddress::new([0xDD; 20])));
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+
+        let got = summary_ok_platform_entries(&summary, |_, hash| *hash == [0xBB; 20]);
+        let entries = &got[0].1;
+        assert_eq!(
+            entries.len(),
+            2,
+            "C and the funded-but-absent B: {entries:?}"
+        );
+        let zeroed = entries
+            .iter()
+            .find(|e| e.hash == [0xBB; 20])
+            .expect("B is zeroed");
+        assert_eq!(
+            (
+                zeroed.balance,
+                zeroed.nonce,
+                zeroed.index,
+                zeroed.as_of_height
+            ),
+            (0, 0, Some(1), 700)
+        );
+    }
+
     /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct
     /// per-address data for `Ok` outcomes and skips `Err` outcomes entirely.
     #[test]
@@ -1423,7 +1513,7 @@ mod tests {
             WalletSyncOutcome::Err("network timeout".to_string()),
         );
 
-        let got = summary_ok_platform_entries(&summary);
+        let got = summary_ok_platform_entries(&summary, |_, _| false);
 
         // Only the Ok wallet should produce entries.
         assert_eq!(got.len(), 1, "only one wallet had an Ok outcome");
@@ -1665,7 +1755,7 @@ mod tests {
             .wallet_results
             .insert(wallet_id, WalletSyncOutcome::Ok(result));
 
-        let got = summary_ok_platform_entries(&summary);
+        let got = summary_ok_platform_entries(&summary, |_, _| false);
         assert_eq!(got.len(), 1);
         let (_, entries) = &got[0];
         assert_eq!(entries.len(), 2);

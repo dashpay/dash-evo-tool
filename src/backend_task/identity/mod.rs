@@ -1107,7 +1107,7 @@ impl AppContext {
         let wallet_seed_hashes: Vec<_> = self.wallet_context().wallets().keys().copied().collect();
         for seed_hash in wallet_seed_hashes {
             if let Err(e) =
-                self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
+                self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos, height)
             {
                 tracing::warn!("Failed to update wallet platform address info: {}", e);
             }

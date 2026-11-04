@@ -772,11 +772,13 @@ impl AppContext {
         status.set_wallet_load(None);
     }
 
-    /// Update this wallet's owned Platform addresses from a proof-verified SDK response.
+    /// Update this wallet's owned Platform addresses from a proof-verified SDK
+    /// response, pinned at `proof_height` so an older sync cannot undo it.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
         seed_hash: WalletSeedHash,
         address_infos: &dash_sdk::query_types::AddressInfos,
+        proof_height: u64,
     ) -> Result<(), TaskError> {
         let wallet_arc = self.wallet_arc(&seed_hash)?;
 
@@ -796,7 +798,12 @@ impl AppContext {
                 // Convert PlatformAddress to core Address using the network
                 let core_addr = platform_addr.to_address_with_network(self.network);
 
-                wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
+                wallet.apply_pinned_platform_address_info(
+                    core_addr.clone(),
+                    info.balance,
+                    info.nonce,
+                    proof_height,
+                );
 
                 tracing::debug!(
                     "Updated platform address {} balance={} nonce={} from SDK response",
@@ -857,7 +864,7 @@ mod tests {
 
         // Identity-to-address transfers return recipients from multiple wallets.
         for (seed_hash, _, _, _) in &wallets {
-            ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+            ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response, 10)
                 .expect("update");
         }
         for (_, wallet, address, balance) in &wallets {
@@ -885,7 +892,7 @@ mod tests {
                 nonce: 3,
             }),
         );
-        ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response)
+        ctx.update_wallet_platform_address_info_from_sdk(*seed_hash, &response, 11)
             .expect("update spent address");
         let wallet = wallet.read().expect("wallet");
         assert_eq!(wallet.total_platform_balance(), 0);
@@ -896,5 +903,46 @@ mod tests {
                 .nonce,
             3
         );
+    }
+
+    /// A spend applied from an SDK proof keeps the proof's height, so a sync
+    /// pass older than the spend cannot bring back the pre-spend figure.
+    #[test]
+    fn sdk_proof_update_is_pinned_against_older_syncs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = test_app_context(dir.path());
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet = Wallet::new_from_seed(seed, ctx.network, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, ctx.network)
+            .expect("platform address");
+        wallet.apply_pinned_platform_address_info(address.clone(), 90_000, 2, 600);
+        let platform_address = PlatformAddress::try_from(address.clone()).expect("address");
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, wallet.clone());
+
+        let mut response = AddressInfos::new();
+        response.insert(
+            platform_address,
+            Some(AddressInfo {
+                address: platform_address,
+                balance: 0,
+                nonce: 3,
+            }),
+        );
+        ctx.update_wallet_platform_address_info_from_sdk(seed_hash, &response, 700)
+            .expect("update spent address");
+        wallet
+            .write()
+            .expect("wallet")
+            .apply_pinned_platform_address_info(address.clone(), 90_000, 2, 500);
+
+        let wallet = wallet.read().expect("wallet");
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!((info.balance, info.nonce), (0, 3));
     }
 }

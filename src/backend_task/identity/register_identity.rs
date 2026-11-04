@@ -366,9 +366,11 @@ impl AppContext {
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
                 // Update source address balances using proof-verified data from SDK response
-                if let Err(e) = self
-                    .update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
-                {
+                if let Err(e) = self.update_wallet_platform_address_info_from_sdk(
+                    wallet_seed_hash,
+                    &address_infos,
+                    height,
+                ) {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
 

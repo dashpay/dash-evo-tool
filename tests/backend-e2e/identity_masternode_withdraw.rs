@@ -34,6 +34,7 @@ use dash_evo_tool::mcp::server::DashMcpService;
 use dash_evo_tool::mcp::tools::masternode::{
     MasternodeCreditsWithdraw, MasternodeCreditsWithdrawParams,
 };
+use dash_evo_tool::model::masternode_keys::MasternodeKeyHashes;
 use dash_evo_tool::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::secret::Secret;
 use dash_sdk::dpp::identity::Purpose;
@@ -190,6 +191,24 @@ fn withdrawal_key_id(qi: &QualifiedIdentity, purpose: Purpose) -> Option<u32> {
         .map(|k| k.identity_public_key.id())
 }
 
+/// A key-absence case needs harness wallets that do not hold this node's
+/// owner key, since a load fills a blank owner field from any loaded wallet.
+async fn require_no_wallet_holds_the_owner_key(qi: &QualifiedIdentity) {
+    let found = ctx()
+        .await
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend")
+        .find_masternode_wallet_keys(MasternodeKeyHashes::from_identity(&qi.identity))
+        .await
+        .expect("search the harness wallets for the node's keys");
+    assert!(
+        found.owner.is_none(),
+        "A harness wallet holds this node's owner key, so a key-absence case cannot run. \
+         Set E2E_MN_PROTX_HASH to a node registered from a different wallet."
+    );
+}
+
 /// Credits a withdrawal test moves: a tenth of the balance, clamped to the
 /// protocol's per-transition limits for the version DET builds transitions at.
 ///
@@ -258,6 +277,7 @@ async fn test_mn016_load_with_payout_key() {
     let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
         panic!("Expected LoadedIdentity, got: {result:?}");
     };
+    require_no_wallet_holds_the_owner_key(&qi).await;
     assert!(
         withdrawal_key_id(&qi, Purpose::TRANSFER).is_some(),
         "payout (TRANSFER) key should be loaded"
@@ -600,6 +620,7 @@ async fn test_mn054_owner_mode_key_not_loaded() {
         panic!("Expected LoadedIdentity");
     };
 
+    require_no_wallet_holds_the_owner_key(&qi).await;
     // The tool would reject owner mode here (no OWNER key) before any dispatch;
     // assert the precondition the tool relies on: no OWNER key is available.
     assert!(
@@ -673,6 +694,7 @@ async fn test_mn019_load_with_voting_key() {
         "voter identity should be bound when a voting key is supplied"
     );
     // The voting key adds no withdrawal mode — only payout (TRANSFER) is present.
+    require_no_wallet_holds_the_owner_key(&qi).await;
     assert!(withdrawal_key_id(&qi, Purpose::TRANSFER).is_some());
     assert!(withdrawal_key_id(&qi, Purpose::OWNER).is_none());
 }

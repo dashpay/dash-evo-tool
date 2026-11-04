@@ -300,7 +300,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod concurrent_refresh_tests {
     use super::*;
     use crate::context::lock_probe::{LockProbe, LockSite};
     use crate::context::test_staging::stage_identity_with_voter_twin;

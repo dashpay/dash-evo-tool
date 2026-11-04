@@ -28,7 +28,10 @@ use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
 };
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
+use crate::model::wallet::{
+    PlatformAddressEntry, PlatformAddressUpdates, PlatformSpendPins, WalletSeedHash,
+    is_older_than_spend,
+};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
@@ -66,9 +69,14 @@ pub struct EventBridge {
     /// produces `platform_balances`; read synchronously in the frame loop via
     /// `AppContext::platform_sync_info` to drive the "Addresses synced" label.
     platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+    /// AppContext's spend pins: a pass older than a spend applied to
+    /// `platform_balances` leaves that wallet's total alone. Locked only while
+    /// `platform_balances` is held.
+    platform_spend_pins: Arc<Mutex<PlatformSpendPins>>,
 }
 
 impl EventBridge {
+    #[allow(clippy::too_many_arguments)] // one shared handle per snapshot the bridge writes.
     pub(super) fn new(
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
@@ -77,6 +85,7 @@ impl EventBridge {
         shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+        platform_spend_pins: Arc<Mutex<PlatformSpendPins>>,
     ) -> Self {
         Self {
             connection_status,
@@ -86,6 +95,7 @@ impl EventBridge {
             shielded_balances,
             platform_balances,
             platform_sync_cursors,
+            platform_spend_pins,
         }
     }
 
@@ -338,8 +348,6 @@ impl PlatformEventHandler for EventBridge {
         // Only OWNED addresses appear in the coordinator result (the provider
         // tracks exactly the wallets registered with the manager), so no orphan
         // inflation is possible. Errored wallets leave both snapshots untouched.
-        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-
         // Single pass: resolve `WalletId → WalletSeedHash` once per wallet, drop
         // any wallet whose id is not registered (no DET mapping) or has no found
         // addresses. Both outputs below reuse the resolved seed hash — no double
@@ -371,10 +379,9 @@ impl PlatformEventHandler for EventBridge {
         // One duff of sub-duff remainder is accepted for the wallet total; the
         // precision loss is ≤ 0.001 DASH regardless of address count.
         if let Ok(mut balances) = self.platform_balances.lock() {
-            for (seed_hash, entries) in &resolved {
-                let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
-                balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
-            }
+            // Lock order: `platform_balances`, then the pins (as the spend path).
+            let pins = self.platform_spend_pins.lock().ok();
+            write_pass_totals(&mut balances, pins.as_deref(), &resolved);
         }
 
         // (1b) Update the frame-safe sync-cursor snapshot so the "Addresses
@@ -509,6 +516,7 @@ fn summary_ok_platform_entries(
                             nonce: funds.nonce,
                             account: *account,
                             index: Some(*index),
+                            as_of_height: funds.as_of_height,
                         },
                     )
                     .collect();
@@ -517,6 +525,26 @@ fn summary_ok_platform_entries(
             WalletSyncOutcome::Err(_) => None,
         })
         .collect()
+}
+
+/// Write each wallet's pass total into the frame-safe snapshot, except for a
+/// wallet whose pass is older than a spend already shown there (`pins`).
+fn write_pass_totals(
+    balances: &mut HashMap<WalletSeedHash, u64>,
+    pins: Option<&PlatformSpendPins>,
+    resolved: &PlatformAddressUpdates,
+) {
+    use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+    for (seed_hash, entries) in resolved {
+        if pins
+            .and_then(|pins| pins.get(seed_hash))
+            .is_some_and(|pins| is_older_than_spend(entries, pins))
+        {
+            continue;
+        }
+        let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
+        balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
+    }
 }
 
 /// `(last_sync_timestamp, sync_height)` for every wallet whose pass completed
@@ -647,6 +675,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, gate)
     }
@@ -670,6 +699,7 @@ mod tests {
             Arc::new(SnapshotStore::new()),
             gate,
             Arc::clone(&balances),
+            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
         );
@@ -700,6 +730,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::clone(&platform_balances),
             Arc::clone(&platform_sync_cursors),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }
@@ -1285,6 +1316,37 @@ mod tests {
             "an errored wallet must not write a sync cursor"
         );
         assert!(drained_repaint(&mut rx));
+    }
+
+    /// A pass older than a spend already in the frame-safe total leaves that
+    /// wallet's total alone; other wallets, and a pass that caught up, write.
+    #[test]
+    fn pass_totals_skip_a_wallet_whose_pass_predates_its_spend() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use std::collections::BTreeMap;
+        let (spent, other) = ([1u8; 32], [2u8; 32]);
+        let entry = |hash: u8, balance: u64, as_of_height: u64| PlatformAddressEntry {
+            hash: [hash; 20],
+            balance,
+            nonce: 1,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+        let mut balances = HashMap::from([(spent, 41)]);
+        let pins: PlatformSpendPins = HashMap::from([(spent, BTreeMap::from([([0xAA; 20], 500)]))]);
+
+        let stale = vec![
+            (spent, vec![entry(0xAA, 80 * CREDITS_PER_DUFF, 400)]),
+            (other, vec![entry(0xCC, 7 * CREDITS_PER_DUFF, 400)]),
+        ];
+        write_pass_totals(&mut balances, Some(&pins), &stale);
+        assert_eq!(balances.get(&spent), Some(&41), "the spend stays shown");
+        assert_eq!(balances.get(&other), Some(&7));
+
+        let caught_up = vec![(spent, vec![entry(0xAA, 45 * CREDITS_PER_DUFF, 520)])];
+        write_pass_totals(&mut balances, Some(&pins), &caught_up);
+        assert_eq!(balances.get(&spent), Some(&45));
     }
 
     /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct

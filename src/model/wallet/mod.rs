@@ -403,6 +403,9 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
+    /// Platform height the balance is current as of (`AddressFunds::as_of_height`);
+    /// `0` when the writer did not know it.
+    pub as_of_height: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -717,7 +720,7 @@ pub type WalletSeedHash = [u8; 32];
 ///
 /// The raw 20-byte P2PKH `hash` is network-agnostic and must be converted to a
 /// `dashcore::Address` by the receiver using the active network before calling
-/// [`Wallet::set_platform_address_info`]. `account` / `index` are the DIP-17
+/// [`Wallet::apply_pinned_platform_address_info`]. `account` / `index` are the DIP-17
 /// coordinates the address was derived at, letting the receiver register its
 /// derivation path EXACTLY via [`Wallet::register_platform_payment_address`]
 /// instead of reverse-deriving it; `index` is `None` only for legacy data that
@@ -732,6 +735,25 @@ pub struct PlatformAddressEntry {
     pub account: u32,
     /// DIP-17 derivation index within the account, when known.
     pub index: Option<AddressIndex>,
+    /// Platform height the balance is current as of (`AddressFunds::as_of_height`);
+    /// `0` when unknown. A lower figure never replaces a higher one.
+    pub as_of_height: u64,
+}
+
+/// Per-address height of the newest spend result DET applied, by wallet.
+/// Lets the coordinator's frame-safe total skip a pass older than a spend.
+pub type PlatformSpendPins = HashMap<WalletSeedHash, BTreeMap<[u8; 20], u64>>;
+
+/// Whether any entry of a coordinator pass is older than the spend result
+/// pinned for its address, so the pass's total would undo that spend.
+pub fn is_older_than_spend(
+    entries: &[PlatformAddressEntry],
+    pins: &BTreeMap<[u8; 20], u64>,
+) -> bool {
+    entries.iter().any(|entry| {
+        pins.get(&entry.hash)
+            .is_some_and(|&pin| pin > entry.as_of_height)
+    })
 }
 
 /// Batch of coordinator-push balance updates, grouped by wallet.
@@ -1782,7 +1804,8 @@ impl Wallet {
         None
     }
 
-    /// Update Platform address info (balance and nonce).
+    /// Update Platform address info (balance and nonce). The stored height pin
+    /// is kept, since the caller does not know the figure's height.
     ///
     /// Handles canonical address deduplication: if the same platform address is
     /// stored under a different `Address` key, the duplicate is removed first.
@@ -1791,6 +1814,21 @@ impl Wallet {
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
+    ) {
+        let as_of_height = self
+            .get_platform_address_info(&address)
+            .map_or(0, |stored| stored.as_of_height);
+        self.insert_platform_address_info(address, balance, nonce, as_of_height);
+    }
+
+    /// Store Platform address info under `address`, dropping any duplicate key
+    /// for the same canonical platform address.
+    fn insert_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+        as_of_height: u64,
     ) {
         // Remove duplicate entries for the same canonical platform address
         if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
@@ -1816,8 +1854,33 @@ impl Wallet {
             }
         }
 
-        self.platform_address_info
-            .insert(address, PlatformAddressInfo { balance, nonce });
+        self.platform_address_info.insert(
+            address,
+            PlatformAddressInfo {
+                balance,
+                nonce,
+                as_of_height,
+            },
+        );
+    }
+
+    /// Record a balance pinned at `as_of_height`, unless the stored one is
+    /// pinned higher: a coordinator pass that started before a spend must not
+    /// undo the spend's result.
+    pub fn apply_pinned_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+        as_of_height: u64,
+    ) {
+        if self
+            .get_platform_address_info(&address)
+            .is_some_and(|stored| stored.as_of_height > as_of_height)
+        {
+            return;
+        }
+        self.insert_platform_address_info(address, balance, nonce, as_of_height);
     }
 
     /// Seed Platform address info only when no entry exists for the canonical
@@ -2485,6 +2548,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 1_000_000,
                 nonce: 0,
+                ..Default::default()
             },
         );
         wallet.platform_address_info.insert(
@@ -2492,6 +2556,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 2_000_000,
                 nonce: 1,
+                ..Default::default()
             },
         );
 
@@ -2510,6 +2575,62 @@ mod tests {
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 600_000);
         assert_eq!(info.nonce, 4);
+    }
+
+    /// A balance pinned lower than the stored one is ignored; an equal or
+    /// higher pin replaces it. An unpinned refresh replaces the figure but
+    /// keeps the pin.
+    #[test]
+    fn pinned_platform_address_info_keeps_the_newer_figure() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        let figure = |wallet: &Wallet| {
+            let info = wallet.get_platform_address_info(&addr).unwrap();
+            (info.balance, info.nonce, info.as_of_height)
+        };
+
+        wallet.apply_pinned_platform_address_info(addr.clone(), 41_000, 3, 500);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
+        assert_eq!(
+            figure(&wallet),
+            (41_000, 3, 500),
+            "an older pass is ignored"
+        );
+
+        wallet.apply_pinned_platform_address_info(addr.clone(), 45_000, 3, 500);
+        assert_eq!(figure(&wallet), (45_000, 3, 500));
+        wallet.apply_pinned_platform_address_info(addr.clone(), 46_000, 4, 600);
+        assert_eq!(figure(&wallet), (46_000, 4, 600));
+
+        // An unpinned refresh keeps the pin, so an older pass stays ignored.
+        wallet.set_platform_address_info(addr.clone(), 47_000, 4);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
+        assert_eq!(figure(&wallet), (47_000, 4, 600));
+    }
+
+    #[test]
+    fn spend_pins_flag_only_a_pass_older_than_the_spend() {
+        let entry = |hash: u8, as_of_height: u64| PlatformAddressEntry {
+            hash: [hash; 20],
+            balance: 1,
+            nonce: 1,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+        let pins = BTreeMap::from([([0xAA; 20], 500)]);
+        assert!(is_older_than_spend(
+            &[entry(0xAA, 400), entry(0xBB, 900)],
+            &pins
+        ));
+        assert!(!is_older_than_spend(
+            &[entry(0xAA, 500), entry(0xBB, 100)],
+            &pins
+        ));
+        assert!(
+            !is_older_than_spend(&[entry(0xBB, 100)], &pins),
+            "unpinned address"
+        );
     }
 
     #[test]
@@ -2547,6 +2668,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 100_000,
                 nonce: 1,
+                ..Default::default()
             },
         );
 

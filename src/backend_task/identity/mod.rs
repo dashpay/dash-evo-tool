@@ -1036,7 +1036,7 @@ impl AppContext {
         // The identity may belong to another wallet or to none, so the
         // backend tops it up by id and only reconciles the paying wallet's
         // addresses in platform-wallet.
-        let (new_balance, height, entries) = self
+        let (new_balance, height, spend) = self
             .wallet_backend()?
             .top_up_identity_from_platform_addresses(
                 &wallet_seed_hash,
@@ -1052,7 +1052,7 @@ impl AppContext {
         );
 
         // Show the spent balances platform-wallet committed, so both views agree.
-        self.apply_platform_address_push(vec![(wallet_seed_hash, entries)]);
+        self.apply_platform_address_spend(wallet_seed_hash, spend);
 
         // Update the identity balance in memory
         let mut updated_identity = qualified_identity;

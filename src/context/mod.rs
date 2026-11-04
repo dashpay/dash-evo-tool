@@ -345,7 +345,8 @@ pub struct AppContext {
     /// Frame-safe platform-address balance snapshot (duffs, summed across owned addresses).
     ///
     /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
-    /// coordinator pass; read synchronously in the frame loop via
+    /// coordinator pass, and by [`Self::apply_platform_address_spend`] after a
+    /// spend; read synchronously in the frame loop via
     /// [`Self::platform_balance_duffs`].
     ///
     /// **Cold-start behaviour:** seeded at boot by [`Self::warm_start_platform_addresses`]
@@ -361,6 +362,11 @@ pub struct AppContext {
     ///
     /// Must never be written from the frame loop (Nagatha ruling).
     pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
+    /// Height pins of the spend results written into `platform_balances`, so
+    /// the coordinator skips a pass older than a spend. Locked only while
+    /// `platform_balances` is held, which makes check-and-write atomic. Shares
+    /// `platform_balances`' wallet-removal leak (accepted, QA-B-004).
+    pub(crate) platform_spend_pins: Arc<Mutex<crate::model::wallet::PlatformSpendPins>>,
     /// Frame-safe `(last_sync_timestamp, sync_height)` snapshot keyed by
     /// `WalletSeedHash`, written by the coordinator's platform-address sync pass
     /// (the same pass that fills `platform_balances`) and read each frame via
@@ -661,6 +667,7 @@ impl AppContext {
             shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            platform_spend_pins: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
@@ -917,7 +924,8 @@ impl AppContext {
     /// payment addresses for the wallet.  Returns `0` if no sync has completed yet.
     ///
     /// This is the **read side** of the coordinator-push snapshot; the write side is
-    /// `on_platform_address_sync_completed` in [`EventBridge`]. Safe to call from
+    /// `on_platform_address_sync_completed` in [`EventBridge`], plus
+    /// [`Self::apply_platform_address_spend`] right after a spend. Safe to call from
     /// the egui frame loop — no blocking I/O, no async (Nagatha ruling).
     pub fn platform_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
         self.platform_balances
@@ -969,7 +977,7 @@ impl AppContext {
     fn seed_platform_address_entries<'a, I, W>(&self, batches: I, write_info: W)
     where
         I: IntoIterator<Item = (&'a WalletSeedHash, &'a [PlatformAddressEntry])>,
-        W: Fn(&mut Wallet, dash_sdk::dpp::dashcore::Address, u64, u32),
+        W: Fn(&mut Wallet, dash_sdk::dpp::dashcore::Address, &PlatformAddressEntry),
     {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
         let network = self.network;
@@ -981,7 +989,7 @@ impl AppContext {
                 for entry in entries {
                     let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
                     let canonical = Wallet::canonical_address(&addr, network);
-                    write_info(&mut wallet, canonical.clone(), entry.balance, entry.nonce);
+                    write_info(&mut wallet, canonical.clone(), entry);
                     match entry.index {
                         Some(index) => wallet.register_platform_payment_address(
                             &canonical,
@@ -1001,19 +1009,53 @@ impl AppContext {
     /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
     ///
     /// Called by `AppState` when a [`BackendTaskSuccessResult::PlatformAddressSyncPushed`]
-    /// result arrives. Overwrites each address's cached info via
-    /// [`Wallet::set_platform_address_info`], keeping the per-address tab
+    /// result arrives. Writes each address's cached info via
+    /// [`Wallet::apply_pinned_platform_address_info`], keeping the per-address tab
     /// consistent with the coordinator-push total balance without requiring a
-    /// manual Refresh on cold start.
+    /// manual Refresh on cold start. An entry pinned lower than the stored one
+    /// (a pass queued before a spend's result was applied) is ignored.
     pub fn apply_platform_address_push(&self, updates: PlatformAddressUpdates) {
         self.seed_platform_address_entries(
             updates
                 .iter()
                 .map(|(seed_hash, entries)| (seed_hash, entries.as_slice())),
-            |wallet, address, balance, nonce| {
-                wallet.set_platform_address_info(address, balance, nonce)
+            |wallet, address, entry| {
+                wallet.apply_pinned_platform_address_info(
+                    address,
+                    entry.balance,
+                    entry.nonce,
+                    entry.as_of_height,
+                )
             },
         );
+    }
+
+    /// Show a Platform-address spend everywhere at once: the per-address
+    /// entries platform-wallet committed and, in the frame-safe total, its
+    /// post-spend figure, pinned so an older coordinator pass cannot undo it.
+    /// When platform-wallet committed nothing its total is not trusted either,
+    /// and both views wait for the next coordinator pass.
+    pub(crate) fn apply_platform_address_spend(
+        &self,
+        seed_hash: WalletSeedHash,
+        spend: crate::wallet_backend::PlatformAddressSpend,
+    ) {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        if spend.entries.is_empty() {
+            return;
+        }
+        // Lock order: `platform_balances`, then the pins (as the bridge).
+        if let Ok(mut balances) = self.platform_balances.lock()
+            && let Ok(mut pins) = self.platform_spend_pins.lock()
+        {
+            let wallet_pins = pins.entry(seed_hash).or_default();
+            for entry in &spend.entries {
+                let pin = wallet_pins.entry(entry.hash).or_default();
+                *pin = (*pin).max(entry.as_of_height);
+            }
+            balances.insert(seed_hash, spend.total_credits / CREDITS_PER_DUFF);
+        }
+        self.apply_platform_address_push(vec![(seed_hash, spend.entries)]);
     }
 
     /// Warm-start the platform-address UI from persisted upstream state.
@@ -1044,8 +1086,8 @@ impl AppContext {
                 .iter()
                 .filter(|(_, e, _)| !e.is_empty())
                 .map(|(seed_hash, entries, _)| (seed_hash, entries.as_slice())),
-            |wallet, address, balance, nonce| {
-                wallet.seed_platform_address_info(address, balance, nonce)
+            |wallet, address, entry| {
+                wallet.seed_platform_address_info(address, entry.balance, entry.nonce)
             },
         );
 
@@ -1913,6 +1955,74 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ordering: a coordinator pass that started before a spend but is
+    /// applied after it must not bring back the pre-spend balance. The spend
+    /// also updates the frame-safe total and pins it for the bridge.
+    #[test]
+    fn a_pass_older_than_a_spend_does_not_undo_it() {
+        use crate::model::wallet::{PlatformAddressEntry, Wallet};
+        use crate::wallet_backend::PlatformAddressSpend;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let seed = [0x5Cu8; 64];
+        let mut wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, Network::Testnet)
+            .expect("platform address");
+        let dash_sdk::dpp::address_funds::PlatformAddress::P2pkh(hash) =
+            dash_sdk::dpp::address_funds::PlatformAddress::try_from(address).expect("p2pkh")
+        else {
+            panic!("p2pkh address expected");
+        };
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::clone(&wallet));
+        let entry = |balance: u64, nonce: u32, as_of_height: u64| PlatformAddressEntry {
+            hash,
+            balance,
+            nonce,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+
+        ctx.apply_platform_address_spend(
+            seed_hash,
+            PlatformAddressSpend {
+                entries: vec![entry(41_000, 3, 500)],
+                total_credits: 41_000,
+            },
+        );
+        assert_eq!(
+            ctx.platform_balance_duffs(&seed_hash),
+            41,
+            "the total follows the spend"
+        );
+
+        // The bridge keeps an older pass off the total by these pins.
+        let pin = ctx
+            .platform_spend_pins
+            .lock()
+            .expect("spend pins")
+            .get(&seed_hash)
+            .and_then(|pins| pins.get(&hash).copied());
+        assert_eq!(pin, Some(500));
+
+        // The frame loop applies the entries of a pass queued before the spend.
+        ctx.apply_platform_address_push(vec![(seed_hash, vec![entry(80_000, 2, 400)])]);
+
+        let address = PlatformP2PKHAddress::new(hash).to_address(Network::Testnet);
+        let wallet = wallet.read().expect("wallet");
+        let info = wallet
+            .get_platform_address_info(&address)
+            .expect("address info");
+        assert_eq!((info.balance, info.nonce), (41_000, 3));
+    }
 
     /// Regression: a connection rebuild gave the app a new SDK while the
     /// wallet backend kept the one it was built with, so wallet operations

@@ -785,10 +785,7 @@ impl WalletBackend {
                 // relayed. Upstream's quote already refuses a pool that nets
                 // below dust, so a Max narrowed below it is held back by
                 // another build's reservation.
-                let dust_duffs = core_quote_recipient(self.inner.network, destination)
-                    .script_pubkey()
-                    .dust_value()
-                    .to_sat();
+                let dust_duffs = destination.dust_threshold_duffs();
                 match max_duffs {
                     max_duffs if max_duffs < dust_duffs => Err(TaskError::CoreSendMaxUnavailable {
                         reason: if duffs < upper_duffs {

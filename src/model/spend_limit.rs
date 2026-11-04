@@ -27,6 +27,20 @@ impl CoreDestinationScript {
         }
     }
 
+    /// Smallest output, in duffs, the network relays to a script of this
+    /// kind: upstream's dust rule, which a Core payment amount and its Max
+    /// are both held to.
+    pub fn dust_threshold_duffs(self) -> u64 {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{PubkeyHash, ScriptBuf, ScriptHash};
+        // Only the script's length sets the threshold, not its hash.
+        let script = match self {
+            Self::PubkeyHash => ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()),
+            Self::ScriptHash => ScriptBuf::new_p2sh(&ScriptHash::all_zeros()),
+        };
+        script.dust_value().to_sat()
+    }
+
     /// The script kind `address` pays to.
     pub fn of(address: &dash_sdk::dpp::dashcore::Address) -> Self {
         if address.script_pubkey().is_p2sh() {
@@ -101,5 +115,24 @@ impl CoreSendShortfall {
                 "Your funds are held by a recent transaction that has not finished yet. The available amount is shown again when it completes."
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relay dust thresholds of the pinned dashcore: a P2SH output's
+    /// shorter script lowers it.
+    #[test]
+    fn dust_threshold_follows_the_output_script() {
+        assert_eq!(
+            CoreDestinationScript::PubkeyHash.dust_threshold_duffs(),
+            546
+        );
+        assert_eq!(
+            CoreDestinationScript::ScriptHash.dust_threshold_duffs(),
+            540
+        );
     }
 }

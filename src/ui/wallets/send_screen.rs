@@ -738,6 +738,10 @@ impl WalletSendScreen {
         output_type: Option<AddressKind>,
     ) -> Option<Credits> {
         let core_min = 5460_u64 * CREDITS_PER_DUFF;
+        // A Core payment's own minimum is its script's dust threshold, the
+        // rule the backend's Max quote is held to, so Max is always accepted.
+        let core_payment_min =
+            self.core_send_destination().dust_threshold_duffs() * CREDITS_PER_DUFF;
         let platform_min = self
             .app_context
             .platform_version()
@@ -749,7 +753,7 @@ impl WalletSendScreen {
         use AddressKind::*;
         match (input_type, output_type) {
             (None, None) => None,
-            (Some(Core), Some(Core)) => Some(core_min),
+            (Some(Core), Some(Core)) => Some(core_payment_min),
             (Some(Platform), Some(Platform)) => Some(platform_min),
             // The wallet funds these directly, and the network takes its fee
             // from the amount.
@@ -760,7 +764,7 @@ impl WalletSendScreen {
             (Some(Platform), Some(Core)) => Some(core_min.max(platform_min)),
             (None, Some(Core)) => Some(core_min),
             (None, Some(Platform)) => Some(platform_min),
-            (Some(Core), None) => Some(core_min),
+            (Some(Core), None) => Some(core_payment_min),
             (Some(Platform), None) => Some(platform_min),
             (Some(Shielded), Some(Shielded)) => Some(platform_min),
             (Some(Shielded), Some(Platform)) => Some(platform_min),
@@ -7065,6 +7069,52 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// A relayable Core Max below the old fixed 5,460-duff minimum is still
+    /// accepted by the field: the form's minimum is the payment script's dust
+    /// threshold, the same rule the backend quote is held to.
+    #[test]
+    fn core_send_max_below_the_old_fixed_minimum_is_accepted() {
+        // One 5,000-duff P2PKH coin less the 192-duff fee of its spend.
+        const QUOTE_DUFFS: u64 = 4_808;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the Core send form must ask for the pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "the field must keep a relayable Max"
         );
     }
 

@@ -1021,7 +1021,8 @@ impl AppContext {
                 self.check_retired_voting_key(identity_id).await
             }
             IdentityTask::RemoveRetiredVotingKey { identity_id } => {
-                self.remove_retired_voting_key(sdk, identity_id).await
+                self.remove_retired_voting_key(sdk, identity_id, &sender)
+                    .await
             }
             IdentityTask::RecoverLegacyIdentityData {
                 identity_id,

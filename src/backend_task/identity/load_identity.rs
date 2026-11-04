@@ -3979,6 +3979,31 @@ mod tests {
         (ctx, dir, node_id, seed_hash, current)
     }
 
+    /// A sender for a task, and its receiver.
+    fn listening_sender(
+        ctx: &AppContext,
+    ) -> (
+        SenderAsync<TaskResult>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        (SenderAsync::new(tx, ctx.egui_ctx().clone()), rx)
+    }
+
+    /// Whether the task announced a change to the identity cache.
+    fn announced_identities(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|result| {
+            matches!(
+                result,
+                TaskResult::CacheUpdated(CacheUpdate {
+                    domain: CacheDomain::Identities,
+                    ..
+                })
+            )
+        })
+    }
+
     /// A mock SDK serving the node and the voter identity behind `voting`.
     async fn node_and_voter_sdk(ctx: &AppContext, node_id: Identifier, voting: [u8; 20]) -> Sdk {
         use dash_sdk::dpp::identity::Purpose;
@@ -4002,13 +4027,21 @@ mod tests {
     async fn removing_a_retired_voting_key_substitutes_the_wallets_current_one() {
         let (ctx, _dir, node_id, seed_hash, current) = node_with_rotated_voting_key().await;
         let sdk = node_and_voter_sdk(&ctx, node_id, current).await;
+        let (sender, mut rx) = listening_sender(&ctx);
 
-        let result = ctx.remove_retired_voting_key(&sdk, node_id).await.unwrap();
+        let result = ctx
+            .remove_retired_voting_key(&sdk, node_id, &sender)
+            .await
+            .unwrap();
 
         assert!(matches!(
             result,
             BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
         ));
+        assert!(
+            announced_identities(&mut rx),
+            "other open screens must learn the node's keys changed"
+        );
         let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
         let entry = stored.private_keys.entry_at(&(V, 0));
         assert!(
@@ -4033,9 +4066,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_wallet_search_after_a_removal_still_reports_the_removal() {
         let (ctx, _dir, node_id, _, _) = node_with_rotated_voting_key().await;
+        let (sender, mut rx) = listening_sender(&ctx);
 
         let result = ctx
-            .remove_retired_voting_key(&Sdk::new_mock(), node_id)
+            .remove_retired_voting_key(&Sdk::new_mock(), node_id, &sender)
             .await
             .unwrap();
 
@@ -4043,6 +4077,7 @@ mod tests {
             result,
             BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
         ));
+        assert!(announced_identities(&mut rx), "the removal is announced");
         let stored = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
         assert!(stored.private_keys.entry_at(&(V, 0)).is_none());
         assert!(stored.associated_voter_identity.is_none());
@@ -4060,13 +4095,18 @@ mod tests {
         assert_ne!(stored_hash, current);
         backend.set_masternode_voting_hash_for_test(stored_hash);
         let sdk = node_and_voter_sdk(&ctx, node_id, current).await;
+        let (sender, mut rx) = listening_sender(&ctx);
 
-        let result = ctx.remove_retired_voting_key(&sdk, node_id).await.unwrap();
+        let result = ctx
+            .remove_retired_voting_key(&sdk, node_id, &sender)
+            .await
+            .unwrap();
 
         assert!(matches!(
             result,
             BackendTaskSuccessResult::RetiredVotingKeyKept { .. }
         ));
+        assert!(!announced_identities(&mut rx), "nothing changed");
         let after = ctx.get_local_qualified_identity(&node_id).unwrap().unwrap();
         assert_eq!(
             after.associated_voter_identity,

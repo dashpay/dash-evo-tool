@@ -11,13 +11,14 @@
 //! for the current one.
 
 use super::{IdentityInputToLoad, IdentityLoadMode};
-use crate::backend_task::{BackendTaskSuccessResult, TaskError};
+use crate::backend_task::{BackendTaskSuccessResult, CacheDomain, TaskError, TaskResult};
 use crate::context::AppContext;
 use crate::model::masternode_keys::{
     StoredVotingKeys, retired_voting_keys, stored_voting_keys, stores_voting_key,
 };
 use crate::model::qualified_identity::IdentityType;
 use crate::model::secret::Secret;
+use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -65,6 +66,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         identity_id: Identifier,
+        sender: &SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let node = self
             .get_local_qualified_identity(&identity_id)?
@@ -77,6 +79,8 @@ impl AppContext {
             BackendTaskSuccessResult::RetiredVotingKeyRemoved { .. }
         ) {
             self.find_current_voting_key_in_wallets(sdk, identity_id, node.identity_type)
+                .await;
+            self.notify_cache_changed(CacheDomain::Identities, sender)
                 .await;
         }
         Ok(result)

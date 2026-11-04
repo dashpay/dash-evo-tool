@@ -340,9 +340,9 @@ pub struct IdentityTokensState {
     refresh_covers: BTreeSet<Identifier>,
     refresh_failure: Option<RefreshFailure>,
     arriving: bool,
-    /// Where the error just recorded, from a request of this tab, is shown
-    /// inline; the hub shows no global banner for it on those views.
-    inline_error: Option<InlineError>,
+    /// The error just recorded refused one of this tab's requests while a
+    /// refresh ran or the network synced: no failure, so no banner.
+    quiet_next_error: bool,
     prefs: Option<IdentityTokensViewPrefs>,
     /// The list controls changed since they were last written to the device.
     prefs_dirty: bool,
@@ -352,17 +352,6 @@ pub struct IdentityTokensState {
     pub detail: Option<IdentityTokenIdentifier>,
     /// The refresh error banner was dismissed; rows keep their stale time.
     pub failure_dismissed: bool,
-}
-
-/// Where a failure of the tab's own requests is reported without a banner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum InlineError {
-    /// A refusal while a refresh runs or the network syncs: nothing to report.
-    Quiet,
-    /// A failed full refresh: its notice on the Tokens list and on Home.
-    Refresh,
-    /// A failed check of these pairs: their rows' status on the Tokens list.
-    Rows(Vec<IdentityTokenIdentifier>),
 }
 
 /// What the arrival rule asks for on a frame.
@@ -909,9 +898,8 @@ impl IdentityTokensState {
 
     /// Note a failure of this tab's requests. A refresh already running
     /// elsewhere, or a read held back until the network has synced, is not a
-    /// failure: the request is owed again once it can go out. Anything else
-    /// is shown inline, never as a global banner — except a "track again"
-    /// whose rows may still be hidden, which only the banner can report.
+    /// failure: the request is owed again once it can go out, and no banner
+    /// shows. Anything else is shown inline and by the default banner.
     pub fn record_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         let in_progress = matches!(
             error,
@@ -920,7 +908,7 @@ impl IdentityTokensState {
         if let Some(mut pairs) = self.track_again.settle(context) {
             if in_progress {
                 pairs.retain(|pair| self.owner.is_some_and(|(_, id)| id == pair.identity_id));
-                self.track_again_owed = (!pairs.is_empty()).then(|| std::mem::take(&mut pairs));
+                self.track_again_owed = (!pairs.is_empty()).then_some(pairs);
             } else {
                 // Only the selected identity's pairs were refreshed: mark
                 // those, never every identity's unknown balances.
@@ -928,18 +916,14 @@ impl IdentityTokensState {
                     error = ?error,
                     "Tracking token balances again for the Identity Hub failed"
                 );
-                self.pair_check_results
-                    .extend(pairs.iter().map(|pair| (*pair, PairCheckResult::Failed)));
+                self.pair_check_results.extend(
+                    pairs
+                        .into_iter()
+                        .map(|pair| (pair, PairCheckResult::Failed)),
+                );
             }
             self.invalidate_rows();
-            // A local storage failure may come before the dismissals were
-            // cleared: those rows stay hidden and cannot show the failure, so
-            // the default banner reports it.
-            self.inline_error = if in_progress {
-                Some(InlineError::Quiet)
-            } else {
-                (!Self::may_leave_rows_dismissed(error)).then_some(InlineError::Rows(pairs))
-            };
+            self.quiet_next_error = in_progress;
             return;
         }
         if self.refresh.settle(context).is_some() {
@@ -949,11 +933,7 @@ impl IdentityTokensState {
                 self.note_full_refresh_failed(error);
             }
             self.invalidate_rows();
-            self.inline_error = Some(if in_progress {
-                InlineError::Quiet
-            } else {
-                InlineError::Refresh
-            });
+            self.quiet_next_error = in_progress;
             return;
         }
         if let Some(pair) = self.pair_checks.settle(context) {
@@ -969,28 +949,13 @@ impl IdentityTokensState {
                     .insert(pair, PairCheckResult::Failed);
                 self.invalidate_rows();
             }
-            self.inline_error = Some(if in_progress {
-                InlineError::Quiet
-            } else {
-                InlineError::Rows(vec![pair])
-            });
+            self.quiet_next_error = in_progress;
             return;
         }
         if self.stop_tracking.settle(context).is_some() {
             // The row left optimistically; put it back with the default banner.
             self.invalidate_rows();
         }
-    }
-
-    /// Whether a failed "track again" may have stopped before clearing its
-    /// dismissals. Only reaching the local token store (the wallet backend,
-    /// then its k/v store) can fail at that point; the read gate and the
-    /// refresh guard before it are in-progress refusals.
-    fn may_leave_rows_dismissed(error: &TaskError) -> bool {
-        matches!(
-            error,
-            TaskError::TokenStorage { .. } | TaskError::WalletBackendNotYetWired
-        )
     }
 
     fn note_full_refresh_failed(&mut self, error: &TaskError) {
@@ -1003,46 +968,10 @@ impl IdentityTokensState {
         self.pair_check_results.clear();
     }
 
-    /// Whether the error just recorded is shown inline on the view in front
-    /// of the user rather than as a banner: the Tokens list
-    /// (`tokens_list_shown`) or Home (`home_shown`). Elsewhere — another
-    /// tab, a token's detail page — the banner reports it; the inline state
-    /// stays for when the user comes back.
-    pub fn take_inline_error(&mut self, tokens_list_shown: bool, home_shown: bool) -> bool {
-        let tokens_list_shown = tokens_list_shown && self.detail.is_none();
-        match self.inline_error.take() {
-            None => false,
-            Some(InlineError::Quiet) => true,
-            // Home shows the refresh notice only beside some token.
-            Some(InlineError::Refresh) => {
-                tokens_list_shown || (home_shown && !self.rows.is_empty())
-            }
-            Some(InlineError::Rows(pairs)) => {
-                tokens_list_shown && pairs.iter().any(|pair| self.shows_failed_row(pair))
-            }
-        }
-    }
-
-    /// Whether the Tokens list shows `pair`'s failed check: the pair belongs
-    /// to the identity on screen, and its row has no known balance (only
-    /// then does it say it could not check) and passes the list controls.
-    fn shows_failed_row(&self, pair: &IdentityTokenIdentifier) -> bool {
-        if self.owner.map(|(_, identity_id)| identity_id) != Some(pair.identity_id) {
-            return false;
-        }
-        let prefs = self.prefs.clone().unwrap_or_default();
-        let shown = filter_shown(self.rows.len());
-        match self.rows.iter().find(|row| row.pair() == *pair) {
-            Some(row) => row.balance().is_none() && row_is_listed(row, &prefs, shown),
-            // A pair tracked again just now joins the list on its next read.
-            None => true,
-        }
-    }
-
-    /// [`take_inline_error`](Self::take_inline_error) as seen from the Tokens list.
-    #[cfg(test)]
-    fn take_swallowed_error(&mut self) -> bool {
-        self.take_inline_error(true, false)
+    /// Whether the error just recorded was a refusal of this tab's request
+    /// that needs no banner. Every real failure gets the default banner.
+    pub fn take_quiet_error(&mut self) -> bool {
+        std::mem::take(&mut self.quiet_next_error)
     }
 
     /// Another screen's full refresh satisfies the arrival rule for the
@@ -1225,7 +1154,7 @@ mod tests {
             state.owner = Some((Network::Testnet, Identifier::from([2; 32])));
             state.record_error(&request, &error);
             assert!(!state.track_again.is_pending());
-            assert!(state.take_swallowed_error());
+            assert!(state.take_quiet_error());
             assert_eq!(state.track_again_owed, None);
             assert_eq!(state.arrival(1_001, true, false), Arrival::NotDue);
         }
@@ -1300,10 +1229,9 @@ mod tests {
         config
     }
 
-    /// A failed check of a row that shows a cached balance has no inline
-    /// surface, so the default banner reports it.
+    /// A failed check reaches the banner whatever its row shows.
     #[test]
-    fn a_failed_check_of_a_cached_balance_reaches_the_banner() {
+    fn a_failed_check_reaches_the_banner_whatever_its_row_shows() {
         let cached = row("Cached", Some(5));
         let unknown = row("Unknown", None);
         let mut state = IdentityTokensState {
@@ -1312,12 +1240,12 @@ mod tests {
         };
         let check = dispatched(state.dispatch_pair_check(cached.pair()));
         state.record_error(&check, &TaskError::NoIdentitiesFound);
-        assert!(!state.take_swallowed_error());
+        assert!(!state.take_quiet_error());
         let check = dispatched(state.dispatch_pair_check(unknown.pair()));
         state.record_error(&check, &TaskError::NoIdentitiesFound);
         assert!(
-            state.take_swallowed_error(),
-            "the row says it could not check"
+            !state.take_quiet_error(),
+            "the row says it could not check, and the banner says so too"
         );
     }
 
@@ -1539,7 +1467,7 @@ mod tests {
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
         assert_eq!(state.refresh_failure(), None);
-        assert!(state.take_swallowed_error());
+        assert!(state.take_quiet_error());
 
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         let timeout = tokio::runtime::Runtime::new()
@@ -1591,7 +1519,7 @@ mod tests {
             state.pair_check_results.get(&pair),
             Some(&PairCheckResult::Failed)
         );
-        assert!(state.take_swallowed_error());
+        assert!(!state.take_quiet_error());
 
         let context = dispatched(state.dispatch_pair_check(pair));
         assert!(state.record_result(&context, &BackendTaskSuccessResult::FetchedTokenBalances, 1));
@@ -1773,7 +1701,7 @@ mod tests {
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         state.reset_for_identity_change();
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_swallowed_error());
+        assert!(state.take_quiet_error());
     }
 
     /// A balance refresh covers every identity it found stored, so switching
@@ -1796,13 +1724,13 @@ mod tests {
         let mut state = owned_state();
         let first_ctx = dispatched(state.dispatch_pair_check(row("First", None).pair()));
         let second_ctx = dispatched(state.dispatch_pair_check(row("Second", None).pair()));
-        state.record_error(&first_ctx, &TaskError::NoIdentitiesFound);
+        state.record_error(&first_ctx, &TaskError::TokenBalanceRefreshInProgress);
         assert!(
-            state.take_swallowed_error(),
-            "the first check is still ours"
+            state.take_quiet_error(),
+            "the first check is still ours, so its refusal stays quiet"
         );
-        state.record_error(&second_ctx, &TaskError::NoIdentitiesFound);
-        assert!(state.take_swallowed_error());
+        state.record_error(&second_ctx, &TaskError::TokenBalanceRefreshInProgress);
+        assert!(state.take_quiet_error());
         assert!(
             !state.pair_checks.is_pending(),
             "nothing of this tab is outstanding"
@@ -1817,7 +1745,7 @@ mod tests {
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_pair_check(row("T", None).pair()));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_swallowed_error());
+        assert!(state.take_quiet_error());
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
     }
@@ -1834,7 +1762,7 @@ mod tests {
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         state.record_error(&context, &TaskError::TokenBalanceRefreshInProgress);
-        assert!(state.take_swallowed_error());
+        assert!(state.take_quiet_error());
         assert_eq!(state.track_again_owed, Some(pairs.clone()));
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
         assert_eq!(state.arrival(1_001, true, true), Arrival::Owed);
@@ -1848,7 +1776,7 @@ mod tests {
         state.balances_refreshed_elsewhere(1_000, everyone());
         let context = dispatched(state.dispatch_refresh(Vec::new()));
         state.record_error(&context, &TaskError::MasternodeListSyncPending);
-        assert!(state.take_swallowed_error());
+        assert!(state.take_quiet_error());
         assert_eq!(state.refresh_failure(), None, "waiting is not a failure");
         assert_eq!(state.arrival(1_001, false, false), Arrival::Owed);
         assert_eq!(state.arrival(1_001, true, false), Arrival::Due);
@@ -1891,7 +1819,7 @@ mod tests {
         let pairs = vec![row("A", None).pair(), row("Bee", None).pair()];
         let context = dispatched(state.dispatch_track_again(pairs.clone()));
         state.record_error(&context, &TaskError::NoIdentitiesFound);
-        assert!(state.take_swallowed_error());
+        assert!(!state.take_quiet_error());
         assert!(!state.full_refresh_failed);
         assert_eq!(state.refresh_failure(), None);
         assert!(
@@ -1938,10 +1866,7 @@ mod tests {
             let mut state = IdentityTokensState::default();
             let context = dispatched(state.dispatch_track_again(pairs.clone()));
             state.record_error(&context, &error);
-            assert!(
-                !state.take_swallowed_error(),
-                "{error:?} must reach the banner"
-            );
+            assert!(!state.take_quiet_error(), "{error:?} must reach the banner");
             assert!(!state.full_refresh_failed);
             assert_eq!(state.refresh_failure(), None);
             assert!(

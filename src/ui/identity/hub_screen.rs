@@ -45,9 +45,6 @@ pub struct IdentityHubScreen {
     /// The currently selected tab. Persisted only in memory for now — start tab
     /// persistence across restarts is a follow-up.
     selected_tab: IdentityHubTab,
-    /// The tab whose content the last frame rendered; `None` while the picker
-    /// or onboarding shows instead, whatever tab stays selected underneath.
-    last_rendered_tab: Option<IdentityHubTab>,
     /// Cached landing-load error banner. Set by `landing()` when identity
     /// loading fails; cleared on `refresh`. Separating this from a real
     /// zero-identity state avoids inviting users to create identities when the
@@ -175,7 +172,6 @@ impl IdentityHubScreen {
         Self {
             app_context: app_context.clone(),
             selected_tab: IdentityHubTab::default(),
-            last_rendered_tab: None,
             load_error_banner: None,
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
@@ -909,8 +905,6 @@ impl ScreenLike for IdentityHubScreen {
             }
         }
 
-        self.last_rendered_tab = rendered_tab;
-
         // Every part of the frame above has had its say; this is where the
         // action that leaves the frame is settled. A data load claims its one
         // dispatch slot when it is asked for, so it is asked for only here and
@@ -1216,16 +1210,9 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        // The Tokens list and Home's token slot show token failures inline,
-        // but only on the view the user last saw and still sees — not the
-        // picker over them, nor a tab selected but not drawn yet.
-        let shown = self
-            .last_rendered_tab
-            .filter(|tab| *tab == self.selected_tab);
-        if self.tokens_state.take_inline_error(
-            shown == Some(IdentityHubTab::Tokens),
-            shown == Some(IdentityHubTab::Home),
-        ) {
+        // A token request refused while a refresh runs or the network syncs
+        // is no failure; every real one gets the banner.
+        if self.tokens_state.take_quiet_error() {
             return true;
         }
         // The status refresh runs in the background; a failure keeps the stored
@@ -1540,26 +1527,6 @@ mod tests {
     // Most tests exercise pure screen state. The identity-result regression
     // uses a throwaway AppContext because selection fallback is the behavior
     // under test. Rendering stays covered by the kittest identity-hub tests.
-
-    /// A tab chosen inside another tab's frame has not rendered yet: a token
-    /// failure delivered before it does is not on screen, so the banner shows.
-    #[test]
-    fn a_token_failure_before_a_newly_selected_tab_renders_reaches_the_banner() {
-        let dir = tempfile::tempdir().unwrap();
-        let context = crate::context::test_support::test_app_context(dir.path());
-        context.connection_status().set_masternodes_ready(true);
-        let mut hub = IdentityHubScreen::new(&context);
-        let refresh = match hub.tokens_state.refresh_action(&context) {
-            AppAction::BackendTaskWithContext { context, .. } => context,
-            other => panic!("expected the refresh, got {other:?}"),
-        };
-        // The Tokens tab drew the last frame and switched to Contacts in it.
-        hub.last_rendered_tab = Some(IdentityHubTab::Tokens);
-        hub.selected_tab = IdentityHubTab::Contacts;
-        let error = TaskError::NoIdentitiesFound;
-        hub.display_backend_task_error(&refresh, &error);
-        assert!(!hub.display_task_error(&error));
-    }
 
     #[test]
     fn default_state_machine() {

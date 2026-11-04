@@ -529,8 +529,8 @@ fn a_failed_refresh_shows_inline_and_keeps_the_rows() {
             .0
             .display_backend_task_error(&context, &error);
         assert!(
-            hub.state_mut().0.display_task_error(&error),
-            "the tab shows the failure itself, not a global banner"
+            !hub.state_mut().0.display_task_error(&error),
+            "a real failure always reaches the banner, beside the inline notice"
         );
         hub.run_steps(2);
         assert!(hub.query_by_label(token_copy::ERROR_REFRESH_SLOW).is_some());
@@ -785,8 +785,8 @@ fn a_failed_refresh_on_home_explains_itself_and_retries_once_per_click() {
             .0
             .display_backend_task_error(&arrival[0], &error);
         assert!(
-            hub.state_mut().0.display_task_error(&error),
-            "Home shows the failure inline, not as a global banner"
+            !hub.state_mut().0.display_task_error(&error),
+            "a real failure always reaches the banner, beside Home's notice"
         );
         hub.run_steps(6);
         assert!(
@@ -2180,6 +2180,38 @@ fn a_pair_check_failure_of_a_filtered_out_row_reaches_the_banner() {
         assert!(
             !hub.state_mut().0.display_task_error(&error),
             "a filtered-out row cannot show this failure"
+        );
+    });
+}
+
+/// A check that fails on a row in plain view still reaches the banner; a
+/// check refused because a refresh is running stays quiet.
+#[test]
+fn a_pair_check_failure_on_a_visible_row_reaches_the_banner_but_a_refusal_does_not() {
+    with_isolated_data_dir(|| {
+        let (_runtime, app_context) = fresh_app_context();
+        let identity = seed_signing_identity(&app_context, 0xE8);
+        seed_three_tokens(&app_context, identity);
+        let mut hub = mount_tokens_tab(&app_context);
+        let check = check_row_now(&mut hub, "Tester");
+        let error = TaskError::NoIdentitiesFound;
+        hub.state_mut().0.display_backend_task_error(&check, &error);
+        assert!(
+            !hub.state_mut().0.display_task_error(&error),
+            "the failure reaches the banner though its row shows it too"
+        );
+
+        hub.state_mut().1.clear();
+        hub.get_by_label("More actions for Tester").click();
+        hub.run_steps(2);
+        hub.get_by_label(token_copy::CHECK_NOW_LABEL).click();
+        hub.run_steps(2);
+        let check = pair_check_context(&hub);
+        let busy = TaskError::TokenBalanceRefreshInProgress;
+        hub.state_mut().0.display_backend_task_error(&check, &busy);
+        assert!(
+            hub.state_mut().0.display_task_error(&busy),
+            "a refusal is no failure: the check is sent again later"
         );
     });
 }

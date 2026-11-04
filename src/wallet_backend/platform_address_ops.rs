@@ -164,7 +164,7 @@ impl WalletBackend {
                 identity
                     .top_up_from_addresses(&sdk, inputs, &signer, None)
                     .await
-                    .map_err(TaskError::from)
+                    .map_err(map_top_up_sdk_error)
             })
             .await?;
         let entries = reconcile_on(&wallet, &address_infos, proof_height, "identity top-up").await;
@@ -203,6 +203,16 @@ fn changeset_platform_entries(changeset: &PlatformAddressChangeSet) -> Vec<Platf
             index: Some(entry.address_index),
         })
         .collect()
+}
+
+/// Classify the SDK error of a direct identity top-up from addresses.
+///
+/// Promotes a nonce rejection the way upstream does for transfers and
+/// withdrawals, so all three spends share [`map_platform_address_spend_error`].
+fn map_top_up_sdk_error(e: dash_sdk::Error) -> TaskError {
+    map_platform_address_spend_error(platform_wallet::error::promote_address_nonce_error_or_sdk(
+        e,
+    ))
 }
 
 /// Classify a `PlatformWalletError` from a Platform-address spend.
@@ -300,6 +310,45 @@ mod tests {
         });
         assert!(
             matches!(mapped, TaskError::PlatformAddressNonceMismatch { .. }),
+            "got {mapped:?}"
+        );
+    }
+
+    /// A stale-nonce rejection of an identity top-up gets the same
+    /// refresh-and-retry variant as transfers and withdrawals.
+    #[test]
+    fn top_up_error_promotes_nonce_mismatch() {
+        use dash_sdk::dpp::consensus::state::address_funds::AddressInvalidNonceError;
+        use dash_sdk::dpp::consensus::state::state_error::StateError;
+        let consensus = dash_sdk::dpp::consensus::ConsensusError::StateError(
+            StateError::AddressInvalidNonceError(AddressInvalidNonceError::new(
+                PlatformAddress::P2pkh([1u8; 20]),
+                3,
+                4,
+            )),
+        );
+        let PlatformWalletError::Sdk(sdk_error) = broadcast_error(consensus) else {
+            unreachable!("broadcast_error builds an SDK error");
+        };
+        let mapped = map_top_up_sdk_error(sdk_error);
+        assert!(
+            matches!(mapped, TaskError::PlatformAddressNonceMismatch { .. }),
+            "got {mapped:?}"
+        );
+    }
+
+    /// Any other top-up failure keeps the regular SDK classification.
+    #[test]
+    fn top_up_error_keeps_sdk_classification() {
+        use dash_sdk::dpp::consensus::basic::UnsupportedVersionError;
+        let consensus =
+            dash_sdk::dpp::consensus::ConsensusError::from(UnsupportedVersionError::new(1, 2, 3));
+        let PlatformWalletError::Sdk(sdk_error) = broadcast_error(consensus) else {
+            unreachable!("broadcast_error builds an SDK error");
+        };
+        let mapped = map_top_up_sdk_error(sdk_error);
+        assert!(
+            matches!(mapped, TaskError::PlatformRejected { .. }),
             "got {mapped:?}"
         );
     }

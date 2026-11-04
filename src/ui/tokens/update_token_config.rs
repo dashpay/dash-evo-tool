@@ -103,10 +103,13 @@ impl UpdateTokenConfigScreen {
         let is_unilateral_group_member = false;
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         Self {
             identity_token_info: identity_token_info.clone(),

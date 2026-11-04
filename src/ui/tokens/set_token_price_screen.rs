@@ -256,13 +256,14 @@ impl SetTokenPriceScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key).unwrap_or_else(
-                |e| {
-                    set_error_banner(&e);
-                    None
-                },
-            );
+        let selected_wallet = possible_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                set_error_banner(&e);
+                None
+            });
 
         Self {
             identity_token_info: identity_token_info.clone(),

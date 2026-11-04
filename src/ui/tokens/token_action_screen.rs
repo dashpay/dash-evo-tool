@@ -216,12 +216,15 @@ impl<A: TokenAction> TokenActionScreen<A> {
             super::set_error_banner(app_context, &msg);
         }
 
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .unwrap_or_else(|e| {
-                    super::set_error_banner(app_context, &e);
-                    None
-                });
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                super::set_error_banner(app_context, &e);
+                None
+            });
 
         let action = A::new(&identity_token_info, app_context);
 

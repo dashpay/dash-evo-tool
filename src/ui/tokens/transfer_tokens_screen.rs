@@ -100,7 +100,9 @@ impl TransferTokensScreen {
                 .cloned()
         });
         let selected_wallet = identity.as_ref().and_then(|id| {
-            get_selected_wallet(id, None, selected_key.as_ref())
+            selected_key
+                .as_ref()
+                .map_or(Ok(None), |key| get_selected_wallet(id, None, Some(key)))
                 .or_show_error(app_context.egui_ctx())
                 .unwrap_or(None)
         });

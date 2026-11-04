@@ -1431,6 +1431,16 @@ As a developer, I want to set a price on a document and allow others to purchase
 
 ---
 
+### DOC-010: Agree to a contract's fee for a document action [Implemented]
+**Persona:** Alex, Priya
+
+As a user acting on a document whose contract charges a fee, I want to see that fee and agree to it before anything is sent, so that I am never charged more than I accepted.
+
+- The estimated-fee panel shows the contract fee next to the network fee, split between the contract owner and its moderators.
+- Sending asks for confirmation naming the fee and, for a fee that follows network fees, the most that can be charged ("up to N DASH") and the tolerated increase.
+- If network fees rise past that tolerance, the network refuses the action; the app updates the fee, and trying again shows the new amount to confirm.
+- If the contract changes its fee after confirmation, nothing is sent, and the user is told to remove the contract on the Contracts screen and load it again to see and confirm its current fee.
+
 ## Developer and Power Tools (DEV)
 
 ### DEV-001: Decode state transitions [Implemented]

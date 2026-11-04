@@ -303,6 +303,9 @@ pub struct IdentityTokensState {
     rows_read_at: Option<Instant>,
     /// Tokens exist in the registry even when every row is dismissed.
     registry_has_tokens: bool,
+    /// The last read of the rows failed; the rows shown are the last good
+    /// ones, if any. Cleared by the next successful read.
+    row_load_error: Option<TaskError>,
     /// Outcomes of explicit checks; full refreshes use their timestamp instead.
     pair_check_results: BTreeMap<IdentityTokenIdentifier, PairCheckResult>,
     /// The last full refresh failed, so every unknown balance could not be checked.
@@ -435,12 +438,14 @@ impl IdentityTokensState {
             Ok((rows, registry_has_tokens)) => {
                 self.rows = rows.into();
                 self.registry_has_tokens = registry_has_tokens;
+                self.row_load_error = None;
             }
             Err(error) => {
                 tracing::warn!(
                     error = ?error,
                     "Could not read the identity's token rows; keeping the ones shown"
                 );
+                self.row_load_error = Some(error);
             }
         }
         self.rows_read_at = Some(Instant::now());
@@ -519,6 +524,12 @@ impl IdentityTokensState {
             Some(result) => *result == PairCheckResult::Failed,
             None => self.full_refresh_failed,
         }
+    }
+
+    /// Why the last read of the rows failed, until a read succeeds. The rows
+    /// are re-read on their usual schedule, which paces the retries.
+    pub fn row_load_error(&self) -> Option<&TaskError> {
+        self.row_load_error.as_ref()
     }
 
     /// Tokens are known on this device, whether or not this identity tracks them.
@@ -1595,6 +1606,21 @@ mod tests {
         let mut state = IdentityTokensState::default();
         assert!(state.track_again_action(&context, &identity).is_err());
         assert!(!state.track_again.is_pending());
+    }
+
+    /// An unreadable token store is reported, never shown as "no tokens".
+    #[test]
+    fn a_failed_row_read_is_kept_as_visible_state() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unwired: the token store cannot be reached.
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let identity = crate::context::test_support::bare_user_identity(
+            Identifier::from([1; 32]),
+            Network::Testnet,
+        );
+        let mut state = IdentityTokensState::default();
+        assert!(state.rows(&context, &identity).is_empty());
+        assert!(state.row_load_error().is_some());
     }
 
     #[test]

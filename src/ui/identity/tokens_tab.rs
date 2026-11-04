@@ -119,14 +119,18 @@ pub fn render(
     ui.add_space(Spacing::SM);
     render_state_bar(ui, state, home);
     action |= render_failure(ui, app_context, state);
+    let row_load_failed = render_row_load_failure(ui, state);
 
     if rows.is_empty() {
-        ui.add_space(Spacing::MD);
-        action |= if state.registry_has_tokens() {
-            render_all_dismissed(ui, app_context, identity, state)
-        } else {
-            render_no_tokens(ui, app_context)
-        };
+        // An unreadable store says nothing about whether tokens exist.
+        if !row_load_failed {
+            ui.add_space(Spacing::MD);
+            action |= if state.registry_has_tokens() {
+                render_all_dismissed(ui, app_context, identity, state)
+            } else {
+                render_no_tokens(ui, app_context)
+            };
+        }
     } else {
         render_controls(ui, app_context, state, &rows);
         ui.add_space(Spacing::SM);
@@ -276,6 +280,24 @@ pub(super) fn render_failure(
         }
         None => AppAction::None,
     }
+}
+
+/// The inline error after the saved tokens could not be read, with a retry;
+/// last good rows stay on screen. Returns whether it showed.
+fn render_row_load_failure(ui: &mut Ui, state: &mut IdentityTokensState) -> bool {
+    let Some(error) = state.row_load_error() else {
+        return false;
+    };
+    let text = error.to_string();
+    ui.add_space(Spacing::SM);
+    let response = InlineNotice::new(MessageType::Error, &text)
+        .with_link(TRY_AGAIN_LABEL)
+        .show(ui);
+    ui.add_space(Spacing::SM);
+    if response.clicked.is_some() {
+        state.invalidate_rows();
+    }
+    true
 }
 
 /// Hide-zero (always), plus filter and sort once the list is long. Hide-zero

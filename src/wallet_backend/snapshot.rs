@@ -992,8 +992,8 @@ impl SnapshotStore {
                 // Best-effort: on observation contention or failure only this
                 // field carries forward — the composition key is fail-closed
                 // by construction, so a stale key merely forces revalidation.
-                // The observation key ignores the input cap: it only detects
-                // composition changes, so any cap would do.
+                // The observation key needs no input cap: it only detects
+                // composition changes.
                 let asset_lock_inputs = match try_asset_lock_final_input_state(
                     state.wallet(),
                     &state.core_wallet,

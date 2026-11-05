@@ -40,7 +40,9 @@ use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_
 use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 #[cfg(test)]
 use dash_sdk::dpp::key_wallet::Utxo;
+use dash_sdk::dpp::key_wallet::account::Account;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
@@ -262,13 +264,13 @@ fn asset_lock_final_funds_duffs<'a>(
     asset_lock_final_inputs(utxos, current_height).final_funds_duffs
 }
 
-fn observe_asset_lock_inputs_locked(
-    pool: &AssetLockFundingPool,
+fn observe_asset_lock_inputs_locked<'a>(
+    accounts: impl IntoIterator<Item = (&'a ManagedCoreFundsAccount, &'a Account)>,
+    current_height: u32,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
-    let current_height = pool.current_height();
     let mut observed = Vec::new();
-    for (managed_account, account) in pool.accounts() {
+    for (managed_account, account) in accounts {
         let candidates: Vec<_> = managed_account
             .utxos
             .values()
@@ -354,19 +356,31 @@ pub(super) fn asset_lock_final_input_state(
     let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    observe_asset_lock_inputs_locked(pool, deadline)
+    observe_asset_lock_inputs_locked(
+        pool.accounts()
+            .iter()
+            .map(|(managed, account)| (managed, account)),
+        pool.current_height(),
+        deadline,
+    )
 }
 
-/// Like [`asset_lock_final_input_state`], but `Ok(None)` also covers losing
-/// the observation try-lock, so the per-event recompute path never blocks.
+/// Like [`asset_lock_final_input_state`] over the pool
+/// [`AssetLockFundingPool::from_wallet`] would build, but `Ok(None)` also
+/// covers losing the observation try-lock, so the per-event recompute path
+/// never blocks. The try-lock is taken first and the accounts are read in
+/// place: only the observation's own per-account scratch clone is made, and
+/// nothing at all on contention.
 fn try_asset_lock_final_input_state(
-    pool: &AssetLockFundingPool,
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
     deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let Ok(_observation_guard) = ASSET_LOCK_INPUT_OBSERVATION_LOCK.try_lock() else {
         return Ok(None);
     };
-    observe_asset_lock_inputs_locked(pool, deadline)
+    let (accounts, current_height) = AssetLockFundingPool::borrowed_from_wallet(wallet, info);
+    observe_asset_lock_inputs_locked(accounts, current_height, deadline)
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -980,13 +994,9 @@ impl SnapshotStore {
                 // by construction, so a stale key merely forces revalidation.
                 // The observation key ignores the input cap: it only detects
                 // composition changes, so any cap would do.
-                let pool = AssetLockFundingPool::from_wallet(
+                let asset_lock_inputs = match try_asset_lock_final_input_state(
                     state.wallet(),
                     &state.core_wallet,
-                    usize::MAX,
-                );
-                let asset_lock_inputs = match try_asset_lock_final_input_state(
-                    &pool,
                     &ProbeDeadline::unbounded(),
                 ) {
                     Ok(Some(inputs)) => inputs,
@@ -1598,6 +1608,63 @@ mod tests {
             forward, different_set,
             "a genuinely different eligible set must not compare equal"
         );
+    }
+
+    /// The snapshot recompute reads the pooled accounts in place: it observes
+    /// exactly the composition the cloned asset-lock pool does, coins of every
+    /// pooled account included.
+    #[test]
+    fn snapshot_observation_matches_the_cloned_asset_lock_pool() {
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            crate::test_support::keys::seed(),
+            Network::Testnet,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("upstream wallet");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let account = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed_account = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed account");
+        for (tag, value) in [(0x61, 1_000_000), (0x62, 250_000)] {
+            let address = managed_account
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("funding address");
+            let outpoint = OutPoint::new(Txid::from_byte_array([tag; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value,
+                    script_pubkey: address.script_pubkey(),
+                },
+                address,
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            managed_account.utxos.insert(outpoint, utxo);
+        }
+
+        let cloned = asset_lock_final_input_state(
+            &AssetLockFundingPool::from_wallet(&wallet, &info, usize::MAX),
+            &ProbeDeadline::unbounded(),
+        )
+        .expect("observation over the cloned pool")
+        .expect("complete observation");
+        let in_place =
+            try_asset_lock_final_input_state(&wallet, &info, &ProbeDeadline::unbounded())
+                .expect("observation in place")
+                .expect("uncontended, complete observation");
+
+        assert_eq!(in_place, cloned);
+        assert_eq!(in_place.final_funds_duffs, 1_250_000);
     }
 
     #[test]

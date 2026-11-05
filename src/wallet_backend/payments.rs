@@ -184,12 +184,25 @@ fn pooled_funding_accounts(
     sources: &[AccountTypePreference],
     account_index: u32,
 ) -> Vec<(ManagedCoreFundsAccount, Account)> {
+    pooled_funding_account_refs(wallet, accounts, sources, account_index)
+        .into_iter()
+        .map(|(managed, account)| (managed.clone(), account.clone()))
+        .collect()
+}
+
+/// [`pooled_funding_account_types`], each account borrowed with its keys.
+fn pooled_funding_account_refs<'a>(
+    wallet: &'a Wallet,
+    accounts: &'a ManagedAccountCollection,
+    sources: &[AccountTypePreference],
+    account_index: u32,
+) -> Vec<(&'a ManagedCoreFundsAccount, &'a Account)> {
     pooled_funding_account_types(wallet, accounts, sources, account_index)
         .into_iter()
         .filter_map(|account_type| {
             let account = wallet.accounts.account_of_type(account_type)?;
             let managed = accounts.funds_account(&account_type)?;
-            Some((managed.clone(), account.clone()))
+            Some((managed, account))
         })
         .collect()
 }
@@ -251,16 +264,32 @@ impl AssetLockFundingPool {
         info: &ManagedWalletInfo,
         max_inputs: usize,
     ) -> Self {
+        let (accounts, current_height) = Self::borrowed_from_wallet(wallet, info);
         Self {
-            accounts: pooled_funding_accounts(
+            accounts: accounts
+                .into_iter()
+                .map(|(managed, account)| (managed.clone(), account.clone()))
+                .collect(),
+            current_height,
+            max_inputs,
+        }
+    }
+
+    /// The accounts [`Self::from_wallet`] pools, borrowed in place rather
+    /// than cloned, and the height its builds run at.
+    pub(super) fn borrowed_from_wallet<'a>(
+        wallet: &'a Wallet,
+        info: &'a ManagedWalletInfo,
+    ) -> (Vec<(&'a ManagedCoreFundsAccount, &'a Account)>, u32) {
+        (
+            pooled_funding_account_refs(
                 wallet,
                 &info.accounts,
                 &platform_wallet::ASSET_LOCK_FUNDING_SOURCES,
                 DEFAULT_BIP44_ACCOUNT,
             ),
-            current_height: asset_lock_builder_height(info),
-            max_inputs,
-        }
+            asset_lock_builder_height(info),
+        )
     }
 
     /// A pool of one account, for tests that fund a single account by hand.

@@ -1610,9 +1610,9 @@ mod tests {
         );
     }
 
-    /// The snapshot recompute reads the pooled accounts in place: it observes
-    /// exactly the composition the cloned asset-lock pool does, coins of every
-    /// pooled account included.
+    /// The snapshot recompute reads the pooled accounts in place: observed
+    /// in place, they give exactly the composition the cloned asset-lock pool
+    /// does, coins of every pooled account included.
     #[test]
     fn snapshot_observation_matches_the_cloned_asset_lock_pool() {
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
@@ -1652,16 +1652,26 @@ mod tests {
             managed_account.utxos.insert(outpoint, utxo);
         }
 
-        let cloned = asset_lock_final_input_state(
-            &AssetLockFundingPool::from_wallet(&wallet, &info, usize::MAX),
+        // Both observations run under one hold of the global observation
+        // lock: parallel tests take it too, so a try-lock could lose to them.
+        let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pool = AssetLockFundingPool::from_wallet(&wallet, &info, usize::MAX);
+        let cloned = observe_asset_lock_inputs_locked(
+            pool.accounts()
+                .iter()
+                .map(|(managed, account)| (managed, account)),
+            pool.current_height(),
             &ProbeDeadline::unbounded(),
         )
         .expect("observation over the cloned pool")
         .expect("complete observation");
+        let (accounts, current_height) = AssetLockFundingPool::borrowed_from_wallet(&wallet, &info);
         let in_place =
-            try_asset_lock_final_input_state(&wallet, &info, &ProbeDeadline::unbounded())
+            observe_asset_lock_inputs_locked(accounts, current_height, &ProbeDeadline::unbounded())
                 .expect("observation in place")
-                .expect("uncontended, complete observation");
+                .expect("complete observation");
 
         assert_eq!(in_place, cloned);
         assert_eq!(in_place.final_funds_duffs, 1_250_000);

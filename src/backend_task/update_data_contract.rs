@@ -54,7 +54,8 @@ impl AppContext {
 
         // Update UI
         sender
-            .send(TaskResult::unattributed_success(
+            .send(TaskResult::interim_success(
+                self.network,
                 BackendTaskSuccessResult::FetchedNonce,
             ))
             .await

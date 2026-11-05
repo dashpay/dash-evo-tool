@@ -13,14 +13,25 @@
 //! reaches screens only while that network is active: one arriving after a
 //! switch to another network ([`ResultRoute::PreviousNetwork`]) reaches no
 //! screen and no observer, and banners report it as for a closed sender. A
-//! switch back before it arrives delivers it as usual. Two results without a
-//! dispatch id name their network and are held to the same rule: the app's
-//! own scheduled-vote sweeps, in their context, and a contest refresh's
-//! mid-task `RefreshedDpnsContests`, in the result itself.
+//! switch back before it arrives delivers it as usual. Results without a
+//! dispatch id that name their network are held to the same rule: the app's
+//! own scheduled-vote sweeps and background refreshes, and the wallet
+//! backend's chain-sync events (a received payment, a balance push, Platform
+//! becoming reachable), in their context
+//! ([`BackendTaskContext::undispatched_network`]); a contest refresh's mid-task
+//! `RefreshedDpnsContests`, in the result itself. A wallet event's data still
+//! applies to the wallets of the network it came from; only screens and
+//! banners are kept to the active network.
 //!
-//! Known limitation: other results without a dispatch id — undispatched app
-//! tasks and mid-task `Progress` updates — carry no network and still go to
-//! the screen in view.
+//! A report a request sends while still running — progress, a partial result,
+//! one step's failure — arrives under a [`BackendTaskContext::Interim`]
+//! context naming the request and its network. It goes where the request's
+//! result will go, but ends nothing: the request's sender stays on record
+//! ([`RequestOwners::peek`]), no screen's wait for the request ends on it, and
+//! a previous network's report reaches no screen and raises no banner.
+//!
+//! Known limitation: undispatched app tasks whose context names no network
+//! still go to the screen in view after a switch.
 //!
 //! Stacked screens have no identity of their own (`ScreenType` equality
 //! ignores its payload), so [`ScreenStack`] gives each pushed screen an id
@@ -216,6 +227,13 @@ impl RequestOwners {
         self.owners.remove(&context.dispatch_id()?)
     }
 
+    /// The sender of `context` and the network it was dispatched on, left on
+    /// record: a report the request sends while still running is not its
+    /// arrival.
+    pub fn peek(&self, context: &BackendTaskContext) -> Option<(ScreenOwner, Network)> {
+        self.owners.get(&context.dispatch_id()?).copied()
+    }
+
     /// How many dispatches still wait for their result.
     pub fn len(&self) -> usize {
         self.owners.len()
@@ -304,6 +322,23 @@ mod tests {
         assert_eq!(owners.take(&context), Some((owner, Network::Testnet)));
         assert_eq!(owners.take(&context), None);
         assert!(owners.is_empty());
+    }
+
+    /// A report a request sends while running finds the request's sender
+    /// and leaves it on record for the request's own result.
+    #[test]
+    fn a_report_of_a_running_request_leaves_its_owner_on_record() {
+        let mut owners = RequestOwners::default();
+        let request = dispatch();
+        let owner = ScreenOwner::Root(RootScreenType::RootScreenIdentityHub);
+        owners.record(&request, owner, Network::Testnet);
+        let report = BackendTaskContext::interim(Network::Testnet, request.clone());
+
+        assert_eq!(owners.take(&report), None, "a report takes no sender");
+        assert_eq!(owners.peek(&request), Some((owner, Network::Testnet)));
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners.take(&request), Some((owner, Network::Testnet)));
+        assert_eq!(owners.peek(&request), None);
     }
 
     #[test]

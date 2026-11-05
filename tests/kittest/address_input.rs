@@ -5,7 +5,7 @@
 //! click rect can own the row), which means their pills and text are not exposed
 //! to accesskit as queryable widgets. Data assertions therefore use the
 //! component's public introspection API (`effective_hint_text`, `rendered_rows`),
-//! whose fields map one-to-one to render decisions, while a focused render pass
+//! whose fields map one-to-one to render decisions, while a typing render pass
 //! actually paints the popup — exercising the real pill layout/paint path and
 //! guarding against panics there.
 
@@ -20,7 +20,7 @@ use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -105,8 +105,9 @@ fn identity_input(name: &str) -> AddressInput {
     })
 }
 
-/// Render `input` in a headless harness, focus its field to open (and paint) the
-/// autocomplete popup, then run `assert` against the component's public state.
+/// Render `input` in a headless harness, type into its field to open (and
+/// paint) the autocomplete popup, then run `assert` against the component's
+/// public state. The typed space leaves the query unchanged.
 fn with_rendered(input: AddressInput, assert: impl FnOnce(&AddressInput)) {
     let cell = Rc::new(RefCell::new(input));
     let cell_ui = Rc::clone(&cell);
@@ -117,10 +118,14 @@ fn with_rendered(input: AddressInput, assert: impl FnOnce(&AddressInput)) {
         });
 
     harness.run();
-    // Focus the text field so the popup opens next frame and paints its rows.
+    // Typing opens the popup; it paints its rows on the next frame.
     harness
         .get_by_role(egui::accesskit::Role::TextInput)
         .focus();
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" ");
     harness.run();
     harness.run();
 
@@ -251,6 +256,63 @@ fn tag_query_narrows_rows() {
     });
 }
 
+/// Whether the suggestion popup shows any row (rows are the only buttons).
+fn popup_rows(harness: &Harness<'_>) -> usize {
+    harness
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .filter(|node| node.accesskit_node().label().as_deref() != Some("Elsewhere"))
+        .count()
+}
+
+#[test]
+fn suggestions_open_while_typing_and_close_on_select_or_click_elsewhere() {
+    let cell = Rc::new(RefCell::new(
+        AddressInput::new(Network::Testnet).with_wallets(&[wallet(1, "main")]),
+    ));
+    let cell_ui = Rc::clone(&cell);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(480.0, 400.0))
+        .build_ui(move |ui| {
+            let _ = ui.button("Elsewhere");
+            let _ = cell_ui.borrow_mut().show(ui);
+        });
+    harness.run();
+
+    let field = || egui::accesskit::Role::TextInput;
+    harness.get_by_role(field()).focus();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "focus alone opens nothing");
+
+    harness.get_by_role(field()).type_text("y");
+    harness.run();
+    assert!(popup_rows(&harness) > 0, "typing offers suggestions");
+
+    harness.get_by_label("Elsewhere").click();
+    harness.run();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "a click elsewhere closes them");
+
+    harness.get_by_role(field()).focus();
+    harness.run();
+    assert_eq!(
+        popup_rows(&harness),
+        0,
+        "focusing again does not reopen them"
+    );
+
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert!(popup_rows(&harness) > 0, "editing reopens them");
+    let row = harness
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .find(|node| node.accesskit_node().label().as_deref() != Some("Elsewhere"))
+        .expect("a suggestion row");
+    row.click();
+    harness.run();
+    harness.run();
+    assert_eq!(popup_rows(&harness), 0, "choosing a suggestion closes them");
+}
+
 /// A blocking dialog over the form closes the address suggestions: the popup
 /// must not draw above the dialog and its dimmed backdrop.
 #[test]
@@ -274,6 +336,10 @@ fn suggestions_do_not_draw_over_a_blocking_dialog() {
         .get_by_role(egui::accesskit::Role::TextInput)
         .focus();
     harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" ");
+    harness.run();
     harness.run();
     assert!(
         harness.query_by_label_contains("(dora)").is_some(),
@@ -290,5 +356,52 @@ fn suggestions_do_not_draw_over_a_blocking_dialog() {
     assert!(
         harness.query_by_label_contains("(dora)").is_none(),
         "the suggestions must not draw over a blocking dialog"
+    );
+}
+
+/// Suggestions a blocking dialog closed stay closed once it goes away.
+#[test]
+fn suggestions_stay_closed_after_a_blocking_dialog_closes() {
+    use dash_evo_tool::ui::components::confirmation_dialog::ConfirmationDialog;
+
+    let input = identity_input("dora").with_wallets(&[wallet(1, "main")]);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(480.0, 400.0))
+        .build_ui_state(
+            |ui, (input, dialog): &mut (AddressInput, Option<ConfirmationDialog>)| {
+                let _ = input.show(ui);
+                if let Some(dialog) = dialog {
+                    let _ = dialog.show(ui);
+                }
+            },
+            (input, None),
+        );
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(" ");
+    harness.run();
+    harness.run();
+    assert!(
+        harness.query_by_label_contains("(dora)").is_some(),
+        "precondition: the suggestions are open"
+    );
+
+    harness.state_mut().1 =
+        Some(ConfirmationDialog::new("Confirm this send.", "Send 1 DASH?").blocks_input(true));
+    harness.run_steps(4);
+    harness.state_mut().1 = None;
+    harness.run_steps(4);
+    assert!(
+        harness.query_by_label("Confirm this send.").is_none(),
+        "precondition: the dialog is gone"
+    );
+    assert!(
+        harness.query_by_label_contains("(dora)").is_none(),
+        "the dialog closed the suggestions"
     );
 }

@@ -1393,17 +1393,69 @@ pub fn estimate_core_payment_fee_duffs(
         .map(|(_, quote)| quote.spendable_input_count)
         .unwrap_or(fallback_input_count)
         .max(1);
-    let change_output_fee = core_fee_rate()
-        .calculate_fee(estimate_tx_size(0, 2, false).saturating_sub(estimate_tx_size(0, 1, false)));
     let bound = tolerance::CORE_SEND.apply_fee(
         pooled_send_fee_duffs(input_count, destination)
-            .saturating_add(change_output_fee)
+            .saturating_add(core_extra_output_fee_duffs())
             .saturating_add(CORE_CHANGE_FORGONE_MAX_DUFFS),
     );
     match quote.and_then(|(_, quote)| quote.spendable_total_duffs) {
         Some(total_duffs) => bound.min(total_duffs.saturating_sub(amount_duffs)),
         None => bound,
     }
+}
+
+/// Fee, in duffs, one more plain output adds to a Core payment.
+fn core_extra_output_fee_duffs() -> u64 {
+    core_fee_rate()
+        .calculate_fee(estimate_tx_size(0, 2, false).saturating_sub(estimate_tx_size(0, 1, false)))
+}
+
+/// Fee, in duffs, shown for a pooled Core payment of `amount_duffs` in total
+/// to `output_count` recipients. It is the bound of
+/// [`estimate_core_payment_fee_duffs`] with one more output per extra
+/// recipient, so it is never below what the build charges: every coin the
+/// build could spend (`quote`, else `fallback_input_count`), with change, plus
+/// the remainder the build may give the miner, and never more than what those
+/// coins hold beyond the amount. Outputs are priced as P2PKH, the larger kind.
+/// `output_count` is clamped to at least 1.
+pub fn estimate_core_several_outputs_fee_duffs(
+    output_count: usize,
+    amount_duffs: u64,
+    quote: Option<CoreSendQuoteFee>,
+    fallback_input_count: usize,
+) -> u64 {
+    let input_count = quote
+        .map(|quote| quote.spendable_input_count)
+        .unwrap_or(fallback_input_count)
+        .max(1);
+    let bound = tolerance::CORE_SEND.apply_fee(
+        pooled_send_fee_duffs(input_count, CoreDestinationScript::PubkeyHash)
+            .saturating_add(
+                core_extra_output_fee_duffs().saturating_mul(output_count.max(1) as u64),
+            )
+            .saturating_add(CORE_CHANGE_FORGONE_MAX_DUFFS),
+    );
+    match quote.and_then(|quote| quote.spendable_total_duffs) {
+        Some(total_duffs) => bound.min(total_duffs.saturating_sub(amount_duffs)),
+        None => bound,
+    }
+}
+
+/// The Core send Max, in duffs, for a payment to `output_count` recipients,
+/// from `single_output_max_duffs`, the Max proven for one output: the fee of
+/// every further output, priced as P2PKH, the larger kind, and of the longer
+/// output count the builder encodes (change included) comes out of it.
+/// `output_count` is clamped to at least 1.
+pub fn core_several_outputs_max_duffs(single_output_max_duffs: u64, output_count: usize) -> u64 {
+    use dash_sdk::dpp::dashcore::consensus::encode::VarInt;
+    let output_count = output_count.max(1);
+    let extra_output_bytes =
+        estimate_tx_size(0, output_count, false).saturating_sub(estimate_tx_size(0, 1, false));
+    let output_count_bytes = VarInt(output_count as u64 + 1)
+        .len()
+        .saturating_sub(VarInt(2).len());
+    single_output_max_duffs
+        .saturating_sub(core_fee_rate().calculate_fee(extra_output_bytes + output_count_bytes))
 }
 
 /// Core (L1) fee, in duffs, of a payment spending `num_inputs` chosen coins
@@ -2199,6 +2251,55 @@ mod tests {
     /// A pooled send is priced as platform-wallet's `pooled_max_sendable`
     /// prices it, which at a whole duff per byte is the plain size estimate,
     /// less what a shorter P2SH output script saves.
+    #[test]
+    fn core_several_outputs_fee_is_the_single_output_bound_plus_each_output() {
+        use crate::model::spend_limit::CoreDestinationScript::PubkeyHash;
+        let quote = CoreSendQuoteFee {
+            fee_at_max_duffs: 1,
+            spendable_input_count: 100,
+            spendable_total_duffs: None,
+        };
+        let one = estimate_core_several_outputs_fee_duffs(1, 1_000, Some(quote), 0);
+        assert_eq!(
+            one,
+            estimate_core_payment_fee_duffs(PubkeyHash, 1_000, Some((u64::MAX, quote)), 0),
+            "one recipient is priced exactly as the single-output bound"
+        );
+        let three = estimate_core_several_outputs_fee_duffs(3, 1_000, Some(quote), 0);
+        assert_eq!(three, one + 2 * core_extra_output_fee_duffs());
+        assert!(
+            three >= estimate_core_l1_send_fee_duffs(100, 3),
+            "never below the transaction of every coin with change"
+        );
+    }
+
+    /// The fee cannot be more than the coins hold beyond the amount, and with
+    /// no quote the wallet's own coin count stands in.
+    #[test]
+    fn core_several_outputs_fee_is_capped_and_falls_back() {
+        let quote = CoreSendQuoteFee {
+            fee_at_max_duffs: 1,
+            spendable_input_count: 100,
+            spendable_total_duffs: Some(1_500),
+        };
+        assert_eq!(
+            estimate_core_several_outputs_fee_duffs(2, 1_000, Some(quote), 0),
+            500
+        );
+        assert_eq!(
+            estimate_core_several_outputs_fee_duffs(2, 1_000, None, 100),
+            estimate_core_several_outputs_fee_duffs(
+                2,
+                1_000,
+                Some(CoreSendQuoteFee {
+                    spendable_total_duffs: None,
+                    ..quote
+                }),
+                0
+            )
+        );
+    }
+
     #[test]
     fn core_send_fee_and_max_follow_the_pooled_pricing() {
         use crate::model::spend_limit::CoreDestinationScript::{PubkeyHash, ScriptHash};

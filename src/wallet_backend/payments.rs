@@ -738,8 +738,10 @@ impl WalletBackend {
         kind: SpendLimitKind,
     ) -> Result<SpendLimitQuote, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
-        let quote_failed = |source| TaskError::SpendLimitQueryFailed {
-            source: Arc::new(source),
+        let quote_failed = |source: platform_wallet::error::PlatformWalletError| {
+            TaskError::SpendLimitQueryFailed {
+                source: Arc::new(Box::new(source).into()),
+            }
         };
         match kind {
             SpendLimitKind::CoreSend { destination } => {
@@ -874,7 +876,8 @@ impl WalletBackend {
                 &recipient,
                 upper_duffs,
                 &deadline,
-            );
+            )
+            .map_err(core_send_search_failed)?;
             // More coins than one transaction spends: upstream refuses the
             // drain, and no build can select more than the input cap.
             let (spendable_input_count, spendable_total_duffs) =
@@ -1388,20 +1391,51 @@ fn dry_build_pooled(
 
 /// The largest single payment of at most `upper_duffs` the pooled send
 /// build accepts now, reservations included, with the fee that build charges.
-/// Buildability falls with the amount, so a binary search finds it; when
-/// `deadline` expires first, the largest amount already proven to build is
-/// returned, never a guess. `None` when no amount was proven.
+/// `None` when no amount was proven; any builder error other than a refusal
+/// to fund the amount ends the search.
 fn largest_core_payment_at_most(
     wallet: &Wallet,
     info: &ManagedWalletInfo,
     recipient: &dash_sdk::dpp::dashcore::Address,
     upper_duffs: u64,
     deadline: &ProbeDeadline,
-) -> Option<(u64, u64)> {
-    let fee_of =
-        |amount: u64| dry_run_core_payment(wallet, info, &[(recipient.clone(), amount)]).ok();
-    if let Some(fee) = fee_of(upper_duffs) {
-        return Some((upper_duffs, fee));
+) -> Result<Option<(u64, u64)>, BuilderError> {
+    largest_payment_at_most(upper_duffs, deadline, |amount| {
+        core_payment_trial(dry_run_core_payment(
+            wallet,
+            info,
+            &[(recipient.clone(), amount)],
+        ))
+    })
+}
+
+/// A trial build's fee, or `None` when the build refused to fund the amount:
+/// the funds fall short or need more inputs than one transaction takes.
+fn core_payment_trial(build: Result<u64, BuilderError>) -> Result<Option<u64>, BuilderError> {
+    match build {
+        Ok(fee) => Ok(Some(fee)),
+        Err(
+            BuilderError::InsufficientFunds { .. }
+            | BuilderError::CoinSelection(
+                SelectionError::InsufficientFunds { .. } | SelectionError::NoUtxosAvailable,
+            )
+            | BuilderError::TooManyInputs { .. },
+        ) => Ok(None),
+        Err(source) => Err(source),
+    }
+}
+
+/// The largest amount of at most `upper_duffs` that `trial` funds, with the
+/// fee it charges. Buildability falls with the amount, so a binary search
+/// finds it; when `deadline` expires first, the largest amount already proven
+/// to build is returned, never a guess. A `trial` error ends the search.
+fn largest_payment_at_most(
+    upper_duffs: u64,
+    deadline: &ProbeDeadline,
+    mut trial: impl FnMut(u64) -> Result<Option<u64>, BuilderError>,
+) -> Result<Option<(u64, u64)>, BuilderError> {
+    if let Some(fee) = trial(upper_duffs)? {
+        return Ok(Some((upper_duffs, fee)));
     }
     let mut proven = None;
     let (mut low, mut high) = (0, upper_duffs.saturating_sub(1));
@@ -1410,7 +1444,7 @@ fn largest_core_payment_at_most(
             break;
         }
         let candidate = low + (high - low).div_ceil(2);
-        match fee_of(candidate) {
+        match trial(candidate)? {
             Some(fee) => {
                 low = candidate;
                 proven = Some((candidate, fee));
@@ -1418,7 +1452,15 @@ fn largest_core_payment_at_most(
             None => high = candidate - 1,
         }
     }
-    proven
+    Ok(proven)
+}
+
+/// A Core send Max search a builder error ended, as a retryable quote failure
+/// that keeps the error.
+fn core_send_search_failed(source: BuilderError) -> TaskError {
+    TaskError::SpendLimitQueryFailed {
+        source: Arc::new(source.into()),
+    }
 }
 
 /// What the reservation-aware Core send Max search found, and the coins the
@@ -1783,13 +1825,172 @@ mod tests {
         let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
         let proven =
             super::largest_core_payment_at_most(&wallet, &info, &recipient, 699_360, &deadline);
-        assert_eq!(proven, Some((699_360, 640)));
+        assert_eq!(proven, Ok(Some((699_360, 640))));
         let (_, charged) = pooled_build_charge(&wallet, &info, recipient.clone(), 699_360);
         assert_eq!(charged, 640);
 
         let spendable = super::pooled_spendable_coins(&wallet, &info, &recipient)
             .expect("the free coins are counted");
         assert_eq!(spendable, (1, COIN_DUFFS));
+    }
+
+    /// The Core Max for several recipients builds: with 253 P2PKH outputs
+    /// the build also pays for the output count's three-byte encoding.
+    #[test]
+    fn core_max_for_several_recipients_builds_with_a_wide_output_count() {
+        use crate::model::fee_estimation::{core_send_max_duffs, core_several_outputs_max_duffs};
+        const COIN_DUFFS: u64 = 10_000_000;
+        const CURRENT_HEIGHT: u32 = 200;
+        const RECIPIENTS: usize = 253;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut info = ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        info.update_last_processed_height(CURRENT_HEIGHT);
+        let bip44 = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let address = managed
+            .next_receive_address(Some(&bip44.account_xpub), true)
+            .expect("BIP44 address");
+        let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: COIN_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed.utxos.insert(outpoint, utxo);
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let (proven, fee) = super::largest_core_payment_at_most(
+            &wallet,
+            &info,
+            &payment_recipient(),
+            COIN_DUFFS,
+            &deadline,
+        )
+        .expect("no builder error")
+        .expect("a Max builds");
+        let total = core_several_outputs_max_duffs(core_send_max_duffs(proven, fee), RECIPIENTS);
+        let share = total / RECIPIENTS as u64;
+        let recipients: Vec<_> = (0..RECIPIENTS)
+            .map(|index| {
+                let mut hash = [0u8; 20];
+                hash[..2].copy_from_slice(&(index as u16).to_be_bytes());
+                let address = Address::new(
+                    Network::Testnet,
+                    dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                        dash_sdk::dpp::dashcore::PubkeyHash::from_byte_array(hash),
+                    ),
+                );
+                let amount = if index == 0 {
+                    total - share * (RECIPIENTS as u64 - 1)
+                } else {
+                    share
+                };
+                (address, amount)
+            })
+            .collect();
+        super::dry_run_core_payment(&wallet, &info, &recipients)
+            .expect("the several-recipient Max must build");
+    }
+
+    /// Refusals to fund an amount narrow the Core Max search: funds short of
+    /// it, or more inputs than one transaction takes.
+    #[test]
+    fn core_max_search_narrows_past_funding_refusals() {
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionError;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError;
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let proven = super::largest_payment_at_most(1_000, &deadline, |amount| {
+            super::core_payment_trial(match amount {
+                701.. => Err(BuilderError::TooManyInputs {
+                    count: 501,
+                    max: 500,
+                }),
+                601.. => Err(BuilderError::CoinSelection(
+                    SelectionError::InsufficientFunds {
+                        available: 600,
+                        required: amount,
+                    },
+                )),
+                501.. => Err(BuilderError::InsufficientFunds {
+                    available: 500,
+                    required: amount,
+                }),
+                _ => Ok(10),
+            })
+        });
+        assert_eq!(proven, Ok(Some((500, 10))));
+
+        let nothing = super::largest_payment_at_most(1_000, &deadline, |_| {
+            super::core_payment_trial(Err(BuilderError::CoinSelection(
+                SelectionError::NoUtxosAvailable,
+            )))
+        });
+        assert_eq!(nothing, Ok(None));
+    }
+
+    /// Any other builder error ends the Core Max search with that error,
+    /// rather than counting as an amount too high.
+    #[test]
+    fn an_unexpected_builder_error_ends_the_core_max_search() {
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError;
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let mut trials = 0;
+        let outcome = super::largest_payment_at_most(1_000, &deadline, |amount| {
+            trials += 1;
+            super::core_payment_trial(if amount > 500 {
+                Err(BuilderError::InsufficientFunds {
+                    available: 500,
+                    required: amount,
+                })
+            } else {
+                Err(BuilderError::NoChangeAddress)
+            })
+        });
+        assert_eq!(outcome, Err(BuilderError::NoChangeAddress));
+        assert_eq!(trials, 2, "the search stops at the first unexpected error");
+    }
+
+    /// A Core Max search ended by an unexpected builder error fails as a
+    /// retryable quote failure that keeps the error, never as funds held by
+    /// another transaction.
+    #[test]
+    fn an_unexpected_builder_error_is_not_relabelled_held_by_pending_transaction() {
+        use crate::backend_task::error::{SpendLimitQueryError, TaskError};
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError;
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let outcome = super::largest_payment_at_most(1_000, &deadline, |_| {
+            super::core_payment_trial(Err(BuilderError::InvalidData("unexpected".into())))
+        })
+        .map_err(super::core_send_search_failed)
+        .and_then(|proven| {
+            let (proven_duffs, _) = proven.unwrap_or_default();
+            super::core_send_search_outcome(proven_duffs, deadline.timed_out())
+        });
+        match outcome {
+            Err(TaskError::SpendLimitQueryFailed { source }) => assert!(
+                matches!(
+                    source.as_ref(),
+                    SpendLimitQueryError::Build(BuilderError::InvalidData(_))
+                ),
+                "the builder error is kept: {source:?}"
+            ),
+            other => panic!("expected a retryable quote failure, got {other:?}"),
+        }
     }
 
     /// Build a payment of `amount` to `recipient` the way the pooled send
@@ -1872,6 +2073,7 @@ mod tests {
             let (max, fee_at_max_duffs) = super::largest_core_payment_at_most(
                 &wallet, &info, recipient, COIN_DUFFS, &deadline,
             )
+            .expect("the search ends without a builder error")
             .expect("a Max builds");
             let (spendable_input_count, total) =
                 super::pooled_spendable_coins(&wallet, &info, recipient).expect("coins counted");

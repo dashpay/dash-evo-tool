@@ -1,6 +1,6 @@
 # Send Screen Redesign — Requirements
 
-Status: proposal (not implemented). Screen: Wallet › Send (`src/ui/wallets/send_screen.rs`).
+Status: implemented; see [04-implementation-notes.md](04-implementation-notes.md) for deviations. Screen: Wallet › Send (`src/ui/wallets/send_screen/`).
 
 ## 1. Executive summary
 

@@ -38,6 +38,7 @@ mod result_reactions;
 mod role_indicator;
 mod secret_prompt;
 #[cfg(feature = "testing")]
+mod send_form;
 mod send_screen;
 mod startup;
 mod support;

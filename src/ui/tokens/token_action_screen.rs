@@ -465,6 +465,13 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         {
             self.common.identity_token_info.identity = updated;
         }
+        let contract_id = self.common.identity_token_info.data_contract.contract.id();
+        super::pick_key_if_none(
+            &self.common.identity_token_info.identity,
+            &mut self.common.selected_key,
+            &mut self.common.selected_wallet,
+            |identity| identity.token_action_key(contract_id),
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -660,5 +667,53 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::QualifiedContract;
+    use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use crate::ui::tokens::tests::{
+        identity_with_expired_key, store_identity_with_usable_wallet_key,
+    };
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::platform::Identifier;
+
+    /// Regression: the action's key was picked only when the form opened, so
+    /// once the identity's key became usable a refresh opened the form with
+    /// no key to sign. A refresh picks it then, with its wallet.
+    #[test]
+    fn a_refresh_picks_the_token_action_key_that_became_usable() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = MintTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.is_none());
+        let seed_hash = store_identity_with_usable_wallet_key(&context);
+
+        screen.refresh();
+        assert_eq!(
+            screen.common.selected_key.as_ref().map(|key| key.id()),
+            Some(1)
+        );
+        let wallet = screen
+            .common
+            .selected_wallet
+            .as_ref()
+            .expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
     }
 }

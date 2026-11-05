@@ -356,6 +356,15 @@ impl ScreenLike for TransferTokensScreen {
                 self.identity = Some(refreshed);
             }
         }
+        if let Some(identity) = &self.identity {
+            let contract_id = self.identity_token_balance.data_contract_id;
+            super::pick_key_if_none(
+                identity,
+                &mut self.selected_key,
+                &mut self.selected_wallet,
+                |identity| identity.single_token_transition_key(contract_id),
+            );
+        }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
             match self.app_context.identity_token_balances() {
                 Ok(token_balances) => {

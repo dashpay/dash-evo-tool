@@ -440,6 +440,15 @@ impl ScreenLike for ClaimTokensScreen {
         {
             self.identity = Some(updated);
         }
+        if let Some(identity) = &self.identity {
+            let contract_id = self.identity_token_basic_info.contract_id;
+            super::pick_key_if_none(
+                identity,
+                &mut self.selected_key,
+                &mut self.selected_wallet,
+                |identity| identity.single_token_transition_key(contract_id),
+            );
+        }
         self.once_per_identity_claimed_at =
             load_once_per_identity_claim(&self.app_context, &self.identity_token_basic_info);
     }
@@ -1117,6 +1126,39 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    /// Regression: the claim key was picked only when the screen opened, so
+    /// once the identity's key became usable (expiry extended, key added or
+    /// its wallet loaded) a refresh opened the form with no key to sign.
+    /// A refresh picks it then, with its wallet, and keeps a manual choice.
+    #[test]
+    fn a_refresh_picks_the_claim_key_that_became_usable() {
+        use crate::ui::tokens::tests::{
+            identity_with_expired_key, store_identity_with_usable_wallet_key,
+        };
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        let (mut screen, _dir) = screen_for(once_per_identity_token(5));
+        screen.identity = Some(identity_with_expired_key());
+        screen.selected_key = None;
+        screen.selected_wallet = None;
+        let seed_hash = store_identity_with_usable_wallet_key(&screen.app_context);
+
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+        let wallet = screen.selected_wallet.as_ref().expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
+
+        let manual = identity_public_key(
+            7,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::CRITICAL,
+            KeyType::ECDSA_SECP256K1,
+            vec![2; 33],
+        );
+        screen.selected_key = Some(manual);
+        screen.refresh();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(7));
     }
 
     /// Regression: a claim whose only key is bound to a contract group closed

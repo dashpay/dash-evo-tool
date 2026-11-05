@@ -403,6 +403,13 @@ impl ScreenLike for PurchaseTokenScreen {
         {
             self.identity_token_info.identity = updated_identity;
         }
+        let contract_id = self.identity_token_info.data_contract.contract.id();
+        super::pick_key_if_none(
+            &self.identity_token_info.identity,
+            &mut self.selected_key,
+            &mut self.selected_wallet,
+            |identity| identity.token_action_key(contract_id),
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

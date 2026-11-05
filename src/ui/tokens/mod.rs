@@ -19,10 +19,12 @@ pub mod view_token_claims_screen;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{QualifiedIdentity, SigningKeyStatus};
 use crate::model::user_role::UserRole;
+use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
+use std::sync::{Arc, RwLock};
 
 /// Loads local identities, displaying an error banner on failure.
 pub fn load_identities_with_banner(app_context: &AppContext) -> Vec<QualifiedIdentity> {
@@ -83,6 +85,23 @@ pub(crate) fn token_action_key_status(
     }
 }
 
+/// After `identity` was refreshed, picks the automatic signing key with
+/// `pick` and its unlock wallet when no key is chosen yet, so a key that
+/// became usable since the form opened is the one it signs with. A chosen
+/// key, picked automatically or by hand, is kept.
+pub(crate) fn pick_key_if_none(
+    identity: &QualifiedIdentity,
+    key: &mut Option<IdentityPublicKey>,
+    wallet: &mut Option<Arc<RwLock<Wallet>>>,
+    pick: impl FnOnce(&QualifiedIdentity) -> Option<&IdentityPublicKey>,
+) {
+    if key.is_some() {
+        return;
+    }
+    *key = pick(identity).cloned();
+    *wallet = crate::ui::identity::wallet_for_signing_key(identity, key.as_ref());
+}
+
 /// Why a token form opened with its key chooser shown
 /// ([`SigningKeyStatus::ManualChoiceOnly`]).
 pub(crate) const CONTRACT_GROUP_KEY_NOTE: &str = "No key can be chosen automatically for this action, because the only key that can sign it is limited to a contract group. Choose that key below if the group includes this token's contract.";
@@ -104,12 +123,39 @@ pub(crate) fn token_action_key_message(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::context::test_support::{auth_key, bound_to, identity_holding};
     use dash_sdk::dpp::identity::SecurityLevel;
     use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
     use dash_sdk::platform::Identifier;
+
+    /// The identity [`identity_holding`] builds, holding only an expired
+    /// CRITICAL authentication key `1`: no key can sign a token action.
+    pub(crate) fn identity_with_expired_key() -> QualifiedIdentity {
+        identity_holding(&[auth_key(1, SecurityLevel::CRITICAL).with_limits(None, Some(1))])
+    }
+
+    /// Stores in `ctx` the same identity holding a live key `1` from a wallet
+    /// loaded in `ctx`, as a screen reads it on refresh once the key became
+    /// usable, and returns that wallet's seed hash.
+    pub(crate) fn store_identity_with_usable_wallet_key(
+        ctx: &AppContext,
+    ) -> crate::model::wallet::WalletSeedHash {
+        use crate::wallet_backend::DetKv;
+        use crate::wallet_backend::kv_test_support::InMemoryKv;
+        use std::sync::{Arc, RwLock};
+        let wallet = crate::model::wallet::test_support::open_wallet();
+        let seed_hash = wallet.seed_hash();
+        ctx.wallet_context()
+            .insert_test_wallet(seed_hash, Arc::new(RwLock::new(wallet)));
+        let mut identity = identity_holding(&[auth_key(1, SecurityLevel::CRITICAL)]);
+        crate::context::test_support::hold_as_wallet_reference(&mut identity, 1, seed_hash);
+        ctx.set_det_kv_override_for_test(DetKv::from_store(Arc::new(InMemoryKv::default())));
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("store identity");
+        seed_hash
+    }
 
     /// Regression: for a Power user whose only key is bound to a contract
     /// group, the token action gate closed before the Advanced chooser that

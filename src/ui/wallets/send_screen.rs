@@ -943,11 +943,12 @@ impl WalletSendScreen {
             .selected_wallet
             .as_ref()
             .and_then(|wallet| wallet.read().ok());
-        let funded = wallet
-            .as_ref()
-            .map(|wallet| funded_platform_addresses(&wallet.platform_address_info))
-            .unwrap_or_default();
-        platform_balances_revision(&funded)
+        platform_balances_revision(
+            wallet
+                .as_ref()
+                .into_iter()
+                .flat_map(|wallet| funded_platform_addresses(&wallet.platform_address_info)),
+        )
     }
 
     /// What the loaded Core send Max was proven against, for the current
@@ -5315,13 +5316,13 @@ impl ScreenLike for WalletSendScreen {
     }
 }
 
-/// The wallet's Platform addresses that hold credits, one entry per address.
-/// Where several stored entries name the same Platform address, the one with
-/// the highest nonce wins (the last of equals); an address whose winning
-/// entry is empty is left out.
+/// The wallet's Platform addresses that hold credits, one entry per address,
+/// in `PlatformAddress` order. Where several stored entries name the same
+/// Platform address, the one with the highest nonce wins (the last of equals);
+/// an address whose winning entry is empty is left out.
 fn funded_platform_addresses(
     info: &BTreeMap<Address, PlatformAddressInfo>,
-) -> BTreeMap<PlatformAddress, (&Address, Credits)> {
+) -> impl Iterator<Item = (PlatformAddress, (&Address, Credits))> {
     let mut latest: BTreeMap<PlatformAddress, (&Address, Credits, AddressNonce)> = BTreeMap::new();
     for (address, entry) in info {
         let Ok(platform_address) = PlatformAddress::try_from(address.clone()) else {
@@ -5338,17 +5339,18 @@ fn funded_platform_addresses(
         .into_iter()
         .filter(|(_, (_, balance, _))| *balance > 0)
         .map(|(platform_address, (address, balance, _))| (platform_address, (address, balance)))
-        .collect()
 }
 
 /// Names the Platform balances a shield quote was made against: any change in
 /// the offered addresses or their balances asks for a new quote.
-fn platform_balances_revision(funded: &BTreeMap<PlatformAddress, (&Address, Credits)>) -> u64 {
+fn platform_balances_revision<'a>(
+    funded: impl IntoIterator<Item = (PlatformAddress, (&'a Address, Credits))>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (platform_address, (_, balance)) in funded {
-        Hash::hash(platform_address, &mut hasher);
-        Hash::hash(balance, &mut hasher);
+        Hash::hash(&platform_address, &mut hasher);
+        Hash::hash(&balance, &mut hasher);
     }
     hasher.finish()
 }
@@ -5410,14 +5412,14 @@ mod tests {
             (other.clone(), entry(300, 1)),
             (empty.clone(), entry(0, 1)),
         ]);
-        let funded = funded_platform_addresses(&info);
+        let funded: BTreeMap<_, _> = funded_platform_addresses(&info).collect();
         assert_eq!(funded.len(), 2, "{funded:?}");
         assert_eq!(funded[&platform(&testnet)], (&mainnet, 700));
         assert_eq!(funded[&platform(&other)], (&other, 300));
 
         // A newer empty entry empties the address.
         let info = BTreeMap::from([(testnet.clone(), entry(500, 1)), (mainnet, entry(0, 2))]);
-        assert!(funded_platform_addresses(&info).is_empty());
+        assert_eq!(funded_platform_addresses(&info).count(), 0);
     }
 
     /// The shield Max key follows the funded balances only: it holds while
@@ -5427,7 +5429,7 @@ mod tests {
         let funded_address = testnet_core_address(14);
         let entry = |balance, nonce| PlatformAddressInfo { balance, nonce };
         let revision = |info: &BTreeMap<Address, PlatformAddressInfo>| {
-            platform_balances_revision(&funded_platform_addresses(info))
+            platform_balances_revision(funded_platform_addresses(info))
         };
 
         let mut info = BTreeMap::from([(funded_address.clone(), entry(500, 1))]);

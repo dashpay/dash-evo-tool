@@ -193,13 +193,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use dash_async::{ShutdownReport, WorkerStatus};
 use dash_sdk::Sdk;
 use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
-use platform_wallet::manager::PlatformWalletManager;
+use platform_wallet::manager::{PlatformWalletManager, WalletWorker};
 use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
@@ -1936,7 +1937,9 @@ impl WalletBackend {
                         Ok(()) => Ok(()),
                         Err(source) => {
                             self.inner.start_latch.reset_if_current(&flight);
-                            Err(StartFlightError::Failed(Arc::new(source)))
+                            Err(StartFlightError::Failed(Arc::new(redact_wallet_error(
+                                source,
+                            ))))
                         }
                     }
                 })
@@ -2067,7 +2070,7 @@ impl WalletBackend {
         // teardown must proceed regardless.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
@@ -2076,13 +2079,7 @@ impl WalletBackend {
         // the wallet-event adapter task. Best-effort: a non-clean report flags a
         // still-live worker or orphan, which teardown proceeds past regardless —
         // log it rather than surface it.
-        let report = self.inner.pwm.shutdown().await;
-        if !report.all_clean() {
-            tracing::warn!(
-                ?report,
-                "Wallet manager shutdown did not complete cleanly; continuing teardown"
-            );
-        }
+        warn_if_shutdown_unclean(&self.inner.pwm.shutdown().await);
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -2126,7 +2123,7 @@ impl WalletBackend {
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
-                error = ?e,
+                error = ?redact_wallet_error(e),
                 "SPV run loop did not stop cleanly during stop_in_place; continuing"
             );
         }
@@ -3934,9 +3931,136 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
     }
 }
 
+/// Withholds the text of `SpvProcessRestartRequired` before the error is
+/// logged or kept for banner details.
+///
+/// Upstream builds that text from a joined SPV task's result (`{result:?}`),
+/// so a panic there puts the runtime-formatted panic message in it. Only its
+/// length is kept, as the panic hook does; every other variant is unchanged.
+fn redact_wallet_error(error: PlatformWalletError) -> PlatformWalletError {
+    match error {
+        PlatformWalletError::SpvProcessRestartRequired(text) => {
+            PlatformWalletError::SpvProcessRestartRequired(format!(
+                "<redacted: SPV task failure, may hold a panic message, {} bytes>",
+                text.len()
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Logs a non-clean `pwm.shutdown()` report with every worker's text withheld.
+///
+/// Upstream fills `Panicked` with the worker's panic message and the SPV
+/// entry's `Error` with the `SpvProcessRestartRequired` text, so only the
+/// worker, its status and the text length are logged.
+fn warn_if_shutdown_unclean(report: &ShutdownReport<WalletWorker>) {
+    if !report.all_clean() {
+        let report = ShutdownReport {
+            per_worker: report
+                .per_worker
+                .iter()
+                .map(|(worker, status)| (*worker, redact_worker_status(status)))
+                .collect(),
+            detached: report.detached,
+            orphan_status: redact_worker_status(&report.orphan_status),
+        };
+        tracing::warn!(
+            ?report,
+            "Wallet manager shutdown did not complete cleanly; continuing teardown"
+        );
+    }
+}
+
+/// A worker status with its text replaced by the text's length. Exhaustive,
+/// so a new upstream variant must be classified here before it is logged.
+fn redact_worker_status(status: &WorkerStatus) -> WorkerStatus {
+    let withheld = |text: &str| format!("<redacted: {} bytes>", text.len());
+    match status {
+        WorkerStatus::Panicked(text) => WorkerStatus::Panicked(withheld(text)),
+        WorkerStatus::Error(text) => WorkerStatus::Error(withheld(text)),
+        WorkerStatus::Stopped(Some(text)) => WorkerStatus::Stopped(Some(withheld(text))),
+        WorkerStatus::Ok
+        | WorkerStatus::Stopped(None)
+        | WorkerStatus::Timeout
+        | WorkerStatus::Detached
+        | WorkerStatus::NotRunning => status.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unclean_shutdown_report_is_logged_without_worker_text() {
+        let synthetic_secret = "synthetic-secret-7f3a9c0e";
+        let report = ShutdownReport {
+            per_worker: [
+                (
+                    WalletWorker::Spv,
+                    WorkerStatus::Error(format!("restart required: {synthetic_secret}")),
+                ),
+                (
+                    WalletWorker::IdentitySync,
+                    WorkerStatus::Panicked(format!("seed {synthetic_secret}")),
+                ),
+                (WalletWorker::ShieldedSync, WorkerStatus::Timeout),
+            ]
+            .into_iter()
+            .collect(),
+            detached: 1,
+            orphan_status: WorkerStatus::Stopped(Some(synthetic_secret.to_owned())),
+        };
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = std::sync::Arc::clone(&log);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || LogSink(std::sync::Arc::clone(&writer)))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || warn_if_shutdown_unclean(&report));
+        let text = String::from_utf8(log.lock().expect("log").clone()).expect("UTF-8 log");
+
+        assert!(!text.contains(synthetic_secret), "{text}");
+        for kept in ["Spv", "IdentitySync", "Panicked", "Timeout", "detached: 1"] {
+            assert!(text.contains(kept), "the report must keep {kept}:\n{text}");
+        }
+        assert!(text.contains("<redacted: 30 bytes>"), "{text}");
+    }
+
+    /// Collects a test subscriber's output.
+    struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn redact_wallet_error_withholds_a_joined_spv_task_panic_message() {
+        let synthetic_secret = "synthetic-secret-7f3a9c0e";
+        let text = format!(
+            "SPV teardown task failed: Err(JoinError::Panic(Id(7), \"seed {synthetic_secret}\", ..))"
+        );
+        let redacted =
+            redact_wallet_error(PlatformWalletError::SpvProcessRestartRequired(text.clone()));
+        let shown = format!("{redacted:?} {redacted}");
+        assert!(!shown.contains(synthetic_secret), "{shown}");
+        assert!(
+            matches!(redacted, PlatformWalletError::SpvProcessRestartRequired(_)),
+            "the variant must survive: {shown}"
+        );
+        assert!(shown.contains(&format!("{} bytes", text.len())), "{shown}");
+
+        let other = redact_wallet_error(PlatformWalletError::SpvError("peer lost".to_owned()));
+        assert!(format!("{other:?}").contains("peer lost"));
+    }
 
     fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
         use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;

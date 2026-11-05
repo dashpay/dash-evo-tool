@@ -88,6 +88,10 @@ fn load_app_env() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First, so no panic reaches the default hook, which prints the full
+    // panic message (and any value formatted into it) to the terminal.
+    dash_evo_tool::logging::install_panic_hook();
+
     // Load .env before clap parses env vars (shell > .env > defaults).
     load_app_env();
 

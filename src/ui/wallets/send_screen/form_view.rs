@@ -1730,6 +1730,17 @@ impl WalletSendScreen {
         if self.form.has_several_recipients() && !self.recipient_rows_complete() {
             return Some(RECIPIENT_ROWS_INCOMPLETE);
         }
+        if self.form.has_several_recipients()
+            && let (Some(source), Some(destination)) =
+                (&self.selected_source, self.destination_kind())
+            && !matches!(
+                (Self::source_kind(source), destination),
+                (PayFromKind::Core, AddressKind::Core)
+                    | (PayFromKind::Platform, AddressKind::Platform)
+            )
+        {
+            return Some(SEVERAL_RECIPIENTS_ROUTE);
+        }
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {
                 Some(AutoMax::Checking { .. }) => "Checking the available amount…",

@@ -1441,6 +1441,16 @@ pub fn estimate_core_several_outputs_fee_duffs(
     }
 }
 
+/// The Core send Max, in duffs, for a payment to `output_count` recipients,
+/// from `single_output_max_duffs`, the Max proven for one output: every
+/// further output's fee comes out of it, priced as P2PKH, the larger kind.
+/// `output_count` is clamped to at least 1.
+pub fn core_several_outputs_max_duffs(single_output_max_duffs: u64, output_count: usize) -> u64 {
+    let extra_outputs = output_count.max(1) as u64 - 1;
+    single_output_max_duffs
+        .saturating_sub(core_extra_output_fee_duffs().saturating_mul(extra_outputs))
+}
+
 /// Core (L1) fee, in duffs, of a payment spending `num_inputs` chosen coins
 /// into `num_outputs` outputs, sized by key-wallet's `estimate_tx_size` at the
 /// rate the send builds with. A change output is counted: a payment from

@@ -248,7 +248,17 @@ impl WalletSendScreen {
                                 None
                             }
                             Some(max_credits) => {
-                                max = Some(max_credits);
+                                // The quote is proven for one output; each
+                                // further recipient adds one.
+                                max = Some(if self.form.has_several_recipients() {
+                                    core_several_outputs_max_duffs(
+                                        max_credits / CREDITS_PER_DUFF,
+                                        self.form.recipients().len(),
+                                    )
+                                    .saturating_mul(CREDITS_PER_DUFF)
+                                } else {
+                                    max_credits
+                                });
                                 let fee_duffs = self
                                     .core_send_quote_fee_for(source, dest_kind)
                                     .map(|quote| core_send_fee_at_max_duffs(&quote))
@@ -719,10 +729,7 @@ impl WalletSendScreen {
                 } else {
                     DestinationStatus::Missing
                 };
-                let same_account = self
-                    .validated_destination
-                    .as_ref()
-                    .and_then(|destination| self.own_account_of(destination));
+                let same_account = self.recipients_own_account();
                 AutoDestination {
                     kind: self.destination_kind(),
                     shielded_is_own_pool: self.shielded_destination_is_own_pool(),
@@ -730,6 +737,23 @@ impl WalletSendScreen {
                 }
             }
         }
+    }
+
+    /// The paying wallet's account every recipient belongs to, if all do: a
+    /// payment from it would move nothing out.
+    fn recipients_own_account(&self) -> Option<PayFromKind> {
+        let destination = self.validated_destination.as_ref()?;
+        if !self.form.has_several_recipients() {
+            return self.own_account_of(destination);
+        }
+        let mut accounts = self.form.recipients().iter().map(|row| {
+            self.row_address(&row.address)
+                .and_then(|address| self.own_account_of(&address))
+        });
+        let first = accounts.next()??;
+        accounts
+            .all(|account| account == Some(first))
+            .then_some(first)
     }
 
     /// With several recipients, the destination Auto resolves against: the

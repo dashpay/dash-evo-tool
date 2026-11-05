@@ -12,10 +12,10 @@ use crate::model::asset_lock::{asset_lock_user_amount_range, asset_lock_user_max
 use crate::model::fee_estimation::{
     AddressAllocationResult, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, core_send_fee_at_max_duffs,
-    estimate_address_funding_fee_from_transition, estimate_platform_fee,
-    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
-    identity_topup_min_funding_duffs, max_platform_inputs, max_spendable_credits,
-    shield_from_balance_fee_headroom,
+    core_several_outputs_max_duffs, estimate_address_funding_fee_from_transition,
+    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
+    format_duffs_as_dash, identity_topup_min_funding_duffs, max_platform_inputs,
+    max_spendable_credits, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spend_limit::SpendLimitKind;
@@ -8231,6 +8231,160 @@ mod tests {
 
         screen.form.recipients_mut()[1].address = testnet_core_address(22).to_string();
         assert!(screen.recipient_rows_complete());
+    }
+
+    /// An explicit source that cannot carry several recipients keeps Send
+    /// disabled with the route explanation, before Send is pressed.
+    #[test]
+    fn an_explicit_source_that_cannot_pay_several_recipients_disables_send() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(31), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(32),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert_eq!(screen.missing_step(), Some(SEVERAL_RECIPIENTS_ROUTE));
+
+        screen
+            .form
+            .choose_pay_from(PayFrom::Platform, PayFromKind::Platform);
+        for (row, seed) in screen.form.recipients_mut().iter_mut().zip([33, 34]) {
+            row.address = testnet_core_address(seed).to_string();
+        }
+        screen.sync_route();
+        assert_eq!(screen.missing_step(), Some(SEVERAL_RECIPIENTS_ROUTE));
+    }
+
+    /// Auto excludes the paying Platform account only when every recipient
+    /// belongs to it: an own first row does not hide the balance that pays
+    /// the external rows.
+    #[test]
+    fn auto_pays_several_platform_recipients_when_only_some_are_own() {
+        let (mut screen, _temp_dir) = send_screen();
+        let paying = testnet_core_address(15);
+        let own = testnet_core_address(16);
+        let platform = |address: &Address| PlatformAddress::try_from(address.clone()).unwrap();
+        screen.set_balances_for_test(SendBalances {
+            core_duffs: 0,
+            core_addresses: vec![],
+            platform: vec![
+                (
+                    paying.clone(),
+                    platform(&paying),
+                    100_000_000 * CREDITS_PER_DUFF,
+                ),
+                (own.clone(), platform(&own), 200_000_000 * CREDITS_PER_DUFF),
+            ],
+            shielded_credits: 0,
+        });
+        screen.form.add_recipient(
+            platform(&own).to_bech32m_string(Network::Testnet),
+            "0.1".to_string(),
+        );
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_platform_bech32m(17),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert!(
+            matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::Chosen {
+                    kind: crate::model::send_route::PayFromKind::Platform,
+                    ..
+                })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
+
+        // Every recipient in the paying account: the payment moves nothing out.
+        screen.form.recipients_mut()[1].address =
+            platform(&paying).to_bech32m_string(Network::Testnet);
+        screen.sync_route();
+        assert!(
+            !matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::Chosen { .. })
+            ),
+            "{:?}",
+            screen.route.auto
+        );
+    }
+
+    /// The Core Max for several recipients leaves room for the fee of every
+    /// output the payment adds beyond the one the quote was proven with, so
+    /// Auto does not pick Core for a total only one output could carry.
+    #[test]
+    fn core_max_for_several_recipients_reserves_every_extra_output_fee() {
+        use crate::model::spend_limit::CoreSendQuoteFee;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::{
+            FeeRate, estimate_tx_size,
+        };
+
+        const QUOTED_DUFFS: u64 = 190_000_000;
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        screen
+            .form
+            .add_recipient(testnet_core_address(21).to_string(), "1.0".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: testnet_core_address(22).to_string(),
+            amount: "0.9".to_string(),
+        };
+        screen.sync_route();
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit {
+            kind, request_id, ..
+        })) = screen.request_spend_limit_for(&SourceSelection::CoreWallet, Some(AddressKind::Core))
+        else {
+            panic!("the form must ask for the Core quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind,
+                request_id,
+                max_credits: QUOTED_DUFFS * CREDITS_PER_DUFF,
+                core_fee: Some(CoreSendQuoteFee {
+                    fee_at_max_duffs: 15_000,
+                    spendable_input_count: 100,
+                    spendable_total_duffs: Some(200_000_000),
+                }),
+            })
+        );
+        screen.sync_route();
+
+        let extra_output_duffs = FeeRate::normal()
+            .calculate_fee(estimate_tx_size(0, 2, false) - estimate_tx_size(0, 1, false));
+        let max = screen
+            .amount_limits_for(
+                &SourceSelection::CoreWallet,
+                screen.validated_destination.as_ref(),
+            )
+            .max_credits
+            .expect("a Core Max");
+        assert!(
+            max <= (QUOTED_DUFFS - extra_output_duffs) * CREDITS_PER_DUFF,
+            "max {max} leaves no room for the second output"
+        );
+        assert!(
+            !matches!(
+                screen.route.auto,
+                Some(crate::model::send_route::AutoSource::Chosen { .. })
+            ),
+            "the quoted total fits one output only: {:?}",
+            screen.route.auto
+        );
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

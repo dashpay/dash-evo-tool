@@ -146,6 +146,20 @@ impl TokenOperationKind {
     }
 }
 
+/// Why the wallet could not quote the largest amount an operation accepts.
+#[derive(Debug, Error)]
+pub enum SpendLimitQueryError {
+    /// The wallet refused the quote.
+    #[error(transparent)]
+    Wallet(#[from] Box<platform_wallet::error::PlatformWalletError>),
+    /// A trial build failed for a reason other than the amount.
+    #[error(transparent)]
+    Build(
+        #[from]
+        dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
+    ),
+}
+
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
 #[derive(Debug, Error)]
 pub enum ContactInfoReadError {
@@ -467,7 +481,7 @@ pub enum TaskError {
     #[error("The wallet's available amount could not be checked. Wait a moment and try again.")]
     SpendLimitQueryFailed {
         #[source]
-        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+        source: std::sync::Arc<SpendLimitQueryError>,
     },
 
     /// Shielding from Platform asked for more than the wallet's Platform

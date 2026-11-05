@@ -237,6 +237,9 @@ fn dpns_registration_error_clears_overlay() {
         screen.display_task_result(BackendTaskSuccessResult::UsernameAvailability {
             label: "alice".to_owned(),
             availability: UsernameAvailability::NeedsVote,
+            contest_fund: dash_evo_tool::model::fee_estimation::contest_fee_credits(
+                app_context.sdk_platform_version(),
+            ),
         });
         screen.open_confirm_for_test();
         let ctx = egui::Context::default();

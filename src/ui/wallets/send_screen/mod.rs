@@ -3038,6 +3038,7 @@ impl WalletSendScreen {
                         .to_string(),
                 );
             }
+            self.ensure_withdrawal_inputs_match_amount()?;
             let action = self.validate_and_send_advanced()?;
             return Ok((action, self.advanced_send_confirmation_message()));
         }
@@ -3056,6 +3057,33 @@ impl WalletSendScreen {
             return Err("Wallet must be unlocked first".to_string());
         }
         Ok(guard.seed_hash())
+    }
+
+    /// A withdrawal from ticked Platform addresses spends exactly what they
+    /// are given, whatever the Amount says, so the two must agree.
+    // TODO(withdrawal-amount-invariant): also enforce it in the backend once
+    // `WalletTask::WithdrawFromPlatformAddress` carries the confirmed amount.
+    fn ensure_withdrawal_inputs_match_amount(&self) -> Result<(), String> {
+        if self.form.advanced_type() != AdvancedSourceType::Platform
+            || self.destination_kind() != Some(AddressKind::Core)
+        {
+            return Ok(());
+        }
+        let inputs_credits = self
+            .form
+            .ticked_advanced()
+            .iter()
+            .filter_map(|(_, amount)| Self::parse_amount_to_credits(amount).ok())
+            .fold(0u64, u64::saturating_add);
+        let amount_credits = self.amount.as_ref().map(Amount::value).unwrap_or(0);
+        if inputs_credits == amount_credits {
+            return Ok(());
+        }
+        Err(format!(
+            "The amounts per address add up to {inputs}, but the amount to send is {amount}. Make them match, or clear the amounts per address.",
+            inputs = format_credits_as_dash(inputs_credits),
+            amount = format_credits_as_dash(amount_credits)
+        ))
     }
 
     /// An Advanced source with no amounts typed spends from the ticked
@@ -8584,6 +8612,42 @@ mod tests {
             screen.prepare_send().err().as_deref(),
             Some(PAYING_FROM_THIS_BALANCE)
         );
+    }
+
+    /// A withdrawal from ticked Platform addresses spends what they are
+    /// given, so amounts per address that do not add up to the Amount are
+    /// refused before any task is built.
+    #[test]
+    fn a_platform_withdrawal_refuses_amounts_per_address_unlike_the_amount() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let paying = PlatformAddress::try_from(testnet_core_address(9))
+            .expect("platform address")
+            .to_bech32m_string(Network::Testnet);
+        screen
+            .form
+            .choose_pay_from(PayFrom::Advanced, PayFromKind::Platform);
+        screen
+            .form
+            .choose_advanced_type(AdvancedSourceType::Platform);
+        screen.form.set_advanced_ticked(&paying, true);
+        screen.form.set_advanced_amount(&paying, "1.0".to_string());
+        screen.typed_destination = Some(ValidatedAddress::Core(testnet_core_address(47)));
+        screen.amount = Some(Amount::new_dash(0.1));
+        screen.sync_route();
+        let refusal = screen
+            .prepare_send()
+            .expect_err("amounts that differ from the Amount are refused");
+        assert!(
+            refusal.contains(&format_credits_as_dash(100_000_000_000))
+                && refusal.contains(&format_credits_as_dash(10_000_000_000)),
+            "{refusal}"
+        );
+
+        screen.form.set_advanced_amount(&paying, "0.1".to_string());
+        screen.sync_route();
+        assert_ne!(screen.prepare_send().err(), Some(refusal));
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

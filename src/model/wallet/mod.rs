@@ -403,6 +403,9 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
+    /// Platform height the balance is current as of (`AddressFunds::as_of_height`);
+    /// `0` when the writer did not know it.
+    pub as_of_height: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -717,7 +720,7 @@ pub type WalletSeedHash = [u8; 32];
 ///
 /// The raw 20-byte P2PKH `hash` is network-agnostic and must be converted to a
 /// `dashcore::Address` by the receiver using the active network before calling
-/// [`Wallet::set_platform_address_info`]. `account` / `index` are the DIP-17
+/// [`Wallet::apply_pinned_platform_address_info`]. `account` / `index` are the DIP-17
 /// coordinates the address was derived at, letting the receiver register its
 /// derivation path EXACTLY via [`Wallet::register_platform_payment_address`]
 /// instead of reverse-deriving it; `index` is `None` only for legacy data that
@@ -732,6 +735,31 @@ pub struct PlatformAddressEntry {
     pub account: u32,
     /// DIP-17 derivation index within the account, when known.
     pub index: Option<AddressIndex>,
+    /// Platform height the balance is current as of (`AddressFunds::as_of_height`);
+    /// `0` when unknown. A lower figure never replaces a higher one.
+    pub as_of_height: u64,
+}
+
+/// Per-address `(balance, as_of_height)` behind the frame-safe Platform total,
+/// by wallet. Coordinator passes and spends merge into it in any order; the
+/// total is always its sum, so a late, older result cannot undo a newer one.
+pub type PlatformBalanceLedger = HashMap<WalletSeedHash, BTreeMap<[u8; 20], (Credits, u64)>>;
+
+/// Merge `entries` into one wallet's ledger, keeping an address's stored figure
+/// when it is pinned higher, and return the wallet's total in credits.
+pub fn merge_platform_balances(
+    ledger: &mut BTreeMap<[u8; 20], (Credits, u64)>,
+    entries: &[PlatformAddressEntry],
+) -> Credits {
+    for entry in entries {
+        if ledger
+            .get(&entry.hash)
+            .is_none_or(|&(_, pin)| pin <= entry.as_of_height)
+        {
+            ledger.insert(entry.hash, (entry.balance, entry.as_of_height));
+        }
+    }
+    ledger.values().map(|&(balance, _)| balance).sum()
 }
 
 /// Batch of coordinator-push balance updates, grouped by wallet.
@@ -1782,7 +1810,8 @@ impl Wallet {
         None
     }
 
-    /// Update Platform address info (balance and nonce).
+    /// Update Platform address info (balance and nonce) of unknown height: the
+    /// pin resets to `0`, so the figure never claims a newer write's height.
     ///
     /// Handles canonical address deduplication: if the same platform address is
     /// stored under a different `Address` key, the duplicate is removed first.
@@ -1791,6 +1820,18 @@ impl Wallet {
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
+    ) {
+        self.insert_platform_address_info(address, balance, nonce, 0);
+    }
+
+    /// Store Platform address info under `address`, dropping any duplicate key
+    /// for the same canonical platform address.
+    fn insert_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+        as_of_height: u64,
     ) {
         // Remove duplicate entries for the same canonical platform address
         if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
@@ -1816,22 +1857,48 @@ impl Wallet {
             }
         }
 
-        self.platform_address_info
-            .insert(address, PlatformAddressInfo { balance, nonce });
+        self.platform_address_info.insert(
+            address,
+            PlatformAddressInfo {
+                balance,
+                nonce,
+                as_of_height,
+            },
+        );
+    }
+
+    /// Record a balance pinned at `as_of_height`, unless the stored one is
+    /// pinned higher: a coordinator pass that started before a spend must not
+    /// undo the spend's result.
+    pub fn apply_pinned_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+        as_of_height: u64,
+    ) {
+        if self
+            .get_platform_address_info(&address)
+            .is_some_and(|stored| stored.as_of_height > as_of_height)
+        {
+            return;
+        }
+        self.insert_platform_address_info(address, balance, nonce, as_of_height);
     }
 
     /// Seed Platform address info only when no entry exists for the canonical
     /// address — the at-rest warm-start equivalent of `or_insert`, so a live
-    /// push (which overwrites via [`Self::set_platform_address_info`]) is never
-    /// clobbered by staler persisted data.
+    /// push is never clobbered by staler persisted data. Keeps the persisted
+    /// height pin (`as_of_height`).
     pub fn seed_platform_address_info(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
+        as_of_height: u64,
     ) {
         if self.get_platform_address_info(&address).is_none() {
-            self.set_platform_address_info(address, balance, nonce);
+            self.insert_platform_address_info(address, balance, nonce, as_of_height);
         }
     }
 
@@ -2166,7 +2233,12 @@ impl WalletAddressProvider {
             total_balance = total_balance.saturating_add(funds.balance);
 
             // Update wallet with synced balances
-            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
+            wallet.apply_pinned_platform_address_info(
+                canonical_address.clone(),
+                funds.balance,
+                funds.nonce,
+                funds.as_of_height,
+            );
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)
@@ -2483,6 +2555,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 1_000_000,
                 nonce: 0,
+                ..Default::default()
             },
         );
         wallet.platform_address_info.insert(
@@ -2490,6 +2563,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 2_000_000,
                 nonce: 1,
+                ..Default::default()
             },
         );
 
@@ -2510,18 +2584,144 @@ mod tests {
         assert_eq!(info.nonce, 4);
     }
 
+    /// An explicit refresh that started before a spend and finishes after it
+    /// must not bring back the pre-spend figure; one newer than the spend is
+    /// applied with its own height.
+    #[test]
+    fn a_refresh_older_than_a_pinned_spend_does_not_undo_it() {
+        let network = Network::Testnet;
+        let seed = rand::random::<[u8; 64]>();
+        let mut wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
+        let address = wallet
+            .generate_platform_receive_address_with_seed(&seed, network)
+            .expect("platform address");
+        let canonical = Wallet::canonical_address(&address, network);
+        let scan = |balance: u64, nonce: u32, as_of_height: u64| {
+            let mut provider =
+                WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+            provider.found_balances.insert(
+                canonical.clone(),
+                AddressFunds {
+                    nonce,
+                    balance,
+                    as_of_height,
+                },
+            );
+            provider
+        };
+        let figure = |wallet: &Wallet| {
+            let info = wallet
+                .get_platform_address_info(&address)
+                .expect("address info");
+            (info.balance, info.nonce, info.as_of_height)
+        };
+        let older = scan(80_000, 2, 400);
+        let newer = scan(45_000, 4, 650);
+
+        wallet.apply_pinned_platform_address_info(address.clone(), 41_000, 3, 500);
+        older.apply_results_to_wallet(&mut wallet);
+        assert_eq!(
+            figure(&wallet),
+            (41_000, 3, 500),
+            "the older scan is ignored"
+        );
+
+        newer.apply_results_to_wallet(&mut wallet);
+        assert_eq!(
+            figure(&wallet),
+            (45_000, 4, 650),
+            "the newer scan is applied"
+        );
+    }
+
+    /// A balance pinned lower than the stored one is ignored; an equal or
+    /// higher pin replaces it. A write of unknown height resets the pin.
+    #[test]
+    fn pinned_platform_address_info_keeps_the_newer_figure() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        let figure = |wallet: &Wallet| {
+            let info = wallet.get_platform_address_info(&addr).unwrap();
+            (info.balance, info.nonce, info.as_of_height)
+        };
+
+        wallet.apply_pinned_platform_address_info(addr.clone(), 41_000, 3, 500);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
+        assert_eq!(
+            figure(&wallet),
+            (41_000, 3, 500),
+            "an older pass is ignored"
+        );
+
+        wallet.apply_pinned_platform_address_info(addr.clone(), 45_000, 3, 500);
+        assert_eq!(figure(&wallet), (45_000, 3, 500));
+        wallet.apply_pinned_platform_address_info(addr.clone(), 46_000, 4, 600);
+        assert_eq!(figure(&wallet), (46_000, 4, 600));
+
+        // A write of unknown height resets the pin rather than claiming 600.
+        wallet.set_platform_address_info(addr.clone(), 47_000, 4);
+        assert_eq!(figure(&wallet), (47_000, 4, 0));
+    }
+
+    /// Results merge by pin in any order; an address a result omits keeps its figure.
+    #[test]
+    fn platform_balances_merge_by_pin_in_any_order() {
+        let entry = |hash: u8, balance: u64, as_of_height: u64| PlatformAddressEntry {
+            hash: [hash; 20],
+            balance,
+            nonce: 1,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+        let mut ledger = BTreeMap::new();
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 10, 500)]),
+            10
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 99, 400)]),
+            10,
+            "older figure"
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xBB, 5, 100)]),
+            15,
+            "omitted address kept"
+        );
+        assert_eq!(
+            merge_platform_balances(&mut ledger, &[entry(0xAA, 7, 500)]),
+            12
+        );
+    }
+
+    /// A warm-start seed keeps the persisted height pin, so an older refresh
+    /// after a restart cannot restore a pre-spend figure.
+    #[test]
+    fn a_warm_start_seed_keeps_its_height_pin() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        wallet.seed_platform_address_info(addr.clone(), 41_000, 3, 500);
+        wallet.apply_pinned_platform_address_info(addr.clone(), 80_000, 2, 400);
+        let info = wallet.get_platform_address_info(&addr).unwrap();
+        assert_eq!(
+            (info.balance, info.nonce, info.as_of_height),
+            (41_000, 3, 500)
+        );
+    }
+
     #[test]
     fn test_seed_platform_address_info_is_insert_if_absent() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
         // Absent -> seeds the value.
-        wallet.seed_platform_address_info(addr.clone(), 500_000, 3);
+        wallet.seed_platform_address_info(addr.clone(), 500_000, 3, 0);
         let info = wallet.get_platform_address_info(&addr).unwrap();
         assert_eq!((info.balance, info.nonce), (500_000, 3));
 
         // Present -> no-op: a warm-start seed must not clobber a live value.
-        wallet.seed_platform_address_info(addr.clone(), 999_999, 9);
+        wallet.seed_platform_address_info(addr.clone(), 999_999, 9, 0);
         let info = wallet.get_platform_address_info(&addr).unwrap();
         assert_eq!(
             (info.balance, info.nonce),
@@ -2545,6 +2745,7 @@ mod tests {
             PlatformAddressInfo {
                 balance: 100_000,
                 nonce: 1,
+                ..Default::default()
             },
         );
 

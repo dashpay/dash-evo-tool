@@ -28,7 +28,10 @@ use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
 };
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
+use crate::model::wallet::{
+    PlatformAddressEntry, PlatformAddressUpdates, PlatformBalanceLedger, WalletSeedHash,
+    merge_platform_balances,
+};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
@@ -66,9 +69,18 @@ pub struct EventBridge {
     /// produces `platform_balances`; read synchronously in the frame loop via
     /// `AppContext::platform_sync_info` to drive the "Addresses synced" label.
     platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+    /// AppContext's height-pinned per-address ledger `platform_balances` is
+    /// summed from, shared with the spend path. Locked only while
+    /// `platform_balances` is held.
+    platform_balance_ledger: Arc<Mutex<PlatformBalanceLedger>>,
+    /// Per-address updates a full channel refused, re-sent with the next
+    /// pass: an incremental pass no longer mentions an address proven absent,
+    /// so its zero would otherwise never reach the per-address view.
+    undelivered_platform_updates: Mutex<PlatformAddressUpdates>,
 }
 
 impl EventBridge {
+    #[allow(clippy::too_many_arguments)] // one shared handle per snapshot the bridge writes.
     pub(super) fn new(
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
@@ -77,6 +89,7 @@ impl EventBridge {
         shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
+        platform_balance_ledger: Arc<Mutex<PlatformBalanceLedger>>,
     ) -> Self {
         Self {
             connection_status,
@@ -86,6 +99,8 @@ impl EventBridge {
             shielded_balances,
             platform_balances,
             platform_sync_cursors,
+            platform_balance_ledger,
+            undelivered_platform_updates: Mutex::new(Vec::new()),
         }
     }
 
@@ -107,6 +122,32 @@ impl EventBridge {
 
     /// Nudge the frame loop without clearing per-screen async caches such as DashPay profiles.
     /// The sender requests repaint on success; a full channel is harmless as events coalesce.
+    /// Send per-address updates, with any a full channel refused before, to
+    /// the frame loop without blocking; keep them for the next pass if the
+    /// channel is still full.
+    fn deliver_platform_updates(&self, updates: PlatformAddressUpdates) {
+        let mut undelivered = self.undelivered_platform_updates.lock().ok();
+        let mut batch = undelivered
+            .as_deref_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        batch.extend(updates);
+        if batch.is_empty() {
+            return;
+        }
+        let result = BackendTaskSuccessResult::PlatformAddressSyncPushed {
+            updates: batch.clone(),
+        };
+        if self
+            .task_result_sender
+            .try_send(TaskResult::unattributed_success(result))
+            .is_err()
+            && let Some(undelivered) = undelivered.as_deref_mut()
+        {
+            *undelivered = coalesce_platform_updates(batch);
+        }
+    }
+
     fn nudge_refresh(&self) {
         let _ = self.task_result_sender.try_send(TaskResult::Repaint);
     }
@@ -338,13 +379,22 @@ impl PlatformEventHandler for EventBridge {
         // Only OWNED addresses appear in the coordinator result (the provider
         // tracks exactly the wallets registered with the manager), so no orphan
         // inflation is possible. Errored wallets leave both snapshots untouched.
-        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-
         // Single pass: resolve `WalletId → WalletSeedHash` once per wallet, drop
         // any wallet whose id is not registered (no DET mapping) or has no found
         // addresses. Both outputs below reuse the resolved seed hash — no double
         // lookup (QA-B2-003).
-        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary)
+        // An address proven absent is zeroed only where the ledger tracks it,
+        // so never-funded derived addresses stay out of the push.
+        let was_funded = |wallet_id: &[u8; 32], hash: &[u8; 20]| {
+            self.snapshots
+                .seed_hash_for(wallet_id)
+                .is_some_and(|seed_hash| {
+                    self.platform_balance_ledger
+                        .lock()
+                        .is_ok_and(|ledger| ledger_tracks(&ledger, &seed_hash, hash))
+                })
+        };
+        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary, was_funded)
             .into_iter()
             .filter_map(|(wallet_id, entries)| {
                 if entries.is_empty() {
@@ -371,10 +421,9 @@ impl PlatformEventHandler for EventBridge {
         // One duff of sub-duff remainder is accepted for the wallet total; the
         // precision loss is ≤ 0.001 DASH regardless of address count.
         if let Ok(mut balances) = self.platform_balances.lock() {
-            for (seed_hash, entries) in &resolved {
-                let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
-                balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
-            }
+            // Lock order: `platform_balances`, then the ledger (as the spend path).
+            let mut ledger = self.platform_balance_ledger.lock().ok();
+            write_pass_totals(&mut balances, ledger.as_deref_mut(), &resolved);
         }
 
         // (1b) Update the frame-safe sync-cursor snapshot so the "Addresses
@@ -426,15 +475,9 @@ impl PlatformEventHandler for EventBridge {
         }
 
         // (2) Emit the per-address update so `wallet.platform_address_info` stays
-        // current without a manual Refresh. Non-blocking; a full channel means
-        // the coordinator retries on the next ~15 s pass. The frame-safe total
-        // (step 1) is already written.
-        if !resolved.is_empty() {
-            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
-            let _ = self
-                .task_result_sender
-                .try_send(TaskResult::unattributed_success(result));
-        }
+        // current without a manual Refresh. The frame-safe total (step 1) is
+        // already written.
+        self.deliver_platform_updates(resolved);
 
         self.nudge_refresh();
     }
@@ -489,10 +532,15 @@ impl PlatformEventHandler for EventBridge {
 /// coordinates from the sync tag — so the receiver can register the address's
 /// derivation path exactly instead of reverse-deriving it.
 ///
+/// An address the pass proved absent (a chain reset) that `was_funded` says
+/// DET tracks gets a zero entry pinned at the scan's checkpoint, as upstream
+/// zeroes its own copy; the raw `found` set omits it.
+///
 /// `Err` outcomes are skipped so their cached per-address data is left
 /// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
 fn summary_ok_platform_entries(
     summary: &PlatformAddressSyncSummary,
+    was_funded: impl Fn(&[u8; 32], &[u8; 20]) -> bool,
 ) -> Vec<([u8; 32], Vec<PlatformAddressEntry>)> {
     summary
         .wallet_results
@@ -509,7 +557,23 @@ fn summary_ok_platform_entries(
                             nonce: funds.nonce,
                             account: *account,
                             index: Some(*index),
+                            as_of_height: funds.as_of_height,
                         },
+                    )
+                    .chain(
+                        result
+                            .absent
+                            .iter()
+                            .filter(|key| !result.found.contains_key(key))
+                            .filter(|(_, p2pkh)| was_funded(wallet_id, &p2pkh.to_bytes()))
+                            .map(|&((_, account, index), p2pkh)| PlatformAddressEntry {
+                                hash: p2pkh.to_bytes(),
+                                balance: 0,
+                                nonce: 0,
+                                account,
+                                index: Some(index),
+                                as_of_height: result.checkpoint_height,
+                            }),
                     )
                     .collect();
                 Some((*wallet_id, entries))
@@ -517,6 +581,62 @@ fn summary_ok_platform_entries(
             WalletSyncOutcome::Err(_) => None,
         })
         .collect()
+}
+
+/// Keep one entry per wallet and address, the highest pin (the later on a
+/// tie), so retained updates stay bounded however long the channel is full.
+fn coalesce_platform_updates(updates: PlatformAddressUpdates) -> PlatformAddressUpdates {
+    let mut by_wallet: std::collections::BTreeMap<
+        WalletSeedHash,
+        std::collections::BTreeMap<[u8; 20], PlatformAddressEntry>,
+    > = std::collections::BTreeMap::new();
+    for (seed_hash, entries) in updates {
+        let wallet = by_wallet.entry(seed_hash).or_default();
+        for entry in entries {
+            if wallet
+                .get(&entry.hash)
+                .is_none_or(|kept| kept.as_of_height <= entry.as_of_height)
+            {
+                wallet.insert(entry.hash, entry);
+            }
+        }
+    }
+    by_wallet
+        .into_iter()
+        .map(|(seed_hash, entries)| (seed_hash, entries.into_values().collect()))
+        .collect()
+}
+
+/// Whether the ledger tracks `hash` for `seed_hash`, at any balance. A zeroed
+/// address stays tracked, so its zero is re-sent on every pass that proves it
+/// absent and a dropped push heals on the next one.
+fn ledger_tracks(
+    ledger: &PlatformBalanceLedger,
+    seed_hash: &WalletSeedHash,
+    hash: &[u8; 20],
+) -> bool {
+    ledger
+        .get(seed_hash)
+        .is_some_and(|addresses| addresses.contains_key(hash))
+}
+
+/// Merge each wallet's pass into the height-pinned `ledger` and publish the
+/// ledger's sum, so a pass older than a spend, or one omitting a spent
+/// address, cannot undo it. Without a ledger (poisoned lock) the pass's own
+/// sum is published, as before the ledger existed.
+fn write_pass_totals(
+    balances: &mut HashMap<WalletSeedHash, u64>,
+    mut ledger: Option<&mut PlatformBalanceLedger>,
+    resolved: &PlatformAddressUpdates,
+) {
+    use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+    for (seed_hash, entries) in resolved {
+        let total_credits = match ledger.as_deref_mut() {
+            Some(ledger) => merge_platform_balances(ledger.entry(*seed_hash).or_default(), entries),
+            None => entries.iter().map(|e| e.balance).sum(),
+        };
+        balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
+    }
 }
 
 /// `(last_sync_timestamp, sync_height)` for every wallet whose pass completed
@@ -647,6 +767,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, gate)
     }
@@ -670,6 +791,7 @@ mod tests {
             Arc::new(SnapshotStore::new()),
             gate,
             Arc::clone(&balances),
+            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
         );
@@ -700,6 +822,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::clone(&platform_balances),
             Arc::clone(&platform_sync_cursors),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }
@@ -1287,6 +1410,233 @@ mod tests {
         assert!(drained_repaint(&mut rx));
     }
 
+    /// A pass older than a spend already in the frame-safe total leaves that
+    /// wallet's total alone; other wallets, and a pass that caught up, write.
+    #[test]
+    fn pass_totals_skip_a_wallet_whose_pass_predates_its_spend() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use std::collections::BTreeMap;
+        let (spent, other) = ([1u8; 32], [2u8; 32]);
+        let entry = |hash: u8, balance: u64, as_of_height: u64| PlatformAddressEntry {
+            hash: [hash; 20],
+            balance,
+            nonce: 1,
+            account: 0,
+            index: Some(0),
+            as_of_height,
+        };
+        let mut balances = HashMap::from([(spent, 41)]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            spent,
+            BTreeMap::from([([0xAA; 20], (41 * CREDITS_PER_DUFF, 500))]),
+        )]);
+
+        let stale = vec![
+            (spent, vec![entry(0xAA, 80 * CREDITS_PER_DUFF, 400)]),
+            (other, vec![entry(0xCC, 7 * CREDITS_PER_DUFF, 400)]),
+        ];
+        write_pass_totals(&mut balances, Some(&mut ledger), &stale);
+        assert_eq!(balances.get(&spent), Some(&41), "the spend stays shown");
+        assert_eq!(balances.get(&other), Some(&7));
+
+        let caught_up = vec![(spent, vec![entry(0xAA, 45 * CREDITS_PER_DUFF, 520)])];
+        write_pass_totals(&mut balances, Some(&mut ledger), &caught_up);
+        assert_eq!(balances.get(&spent), Some(&45));
+    }
+
+    /// A delayed pass that predates the funding of a spent address, and so
+    /// omits it, must not drop that address from the total.
+    #[test]
+    fn pass_totals_keep_a_spent_address_the_pass_omits() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use std::collections::BTreeMap;
+        let wallet = [3u8; 32];
+        let mut balances = HashMap::from([(wallet, 35)]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            wallet,
+            BTreeMap::from([([0xBB; 20], (30 * CREDITS_PER_DUFF, 600))]),
+        )]);
+        let delayed = vec![(
+            wallet,
+            vec![PlatformAddressEntry {
+                hash: [0xCC; 20],
+                balance: 5 * CREDITS_PER_DUFF,
+                nonce: 1,
+                account: 0,
+                index: Some(1),
+                as_of_height: 400,
+            }],
+        )];
+        write_pass_totals(&mut balances, Some(&mut ledger), &delayed);
+        assert_eq!(balances.get(&wallet), Some(&35), "C plus the spent B");
+    }
+
+    /// A push dropped on a full channel is delivered with the next pass, even
+    /// an incremental one that no longer mentions the address; retained
+    /// updates keep only the newest figure per address.
+    #[test]
+    fn a_dropped_platform_push_is_delivered_by_the_next_pass() {
+        let (bridge, _cs, mut rx, _balances, _cursors) = make_bridge_with_platform_balances();
+        let seed_hash = [7u8; 32];
+        let zero = PlatformAddressEntry {
+            hash: [0xBB; 20],
+            balance: 0,
+            nonce: 0,
+            account: 0,
+            index: Some(1),
+            as_of_height: 700,
+        };
+        while bridge
+            .task_result_sender
+            .try_send(TaskResult::Repaint)
+            .is_ok()
+        {}
+
+        let older = PlatformAddressEntry {
+            balance: 30_000,
+            nonce: 2,
+            as_of_height: 600,
+            ..zero
+        };
+        bridge.deliver_platform_updates(vec![(seed_hash, vec![older])]);
+        bridge.deliver_platform_updates(vec![(seed_hash, vec![zero])]);
+        while rx.try_recv().is_ok() {}
+        // The next pass is incremental: it carries nothing for the address.
+        bridge.deliver_platform_updates(Vec::new());
+
+        let mut delivered = Vec::new();
+        while let Ok(result) = rx.try_recv() {
+            if let TaskResult::Success { result, .. } = result
+                && let BackendTaskSuccessResult::PlatformAddressSyncPushed { updates } = *result
+            {
+                delivered.extend(updates);
+            }
+        }
+        assert_eq!(delivered, vec![(seed_hash, vec![zero])]);
+    }
+
+    /// A proven-absent address whose zero push was dropped (full channel) is
+    /// zeroed again by the next pass, after its total already reads zero.
+    #[test]
+    fn a_dropped_absence_push_is_resent_by_the_next_pass() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::AddressSyncResult;
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+        use std::collections::BTreeMap;
+
+        let (wallet_id, seed_hash) = ([6u8; 32], [6u8; 32]);
+        let mut ledger: PlatformBalanceLedger = HashMap::from([(
+            seed_hash,
+            BTreeMap::from([([0xBB; 20], (30 * CREDITS_PER_DUFF, 600))]),
+        )]);
+        let mut balances = HashMap::from([(seed_hash, 30)]);
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult {
+                checkpoint_height: 700,
+                ..Default::default()
+            };
+        result
+            .absent
+            .insert(((wallet_id, 0, 1), PlatformP2PKHAddress::new([0xBB; 20])));
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+        let pass = |ledger: &PlatformBalanceLedger| -> PlatformAddressUpdates {
+            summary_ok_platform_entries(&summary, |_, hash| ledger_tracks(ledger, &seed_hash, hash))
+                .into_iter()
+                .map(|(_, entries)| (seed_hash, entries))
+                .collect()
+        };
+
+        // First pass: the total goes to zero, but its push is dropped.
+        let first = pass(&ledger);
+        write_pass_totals(&mut balances, Some(&mut ledger), &first);
+        assert_eq!(balances.get(&seed_hash), Some(&0));
+
+        // The next pass still carries the zero for the per-address view.
+        let second = pass(&ledger);
+        let zero = second[0].1.iter().find(|e| e.hash == [0xBB; 20]);
+        assert_eq!(
+            zero.map(|e| (e.balance, e.nonce, e.as_of_height)),
+            Some((0, 0, 700))
+        );
+    }
+
+    /// An address already zeroed stays tracked, so a pass after a dropped
+    /// push zeroes it again; an address the ledger never held is not tracked.
+    #[test]
+    fn a_zeroed_address_stays_tracked_for_the_next_pass() {
+        use std::collections::BTreeMap;
+        let seed_hash = [4u8; 32];
+        let ledger: PlatformBalanceLedger =
+            HashMap::from([(seed_hash, BTreeMap::from([([0xBB; 20], (0, 700))]))]);
+        assert!(ledger_tracks(&ledger, &seed_hash, &[0xBB; 20]));
+        assert!(!ledger_tracks(&ledger, &seed_hash, &[0xDD; 20]));
+    }
+
+    /// An address proven absent that DET still shows funds for is zeroed at
+    /// the checkpoint height; an absent address DET never funded is left out.
+    #[test]
+    fn summary_entries_zero_a_funded_address_proven_absent() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id = [5u8; 32];
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult {
+                checkpoint_height: 700,
+                ..Default::default()
+            };
+        result.found.insert(
+            ((wallet_id, 0, 0), PlatformP2PKHAddress::new([0xCC; 20])),
+            AddressFunds {
+                nonce: 1,
+                balance: 5_000,
+                as_of_height: 700,
+            },
+        );
+        result
+            .absent
+            .insert(((wallet_id, 0, 1), PlatformP2PKHAddress::new([0xBB; 20])));
+        result
+            .absent
+            .insert(((wallet_id, 0, 2), PlatformP2PKHAddress::new([0xDD; 20])));
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+
+        let got = summary_ok_platform_entries(&summary, |_, hash| *hash == [0xBB; 20]);
+        let entries = &got[0].1;
+        assert_eq!(
+            entries.len(),
+            2,
+            "C and the funded-but-absent B: {entries:?}"
+        );
+        let zeroed = entries
+            .iter()
+            .find(|e| e.hash == [0xBB; 20])
+            .expect("B is zeroed");
+        assert_eq!(
+            (
+                zeroed.balance,
+                zeroed.nonce,
+                zeroed.index,
+                zeroed.as_of_height
+            ),
+            (0, 0, Some(1), 700)
+        );
+    }
+
     /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct
     /// per-address data for `Ok` outcomes and skips `Err` outcomes entirely.
     #[test]
@@ -1332,7 +1682,7 @@ mod tests {
             WalletSyncOutcome::Err("network timeout".to_string()),
         );
 
-        let got = summary_ok_platform_entries(&summary);
+        let got = summary_ok_platform_entries(&summary, |_, _| false);
 
         // Only the Ok wallet should produce entries.
         assert_eq!(got.len(), 1, "only one wallet had an Ok outcome");
@@ -1574,7 +1924,7 @@ mod tests {
             .wallet_results
             .insert(wallet_id, WalletSyncOutcome::Ok(result));
 
-        let got = summary_ok_platform_entries(&summary);
+        let got = summary_ok_platform_entries(&summary, |_, _| false);
         assert_eq!(got.len(), 1);
         let (_, entries) = &got[0];
         assert_eq!(entries.len(), 2);

@@ -789,7 +789,6 @@ impl WalletSendScreen {
 
         let network = self.app_context.network;
         let mut result: Vec<_> = funded_platform_addresses(&wallet.platform_address_info)
-            .into_iter()
             .map(|(platform_addr, (addr, balance))| {
                 (
                     platform_addr.to_bech32m_string(network),

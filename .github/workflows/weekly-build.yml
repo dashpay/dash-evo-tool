@@ -40,6 +40,7 @@ permissions: {}
 jobs:
   gate:
     name: Determine whether to release
+    if: github.ref == 'refs/heads/v1.0-dev'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -50,13 +51,16 @@ jobs:
       reason: ${{ steps.decide.outputs.reason }}
       version: ${{ steps.decide.outputs.version }}
       tag: ${{ steps.decide.outputs.tag }}
+      source_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Decide
         id: decide
@@ -182,9 +186,10 @@ jobs:
       TAG: ${{ needs.gate.outputs.tag }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.gate.outputs.source_sha }}
 
       - name: Verify force-recut ownership
         run: |
@@ -240,8 +245,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # See the SECURITY NOTE at the top of this file: GITHUB_TOKEN only.
-          # Use HEAD, not $GITHUB_SHA: default checkout resolves the triggering
-          # ref, so HEAD is the commit this workflow is intentionally building.
+          # Checkout is pinned to the same event SHA as every build.
           git tag -a "$TAG" -m "Weekly draft pre-release $TAG" HEAD
           git push origin "refs/tags/$TAG"
 
@@ -249,12 +253,19 @@ jobs:
     name: Build platform artifacts
     needs: [gate, tag]
     uses: ./.github/workflows/release.yml
-    secrets: inherit
+    secrets:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
     permissions:
       contents: write
       id-token: write
       attestations: write
     with:
+      weekly: true
+      source_sha: ${{ needs.gate.outputs.source_sha }}
       tag: ${{ needs.gate.outputs.tag }}
       draft: true
       version_override: ${{ needs.gate.outputs.version }}
@@ -263,19 +274,10 @@ jobs:
     name: Build Flatpak artifacts
     needs: [gate, tag]
     uses: ./.github/workflows/flatpak.yml
-    secrets: inherit
-    # NOTE: flatpak.yml's own `build-flatpak` job hard-codes
-    # `permissions: { contents: write }` (needed for its `release:`-event
-    # attach-to-release step). GitHub's nested-workflow permission capping is
-    # NOT silent truncation — a nested job's own declared permissions must be
-    # <= what the caller grants, or the whole workflow fails validation
-    # ("Invalid workflow file", startup_failure) before any job runs. So this
-    # must be `write` even though the write capability goes unused on this
-    # workflow_call path (the attach step only fires on the real `release`
-    # event, never on workflow_call).
     permissions:
-      contents: write
+      contents: read
     with:
+      source_sha: ${{ needs.gate.outputs.source_sha }}
       version_override: ${{ needs.gate.outputs.version }}
 
   # Captures this version's migration fixture with the binary just built and
@@ -321,12 +323,26 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.gate.outputs.tag }}
     steps:
+      - name: Checkout release policy for the authorized source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release_source.py
+          sparse-checkout-cone-mode: false
+          path: release-policy
       - name: Download Flatpak artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: "dash-evo-tool-linux-*-flatpak"
           merge-multiple: true
           path: fp
+
+      - name: Verify the weekly tag before changing its release
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+        run: python3 release-policy/scripts/ci/release_source.py --verify-remote-tag
 
       - name: Upload Flatpak bundles and fetch release URL
         id: upload
@@ -382,10 +398,26 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.gate.outputs.tag }}
     steps:
+      - name: Checkout release policy for the authorized source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release_source.py
+          sparse-checkout-cone-mode: false
+          path: release-policy
+      - name: Verify cleanup ownership
+        id: cleanup
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+        run: python3 release-policy/scripts/ci/release_source.py --cleanup-plan
       - name: Delete orphaned weekly tag
+        env:
+          DELETE_RELEASE: ${{ steps.cleanup.outputs.delete_release }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [ "$DELETE_RELEASE" = true ]; then
             gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY"
           else
             gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"

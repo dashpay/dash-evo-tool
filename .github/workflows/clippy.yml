@@ -1,22 +1,20 @@
 name: Clippy
 
-# Path filters below fire on any change that can affect a lint or fmt result,
-# and on nothing that cannot. `**/*.rs` covers build.rs and every crate's
-# sources; documentation changes deliberately match nothing.
+# Pushes keep path filters; PRs report required checks even for docs-only changes.
 on:
   push:
     branches:
       - "v*-dev"
-    paths: &code_paths
+    paths:
       - "**/*.rs" # includes build.rs
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/clippy.yml"
+      - "scripts/ci/pr_scope.py"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths: *code_paths
   # Allows a manual run against a branch. Draft PRs are suppressed by the
   # `draft != true` guard below and otherwise have no way to run CI at all; a
   # manual run covers them. Note it tests the branch head, not the PR merge
@@ -27,18 +25,40 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  scope:
+    name: Determine PR scope
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      needed: ${{ steps.scope.outputs.needed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        run: python3 scripts/ci/pr_scope.py --suite clippy
+
   clippy:
+    needs: [scope]
     name: Clippy
-    if: github.event.pull_request.draft != true
+    if: ${{ !cancelled() && github.event.pull_request.draft != true && (github.event_name != 'pull_request' || needs.scope.result != 'success' || needs.scope.outputs.needed != 'false') }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -82,8 +102,4 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features --all-targets -- -D warnings
-          name: Clippy Report
+        run: cargo clippy --all-features --all-targets -- -D warnings

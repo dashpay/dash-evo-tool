@@ -1834,6 +1834,76 @@ mod tests {
         assert_eq!(spendable, (1, COIN_DUFFS));
     }
 
+    /// The Core Max for several recipients builds: with 253 P2PKH outputs
+    /// the build also pays for the output count's three-byte encoding.
+    #[test]
+    fn core_max_for_several_recipients_builds_with_a_wide_output_count() {
+        use crate::model::fee_estimation::{core_send_max_duffs, core_several_outputs_max_duffs};
+        const COIN_DUFFS: u64 = 10_000_000;
+        const CURRENT_HEIGHT: u32 = 200;
+        const RECIPIENTS: usize = 253;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut info = ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        info.update_last_processed_height(CURRENT_HEIGHT);
+        let bip44 = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let address = managed
+            .next_receive_address(Some(&bip44.account_xpub), true)
+            .expect("BIP44 address");
+        let outpoint = OutPoint::new(Txid::from_byte_array(rand::random()), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: COIN_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed.utxos.insert(outpoint, utxo);
+
+        let deadline = super::ProbeDeadline::after(std::time::Duration::from_secs(30));
+        let (proven, fee) = super::largest_core_payment_at_most(
+            &wallet,
+            &info,
+            &payment_recipient(),
+            COIN_DUFFS,
+            &deadline,
+        )
+        .expect("no builder error")
+        .expect("a Max builds");
+        let total = core_several_outputs_max_duffs(core_send_max_duffs(proven, fee), RECIPIENTS);
+        let share = total / RECIPIENTS as u64;
+        let recipients: Vec<_> = (0..RECIPIENTS)
+            .map(|index| {
+                let mut hash = [0u8; 20];
+                hash[..2].copy_from_slice(&(index as u16).to_be_bytes());
+                let address = Address::new(
+                    Network::Testnet,
+                    dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                        dash_sdk::dpp::dashcore::PubkeyHash::from_byte_array(hash),
+                    ),
+                );
+                let amount = if index == 0 {
+                    total - share * (RECIPIENTS as u64 - 1)
+                } else {
+                    share
+                };
+                (address, amount)
+            })
+            .collect();
+        super::dry_run_core_payment(&wallet, &info, &recipients)
+            .expect("the several-recipient Max must build");
+    }
+
     /// Refusals to fund an amount narrow the Core Max search: funds short of
     /// it, or more inputs than one transaction takes.
     #[test]

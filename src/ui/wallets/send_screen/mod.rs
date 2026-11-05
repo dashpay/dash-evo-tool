@@ -8436,26 +8436,41 @@ mod tests {
             amount: "0.1".to_string(),
         };
         screen.sync_route();
+
+        const OTHER_WALLET: WalletSeedHash = [9; 32];
+        let own = testnet_core_address(44);
         screen
             .form
             .choose_to_mode(ToMode::MyWallets, seed_hash, PayFromKind::Core);
+        screen.form.choose_to_wallet(OTHER_WALLET);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        let _ = screen
+            .own_addresses
+            .ensure_requested(OTHER_WALLET, OwnAddressKind::Core);
+        screen
+            .own_addresses
+            .store(OTHER_WALLET, OwnAddressKind::Core, own.to_string());
+        screen.amount = Some(Amount::new_dash(0.2));
         screen.sync_route();
-        if let Ok((
-            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
-                request,
-                ..
-            })),
-            _,
-        )) = screen.prepare_send()
-        {
-            assert!(
+        match screen.prepare_send() {
+            Ok((
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
+                    request,
+                    ..
+                })),
+                _,
+            )) => assert_eq!(
                 request
                     .recipients
                     .iter()
-                    .all(|recipient| !rows.contains(&recipient.address)),
-                "a hidden row must not be paid: {:?}",
-                request.recipients
-            );
+                    .map(|recipient| (recipient.address.as_str(), recipient.amount_duffs))
+                    .collect::<Vec<_>>(),
+                vec![(own.to_string().as_str(), 20_000_000)],
+                "only the wallet chosen under My wallets is paid"
+            ),
+            other => panic!("expected a Core payment to the own wallet, got {other:?}"),
         }
     }
 

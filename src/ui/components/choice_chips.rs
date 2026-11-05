@@ -61,6 +61,11 @@ impl<T> ChoiceChip<T> {
         self
     }
 
+    /// The value the chip selects.
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.disabled_reason.is_none()
     }

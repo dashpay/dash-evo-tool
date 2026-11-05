@@ -795,6 +795,38 @@ impl WalletSendScreen {
         }
     }
 
+    /// Why several recipients cannot be paid as entered: a row lacks its
+    /// address or amount, an address is not of the active network, or the
+    /// source cannot carry several outputs to these addresses.
+    pub(super) fn recipient_rows_refusal(&self) -> Option<&'static str> {
+        if !self.form.has_several_recipients() {
+            return None;
+        }
+        if !self.recipient_rows_complete() {
+            return Some(RECIPIENT_ROWS_INCOMPLETE);
+        }
+        let rows = self.form.recipients();
+        if rows
+            .iter()
+            .any(|row| self.row_address(&row.address).is_none())
+        {
+            return Some(RECIPIENT_ROWS_INVALID);
+        }
+        match (&self.selected_source, self.destination_kind()) {
+            (_, None) => Some(SEVERAL_RECIPIENTS_ROUTE),
+            (Some(source), Some(destination))
+                if !matches!(
+                    (Self::source_kind(source), destination),
+                    (PayFromKind::Core, AddressKind::Core)
+                        | (PayFromKind::Platform, AddressKind::Platform)
+                ) =>
+            {
+                Some(SEVERAL_RECIPIENTS_ROUTE)
+            }
+            _ => None,
+        }
+    }
+
     /// Whether every recipient row names an address and a positive amount.
     /// A row missing either would be left out of the payment.
     pub(super) fn recipient_rows_complete(&self) -> bool {

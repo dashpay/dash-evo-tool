@@ -461,9 +461,10 @@ impl SendFormState {
         &mut self.recipients
     }
 
-    /// Whether the form pays several recipients (two or more rows).
+    /// Whether the form pays several recipients: two or more rows, under
+    /// Someone else. My wallets keeps them aside for the way back.
     pub fn has_several_recipients(&self) -> bool {
-        self.recipients.len() >= 2
+        self.to_mode == ToMode::SomeoneElse && self.recipients.len() >= 2
     }
 
     /// Add a recipient row. From the single-recipient layout, the current
@@ -564,6 +565,20 @@ mod tests {
         assert_eq!(form.to_mode(), ToMode::SomeoneElse);
         assert_eq!(form.pin_notice(), None);
         assert!(!form.max_intent());
+    }
+
+    /// Recipient rows belong to Someone else: under My wallets they are kept
+    /// but pay nothing, and they come back on the way back.
+    #[test]
+    fn recipient_rows_apply_only_to_someone_else() {
+        let mut form = SendFormState::default();
+        form.add_recipient("first".to_string(), "0.1".to_string());
+        assert!(form.has_several_recipients());
+        form.choose_to_mode(ToMode::MyWallets, Some(MAIN), PayFromKind::Core);
+        assert!(!form.has_several_recipients());
+        form.choose_to_mode(ToMode::SomeoneElse, Some(MAIN), PayFromKind::Core);
+        assert!(form.has_several_recipients());
+        assert_eq!(form.recipients()[0].address, "first");
     }
 
     #[test]

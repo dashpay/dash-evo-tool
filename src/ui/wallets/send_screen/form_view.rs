@@ -267,7 +267,7 @@ impl WalletSendScreen {
     }
 
     /// Chips for Pay from, with the reasons disabled ones carry.
-    fn pay_from_chips(&mut self) -> Vec<ChoiceChip<PayFrom>> {
+    pub(super) fn pay_from_chips(&mut self) -> Vec<ChoiceChip<PayFrom>> {
         let wallet = self.paying_wallet_name();
         let destination = self.destination_kind();
         let own_pool = self.shielded_destination_is_own_pool();
@@ -319,14 +319,21 @@ impl WalletSendScreen {
                         format_selector_balance(chosen.identity.balance() / CREDITS_PER_DUFF)
                             .replace(" DASH", ""),
                     );
-                    let has_key = if destination == Some(AddressKind::Core) {
-                        chosen.resolve_withdrawal_signing_key(None).is_ok()
-                    } else {
-                        chosen.resolve_transfer_signing_key(None).is_ok()
+                    // One identity without a usable key must not hide the
+                    // others, which are chosen only after Identity is.
+                    let can_sign = |qi: &QualifiedIdentity| {
+                        if destination == Some(AddressKind::Core) {
+                            qi.resolve_withdrawal_signing_key(None).is_ok()
+                        } else {
+                            qi.resolve_transfer_signing_key(None).is_ok()
+                        }
                     };
-                    if !has_key {
-                        identity =
-                            identity.disabled("This identity has no key that can send credits.");
+                    if !identities.iter().any(can_sign) {
+                        identity = identity.disabled(if identities.len() == 1 {
+                            "This identity has no key that can send credits."
+                        } else {
+                            "None of this wallet's identities has a key that can send credits."
+                        });
                     } else if let Some(refusal) = refused(PayFromKind::Identity) {
                         identity = identity.disabled(refusal_message(refusal, own_pool));
                     }
@@ -1727,19 +1734,8 @@ impl WalletSendScreen {
                 _ => "Enter who you're paying.",
             });
         }
-        if self.form.has_several_recipients() && !self.recipient_rows_complete() {
-            return Some(RECIPIENT_ROWS_INCOMPLETE);
-        }
-        if self.form.has_several_recipients()
-            && let (Some(source), Some(destination)) =
-                (&self.selected_source, self.destination_kind())
-            && !matches!(
-                (Self::source_kind(source), destination),
-                (PayFromKind::Core, AddressKind::Core)
-                    | (PayFromKind::Platform, AddressKind::Platform)
-            )
-        {
-            return Some(SEVERAL_RECIPIENTS_ROUTE);
+        if let Some(refusal) = self.recipient_rows_refusal() {
+            return Some(refusal);
         }
         if self.requested_credits().filter(|v| *v > 0).is_none() {
             return Some(match self.route.auto_max {

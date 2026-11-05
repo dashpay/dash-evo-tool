@@ -416,6 +416,10 @@ const SHIELDED_NOT_OWN_POOL: &str = "Core and Platform funds can only move into 
 const RECIPIENT_ROWS_INCOMPLETE: &str =
     "Enter an address and an amount for every recipient, or remove the rows you don't need.";
 
+/// Refusal of several recipients while a row's address is not a Core or
+/// Platform address of the active network.
+const RECIPIENT_ROWS_INVALID: &str = "Every recipient needs a Core or Platform address of the network you're on. Check the addresses, or remove the rows you don't need.";
+
 /// Refusal of several recipients on a route that carries one output.
 const SEVERAL_RECIPIENTS_ROUTE: &str = "Several recipients can be paid only from Core to Core addresses, or from Platform to Platform addresses. Change Pay from or send separately.";
 
@@ -2980,8 +2984,8 @@ impl WalletSendScreen {
         }
         self.sync_explicit_payment();
         if self.form.has_several_recipients() {
-            if !self.recipient_rows_complete() {
-                return Err(RECIPIENT_ROWS_INCOMPLETE.to_string());
+            if let Some(refusal) = self.recipient_rows_refusal() {
+                return Err(refusal.to_string());
             }
             let kinds: Vec<_> = self
                 .advanced_outputs
@@ -4190,6 +4194,8 @@ impl ScreenLike for WalletSendScreen {
             && matches!(update.domain, CacheDomain::Identities | CacheDomain::All)
         {
             self.refresh_bound_identity();
+            // Re-read on the next frame; the form keeps the chosen identity.
+            self.identities_by_wallet = None;
         }
     }
 
@@ -4614,6 +4620,29 @@ mod tests {
         });
         assert_eq!(balance(&screen), Some(300_000_000_000));
         assert_eq!(screen.amount, Some(Amount::dash_from_duffs(100_000)));
+    }
+
+    /// An identities notification re-reads the form's identities, keeping
+    /// the identity the user chose.
+    #[test]
+    fn an_identities_notification_reloads_the_paying_identities() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        let chosen = sender_holding_a_transfer_key();
+        screen.form.choose_pay_identity(chosen.identity.id());
+        screen.identities_by_wallet = Some(BTreeMap::from([(seed_hash, vec![chosen.clone()])]));
+
+        screen.cached_data_changed(CacheUpdate {
+            network: Network::Testnet,
+            domain: CacheDomain::Identities,
+        });
+        assert!(
+            screen.identities_by_wallet.is_none(),
+            "a stale identity balance must not stay cached"
+        );
+        assert_eq!(screen.form.pay_identity(), Some(chosen.identity.id()));
     }
 
     /// A top-up is refused while another top-up of the same identity runs,
@@ -8385,6 +8414,113 @@ mod tests {
             "the quoted total fits one output only: {:?}",
             screen.route.auto
         );
+    }
+
+    /// Switching To to My wallets leaves the hidden recipient rows out of
+    /// the payment.
+    #[test]
+    fn hidden_recipient_rows_do_not_pay_under_my_wallets() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash;
+        let rows = [testnet_core_address(41), testnet_core_address(42)].map(|a| a.to_string());
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .add_recipient(rows[0].clone(), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: rows[1].clone(),
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, seed_hash, PayFromKind::Core);
+        screen.sync_route();
+        if let Ok((
+            AppAction::BackendTask(BackendTask::CoreTask(CoreTask::SendWalletPayment {
+                request,
+                ..
+            })),
+            _,
+        )) = screen.prepare_send()
+        {
+            assert!(
+                request
+                    .recipients
+                    .iter()
+                    .all(|recipient| !rows.contains(&recipient.address)),
+                "a hidden row must not be paid: {:?}",
+                request.recipients
+            );
+        }
+    }
+
+    /// A recipient row of another network keeps Send disabled and is refused
+    /// before any task is built, whichever source was chosen.
+    #[test]
+    fn a_recipient_row_of_another_network_is_refused() {
+        use crate::model::send_route::PayFromKind;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let mainnet_platform = PlatformAddress::try_from(mainnet_core_address())
+            .expect("platform address")
+            .to_bech32m_string(Network::Mainnet);
+        screen
+            .form
+            .choose_pay_from(PayFrom::Platform, PayFromKind::Platform);
+        screen
+            .form
+            .add_recipient(testnet_platform_bech32m(43), "0.1".to_string());
+        screen.form.recipients_mut()[1] = crate::ui::state::send_form::RecipientRow {
+            address: mainnet_platform,
+            amount: "0.1".to_string(),
+        };
+        screen.sync_route();
+        assert_eq!(screen.missing_step(), Some(RECIPIENT_ROWS_INVALID));
+        assert_eq!(
+            screen.prepare_send().err().as_deref(),
+            Some(RECIPIENT_ROWS_INVALID)
+        );
+    }
+
+    /// A paying identity without a usable key does not block the others:
+    /// Identity stays available while one of the wallet's identities can
+    /// sign, and is refused only when none can.
+    #[test]
+    fn identity_stays_available_while_any_paying_identity_can_sign() {
+        use crate::model::qualified_identity::withdrawal_key_tests::key;
+        use dash_sdk::dpp::identity::Purpose;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("selected wallet");
+        let mut keyless = sender_with_keys(vec![key(3, Purpose::TRANSFER)], vec![]);
+        keyless.identity.set_balance(900_000_000_000);
+        let signing = sender_holding_a_transfer_key();
+        let identity_chip_enabled = |screen: &mut WalletSendScreen| {
+            screen
+                .pay_from_chips()
+                .into_iter()
+                .find(|chip| *chip.value() == PayFrom::Identity)
+                .expect("the Identity chip")
+                .is_enabled()
+        };
+
+        screen.identities_by_wallet = Some(BTreeMap::from([(
+            seed_hash,
+            vec![keyless.clone(), signing],
+        )]));
+        assert!(
+            identity_chip_enabled(&mut screen),
+            "the richest identity has no key, but another can sign"
+        );
+
+        screen.identities_by_wallet = Some(BTreeMap::from([(seed_hash, vec![keyless])]));
+        assert!(!identity_chip_enabled(&mut screen));
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

@@ -1124,9 +1124,15 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
                 let seed_hash = selected_wallet.read_recover().seed_hash();
-                // Busy withholds only Max; the backend decides the amount.
-                let max_amount = self.current_validation_ceiling_duffs(funding_method);
-                if max_amount.is_none() && !self.asset_lock_balance.is_busy(&seed_hash) {
+                // Busy withholds only the wallet's Max; the backend decides
+                // the amount. A received deposit stays bounded by what its
+                // address holds, so other wallet funds are never drawn in.
+                let quoted_ceiling = self.current_validation_ceiling_duffs(funding_method);
+                let max_amount = quoted_ceiling.or_else(|| {
+                    (funding_method == FundingMethod::ReceiveDeposit)
+                        .then_some(self.funding_address_balance_duffs)
+                });
+                if quoted_ceiling.is_none() && !self.asset_lock_balance.is_busy(&seed_hash) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         self.asset_lock_balance
@@ -1876,7 +1882,8 @@ mod funding_method_tests {
     ) -> (AddNewIdentityScreen, WalletSeedHash, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
-        let seed = [seed_byte; 64];
+        let seed =
+            crate::test_support::keys::labelled_seed("add_new_identity", u64::from(seed_byte));
         let wallet = Arc::new(RwLock::new(
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
         ));
@@ -1911,7 +1918,7 @@ mod funding_method_tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x63, "Alpha"), (0x64, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("add_new_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,
@@ -2060,7 +2067,7 @@ mod funding_method_tests {
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
-        let seed = [0x31; 64];
+        let seed = crate::test_support::keys::seed();
         let wallet = Arc::new(RwLock::new(
             Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
         ));
@@ -2189,12 +2196,13 @@ mod funding_method_tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_33 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x33; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_33, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read_recover().seed_hash();
         let mut screen = AddNewIdentityScreen::new(&old_context);
@@ -2434,6 +2442,44 @@ mod funding_method_tests {
         assert!(
             matches!(action, AppAction::None),
             "an amount below the network fee is still refused, got {action:?}"
+        );
+    }
+
+    /// Busy withholds only the wallet's Max, never the deposit's bound: a
+    /// registration funded from a received deposit is still capped at what
+    /// the deposit address holds, so other wallet funds are never drawn in.
+    #[test]
+    fn a_deposit_funded_amount_stays_capped_while_another_transaction_is_in_progress() {
+        const DEPOSIT_DUFFS: u64 = 1_000_000;
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x68);
+        *screen.funding_method.write_recover() = FundingMethod::ReceiveDeposit;
+        screen.funding_address_balance_duffs = DEPOSIT_DUFFS;
+        let (generation, inputs, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(
+            screen
+                .asset_lock_balance
+                .ensure_requested(seed_hash, generation, inputs, revision),
+        );
+        screen.asset_lock_balance.mark_request_error(
+            &seed_hash,
+            generation,
+            request_id,
+            &TaskError::SpendInProgress,
+        );
+
+        set_funding_duffs(&mut screen, DEPOSIT_DUFFS + 1);
+        let action = screen.register_identity_clicked(FundingMethod::ReceiveDeposit);
+        assert!(
+            matches!(action, AppAction::None),
+            "an amount above the deposit must be refused, got {action:?}"
+        );
+
+        set_funding_duffs(&mut screen, ONE_KEY_FEE_DUFFS);
+        let action = screen.register_identity_clicked(FundingMethod::ReceiveDeposit);
+        assert!(
+            matches!(action, AppAction::BackendTask(_)),
+            "an amount within the deposit is dispatched, got {action:?}"
         );
     }
 

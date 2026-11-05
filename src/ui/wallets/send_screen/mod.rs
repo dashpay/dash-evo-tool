@@ -828,6 +828,9 @@ impl WalletSendScreen {
         output_type: Option<AddressKind>,
     ) -> Option<Credits> {
         let core_min = 5460_u64 * CREDITS_PER_DUFF;
+        // Operations with a backend-quoted Max take their minimum from the
+        // same model rule the quote is held to, so Max is always accepted.
+        let core_payment_min = self.core_send_limit_kind().min_amount_credits();
         let platform_min = self
             .app_context
             .platform_version()
@@ -839,7 +842,7 @@ impl WalletSendScreen {
         use AddressKind::*;
         match (input_type, output_type) {
             (None, None) => None,
-            (Some(Core), Some(Core)) => Some(core_min),
+            (Some(Core), Some(Core)) => Some(core_payment_min),
             (Some(Platform), Some(Platform)) => Some(platform_min),
             // The wallet funds these directly, and the network takes its fee
             // from the amount.
@@ -850,8 +853,11 @@ impl WalletSendScreen {
             (Some(Platform), Some(Core)) => Some(core_min.max(platform_min)),
             (None, Some(Core)) => Some(core_min),
             (None, Some(Platform)) => Some(platform_min),
-            (Some(Core), None) => Some(core_min),
+            (Some(Core), None) => Some(core_payment_min),
             (Some(Platform), None) => Some(platform_min),
+            (Some(Platform), Some(Shielded)) => {
+                Some(SpendLimitKind::ShieldFromPlatform.min_amount_credits())
+            }
             (Some(Shielded), Some(Shielded)) => Some(platform_min),
             (Some(Shielded), Some(Platform)) => Some(platform_min),
             (Some(Shielded), _) => Some(platform_min),
@@ -4256,7 +4262,11 @@ mod tests {
     }
 
     fn testnet_core_address(key_byte: u8) -> Address {
-        let secret_key = SecretKey::from_secret_bytes([key_byte; 32]).expect("valid secret key");
+        let secret_key = SecretKey::from_secret_bytes(crate::test_support::keys::labelled_secret(
+            "ui::wallets::send_screen::testnet_core_address",
+            key_byte.into(),
+        ))
+        .expect("valid secret key");
         let private_key =
             PrivateKey::from_byte_array(secret_key.as_secret_bytes(), Network::Testnet)
                 .expect("valid secret key");
@@ -4302,9 +4312,10 @@ mod tests {
     }
 
     fn send_screen() -> (WalletSendScreen, tempfile::TempDir) {
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, temp_dir) = offline_ctx();
         let wallet = Wallet::new_from_seed(
-            [1u8; 64],
+            seed_1,
             Network::Testnet,
             Some("Test wallet".to_string()),
             None,
@@ -4512,6 +4523,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn identity_top_up_is_recorded_under_an_index_no_earlier_top_up_holds() {
         use crate::backend_task::identity::{IdentityTask, TopUpIdentityFundingMethod};
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, _dir) = offline_ctx();
         // Identities and their top-up history live in the wallet backend's store.
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
@@ -4521,8 +4533,8 @@ mod tests {
         ))
         .await
         .expect("wallet backend");
-        let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
-            .expect("wallet from seed");
+        let wallet =
+            Wallet::new_from_seed(seed_1, Network::Testnet, None, None).expect("wallet from seed");
         let mut identity = bound_identity();
         identity
             .associated_wallets
@@ -4610,9 +4622,10 @@ mod tests {
     #[test]
     fn a_running_top_up_holds_back_another_top_up_of_the_same_identity() {
         use crate::backend_task::identity::IdentityTask;
+        let seed_1 = crate::test_support::keys::seed();
         let (ctx, _dir) = offline_ctx();
         let wallet = || {
-            let wallet = Wallet::new_from_seed([1u8; 64], Network::Testnet, None, None)
+            let wallet = Wallet::new_from_seed(seed_1, Network::Testnet, None, None)
                 .expect("wallet from seed");
             Arc::new(RwLock::new(wallet))
         };
@@ -4854,16 +4867,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn identity_move_to_wallet_withdraws_only_to_an_address_of_a_loaded_wallet() {
         use crate::model::wallet::DerivationPathHelpers;
-        const SEED: [u8; 64] = [9; 64];
+        let seed = crate::test_support::keys::seed();
 
         let (ctx, _dir) = offline_ctx();
         // Loaded before the backend is wired, so nothing registers the wallet
         // in the background and the awaited calls below are the only writers.
-        let wallet = Wallet::new_from_seed(SEED, Network::Testnet, None, None).expect("wallet");
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet");
         let (seed_hash, _) = ctx
             .register_wallet(
                 wallet,
-                &SEED,
+                &seed,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .expect("loaded wallet");
@@ -4876,7 +4889,7 @@ mod tests {
         .expect("offline wallet backend");
         ctx.wallet_backend()
             .expect("wallet backend")
-            .register_wallet_from_seed(&seed_hash, &SEED, None)
+            .register_wallet_from_seed(&seed_hash, &seed, None)
             .await
             .expect("wallet addresses");
         let owned = ctx
@@ -5777,6 +5790,56 @@ mod tests {
         );
     }
 
+    /// A planner quote below the 500,000-credit minimum of a transparent
+    /// Platform-address output is still accepted by the field: shielding only
+    /// requires a positive amount.
+    #[test]
+    fn shield_from_platform_max_below_the_address_output_minimum_is_accepted() {
+        const QUOTE_CREDITS: u64 = 100_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            CREDITS_PER_DUFF * 100_000_000,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the shield form must ask for the planner's quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::ShieldFromPlatform,
+                request_id,
+                max_credits: QUOTE_CREDITS,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_CREDITS),
+            "the field must keep a positive planner quote"
+        );
+    }
+
     /// The Platform balances captured when the source was picked can lag a
     /// sync that raised them, so they must not veto a shield: the planner
     /// decides, and refuses an amount above its maximum itself.
@@ -6031,6 +6094,52 @@ mod tests {
             harness.state().amount.as_ref().map(Amount::value),
             Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
             "Max must be exactly the pooled quote"
+        );
+    }
+
+    /// A relayable Core Max below the old fixed 5,460-duff minimum is still
+    /// accepted by the field: the form's minimum is the payment script's dust
+    /// threshold, the same rule the backend quote is held to.
+    #[test]
+    fn core_send_max_below_the_old_fixed_minimum_is_accepted() {
+        // One 5,000-duff P2PKH coin less the 192-duff fee of its spend.
+        const QUOTE_DUFFS: u64 = 4_808;
+
+        let (mut screen, _temp_dir) = send_screen();
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Core(testnet_core_address(3)));
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let Some(BackendTask::WalletTask(WalletTask::GetSpendLimit { request_id, .. })) =
+            screen.request_spend_limit()
+        else {
+            panic!("the Core send form must ask for the pooled quote");
+        };
+        assert!(
+            screen.refresh_form_inputs(&BackendTaskSuccessResult::SpendLimit {
+                seed_hash,
+                kind: SpendLimitKind::CoreSend {
+                    destination: Default::default()
+                },
+                request_id,
+                max_credits: QUOTE_DUFFS * CREDITS_PER_DUFF,
+                core_fee: None,
+            })
+        );
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert_eq!(
+            harness.state().amount.as_ref().map(Amount::value),
+            Some(QUOTE_DUFFS * CREDITS_PER_DUFF),
+            "the field must keep a relayable Max"
         );
     }
 
@@ -6984,6 +7093,7 @@ mod tests {
             identity::{Identity, accessors::IdentitySettersV0},
             version::PlatformVersion,
         };
+        let seed_1 = crate::test_support::keys::seed();
         let (mut screen, _dir) = send_screen();
         let (sender, _receiver) = tokio::sync::mpsc::channel(32);
         screen
@@ -6994,12 +7104,12 @@ mod tests {
             ))
             .await
             .unwrap();
-        let wallet = Wallet::new_from_seed([1; 64], Network::Testnet, None, None).unwrap();
+        let wallet = Wallet::new_from_seed(seed_1, Network::Testnet, None, None).unwrap();
         let (hash, wallet) = screen
             .app_context
             .register_wallet(
                 wallet,
-                &[1; 64],
+                &seed_1,
                 crate::model::wallet::birth_height::WalletOrigin::Fresh,
             )
             .unwrap();
@@ -7163,14 +7273,10 @@ mod tests {
 
     #[test]
     fn address_input_snapshot_signature_tracks_paths_and_balances() {
+        let seed_7 = crate::test_support::keys::seed();
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed(
-                [7u8; 64],
-                Network::Testnet,
-                Some("Wallet".to_string()),
-                None,
-            )
-            .expect("wallet from seed"),
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("Wallet".to_string()), None)
+                .expect("wallet from seed"),
         ));
         let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new(), None)];
         let empty_signature = WalletSendScreen::address_input_snapshot_signature(&empty_wallets);
@@ -8171,7 +8277,7 @@ mod tests {
     /// A valid testnet private (Orchard) address derived from `seed_byte`.
     fn testnet_shielded_address(seed_byte: u8) -> String {
         let keys = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
-            &[seed_byte; 64],
+            &crate::test_support::keys::labelled_seed("send_screen", u64::from(seed_byte)),
             Network::Testnet,
             0,
         )

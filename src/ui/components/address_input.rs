@@ -1517,7 +1517,8 @@ mod tests {
 
     /// Generate a valid testnet P2PKH address for testing.
     fn testnet_core_address() -> (String, Address) {
-        let sk = SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+        let secret_1 = crate::test_support::keys::secret_bytes();
+        let sk = SecretKey::from_secret_bytes(secret_1).unwrap();
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Testnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -1542,7 +1543,8 @@ mod tests {
 
     /// Generate a valid mainnet P2PKH address for testing.
     fn mainnet_core_address() -> (String, Address) {
-        let sk = SecretKey::from_secret_bytes([2u8; 32]).unwrap();
+        let secret_2 = crate::test_support::keys::secret_bytes();
+        let sk = SecretKey::from_secret_bytes(secret_2).unwrap();
         let privkey = PrivateKey::from_byte_array(sk.as_secret_bytes(), Network::Mainnet)
             .expect("valid secret key");
         let pubkey = PublicKey::from_private_key(&privkey);
@@ -2237,9 +2239,9 @@ mod tests {
     /// An input fed one snapshot-sourced BIP-44 receive address.
     fn core_wallet_input(alias: Option<&str>) -> AddressInput {
         use std::collections::BTreeMap;
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, alias.map(String::from), None)
-                .expect("wallet from seed");
+        let seed_7 = crate::test_support::keys::seed();
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, alias.map(String::from), None)
+            .expect("wallet from seed");
         let (_, address) = testnet_core_address();
         let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
         AddressInput::new(Network::Testnet).with_wallets(&[(
@@ -2331,10 +2333,10 @@ mod tests {
     #[test]
     fn core_change_entry_gets_change_name_label() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
-                .expect("wallet from seed");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
+            .expect("wallet from seed");
         let (_, change_addr) = testnet_core_address();
         let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
 
@@ -2356,10 +2358,10 @@ mod tests {
     #[test]
     fn core_change_entry_excluded_when_requested() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
-        let wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
-                .expect("wallet from seed");
+        let wallet = Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
+            .expect("wallet from seed");
         let (_, change_addr) = testnet_core_address();
         let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
 
@@ -2381,9 +2383,10 @@ mod tests {
     #[test]
     fn core_entries_are_sourced_from_the_snapshot_paths() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         wallet.known_addresses.clear();
         wallet.watched_addresses.clear();
@@ -2413,9 +2416,10 @@ mod tests {
     #[test]
     fn platform_entries_are_sourced_from_the_snapshot_paths() {
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         wallet.known_addresses.clear();
         wallet.watched_addresses.clear();
@@ -2454,11 +2458,12 @@ mod tests {
     fn legacy_maps_never_source_autocomplete_entries() {
         use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
         use std::collections::BTreeMap;
+        let seed_7 = crate::test_support::keys::seed();
 
         // `new_from_seed` seeds `known_addresses` with the first BIP-44 receive
         // address; add a platform-payment entry so both legacy branches are live.
         let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+            Wallet::new_from_seed(seed_7, Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         assert!(
             !wallet.known_addresses.is_empty(),

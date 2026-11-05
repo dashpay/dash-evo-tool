@@ -385,7 +385,7 @@ impl VotesPanelResult {
                 Some(Self::ScheduledVotesInProgress)
             }
             BackendTaskSuccessResult::ScheduledVotesCleared(_) => Some(Self::ScheduledVotesCleared),
-            BackendTaskSuccessResult::RefreshedDpnsContests => Some(Self::ContestsRefreshed),
+            BackendTaskSuccessResult::RefreshedDpnsContests { .. } => Some(Self::ContestsRefreshed),
             _ => None,
         }
     }
@@ -3124,7 +3124,9 @@ mod tests {
             },
             BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
             BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
-            BackendTaskSuccessResult::RefreshedDpnsContests,
+            BackendTaskSuccessResult::RefreshedDpnsContests {
+                network: Network::Testnet,
+            },
         ] {
             assert!(DPNSScreen::handles_result(&handled));
         }
@@ -3275,7 +3277,9 @@ mod tests {
             .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
             .unwrap();
         screen.refreshing_status = RefreshingStatus::Refreshing;
-        screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests);
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedDpnsContests {
+            network: screen.app_context.network(),
+        });
         assert!(!screen.active_contests.is_empty());
         assert_eq!(
             screen.vote_state.state(voter, poll),

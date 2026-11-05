@@ -27,6 +27,20 @@ impl CoreDestinationScript {
         }
     }
 
+    /// Smallest output, in duffs, the network relays to a script of this
+    /// kind: upstream's dust rule, which a Core payment amount and its Max
+    /// are both held to.
+    pub fn dust_threshold_duffs(self) -> u64 {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{PubkeyHash, ScriptBuf, ScriptHash};
+        // Only the script's length sets the threshold, not its hash.
+        let script = match self {
+            Self::PubkeyHash => ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()),
+            Self::ScriptHash => ScriptBuf::new_p2sh(&ScriptHash::all_zeros()),
+        };
+        script.dust_value().to_sat()
+    }
+
     /// The script kind `address` pays to.
     pub fn of(address: &dash_sdk::dpp::dashcore::Address) -> Self {
         if address.script_pubkey().is_p2sh() {
@@ -73,6 +87,21 @@ pub enum SpendLimitKind {
     ShieldFromPlatform,
 }
 
+impl SpendLimitKind {
+    /// Smallest amount, in credits, the operation behind this Max accepts,
+    /// so the amount field never refuses a Max the backend quotes.
+    pub fn min_amount_credits(self) -> dash_sdk::dpp::balances::credits::Credits {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        match self {
+            // The payment output must clear its script's dust threshold.
+            Self::CoreSend { destination } => destination.dust_threshold_duffs() * CREDITS_PER_DUFF,
+            // The shield transition and planner only require a positive
+            // amount; the Platform-address output minimum does not apply.
+            Self::ShieldFromPlatform => 1,
+        }
+    }
+}
+
 /// Why a Core send has no Max to offer although the wallet answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreSendShortfall {
@@ -101,5 +130,41 @@ impl CoreSendShortfall {
                 "Your funds are held by a recent transaction that has not finished yet. The available amount is shown again when it completes."
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relay dust thresholds of the pinned dashcore: a P2SH output's
+    /// shorter script lowers it.
+    #[test]
+    fn dust_threshold_follows_the_output_script() {
+        assert_eq!(
+            CoreDestinationScript::PubkeyHash.dust_threshold_duffs(),
+            546
+        );
+        assert_eq!(
+            CoreDestinationScript::ScriptHash.dust_threshold_duffs(),
+            540
+        );
+    }
+
+    /// Each Max's operation has its own minimum: a Core payment's dust
+    /// threshold, and any positive amount for a shield from Platform.
+    #[test]
+    fn min_amount_follows_the_operation_behind_the_max() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        let core = |destination| SpendLimitKind::CoreSend { destination }.min_amount_credits();
+        assert_eq!(
+            core(CoreDestinationScript::PubkeyHash),
+            546 * CREDITS_PER_DUFF
+        );
+        assert_eq!(
+            core(CoreDestinationScript::ScriptHash),
+            540 * CREDITS_PER_DUFF
+        );
+        assert_eq!(SpendLimitKind::ShieldFromPlatform.min_amount_credits(), 1);
     }
 }

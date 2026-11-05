@@ -1100,7 +1100,10 @@ impl AddressInput {
             {
                 self.autocomplete_open = true;
             }
-            if !behind_modal && self.autocomplete_open {
+            if behind_modal {
+                self.autocomplete_open = false;
+                self.autocomplete_highlight = None;
+            } else if self.autocomplete_open {
                 // Collect filtered entries into an owned snapshot to release the
                 // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();

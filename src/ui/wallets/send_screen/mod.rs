@@ -420,6 +420,10 @@ const RECIPIENT_ROWS_INCOMPLETE: &str =
 /// Platform address of the active network.
 const RECIPIENT_ROWS_INVALID: &str = "Every recipient needs a Core or Platform address of the network you're on. Check the addresses, or remove the rows you don't need.";
 
+/// Refusal of a My wallets payment into the very balance that pays it.
+const PAYING_FROM_THIS_BALANCE: &str =
+    "You're paying from this balance. Pick a different one, or a different wallet.";
+
 /// Refusal of several recipients on a route that carries one output.
 const SEVERAL_RECIPIENTS_ROUTE: &str = "Several recipients can be paid only from Core to Core addresses, or from Platform to Platform addresses. Change Pay from or send separately.";
 
@@ -2981,6 +2985,9 @@ impl WalletSendScreen {
                     .err()
                     .unwrap_or_else(|| SHIELDED_NOT_OWN_POOL.to_string()),
             });
+        }
+        if let Some(refusal) = self.own_balance_refusal() {
+            return Err(refusal.to_string());
         }
         self.sync_explicit_payment();
         if self.form.has_several_recipients() {
@@ -8196,14 +8203,13 @@ mod tests {
         }
     }
 
+    /// A Mainnet P2PKH address from a public payload: no key behind it.
     fn mainnet_core_address() -> Address {
-        Address::p2pkh(
-            &dash_sdk::dpp::dashcore::PublicKey::new(
-                dash_sdk::dpp::secp256k1::SecretKey::from_secret_bytes([3; 32])
-                    .expect("key")
-                    .public_key(),
-            ),
+        Address::new(
             Network::Mainnet,
+            dash_sdk::dpp::dashcore::address::Payload::PubkeyHash(
+                dash_sdk::dpp::dashcore::PubkeyHash::from_byte_array([3; 20]),
+            ),
         )
     }
 
@@ -8536,6 +8542,48 @@ mod tests {
 
         screen.identities_by_wallet = Some(BTreeMap::from([(seed_hash, vec![keyless])]));
         assert!(!identity_chip_enabled(&mut screen));
+    }
+
+    /// Switching My wallets to the paying wallet while Receive into names the
+    /// paying balance keeps Send disabled and is refused before any task.
+    #[test]
+    fn my_wallets_refuses_paying_into_the_paying_balance() {
+        use crate::model::send_route::PayFromKind;
+
+        const OTHER_WALLET: WalletSeedHash = [9; 32];
+        let (mut screen, _temp_dir) = funded_send_screen();
+        let seed_hash = screen.selected_wallet_seed_hash.expect("a wallet");
+        screen
+            .form
+            .choose_pay_from(PayFrom::Core, PayFromKind::Core);
+        screen
+            .form
+            .choose_to_mode(ToMode::MyWallets, Some(seed_hash), PayFromKind::Core);
+        screen.form.choose_to_wallet(OTHER_WALLET);
+        screen
+            .form
+            .choose_receive_into(ReceiveInto::Core, PayFromKind::Core);
+        for (wallet, seed) in [(OTHER_WALLET, 45), (seed_hash, 46)] {
+            let _ = screen
+                .own_addresses
+                .ensure_requested(wallet, OwnAddressKind::Core);
+            screen.own_addresses.store(
+                wallet,
+                OwnAddressKind::Core,
+                testnet_core_address(seed).to_string(),
+            );
+        }
+        screen.amount = Some(Amount::new_dash(0.2));
+        screen.sync_route();
+        assert_eq!(screen.missing_step(), None, "precondition: another wallet");
+
+        screen.form.choose_to_wallet(seed_hash);
+        screen.sync_route();
+        assert_eq!(screen.missing_step(), Some(PAYING_FROM_THIS_BALANCE));
+        assert_eq!(
+            screen.prepare_send().err().as_deref(),
+            Some(PAYING_FROM_THIS_BALANCE)
+        );
     }
 
     fn testnet_platform_bech32m(seed: u8) -> String {

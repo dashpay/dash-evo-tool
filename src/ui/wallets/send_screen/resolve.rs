@@ -795,6 +795,16 @@ impl WalletSendScreen {
         }
     }
 
+    /// Refusal of a My wallets payment into the balance that pays it: the
+    /// Receive into choice the chips disable, kept after a wallet change.
+    pub(super) fn own_balance_refusal(&self) -> Option<&'static str> {
+        let source = self.selected_source.as_ref()?;
+        let same_account = self.route.destination.as_ref()?.same_account;
+        (self.form.to_mode() == ToMode::MyWallets
+            && same_account == Some(Self::source_kind(source)))
+        .then_some(PAYING_FROM_THIS_BALANCE)
+    }
+
     /// Why several recipients cannot be paid as entered: a row lacks its
     /// address or amount, an address is not of the active network, or the
     /// source cannot carry several outputs to these addresses.

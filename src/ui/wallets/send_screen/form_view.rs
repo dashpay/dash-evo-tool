@@ -791,9 +791,7 @@ impl WalletSendScreen {
             let mut chip = ChoiceChip::new(ReceiveInto::from_kind(kind), kind_label(kind))
                 .with_tooltip(kind_tooltip(kind));
             if same_wallet && explicit == Some(kind) {
-                chip = chip.disabled(
-                    "You're paying from this balance. Pick a different one, or a different wallet.",
-                );
+                chip = chip.disabled(PAYING_FROM_THIS_BALANCE);
             } else if let Some(source) = explicit {
                 match crate::model::send_route::route_refusal(
                     source,
@@ -1734,7 +1732,10 @@ impl WalletSendScreen {
                 _ => "Enter who you're paying.",
             });
         }
-        if let Some(refusal) = self.recipient_rows_refusal() {
+        if let Some(refusal) = self
+            .recipient_rows_refusal()
+            .or_else(|| self.own_balance_refusal())
+        {
             return Some(refusal);
         }
         if self.requested_credits().filter(|v| *v > 0).is_none() {

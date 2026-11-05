@@ -1903,8 +1903,9 @@ mod tests {
         utxo.is_confirmed = true;
         managed.utxos.insert(outpoint, utxo);
         let payment = || super::core_payment_builder(&[(payment_recipient(), PAYMENT_DUFFS)]);
-        let (fresh, fresh_fee) =
-            super::dry_build_pooled(&wallet, &info, payment()).expect("a fresh pooled build");
+        // The reference is funded the ordinary way, change chosen by
+        // `add_funding` itself, not through the scratch set.
+        let (fresh, fresh_fee) = pooled_build(&wallet, &info, payment_recipient(), PAYMENT_DUFFS);
 
         let mut scratch = super::PooledScratch::new(&wallet, &info);
         for build in 0..BUILDS {
@@ -1931,6 +1932,19 @@ mod tests {
         recipient: Address,
         amount: u64,
     ) -> (usize, u64) {
+        let (transaction, charged) = pooled_build(wallet, info, recipient, amount);
+        (transaction.input.len(), charged)
+    }
+
+    /// [`pooled_build_charge`]'s build: fresh clones of the pooled accounts,
+    /// each funding the payment through `add_funding`, which picks the change
+    /// address; the reservation is released.
+    fn pooled_build(
+        wallet: &Wallet,
+        info: &ManagedWalletInfo,
+        recipient: Address,
+        amount: u64,
+    ) -> (dash_sdk::dpp::dashcore::Transaction, u64) {
         let mut pooled = super::pooled_funding_accounts(
             wallet,
             &info.accounts,
@@ -1950,7 +1964,7 @@ mod tests {
                 managed.release_reservation_if_owner(&transaction, token);
             }
         }
-        (transaction.input.len(), charged)
+        (transaction, charged)
     }
 
     /// The fee a pooled Core payment shows is never below what the build

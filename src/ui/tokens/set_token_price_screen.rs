@@ -5,7 +5,8 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::user_role::UserRole;
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
@@ -171,13 +172,7 @@ impl SetTokenPriceScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            );
+            .token_action_key(identity_token_info.data_contract.contract.id());
 
         let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
@@ -261,13 +256,14 @@ impl SetTokenPriceScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key).unwrap_or_else(
-                |e| {
-                    set_error_banner(&e);
-                    None
-                },
-            );
+        let selected_wallet = possible_key
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                set_error_banner(&e);
+                None
+            });
 
         Self {
             identity_token_info: identity_token_info.clone(),
@@ -867,6 +863,13 @@ impl ScreenLike for SetTokenPriceScreen {
         {
             self.identity_token_info.identity = updated_identity;
         }
+        let contract_id = self.identity_token_info.data_contract.contract.id();
+        super::pick_key_if_none(
+            &self.identity_token_info.identity,
+            &mut self.selected_key,
+            &mut self.selected_wallet,
+            |identity| identity.token_action_key(contract_id),
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -926,29 +929,24 @@ impl ScreenLike for SetTokenPriceScreen {
             });
             ui.add_space(10.0);
 
-            // Check if user has any auth keys
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self
-                    .identity_token_info
-                    .identity
-                    .identity
-                    .public_keys()
-                    .is_empty()
-            } else {
-                !self
-                    .identity_token_info
-                    .identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
+            // Open the form only when the action's key choice picks a key.
+            let key_status = super::token_action_key_status(
+                &self.app_context,
+                &self.identity_token_info.identity,
+                self.identity_token_info.data_contract.contract.id(),
+            );
 
-            if !has_keys {
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.show_advanced_options = true;
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 ui.colored_label(
                     Color32::DARK_RED,
-                    format!(
-                        "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity_token_info.identity.identity_type,
-                    ),
+                    super::token_action_key_message(key_status, &self.identity_token_info.identity),
                 );
                 ui.add_space(10.0);
 
@@ -1011,12 +1009,19 @@ impl ScreenLike for SetTokenPriceScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Set Price transaction");
                     ui.add_space(10.0);
+                    if key_status == SigningKeyStatus::ManualChoiceOnly {
+                        ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                        ui.add_space(5.0);
+                    }
                     add_key_chooser(
                         ui,
                         &self.app_context,
                         &self.identity_token_info.identity,
                         &mut self.selected_key,
                         TransactionType::TokenAction,
+                        SigningScope::ContractWide {
+                            contract_id: self.identity_token_info.data_contract.contract.id(),
+                        },
                     );
                     ui.add_space(10.0);
                     ui.separator();

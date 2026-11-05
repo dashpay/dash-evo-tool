@@ -66,13 +66,6 @@ pub enum DashPayError {
     #[error("The contact request could not be verified. Please check the details and try again.")]
     ValidationFailed { errors: Vec<String> },
 
-    // Auto Accept Proof Errors
-    #[error("The QR code format is not recognized. Please scan a valid contact QR code.")]
-    InvalidQrCode { reason: String },
-
-    #[error("This QR code has expired. Please ask for a new one.")]
-    QrCodeExpired { expired_at: u64, current_time: u64 },
-
     // Network/SDK Errors
     #[error("Network connection failed. Please check your internet connection and retry.")]
     NetworkError,
@@ -177,8 +170,6 @@ impl DashPayError {
         matches!(
             self,
             DashPayError::UsernameResolutionFailed { .. }
-                | DashPayError::InvalidQrCode { .. }
-                | DashPayError::QrCodeExpired { .. }
                 | DashPayError::ValidationFailed { .. }
                 | DashPayError::AccountLabelTooLong { .. }
                 | DashPayError::InvalidUsername { .. }

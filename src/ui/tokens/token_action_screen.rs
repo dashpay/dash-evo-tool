@@ -12,6 +12,8 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::identity_key_usability::SigningScope;
+use crate::model::qualified_identity::SigningKeyStatus;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -34,6 +36,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -204,13 +207,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
-            .identity
-            .get_first_public_key_matching(
-                Purpose::AUTHENTICATION,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            )
+            .token_action_key(identity_token_info.data_contract.contract.id())
             .cloned();
 
         let takers = A::authorized_takers(&identity_token_info.token_config);
@@ -219,12 +216,15 @@ impl<A: TokenAction> TokenActionScreen<A> {
             super::set_error_banner(app_context, &msg);
         }
 
-        let selected_wallet =
-            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .unwrap_or_else(|e| {
-                    super::set_error_banner(app_context, &e);
-                    None
-                });
+        let selected_wallet = possible_key
+            .as_ref()
+            .map_or(Ok(None), |key| {
+                get_selected_wallet(&identity_token_info.identity, None, Some(key))
+            })
+            .unwrap_or_else(|e| {
+                super::set_error_banner(app_context, &e);
+                None
+            });
 
         let action = A::new(&identity_token_info, app_context);
 
@@ -276,17 +276,14 @@ impl<A: TokenAction> TokenActionScreen<A> {
     }
 
     /// Renders the missing-key banner with "Check Keys" / "Add key" shortcuts.
-    fn render_no_keys(&self, ui: &mut Ui) -> AppAction {
+    fn render_no_keys(&self, ui: &mut Ui, key_status: SigningKeyStatus) -> AppAction {
         let mut action = AppAction::None;
         let identity = &self.common.identity_token_info.identity;
         let dark_mode = ui.style().visuals.dark_mode;
 
         ui.colored_label(
             DashColors::error_color(dark_mode),
-            format!(
-                "No authentication keys with CRITICAL security level found for this {} identity.",
-                identity.identity_type,
-            ),
+            super::token_action_key_message(key_status, identity),
         );
         ui.add_space(10.0);
 
@@ -468,6 +465,13 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         {
             self.common.identity_token_info.identity = updated;
         }
+        let contract_id = self.common.identity_token_info.data_contract.contract.id();
+        super::pick_key_if_none(
+            &self.common.identity_token_info.identity,
+            &mut self.common.selected_key,
+            &mut self.common.selected_wallet,
+            |identity| identity.token_action_key(contract_id),
+        );
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -504,24 +508,22 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 return self.show_success_screen(ui);
             }
 
-            let identity = &self.common.identity_token_info.identity;
-            let has_keys = if self
-                .common
-                .app_context
-                .user_role()
-                .at_least(UserRole::Developer)
-            {
-                !identity.identity.public_keys().is_empty()
-            } else {
-                !identity
-                    .available_authentication_keys_with_critical_security_level()
-                    .is_empty()
-            };
-
-            if !has_keys {
+            let key_status = super::token_action_key_status(
+                &self.common.app_context,
+                &self.common.identity_token_info.identity,
+                self.common.identity_token_info.data_contract.contract.id(),
+            );
+            if key_status == SigningKeyStatus::ManualChoiceOnly {
+                // Only a contract-group key can sign it: the user picks it below.
+                self.common.show_advanced_options = true;
+            }
+            if !matches!(
+                key_status,
+                SigningKeyStatus::Usable | SigningKeyStatus::ManualChoiceOnly
+            ) {
                 ui.heading(A::PAGE_HEADING);
                 ui.add_space(10.0);
-                return self.render_no_keys(ui);
+                return self.render_no_keys(ui, key_status);
             }
 
             let mut inner_action = AppAction::None;
@@ -571,12 +573,19 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                     A::VERB
                 ));
                 ui.add_space(10.0);
+                if key_status == SigningKeyStatus::ManualChoiceOnly {
+                    ui.label(super::CONTRACT_GROUP_KEY_NOTE);
+                    ui.add_space(5.0);
+                }
                 add_key_chooser(
                     ui,
                     &self.common.app_context,
                     &self.common.identity_token_info.identity,
                     &mut self.common.selected_key,
                     TransactionType::TokenAction,
+                    SigningScope::ContractWide {
+                        contract_id: self.common.identity_token_info.data_contract.contract.id(),
+                    },
                 );
                 ui.add_space(10.0);
                 ui.separator();
@@ -658,5 +667,53 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_contract::QualifiedContract;
+    use crate::ui::tokens::mint_tokens_screen::MintTokensScreen;
+    use crate::ui::tokens::tests::{
+        identity_with_expired_key, store_identity_with_usable_wallet_key,
+    };
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+    use dash_sdk::platform::Identifier;
+
+    /// Regression: the action's key was picked only when the form opened, so
+    /// once the identity's key became usable a refresh opened the form with
+    /// no key to sign. A refresh picks it then, with its wallet.
+    #[test]
+    fn a_refresh_picks_the_token_action_key_that_became_usable() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let info = IdentityTokenInfo {
+            token_id: Identifier::from([4; 32]),
+            token_alias: "Test token".into(),
+            identity: identity_with_expired_key(),
+            data_contract: QualifiedContract {
+                contract: context.dpns_contract().as_ref().clone(),
+                alias: None,
+            },
+            token_config: TokenConfigurationV0::default_most_restrictive().into(),
+            token_position: 0,
+        };
+        let mut screen = MintTokensScreen::new(info, &context);
+        assert!(screen.common.selected_key.is_none());
+        let seed_hash = store_identity_with_usable_wallet_key(&context);
+
+        screen.refresh();
+        assert_eq!(
+            screen.common.selected_key.as_ref().map(|key| key.id()),
+            Some(1)
+        );
+        let wallet = screen
+            .common
+            .selected_wallet
+            .as_ref()
+            .expect("the key's wallet");
+        assert_eq!(wallet.read().expect("wallet").seed_hash(), seed_hash);
     }
 }

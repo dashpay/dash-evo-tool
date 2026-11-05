@@ -2819,9 +2819,8 @@ mod tests {
     /// its stored balance is read back after the task; reads name nobody.
     #[test]
     fn paid_tasks_name_the_identity_that_pays_for_them() {
-        use crate::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
         use crate::backend_task::tokens::TokenContractParams;
-        use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+        use crate::model::dashpay::{ContactInfoUpdate, ContactQr, UnreadableContactInfoPolicy};
         use crate::model::qualified_contract::QualifiedContract;
         use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
         use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -3082,13 +3081,16 @@ mod tests {
             dashpay(DashPayTask::SendContactRequestWithProof {
                 identity: payer.clone(),
                 signing_key: key.clone(),
-                to_identity_id: other,
-                account_label: None,
-                qr_auto_accept: AutoAcceptProofData {
-                    identity_id: other,
-                    proof_key: [0; 32],
-                    account_reference: 0,
-                    expires_at: 0,
+                qr: {
+                    use platform_wallet::wallet::identity::crypto::auto_accept::{
+                        encode_auto_accept_key_blob, encode_dashpay_contact_uri,
+                    };
+                    let key = crate::test_support::keys::secret_key();
+                    let uri = encode_dashpay_contact_uri(
+                        "bob",
+                        &encode_auto_accept_key_blob(&key, u32::MAX),
+                    );
+                    ContactQr::parse(&uri, 0).expect("a contact QR code")
                 },
             }),
             dashpay(DashPayTask::AcceptContactRequest {

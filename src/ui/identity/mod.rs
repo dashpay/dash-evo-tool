@@ -166,6 +166,17 @@ pub fn removed_identities_banner(
     }
 }
 
+/// The wallet that derives `key`, the key the caller signs with, for the
+/// unlock prompt. `None` when no key is chosen or no wallet derives it.
+pub fn wallet_for_signing_key(
+    qualified_identity: &QualifiedIdentity,
+    key: Option<&IdentityPublicKey>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    get_selected_wallet(qualified_identity, None, Some(key?))
+        .ok()
+        .flatten()
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -208,13 +219,13 @@ pub fn get_selected_wallet(
         let dpns_contract = &context.dpns_contract();
 
         // Attempt to fetch the `preorder` document type from the DPNS contract.
-        let preorder_document_type = dpns_contract
+        dpns_contract
             .document_type_for_name("preorder")
             .map_err(|e| format!("DPNS preorder document type not found: {}", e))?;
 
         // Attempt to retrieve the public key from the identity.
         qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .username_registration_key(dpns_contract)
             .ok_or_else(|| {
                 "Identity doesn't have an authentication key for signing document transitions"
                     .to_string()

@@ -42,11 +42,17 @@ pub fn clean_display_text(text: &str) -> String {
     cleaned.trim().to_owned()
 }
 
-/// Keep visible text and normal Unicode shaping while excluding controls and bidi directives.
+/// Keep visible text and normal Unicode shaping while excluding controls,
+/// bidi directives and every invisible format character that makes two names
+/// look identical: soft hyphen, Mongolian vowel separator, ZWSP, word joiner
+/// and the invisible operators, BOM, and the tag characters. ZWNJ and ZWJ
+/// stay: scripts and emoji sequences need them.
 pub(super) fn is_safe_display_character(character: char) -> bool {
     !character.is_control()
         && !matches!(character,
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}' | '\u{200e}' | '\u{200f}'
+            | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}'
+            | '\u{feff}' | '\u{e0000}'..='\u{e007f}'
         )
 }
 
@@ -86,6 +92,54 @@ mod tests {
         assert_eq!(
             display_label(Some("李雷 👩‍💻 العربية"), Some("username"), "abcdefghijk"),
             "李雷 👩‍💻 العربية"
+        );
+    }
+
+    #[test]
+    fn invisible_spaces_are_dropped_but_joiners_shape_text() {
+        assert_eq!(clean_display_text("Dash\u{200b}Coffee"), "DashCoffee");
+        assert_eq!(clean_display_text("\u{feff}Grit\u{2060}"), "Grit");
+        assert_eq!(
+            clean_display_text("\u{1F468}\u{200d}\u{1F4BB}"),
+            "\u{1F468}\u{200d}\u{1F4BB}",
+            "an emoji sequence keeps its joiner"
+        );
+    }
+
+    /// Every invisible format character an attacker can hide in a name.
+    const INVISIBLE: [&str; 9] = [
+        "\u{00ad}",
+        "\u{180e}",
+        "\u{200b}",
+        "\u{2060}",
+        "\u{2061}",
+        "\u{2063}",
+        "\u{2064}",
+        "\u{feff}",
+        "\u{e0041}",
+    ];
+
+    #[test]
+    fn invisible_format_characters_are_dropped_from_identity_names() {
+        for hidden in INVISIBLE {
+            let name = format!("Al{hidden}ice");
+            assert_eq!(clean_display_text(&name), "Alice", "{hidden:?} survived");
+            assert_eq!(
+                display_label(Some(&name), None, "abcdefghijk"),
+                "Alice",
+                "{hidden:?} survived in a profile name"
+            );
+            assert_eq!(
+                display_label(None, Some(&format!("{hidden}bob{hidden}")), "abcdefghijk"),
+                "bob",
+                "{hidden:?} survived in a username"
+            );
+        }
+        let only_hidden = INVISIBLE.concat();
+        assert_eq!(
+            display_label(Some(&only_hidden), Some(&only_hidden), "abcdefghijk"),
+            "abcde…ijk",
+            "a name made only of invisible characters falls back to the ID"
         );
     }
 

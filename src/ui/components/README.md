@@ -69,6 +69,7 @@ directory.
 | Component | File | Description |
 |-----------|------|-------------|
 | `MessageBanner` | `message_banner.rs` | Global error/warning/success/info banners. `set_global()`, `with_details()`, auto-dismiss. Extensions: `OptionBannerExt`, `OptionBannerShowExt`, `ResultBannerExt` |
+| `InlineNotice` | `inline_notice.rs` | A notice of one `MessageType` painted in place next to the content it is about, with optional action links (`with_link`, `with_link_unless(label, disabled_reason)`); `InlineNoticeResponse::clicked` is the index of the link clicked. For a screen-local message such as a failed refresh above the list it could not update; app-wide messages stay with `MessageBanner` |
 | `ProgressOverlay` | `progress_overlay.rs` | Full-screen blocking progress overlay: spinner, optional step counter, generic buttons (`with_action(label, action_id)`, mirrors `MessageBanner::with_action`), 120s watchdog. A hard block is never keyboard-activatable except via `with_keyboard_escape(action_id)`, which designates one focus-pinned button as a keyboard-reachable escape (Enter/Space) for unbounded blocks (the SPV-sync block). Global path: `set_global()` (raise, mirrors `MessageBanner::set_global`) / `render_global()`, claims input each frame. Companions: `OverlayConfig`, `OverlayHandle`, `OptionOverlayExt` (`raise` — the banner's `replace`, renamed to dodge inherent `Option::replace`), `ProgressOverlayResponse` |
 
 ## Styled Components (`styled.rs`)

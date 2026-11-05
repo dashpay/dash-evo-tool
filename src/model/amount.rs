@@ -375,8 +375,52 @@ fn checked_round(value: f64) -> Result<u64, String> {
     Ok(rounded as u64)
 }
 
+/// Compare `a` and `b` smallest units, with `a_decimals` and `b_decimals`
+/// decimal places, by the quantities they display — exactly, so amounts of
+/// tokens with different decimals order the way a user reads them.
+pub fn cmp_displayed_quantity(
+    a: TokenAmount,
+    a_decimals: u8,
+    b: TokenAmount,
+    b_decimals: u8,
+) -> std::cmp::Ordering {
+    // Scale the side with fewer decimals up to the other's. Only that side
+    // can overflow, and an overflowing value exceeds any unscaled u64.
+    let decimals = a_decimals.max(b_decimals);
+    let scaled = |value: TokenAmount, own: u8| {
+        10u128
+            .checked_pow(u32::from(decimals - own))
+            .and_then(|factor| factor.checked_mul(u128::from(value)))
+    };
+    match (scaled(a, a_decimals), scaled(b, b_decimals)) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (None, _) => std::cmp::Ordering::Greater,
+        (_, None) => std::cmp::Ordering::Less,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn displayed_quantities_compare_across_decimals() {
+        use std::cmp::Ordering::*;
+        assert_eq!(
+            super::cmp_displayed_quantity(100_000_000, 8, 1_000, 0),
+            Less
+        );
+        assert_eq!(
+            super::cmp_displayed_quantity(1_000, 0, 100_000_000, 8),
+            Greater
+        );
+        assert_eq!(super::cmp_displayed_quantity(150, 2, 15, 1), Equal);
+        assert_eq!(
+            super::cmp_displayed_quantity(u64::MAX, 0, u64::MAX, 255),
+            Greater,
+            "an overflowing scale is the larger side"
+        );
+        assert_eq!(super::cmp_displayed_quantity(1, 255, 1, 0), Less);
+    }
+
     use super::*;
 
     #[test]

@@ -13,11 +13,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
-use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
-use crate::wallet_backend::TokenBalanceSyncOutcome;
+use crate::model::token::IdentityTokenIdentifier;
+use crate::wallet_backend::TokenBalanceSyncError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -26,6 +27,26 @@ use tokio_util::sync::CancellationToken;
 use crate::backend_task::TaskResult;
 
 const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
+
+/// What a refresh spends outside the sync budget under the outer timeout: it
+/// registers the watch lists before the budget starts and republishes balances
+/// after it ends.
+const TOKEN_BALANCE_SYNC_HEADROOM: Duration = Duration::from_secs(15);
+
+/// The one deadline for upstream's sync pass, waiting and retries included.
+/// It must end before the outer [`NETWORK_REQUEST_TIMEOUT`], which starts
+/// first: otherwise that timer always wins and the user never sees why the sync
+/// stopped. The lease outlives both, so no second refresh can start while this
+/// one still runs.
+const TOKEN_BALANCE_SYNC_BUDGET: Duration =
+    NETWORK_REQUEST_TIMEOUT.saturating_sub(TOKEN_BALANCE_SYNC_HEADROOM);
+const _: () = assert!(
+    TOKEN_BALANCE_SYNC_BUDGET.as_millis() > 0
+        && TOKEN_BALANCE_SYNC_BUDGET.as_millis() + TOKEN_BALANCE_SYNC_HEADROOM.as_millis()
+            <= NETWORK_REQUEST_TIMEOUT.as_millis()
+);
+const _: () =
+    assert!(NETWORK_REQUEST_TIMEOUT.as_millis() < TOKEN_BALANCE_REFRESH_MAX_LIFETIME.as_millis());
 
 struct TokenBalanceRefreshLease {
     context: Arc<AppContext>,
@@ -62,6 +83,7 @@ impl AppContext {
         _sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.ensure_token_balance_reads_allowed()?;
         let identities = self.load_local_qualified_identities()?;
 
         if identities.is_empty() {
@@ -73,7 +95,7 @@ impl AppContext {
 
         let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
-        let outcome = await_managed_network_request_with_timeout(
+        await_managed_network_request_with_timeout(
             self.subtasks.clone(),
             "token_balance_refresh_reaper",
             NETWORK_REQUEST_TIMEOUT,
@@ -84,31 +106,52 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        let result = Self::token_balance_sync_result(outcome);
-        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
-                .await;
-        }
-        Ok(result)
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
+        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
     pub async fn query_token_balance(
         self: &std::sync::Arc<Self>,
-        _sdk: &Sdk,
+        sdk: &Sdk,
         pair: IdentityTokenIdentifier,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Asking for a balance is intent to track it: undo any earlier "stop
-        // tracking" for this pair, otherwise the watch set would omit the very
-        // token the caller asked about.
-        self.clear_untracked_token_balance(pair)?;
+        self.track_token_balances_again(sdk, vec![pair], sender)
+            .await
+    }
 
-        // The upstream watch list is per-identity and replaced wholesale, so
-        // register the identity's whole watch set rather than a single pair.
-        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
+    /// Track `pairs` again and refresh their identities' balances in one pass.
+    /// Asking for a balance is intent to track it: every earlier "stop
+    /// tracking" of these pairs is undone first, otherwise the watch set would
+    /// omit the very tokens the caller asked about.
+    pub async fn track_token_balances_again(
+        self: &std::sync::Arc<Self>,
+        _sdk: &Sdk,
+        pairs: Vec<IdentityTokenIdentifier>,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let identity_ids: Vec<Identifier> = pairs
+            .iter()
+            .map(|pair| pair.identity_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if identity_ids.is_empty() {
+            return Ok(BackendTaskSuccessResult::FetchedTokenBalances);
+        }
+        // Gate and guard come first: a refusal must leave the dismissals as they
+        // were, or the rows would reappear with no refresh to fill them.
+        self.ensure_token_balance_reads_allowed()?;
         let refresh_guard = self.begin_token_balance_refresh()?;
+        for pair in &pairs {
+            self.clear_untracked_token_balance(*pair)?;
+        }
+        // The upstream watch list is per-identity and replaced wholesale, so
+        // register each identity's whole watch set rather than single pairs.
+        let watch_sets = self.token_watch_sets(identity_ids)?;
         let context = Arc::clone(self);
-        let outcome = await_managed_network_request_with_timeout(
+        await_managed_network_request_with_timeout(
             self.subtasks.clone(),
             "token_balance_refresh_reaper",
             NETWORK_REQUEST_TIMEOUT,
@@ -119,12 +162,9 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        let result = Self::token_balance_sync_result(outcome);
-        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
-            self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
-                .await;
-        }
-        Ok(result)
+        self.notify_cache_changed(crate::backend_task::CacheDomain::Tokens, &sender)
+            .await;
+        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
     /// Stop tracking one identity-token balance. Un-watches the pair in the
@@ -179,6 +219,25 @@ impl AppContext {
             .collect())
     }
 
+    /// Refuse a balance read until the masternode list has synced. Every
+    /// caller goes through these tasks, so the gate lives here rather than in
+    /// each screen: a proof-verifying read sent earlier fails and gets the
+    /// queried node banned.
+    fn ensure_token_balance_reads_allowed(&self) -> Result<(), TaskError> {
+        if self.connection_status().masternodes_ready() {
+            Ok(())
+        } else {
+            Err(TaskError::MasternodeListSyncPending)
+        }
+    }
+
+    /// Whether a token balance refresh is running anywhere in the app. The
+    /// guard is app-wide, so a second surface asking now would be refused
+    /// with [`TaskError::TokenBalanceRefreshInProgress`].
+    pub fn token_balance_refresh_in_flight(&self) -> bool {
+        self.token_balance_refresh_in_flight.load(Ordering::Acquire)
+    }
+
     fn begin_token_balance_refresh(
         self: &Arc<Self>,
     ) -> Result<TokenBalanceRefreshGuard, TaskError> {
@@ -218,29 +277,31 @@ impl AppContext {
         Ok(TokenBalanceRefreshGuard { lease })
     }
 
-    /// Register each identity's watch set with upstream, force an immediate
-    /// sync pass, then republish DET's balance snapshot and nudge the UI to
-    /// re-read it.
+    /// Register each identity's watch set with upstream, then run a sync pass
+    /// that sees it — waiting out one already running — and republish DET's
+    /// balance snapshot.
     async fn refresh_upstream_token_balances(
         &self,
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
-    ) -> Result<TokenBalanceSyncOutcome, TaskError> {
+    ) -> Result<(), TaskError> {
         let backend = self.wallet_backend()?;
         for (identity_id, token_ids) in watch_sets {
             backend
                 .register_identity_tokens(identity_id, token_ids)
                 .await;
         }
-        Ok(backend.sync_token_balances_now().await)
+        backend
+            .sync_token_balances_now(TOKEN_BALANCE_SYNC_BUDGET, &self.subtasks.cancellation_token)
+            .await
+            .map_err(token_balance_sync_task_error)
     }
+}
 
-    fn token_balance_sync_result(outcome: TokenBalanceSyncOutcome) -> BackendTaskSuccessResult {
-        match outcome {
-            TokenBalanceSyncOutcome::Performed => BackendTaskSuccessResult::FetchedTokenBalances,
-            TokenBalanceSyncOutcome::AlreadyInFlight => {
-                BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
-            }
-        }
+fn token_balance_sync_task_error(error: TokenBalanceSyncError) -> TaskError {
+    match error {
+        TokenBalanceSyncError::OtherPassStillRunning => TaskError::TokenBalanceSyncStillRunning,
+        TokenBalanceSyncError::TimedOut(source) => TaskError::TokenBalanceRefreshTimeout { source },
+        TokenBalanceSyncError::Cancelled => TaskError::TaskManagerShuttingDown,
     }
 }
 
@@ -358,6 +419,42 @@ mod tests {
         assert!(f.ctx.begin_token_balance_refresh().is_ok());
     }
 
+    /// The real budget and outer timeout, scaled down, in the order a refresh
+    /// starts them: the outer timer first. The sync budget must end first, or
+    /// the outer timer always wins and the sync's own error never reaches the
+    /// user.
+    #[tokio::test]
+    async fn a_pass_holding_the_slot_reports_the_sync_error_not_the_outer_timeout() {
+        const SCALE: u32 = 100;
+        let f = fixture().await;
+        let budget = TOKEN_BALANCE_SYNC_BUDGET / SCALE;
+        let cancel = f.ctx.subtasks.cancellation_token.clone();
+
+        let result = await_managed_network_request_with_timeout(
+            f.ctx.subtasks.clone(),
+            "token_balance_budget_order_test",
+            NETWORK_REQUEST_TIMEOUT / SCALE,
+            async move {
+                crate::wallet_backend::run_fresh_token_balance_sync(
+                    || true,
+                    || std::future::ready(()),
+                    std::time::Duration::from_millis(1),
+                    budget,
+                    &cancel,
+                )
+                .await
+                .map_err(token_balance_sync_task_error)
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(Err(TaskError::TokenBalanceSyncStillRunning))),
+            "got {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn unbounded_refresh_hang_eventually_releases_single_flight_guard() {
         let f = fixture().await;
@@ -398,51 +495,44 @@ mod tests {
         drop(reacquired_guard);
     }
 
+    /// Every balance read waits for the masternode list, whichever screen
+    /// asks: a refusal happens before the refresh guard is taken and before
+    /// any dismissal is undone.
     #[tokio::test]
-    async fn expired_lease_does_not_report_success_while_upstream_refresh_is_still_running() {
+    async fn balance_reads_are_refused_until_the_masternode_list_is_synced() {
         let f = fixture().await;
-        let old_refresh_guard = f
-            .ctx
-            .begin_token_balance_refresh_with_timeout(std::time::Duration::from_millis(10))
-            .expect("old refresh must acquire the single-flight guard");
-        let old_result = await_managed_network_request_with_timeout(
-            f.ctx.subtasks.clone(),
-            "detached_pending_token_balance_refresh_test",
-            std::time::Duration::from_millis(1),
-            async move {
-                let _old_refresh_guard = old_refresh_guard;
-                std::future::pending::<Result<(), TaskError>>().await
-            },
-            |source| TaskError::TokenBalanceRefreshTimeout { source },
-        )
-        .await;
-        assert!(matches!(
-            old_result,
-            Err(TaskError::TokenBalanceRefreshTimeout { .. })
-        ));
-
-        let retry_guard = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                match f.ctx.begin_token_balance_refresh() {
-                    Ok(guard) => break guard,
-                    Err(TaskError::TokenBalanceRefreshInProgress) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                    }
-                    Err(error) => panic!("unexpected refresh error: {error:?}"),
-                }
-            }
-        })
-        .await
-        .expect("the expired lease must allow a retry attempt");
-
-        let result =
-            AppContext::token_balance_sync_result(TokenBalanceSyncOutcome::AlreadyInFlight);
+        let (alpha, beta) = tokens(&f.ctx);
+        let identity = ident(10);
+        f.ctx
+            .stop_tracking_token_balance(pair(identity, alpha), f.sender.clone())
+            .await
+            .expect("stop tracking");
+        assert!(!f.ctx.connection_status().masternodes_ready());
+        let sdk = f.ctx.sdk();
 
         assert!(matches!(
-            result,
-            BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
+            f.ctx.query_my_token_balances(&sdk, f.sender.clone()).await,
+            Err(TaskError::MasternodeListSyncPending)
         ));
-        drop(retry_guard);
+        assert!(matches!(
+            f.ctx
+                .query_token_balance(&sdk, pair(identity, alpha), f.sender.clone())
+                .await,
+            Err(TaskError::MasternodeListSyncPending)
+        ));
+        assert!(matches!(
+            f.ctx
+                .track_token_balances_again(&sdk, vec![pair(identity, alpha)], f.sender.clone())
+                .await,
+            Err(TaskError::MasternodeListSyncPending)
+        ));
+
+        assert_eq!(
+            watched(&f.ctx, identity),
+            vec![beta],
+            "a refused read leaves the dismissal in place"
+        );
+        assert!(!f.ctx.token_balance_refresh_in_flight());
     }
 
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays

@@ -63,7 +63,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::{
     TokenRegistrationFeatures, estimate_token_contract_registration,
 };
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -102,39 +102,6 @@ pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let pixels = image.as_flat_samples();
 
     ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
-}
-
-pub fn validate_perpetual_distribution_recipient(
-    contract_owner_id: Identifier,
-    recipient: TokenDistributionRecipient,
-    identity: &QualifiedIdentity,
-) -> Result<(), String> {
-    match recipient {
-        TokenDistributionRecipient::ContractOwner => {
-            if contract_owner_id != identity.identity.id() {
-                Err("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string())
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::Identity(identifier) => {
-            if identifier != identity.identity.id() {
-                Err(
-                    "This identity is not a valid distribution recipient for this token"
-                        .to_string(),
-                )
-            } else {
-                Ok(())
-            }
-        }
-        TokenDistributionRecipient::EvonodesByParticipation => {
-            if identity.identity_type != IdentityType::Evonode {
-                Err("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string())
-            } else {
-                Ok(())
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,8 +203,7 @@ fn completes_pending_operation(
     }
 
     match result {
-        BackendTaskSuccessResult::FetchedTokenBalances
-        | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
+        BackendTaskSuccessResult::FetchedTokenBalances => {
             *result_context.operation() == BackendTaskContext::TokenBalanceRefresh
         }
         BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
@@ -2804,7 +2770,13 @@ impl ScreenLike for TokensScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        self.selected_token = None;
+        // Another screen may have asked for a token to open on arrival; any
+        // other Tokens subscreen clears the request so it cannot go stale.
+        let staged = self.app_context.take_pending_token_selection();
+        self.selected_token = match self.tokens_subscreen {
+            TokensSubscreen::MyTokens => staged,
+            _ => None,
+        };
         self.should_reset_collapsing_states = true;
 
         self.all_known_tokens = self
@@ -3202,8 +3174,7 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
-            BackendTaskSuccessResult::FetchedTokenBalances
-            | BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
+            BackendTaskSuccessResult::FetchedTokenBalances => {
                 if completes_pending {
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
                     self.pending_operation_context = None;
@@ -4820,6 +4791,33 @@ mod tests {
         let unlocked = confirmation(true, None, false);
         assert!(!unlocked.contains("WARNING"));
         assert!(!unlocked.contains("marketplace"));
+    }
+
+    /// The pending token selection is a one-shot courier: My Tokens opens on
+    /// it, and arriving on any other Tokens subscreen discards it, so a stale
+    /// request can never open a token later.
+    #[test]
+    fn a_pending_token_selection_is_taken_on_arrival_by_every_tokens_subscreen() {
+        use crate::ui::ScreenLike;
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let token_id = dash_sdk::platform::Identifier::from([5; 32]);
+
+        context.set_pending_token_selection(token_id);
+        let mut my_tokens = TokensScreen::new(&context, TokensSubscreen::MyTokens);
+        my_tokens.refresh_on_arrival();
+        assert_eq!(my_tokens.selected_token, Some(token_id));
+        assert_eq!(context.take_pending_token_selection(), None);
+
+        context.set_pending_token_selection(token_id);
+        let mut search = TokensScreen::new(&context, TokensSubscreen::SearchTokens);
+        search.refresh_on_arrival();
+        assert_eq!(search.selected_token, None, "Search opens no token");
+        assert_eq!(
+            context.take_pending_token_selection(),
+            None,
+            "the request is consumed, not left for a later My Tokens visit"
+        );
     }
 
     /// Both modes name the preset first and then a setting the network does not

@@ -12,6 +12,8 @@ pub enum IdentityHubTab {
     Home,
     /// Contacts: requests, active contacts, sent requests. Gated on social profile.
     Contacts,
+    /// Tokens: the tokens this identity holds, with Send and Claim.
+    Tokens,
     /// Unfinished activity shell, retained for existing internal links.
     Activity,
     /// Profile: social profile, usernames, advanced settings, and danger zone.
@@ -20,9 +22,10 @@ pub enum IdentityHubTab {
 
 impl IdentityHubTab {
     /// All tabs in display order.
-    pub const ALL: [IdentityHubTab; 3] = [
+    pub const ALL: [IdentityHubTab; 4] = [
         IdentityHubTab::Home,
         IdentityHubTab::Contacts,
+        IdentityHubTab::Tokens,
         IdentityHubTab::Settings,
     ];
 
@@ -31,6 +34,7 @@ impl IdentityHubTab {
         match self {
             IdentityHubTab::Home => "Home",
             IdentityHubTab::Contacts => "Contacts",
+            IdentityHubTab::Tokens => "Tokens",
             IdentityHubTab::Activity => "Activity",
             IdentityHubTab::Settings => "Profile",
         }
@@ -43,6 +47,7 @@ impl IdentityHubTab {
             IdentityHubTab::Contacts => {
                 "Contacts. Received requests, your contacts, and sent requests."
             }
+            IdentityHubTab::Tokens => "Tokens. Balances and rewards this identity holds.",
             IdentityHubTab::Activity => {
                 "Activity. A unified timeline of payments, funding, and platform actions."
             }
@@ -67,7 +72,8 @@ mod tests {
     fn all_in_display_order() {
         assert_eq!(IdentityHubTab::ALL[0], IdentityHubTab::Home);
         assert_eq!(IdentityHubTab::ALL[1], IdentityHubTab::Contacts);
-        assert_eq!(IdentityHubTab::ALL[2], IdentityHubTab::Settings);
+        assert_eq!(IdentityHubTab::ALL[2], IdentityHubTab::Tokens);
+        assert_eq!(IdentityHubTab::ALL[3], IdentityHubTab::Settings);
     }
 
     #[test]
@@ -102,7 +108,7 @@ mod tests {
     #[test]
     fn labels_in_display_order() {
         let labels: Vec<&str> = IdentityHubTab::ALL.iter().map(|t| t.label()).collect();
-        assert_eq!(labels, ["Home", "Contacts", "Profile"]);
+        assert_eq!(labels, ["Home", "Contacts", "Tokens", "Profile"]);
     }
 
     #[test]

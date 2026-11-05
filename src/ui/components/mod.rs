@@ -13,6 +13,7 @@ pub mod global_nav_switcher;
 pub mod icons;
 pub mod identity_selector;
 pub mod info_popup;
+pub mod inline_notice;
 pub mod left_panel;
 pub mod legacy_recovery_section;
 pub mod local_schedule_input;

@@ -3161,6 +3161,9 @@ impl ScreenLike for TokensScreen {
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor);
                 }
+                if self.contract_search_status == ContractSearchStatus::WaitingForResult {
+                    self.operation_banner.take_and_clear();
+                }
                 self.contract_search_status = ContractSearchStatus::Complete;
             }
             BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
@@ -3362,6 +3365,63 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn keyword_search_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        let handle = MessageBanner::set_global(
+            app_context.egui_ctx(),
+            "Searching contracts...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        screen.operation_banner = Some(handle.clone());
+        // As set when the search was sent.
+        screen.contract_search_status = ContractSearchStatus::WaitingForResult;
+
+        // No match is still a finished search.
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+        );
+
+        assert!(screen.contract_search_status == ContractSearchStatus::Complete);
+        assert!(screen.operation_banner.is_none());
+        assert!(!handle.is_live());
+    }
+
+    #[test]
+    fn keyword_search_page_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        screen.token_search_query = Some("game".to_owned());
+        screen.contract_search_status = ContractSearchStatus::Complete;
+        screen.next_cursors.push(Start::StartAfter(vec![1]));
+        screen.search_has_next_page = true;
+
+        for page_action in [
+            TokensScreen::goto_next_search_page as fn(&mut TokensScreen) -> AppAction,
+            TokensScreen::goto_previous_search_page,
+        ] {
+            assert!(matches!(
+                page_action(&mut screen),
+                AppAction::BackendTask(_)
+            ));
+            let handle = screen.operation_banner.clone().expect("searching banner");
+            assert!(handle.is_live());
+
+            screen.display_backend_task_result(
+                &BackendTaskContext::Other,
+                BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+            );
+
+            assert!(screen.operation_banner.is_none());
+            assert!(!handle.is_live());
+        }
     }
 
     /// A token DET knows about, as the registry would list it, with a contract

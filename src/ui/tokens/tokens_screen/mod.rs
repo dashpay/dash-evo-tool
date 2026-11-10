@@ -3019,11 +3019,15 @@ impl ScreenLike for TokensScreen {
                 self.operation_banner = Some(handle);
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
+                // The screen stops waiting, so the result will not retire the banner.
+                if self.refreshing_status == RefreshingStatus::Refreshing {
+                    self.operation_banner.take_and_clear();
+                }
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.pending_operation_context = None;
 
                 // should put these in a fn
-                self.contract_search_status = ContractSearchStatus::NotStarted;
+                self.end_keyword_search();
                 self.selected_token = None;
                 self.selected_contract_id = None;
                 self.token_search_query = None;
@@ -3160,6 +3164,9 @@ impl ScreenLike for TokensScreen {
                 self.search_has_next_page = next_cursor.is_some();
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor);
+                }
+                if self.contract_search_status == ContractSearchStatus::WaitingForResult {
+                    self.operation_banner.take_and_clear();
                 }
                 self.contract_search_status = ContractSearchStatus::Complete;
             }
@@ -3362,6 +3369,147 @@ mod tests {
         assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(handle.elapsed().is_none());
+    }
+
+    #[test]
+    fn keyword_search_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        let handle = MessageBanner::set_global(
+            app_context.egui_ctx(),
+            "Searching contracts...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        screen.operation_banner = Some(handle.clone());
+        // As set when the search was sent.
+        screen.contract_search_status = ContractSearchStatus::WaitingForResult;
+
+        // No match is still a finished search.
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+        );
+
+        assert!(screen.contract_search_status == ContractSearchStatus::Complete);
+        assert!(screen.operation_banner.is_none());
+        assert!(!handle.is_live());
+    }
+
+    /// Clearing a search, or leaving the screen, while it waits for results
+    /// retires its progress banner; no result will come to retire it later.
+    #[test]
+    fn clearing_or_leaving_a_pending_search_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for control in ["Clear", "Wallets"] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let app_context = crate::context::test_support::test_app_context(tmp.path());
+            let screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut TokensScreen| {
+                        let _ = screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label("Search").click();
+            harness.run();
+            let handle = harness
+                .state()
+                .operation_banner
+                .clone()
+                .expect("searching banner");
+            assert!(handle.is_live(), "{control}");
+
+            // The nav entry is an icon and a label, both clickable.
+            harness
+                .query_all_by_label(control)
+                .next()
+                .expect("control")
+                .click();
+            harness.run();
+
+            assert!(!handle.is_live(), "{control}");
+        }
+    }
+
+    /// Leaving My Tokens while its balance refresh runs retires the refresh
+    /// banner: the screen stops waiting, so the result will not retire it.
+    #[test]
+    fn leaving_during_a_balance_refresh_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Refresh").click();
+        harness.run();
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::Refreshing
+        );
+        let handle = harness
+            .state()
+            .operation_banner
+            .clone()
+            .expect("refresh banner");
+        assert!(handle.is_live());
+
+        // The nav entry is an icon and a label, both clickable.
+        harness
+            .query_all_by_label("Wallets")
+            .next()
+            .expect("nav entry")
+            .click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::NotRefreshing
+        );
+        assert!(!handle.is_live());
+    }
+
+    #[test]
+    fn keyword_search_page_results_clear_searching_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+        screen.token_search_query = Some("game".to_owned());
+        screen.contract_search_status = ContractSearchStatus::Complete;
+        screen.next_cursors.push(Start::StartAfter(vec![1]));
+        screen.search_has_next_page = true;
+
+        for page_action in [
+            TokensScreen::goto_next_search_page as fn(&mut TokensScreen) -> AppAction,
+            TokensScreen::goto_previous_search_page,
+        ] {
+            assert!(matches!(
+                page_action(&mut screen),
+                AppAction::BackendTask(_)
+            ));
+            let handle = screen.operation_banner.clone().expect("searching banner");
+            assert!(handle.is_live());
+
+            screen.display_backend_task_result(
+                &BackendTaskContext::Other,
+                BackendTaskSuccessResult::DescriptionsByKeyword(vec![], None),
+            );
+
+            assert!(screen.operation_banner.is_none());
+            assert!(!handle.is_live());
+        }
     }
 
     /// A token DET knows about, as the registry would list it, with a contract

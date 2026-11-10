@@ -7,16 +7,38 @@ use tokio::sync::mpsc;
 pub struct SenderAsync<T> {
     sender: mpsc::Sender<T>,
     ctx: egui::Context,
+    /// The messages this sender passes on; `None` passes every one.
+    keep: Option<fn(&T) -> bool>,
 }
 
 impl<T> SenderAsync<T> {
     /// Create a new SenderAsync wrapper
     pub fn new(sender: mpsc::Sender<T>, ctx: egui::Context) -> Self {
-        Self { sender, ctx }
+        Self {
+            sender,
+            ctx,
+            keep: None,
+        }
+    }
+
+    /// This sender, passing on only the messages `keep` accepts. The others
+    /// are accepted and dropped, so a caller sees no failure.
+    pub fn keeping_only(self, keep: fn(&T) -> bool) -> Self {
+        Self {
+            keep: Some(keep),
+            ..self
+        }
+    }
+
+    fn drops(&self, value: &T) -> bool {
+        self.keep.is_some_and(|keep| !keep(value))
     }
 
     /// Send a message and trigger a repaint
     pub async fn send(&self, value: T) -> Result<(), mpsc::error::SendError<T>> {
+        if self.drops(&value) {
+            return Ok(());
+        }
         let result = self.sender.send(value).await;
         if result.is_ok() {
             self.ctx.request_repaint();
@@ -26,6 +48,9 @@ impl<T> SenderAsync<T> {
 
     /// Try to send a message without blocking and trigger a repaint
     pub fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>> {
+        if self.drops(&value) {
+            return Ok(());
+        }
         let result = self.sender.try_send(value);
         if result.is_ok() {
             self.ctx.request_repaint();
@@ -49,6 +74,7 @@ impl<T> Clone for SenderAsync<T> {
         Self {
             sender: self.sender.clone(),
             ctx: self.ctx.clone(),
+            keep: self.keep,
         }
     }
 }

@@ -187,7 +187,7 @@ fn contextualize_dapi_task_result(
 /// `run_backend_task`: identity / DashPay / Core / wallet / shielded
 /// all funnel through `WalletBackend`. The migration task itself is
 /// explicitly excluded — that is the work in progress.
-fn is_wallet_touching(task: &BackendTask) -> bool {
+pub(crate) fn is_wallet_touching(task: &BackendTask) -> bool {
     matches!(
         task,
         BackendTask::WalletTask(_)

@@ -3023,7 +3023,7 @@ impl ScreenLike for TokensScreen {
                 self.pending_operation_context = None;
 
                 // should put these in a fn
-                self.contract_search_status = ContractSearchStatus::NotStarted;
+                self.end_keyword_search();
                 self.selected_token = None;
                 self.selected_contract_id = None;
                 self.token_search_query = None;
@@ -3391,6 +3391,45 @@ mod tests {
         assert!(screen.contract_search_status == ContractSearchStatus::Complete);
         assert!(screen.operation_banner.is_none());
         assert!(!handle.is_live());
+    }
+
+    /// Clearing a search, or leaving the screen, while it waits for results
+    /// retires its progress banner; no result will come to retire it later.
+    #[test]
+    fn clearing_or_leaving_a_pending_search_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        for control in ["Clear", "Wallets"] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let app_context = crate::context::test_support::test_app_context(tmp.path());
+            let screen = TokensScreen::new(&app_context, TokensSubscreen::SearchTokens);
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 900.0))
+                .build_ui_state(
+                    |ui, screen: &mut TokensScreen| {
+                        let _ = screen.ui(ui);
+                    },
+                    screen,
+                );
+            harness.run();
+            harness.get_by_label("Search").click();
+            harness.run();
+            let handle = harness
+                .state()
+                .operation_banner
+                .clone()
+                .expect("searching banner");
+            assert!(handle.is_live(), "{control}");
+
+            // The nav entry is an icon and a label, both clickable.
+            harness
+                .query_all_by_label(control)
+                .next()
+                .expect("control")
+                .click();
+            harness.run();
+
+            assert!(!handle.is_live(), "{control}");
+        }
     }
 
     #[test]

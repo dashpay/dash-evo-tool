@@ -149,6 +149,11 @@ skill may still provide convenient screenshot and input tooling.
    variable *names* only (matching the `tests/backend-e2e/` convention — e.g.
    `E2E_WALLET_MNEMONIC`, `E2E_MN_*`). Read actual values at run time via
    `grep`/`env`, never paste them into a scenario doc, a report, or a commit.
+   To start with the test wallet already imported, provision the data
+   directory before launch with
+   `.claude/skills/visual-diff/scripts/provision-wallet.sh` (a `det-cli` built
+   from the same commit as the GUI pipes the phrase in with
+   `--mnemonic-stdin`).
 4. **Default to testnet.** Only use mainnet if a scenario explicitly requires
    it and says why — and if it does, treat every fund-moving step as
    irreversible and get explicit confirmation before broadcasting.

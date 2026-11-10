@@ -126,8 +126,8 @@ pass show dash/testnet-wallet | det-cli core-wallet-import --mnemonic-stdin netw
   `--password-file` for a password).
 - A phrase given as `mnemonic=...` still works, but det-cli warns: command-line
   arguments are visible to other users and saved in shell history.
-- In HTTP mode the phrase is sent only to this computer (`127.0.0.1`, `::1` or
-  `localhost`) or to an `https` address, like a password.
+- In HTTP mode a phrase, piped or inline, is sent only to this computer
+  (`127.0.0.1`, `::1` or `localhost`) or to an `https` address, like a password.
 - To provision a wallet into a GUI data directory for testing, point
   `DASH_EVO_DATA_DIR` at it and leave `MCP_API_KEY` unset (standalone mode).
   Use a `det-cli` built from the same commit as the GUI: both open the same

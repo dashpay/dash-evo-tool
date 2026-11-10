@@ -204,10 +204,15 @@ fn prepare_tool_call(
             &arguments,
             password_source == Some(password::PasswordSource::Stdin),
             help::cached_tool_takes_param(&mcp_name, mnemonic::MNEMONIC_PARAM),
-            http_addr,
         )
         .map_err(|e| password::describe(&e))?;
-    } else if let Some(warning) = mnemonic::inline_mnemonic_warning(&arguments) {
+    }
+    if (mnemonic_from_stdin || arguments.contains_key(mnemonic::MNEMONIC_PARAM))
+        && let Some(addr) = http_addr
+    {
+        mnemonic::ensure_safe_destination(addr).map_err(|e| password::describe(&e))?;
+    }
+    if !mnemonic_from_stdin && let Some(warning) = mnemonic::inline_mnemonic_warning(&arguments) {
         eprintln!("{warning}");
     }
     if let Some(source) = password_source {
@@ -367,6 +372,30 @@ mod tests {
                 addr: "http://192.168.1.5:9527/mcp".to_owned()
             }
             .to_string()
+        );
+    }
+
+    /// A phrase never travels unencrypted off this computer, inline or piped.
+    #[test]
+    fn an_inline_mnemonic_is_refused_over_unencrypted_remote_http() {
+        let remote = "http://192.168.1.5:9527/mcp";
+        let inline = call(
+            &["core-wallet-import", "mnemonic=x y", "network=testnet"],
+            Some(remote),
+        );
+        assert_eq!(
+            inline.expect_err("inline phrase to a remote plain-http server"),
+            mnemonic::MnemonicArgError::InsecureDestination {
+                addr: remote.to_owned()
+            }
+            .to_string()
+        );
+        assert!(
+            call(
+                &["core-wallet-import", "mnemonic=x y", "network=testnet"],
+                Some("http://127.0.0.1:9527/mcp"),
+            )
+            .is_ok()
         );
     }
 

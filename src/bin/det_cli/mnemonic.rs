@@ -37,7 +37,7 @@ pub(super) enum MnemonicArgError {
     #[error("Choose one recovery phrase source: mnemonic=... or --mnemonic-stdin.")]
     InlineAndStdin,
     #[error(
-        "--mnemonic-stdin and --password-stdin cannot both read standard input. Pass the password with --password-file instead."
+        "Only one input can be read from standard input: give --mnemonic-stdin or --password-stdin, not both."
     )]
     BothFromStdin,
     #[error(
@@ -94,19 +94,16 @@ pub(super) fn take_stdin_flag(params: &mut Vec<String>) -> Result<bool, Mnemonic
 ///
 /// `takes_mnemonic` is whether the cached schema of the tool declares the
 /// parameter, `None` when unknown: the server is then the authority.
-/// `http_addr` is the server address in HTTP mode, `None` in-process.
 ///
 /// # Errors
 ///
 /// [`MnemonicArgError`] when the phrase is also inline, the password reads
-/// standard input too, the tool takes no phrase, or the phrase would leave
-/// this computer unencrypted.
+/// standard input too, or the tool takes no phrase.
 pub(super) fn check_stdin_request(
     tool: &str,
     arguments: &Map<String, Value>,
     password_from_stdin: bool,
     takes_mnemonic: Option<bool>,
-    http_addr: Option<&str>,
 ) -> Result<(), MnemonicArgError> {
     if arguments.contains_key(MNEMONIC_PARAM) {
         return Err(MnemonicArgError::InlineAndStdin);
@@ -119,14 +116,24 @@ pub(super) fn check_stdin_request(
             tool: tool.to_owned(),
         });
     }
-    if let Some(addr) = http_addr
-        && !password::is_private_destination(addr)
-    {
-        return Err(MnemonicArgError::InsecureDestination {
-            addr: addr.to_owned(),
-        });
-    }
     Ok(())
+}
+
+/// Refuses to send a recovery phrase, inline or piped, over plain HTTP
+/// anywhere but this computer.
+///
+/// # Errors
+///
+/// [`MnemonicArgError::InsecureDestination`] unless `addr` is `https` or a
+/// plain-`http` address of this computer.
+pub(super) fn ensure_safe_destination(addr: &str) -> Result<(), MnemonicArgError> {
+    if password::is_private_destination(addr) {
+        Ok(())
+    } else {
+        Err(MnemonicArgError::InsecureDestination {
+            addr: addr.to_owned(),
+        })
+    }
 }
 
 /// The warning for a phrase passed inline as `mnemonic=...`, if it was.
@@ -238,51 +245,36 @@ mod tests {
 
     #[test]
     fn a_stdin_request_is_checked_before_stdin_is_read() {
-        let local = Some("http://127.0.0.1:9527/mcp");
-        assert!(
-            check_stdin_request(
-                "core-wallet-import",
-                &inline(false),
-                false,
-                Some(true),
-                None
-            )
-            .is_ok()
-        );
-        assert!(
-            check_stdin_request("core-wallet-import", &inline(false), false, None, local).is_ok()
-        );
+        let tool = "core-wallet-import";
+        assert!(check_stdin_request(tool, &inline(false), false, Some(true)).is_ok());
+        assert!(check_stdin_request(tool, &inline(false), false, None).is_ok());
 
-        let error =
-            check_stdin_request("core-wallet-import", &inline(true), false, Some(true), None)
-                .expect_err("inline and stdin");
+        let error = check_stdin_request(tool, &inline(true), false, Some(true))
+            .expect_err("inline and stdin");
         assert!(matches!(error, MnemonicArgError::InlineAndStdin));
         assert_no_phrase(&error);
 
         assert!(matches!(
-            check_stdin_request("core-wallet-import", &inline(false), true, Some(true), None),
+            check_stdin_request(tool, &inline(false), true, Some(true)),
             Err(MnemonicArgError::BothFromStdin)
         ));
         assert!(matches!(
-            check_stdin_request("core-wallets-list", &inline(false), false, Some(false), None),
+            check_stdin_request("core-wallets-list", &inline(false), false, Some(false)),
             Err(MnemonicArgError::ToolTakesNoMnemonic { tool }) if tool == "core-wallets-list"
         ));
+    }
+
+    #[test]
+    fn a_phrase_goes_over_http_only_to_this_computer_or_over_https() {
+        for addr in ["http://127.0.0.1:9527/mcp", "https://det.example.com/mcp"] {
+            assert!(ensure_safe_destination(addr).is_ok(), "{addr}");
+        }
         for addr in ["http://192.168.1.5:9527/mcp", "not a url"] {
             assert!(matches!(
-                check_stdin_request("core-wallet-import", &inline(false), false, Some(true), Some(addr)),
+                ensure_safe_destination(addr),
                 Err(MnemonicArgError::InsecureDestination { addr: reported }) if reported == addr
             ));
         }
-        assert!(
-            check_stdin_request(
-                "core-wallet-import",
-                &inline(false),
-                false,
-                Some(true),
-                Some("https://det.example.com/mcp")
-            )
-            .is_ok()
-        );
     }
 
     #[test]

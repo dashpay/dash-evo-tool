@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 /// Tool parameter the password is delivered as.
 pub(super) const PASSWORD_PARAM: &str = "password";
 
-pub(super) const STDIN_FLAG: &str = "--password-stdin";
+const STDIN_FLAG: &str = "--password-stdin";
 const FILE_FLAG: &str = "--password-file";
 
 /// Bytes read before giving up: the longest accepted password, a CRLF line

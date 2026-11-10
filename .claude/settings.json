@@ -1,5 +1,8 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(.claude/skills/visual-diff/scripts/type-secret.sh *)"
+    ],
     "deny": [
       "Edit(scripts/**)",
       "Write(scripts/**)",

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regression tests for render.py, diff.py and gallery.py on synthetic images.
+"""Regression tests for render.py, diff.py and gallery.py on synthetic images,
+and for env-value.awk on throwaway env files.
 
 usage: selftest.py
 Needs no display, no application build and no captured data. Run it after
@@ -193,6 +194,52 @@ class Gallery(Case):
         self.assertNotEqual(code, 0, out)
         self.assertIn("not listed", out)
 
+
+
+class EnvValue(unittest.TestCase):
+    """env-value.awk reads one variable from an env file the way the secret
+    helpers need it, and prints nothing for anything it cannot read safely.
+    The values here are fake; no real credential is ever used."""
+
+    NAME = "E2E_WALLET_MNEMONIC"
+
+    def value(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".env", newline="", delete=False) as f:
+            f.write(text)
+        self.addCleanup(os.unlink, f.name)
+        r = subprocess.run(
+            ["awk", "-v", f"name={self.NAME}", "-f", os.path.join(HERE, "env-value.awk"), f.name],
+            capture_output=True,
+            text=True,
+        )
+        return r.returncode, r.stdout
+
+    def test_accepted_forms_yield_the_bare_value(self):
+        for text in [
+            f"{self.NAME}=alpha bravo\n",
+            f"{self.NAME}=alpha bravo   \n",
+            f"{self.NAME}=alpha bravo # note\n",
+            f'{self.NAME}="alpha bravo"\n',
+            f'{self.NAME}="alpha bravo"\r\n',
+            f"{self.NAME}='alpha bravo'\r\n",
+            f'export {self.NAME}="alpha bravo"\n',
+            f'{self.NAME}="alpha bravo"   # note\n',
+            f"OTHER=x\n{self.NAME}_NOT=y\n{self.NAME}=alpha bravo",
+        ]:
+            self.assertEqual(self.value(text), (0, "alpha bravo"), repr(text))
+
+    def test_anything_else_fails_and_prints_nothing(self):
+        for text in [
+            "OTHER=x\n",
+            f"{self.NAME}=\n",
+            f'{self.NAME}=""\n',
+            f'{self.NAME}="alpha bravo\n',
+            f'{self.NAME}="alpha bravo" trailing\n',
+            f"{self.NAME} = alpha bravo\n",
+        ]:
+            code, out = self.value(text)
+            self.assertNotEqual(code, 0, repr(text))
+            self.assertEqual(out, "", repr(text))
 
 if __name__ == "__main__":
     unittest.main()

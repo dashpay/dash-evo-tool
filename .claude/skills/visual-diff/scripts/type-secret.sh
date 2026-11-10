@@ -21,8 +21,10 @@ case "${1:-}" in
     exit 2
     ;;
 esac
-if ! grep -q "^$1=..*" "$ENV_FILE"; then
-  echo "type-secret: $1 is not set" >&2
+# Reads the variable without printing it; nothing on any form it cannot read.
+env_value() { awk -v name="$1" -f "$(dirname "$0")/env-value.awk" "$ENV_FILE"; }
+if ! env_value "$1" >/dev/null; then
+  echo "type-secret: $1 is not set, or not as NAME=value, NAME=\"value\" or NAME='value'" >&2
   exit 1
 fi
 word="${2:-}"
@@ -32,8 +34,7 @@ if [ -n "$word" ]; then
     exit 2
   fi
 fi
-# Strip the name, optional surrounding quotes and the trailing newline.
-grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2- | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" | tr -d '\n' |
+env_value "$1" |
   awk -v i="$word" '{ if (i == "") printf "%s", $0; else printf "%s", $i }' |
   xdotool type --clearmodifiers --delay 15 --file - >/dev/null 2>&1
 if [ -n "$word" ]; then

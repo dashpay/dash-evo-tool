@@ -41,6 +41,7 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -2336,6 +2337,32 @@ impl TokensScreen {
         }
     }
 
+    /// Replaces the creator's copy of its selected identity with the one just read
+    /// into `self.identities`, so keys and balance changed elsewhere show here. A
+    /// selected key the identity no longer holds is dropped; a removed identity is
+    /// deselected.
+    fn refresh_token_creator_identity(&mut self) {
+        let Some(id) = self.selected_identity.as_ref().map(|qi| qi.identity.id()) else {
+            return;
+        };
+        let Some(fresh) = self.identities.get(&id) else {
+            self.identity_id_string.clear();
+            self.selected_identity = None;
+            self.selected_key = None;
+            return;
+        };
+        self.selected_key = self.selected_key.take().and_then(|selected| {
+            fresh
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .map(|key_ref| &key_ref.1.identity_public_key)
+                .find(|key| key.id() == selected.id() && key.data() == selected.data())
+                .cloned()
+        });
+        self.selected_identity = Some(fresh.clone());
+    }
+
     /// Whether this creator sent a registration it has not heard back about. A
     /// network switch resets the creator, so a late result of a registration
     /// sent on the previous network finds it not waiting and is ignored rather
@@ -2756,6 +2783,7 @@ impl ScreenLike for TokensScreen {
                 .into_iter()
                 .map(|identity| (identity.identity.id(), identity))
                 .collect();
+            self.refresh_token_creator_identity();
         }
         // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
@@ -2778,6 +2806,7 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        self.refresh_token_creator_identity();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -2818,6 +2847,7 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+        self.refresh_token_creator_identity();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -3245,6 +3275,7 @@ mod tests {
     use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
+    use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::platform::{DataContract, Identity};
 
     #[test]
@@ -4529,6 +4560,182 @@ mod tests {
             TokenPresetSelection::Unselected
         );
         assert!(!screen.can_create_in_simple_mode());
+    }
+
+    /// A user identity holding private keys for `keys`.
+    fn creator_identity(
+        context: &AppContext,
+        keys: &[(KeyID, Purpose, SecurityLevel)],
+    ) -> QualifiedIdentity {
+        use crate::context::test_support::identity_public_key;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+
+        let mut private_keys = KeyStorage::default();
+        for &(id, purpose, security_level) in keys {
+            let key = identity_public_key(
+                id,
+                purpose,
+                security_level,
+                KeyType::ECDSA_HASH160,
+                vec![id as u8; 20],
+            );
+            private_keys.insert_at(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+                ),
+            );
+        }
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([0x41; 32]),
+                context.platform_version(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network,
+        }
+    }
+
+    fn selected_key_ids(screen: &TokensScreen) -> Vec<KeyID> {
+        let mut ids: Vec<KeyID> = screen
+            .selected_identity
+            .as_ref()
+            .expect("an identity stays selected")
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| key_ref.1.identity_public_key.id())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Regression: the creator kept its own copy of the selected identity, so a
+    /// key added on the identity's key screen never reached it — Simple mode kept
+    /// saying no eligible key exists. Coming back (or a change to identities)
+    /// shows the stored identity, and the form the user filled in is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_shows_the_current_keys_of_the_selected_identity() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+
+        for arrival in ["navigation", "cache update"] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+            let stored = creator_identity(
+                &context,
+                &[(1, Purpose::AUTHENTICATION, SecurityLevel::MEDIUM)],
+            );
+            context
+                .insert_local_qualified_identity(&stored, &None)
+                .expect("store identity");
+            let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert_eq!(selected_key_ids(&screen), vec![1]);
+            screen.token_description_input = "Kept across navigation".to_string();
+
+            let with_new_key = creator_identity(
+                &context,
+                &[
+                    (1, Purpose::AUTHENTICATION, SecurityLevel::MEDIUM),
+                    (2, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                ],
+            );
+            context
+                .update_local_qualified_identity(&with_new_key)
+                .expect("add key");
+
+            if arrival == "navigation" {
+                screen.keep_token_creator_across_navigation();
+                screen.refresh_on_arrival();
+            } else {
+                screen.cached_data_changed(CacheUpdate {
+                    network: context.network,
+                    domain: CacheDomain::Identities,
+                });
+            }
+
+            assert_eq!(selected_key_ids(&screen), vec![1, 2], "after {arrival}");
+            assert_eq!(
+                screen.token_description_input, "Kept across navigation",
+                "after {arrival}"
+            );
+            context.wallet_backend().unwrap().shutdown().await;
+        }
+    }
+
+    /// A selected key that the stored identity no longer holds is dropped, so the
+    /// creator never signs with it; a key it still holds stays selected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_drops_a_selected_key_the_identity_no_longer_holds() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let stored = creator_identity(
+            &context,
+            &[
+                (1, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                (2, Purpose::AUTHENTICATION, SecurityLevel::CRITICAL),
+            ],
+        );
+        context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("store identity");
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        let key_of = |id: KeyID| {
+            stored
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .map(|key_ref| key_ref.1.identity_public_key.clone())
+                .find(|key| key.id() == id)
+                .expect("stored key")
+        };
+
+        screen.selected_key = Some(key_of(1));
+        screen.refresh_on_arrival();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+
+        screen.selected_key = Some(key_of(2));
+        let without_key_2 = creator_identity(
+            &context,
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        context
+            .update_local_qualified_identity(&without_key_2)
+            .expect("remove key");
+        screen.refresh_on_arrival();
+        assert!(screen.selected_key.is_none());
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity removed from the store is no longer offered by the creator,
+    /// so it stops being the selected one; the rest of the form is kept.
+    #[test]
+    fn token_creator_deselects_an_identity_that_is_no_longer_stored() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+
+        screen.keep_token_creator_across_navigation();
+        screen.refresh_on_arrival();
+
+        assert!(screen.selected_identity.is_none());
+        assert!(screen.identity_id_string.is_empty());
+        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
     }
 
     /// Every preset picked in a freshly opened creator is built exactly as defined.

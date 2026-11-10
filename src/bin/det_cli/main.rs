@@ -15,6 +15,7 @@ mod connect;
 #[cfg(feature = "headless")]
 mod headless;
 mod help;
+mod mnemonic;
 mod password;
 
 type McpClient = RunningService<RoleClient, ()>;
@@ -193,8 +194,27 @@ fn prepare_tool_call(
     let mut params = args[1..].to_vec();
     let password_source =
         password::take_password_source(&mut params).map_err(|e| password::describe(&e))?;
+    let mnemonic_from_stdin =
+        mnemonic::take_stdin_flag(&mut params).map_err(|e| password::describe(&e))?;
     let mut arguments = help::parse_params(&params).map_err(|e| e.to_string())?;
     password::reject_inline_password(&arguments).map_err(|e| password::describe(&e))?;
+    if mnemonic_from_stdin {
+        mnemonic::check_stdin_request(
+            tool_name,
+            &arguments,
+            password_source == Some(password::PasswordSource::Stdin),
+            help::cached_tool_takes_param(&mcp_name, mnemonic::MNEMONIC_PARAM),
+        )
+        .map_err(|e| password::describe(&e))?;
+    }
+    if (mnemonic_from_stdin || arguments.contains_key(mnemonic::MNEMONIC_PARAM))
+        && let Some(addr) = http_addr
+    {
+        mnemonic::ensure_safe_destination(addr).map_err(|e| password::describe(&e))?;
+    }
+    if !mnemonic_from_stdin && let Some(warning) = mnemonic::inline_mnemonic_warning(&arguments) {
+        eprintln!("{warning}");
+    }
     if let Some(source) = password_source {
         // Checked before reading, so a mistyped command never consumes stdin.
         // An unknown (uncached) tool is let through: the server is the
@@ -210,6 +230,10 @@ fn prepare_tool_call(
         }
         let secret = password::read_password(&source).map_err(|e| password::describe(&e))?;
         password::insert_password(&mut arguments, &secret);
+    }
+    if mnemonic_from_stdin {
+        let phrase = mnemonic::read_mnemonic_stdin().map_err(|e| password::describe(&e))?;
+        mnemonic::insert_mnemonic(&mut arguments, &phrase);
     }
 
     let mut request = CallToolRequestParams::new(mcp_name);
@@ -278,4 +302,119 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(
+        list: &[&str],
+        http_addr: Option<&str>,
+    ) -> Result<Option<CallToolRequestParams>, String> {
+        let args: Vec<String> = list.iter().map(|arg| (*arg).to_owned()).collect();
+        prepare_tool_call(&args, http_addr)
+    }
+
+    /// Refusals land before standard input is read, so none of these
+    /// consumes it.
+    #[test]
+    fn a_mnemonic_from_stdin_is_refused_before_reading_when_misused() {
+        let inline = call(
+            &[
+                "core-wallet-import",
+                "--mnemonic-stdin",
+                "mnemonic=x y",
+                "network=testnet",
+            ],
+            None,
+        );
+        assert_eq!(
+            inline.expect_err("inline and stdin"),
+            mnemonic::MnemonicArgError::InlineAndStdin.to_string()
+        );
+
+        let both = call(
+            &[
+                "core-wallet-import",
+                "--mnemonic-stdin",
+                "--password-stdin",
+                "network=testnet",
+            ],
+            None,
+        );
+        assert_eq!(
+            both.expect_err("two stdin readers"),
+            mnemonic::MnemonicArgError::BothFromStdin.to_string()
+        );
+
+        let twice = call(
+            &[
+                "core-wallet-import",
+                "--mnemonic-stdin",
+                "--mnemonic-stdin",
+                "network=testnet",
+            ],
+            None,
+        );
+        assert_eq!(
+            twice.expect_err("repeated flag"),
+            mnemonic::MnemonicArgError::RepeatedFlag.to_string()
+        );
+
+        let remote = call(
+            &["core-wallet-import", "--mnemonic-stdin", "network=testnet"],
+            Some("http://192.168.1.5:9527/mcp"),
+        );
+        assert_eq!(
+            remote.expect_err("unencrypted remote"),
+            mnemonic::MnemonicArgError::InsecureDestination {
+                addr: "http://192.168.1.5:9527/mcp".to_owned()
+            }
+            .to_string()
+        );
+    }
+
+    /// A phrase never travels unencrypted off this computer, inline or piped.
+    #[test]
+    fn an_inline_mnemonic_is_refused_over_unencrypted_remote_http() {
+        let remote = "http://192.168.1.5:9527/mcp";
+        let inline = call(
+            &["core-wallet-import", "mnemonic=x y", "network=testnet"],
+            Some(remote),
+        );
+        assert_eq!(
+            inline.expect_err("inline phrase to a remote plain-http server"),
+            mnemonic::MnemonicArgError::InsecureDestination {
+                addr: remote.to_owned()
+            }
+            .to_string()
+        );
+        assert!(
+            call(
+                &["core-wallet-import", "mnemonic=x y", "network=testnet"],
+                Some("http://127.0.0.1:9527/mcp"),
+            )
+            .is_ok()
+        );
+    }
+
+    /// An inline phrase still runs, with a warning, as before.
+    #[test]
+    fn an_inline_mnemonic_is_passed_to_the_tool() {
+        let request = call(
+            &["core-wallet-import", "mnemonic=x y", "network=testnet"],
+            None,
+        )
+        .expect("inline phrase")
+        .expect("a tool call");
+        assert_eq!(
+            request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get(mnemonic::MNEMONIC_PARAM))
+                .and_then(serde_json::Value::as_str),
+            Some("x y")
+        );
+    }
 }

@@ -1,5 +1,11 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(.claude/skills/visual-diff/scripts/type-secret.sh *)"
+    ],
+    "ask": [
+      "Edit(.claude/skills/visual-diff/scripts/**)"
+    ],
     "deny": [
       "Edit(scripts/**)",
       "Write(scripts/**)",

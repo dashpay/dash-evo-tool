@@ -51,6 +51,13 @@ pub(super) fn print_tool_help(mcp_name: &str) -> bool {
                     };
                     println!("  {:<28} {}{}", cli_param, pdesc, req);
                 }
+                if obj.contains_key(super::mnemonic::MNEMONIC_PARAM) {
+                    println!();
+                    println!(
+                        "Pipe the recovery phrase in with --mnemonic-stdin. A phrase given as \
+                         mnemonic=... is visible to other users and saved in shell history."
+                    );
+                }
                 if obj.contains_key(super::password::PASSWORD_PARAM) {
                     println!();
                     println!(

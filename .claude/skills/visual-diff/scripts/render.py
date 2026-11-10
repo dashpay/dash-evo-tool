@@ -3,15 +3,17 @@
 
 usage: render.py SPEC.json --new-dir DIR [--old-dir DIR] --out-dir DIR [--scale 2]
 
-SPEC: {"<image name>": [{"kind": "new|changed|removed|screen",
+SPEC: {"<image name>": [{"kind": "new|changed|removed|screen|defect",
                          "rect": [x0, y0, x1, y1],          # capture pixels (1x)
                          "label": "Changed: profile name",  # 2-5 words
                          "pill": [x, y],                    # pill top-left, 1x
+                         "pre_existing": true,              # optional, defect only
                          "inset": {"old": "<old image name>", # optional, removed items
                                    "crop": [x0, y0, x1, y1], "xy": [x, y]}}]}
 
 Reads <new-dir>/<name>.png (and <old-dir>/<name>.png for the self-check and
-insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png.
+insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png,
+and <out-dir>/defects.json listing every defect per image for gallery.py.
 Without --old-dir (NEW-only mode) the rect self-check is skipped and insets are
 refused. Exit code 1 if a self-check fails (see selfcheck()); warnings do not
 change it.
@@ -25,7 +27,16 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-COL = {"new": (0, 168, 84), "changed": (123, 63, 242), "removed": (229, 57, 53)}
+COL = {
+    "new": (0, 168, 84),
+    "changed": (123, 63, 242),
+    "removed": (229, 57, 53),
+    "defect": (245, 124, 0),
+}
+INK = (30, 30, 40)  # defect pill text: white on amber is too faint
+MARK = "\u26a0 "  # tells a defect from a change without colour
+DEFECT_PREFIX = "Defect: "
+PRE_EXISTING = "Existed before this release"
 PAD = 5
 FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf",
@@ -105,8 +116,12 @@ def build(name, els, a, labels):
         else:
             rr(d, box, 10 * s, outline=c, width=4 * s)
         px, py = e["pill"][0] * s, e["pill"][1] * s
-        f = font(20, s)
-        w, h = d.textlength(lab, font=f) + 28 * s, 36 * s
+        f, f2 = font(20, s), font(14, s, bold=False)
+        if k == "defect":
+            lab = MARK + lab
+        note = PRE_EXISTING if e.get("pre_existing") else None
+        w = max(d.textlength(lab, font=f), d.textlength(note or "", font=f2))
+        w, h = w + 28 * s, (56 if note else 36) * s
         if px < 0 or py < 0 or px + w > img.width or py + h > img.height:
             BAD.append((name, lab, "pill outside image"))
         if not labels:
@@ -121,7 +136,12 @@ def build(name, els, a, labels):
         if not (box[0] < px + w / 2 < box[2] and box[1] < py + h / 2 < box[3]):
             d.line((sx, sy, tx, ty), fill=c, width=3 * s)  # leader line
         rr(d, [px, py, px + w, py + h], 8 * s, fill=c)
-        d.text((px + 14 * s, py + h / 2), lab, fill="white", font=f, anchor="lm")
+        ink = INK if k == "defect" else "white"
+        if note:
+            d.text((px + 14 * s, py + 19 * s), lab, fill=ink, font=f, anchor="lm")
+            d.text((px + 14 * s, py + 41 * s), note, fill=ink, font=f2, anchor="lm")
+        else:
+            d.text((px + 14 * s, py + h / 2), lab, fill=ink, font=f, anchor="lm")
         ins = e.get("inset")
         if ins and old_dir is None:
             BAD.append((name, lab, "inset needs --old-dir"))
@@ -149,6 +169,8 @@ def build(name, els, a, labels):
     # corner key
     f = font(15, s)
     items = [("new", "New"), ("changed", "Changed"), ("removed", "Removed")]
+    if any(e["kind"] == "defect" for e in els):  # only where one is shown
+        items.append(("defect", MARK + "Defect"))
     kw = int(sum(d.textlength(t, font=f) + 60 * s for _, t in items)) + 10 * s
     kh = 34 * s
     kx, ky = img.width - kw - 16 * s, img.height - kh - 12 * s
@@ -172,6 +194,30 @@ def build(name, els, a, labels):
         d.text((x + 30 * s, ky + kh / 2), t, fill=(30, 30, 40), font=f, anchor="lm")
         x += d.textlength(t, font=f) + 60 * s
     return img
+
+
+def validate(name, els):
+    """A defect must read as one without its colour; only a defect can
+    predate the release."""
+    for e in els:
+        if e["kind"] == "defect" and not e["label"].startswith(DEFECT_PREFIX):
+            BAD.append(
+                (name, e["label"], f'defect label must start with "{DEFECT_PREFIX}"')
+            )
+        if e.get("pre_existing") and e["kind"] != "defect":
+            BAD.append((name, e["label"], "pre_existing applies only to a defect"))
+
+
+def defects(spec):
+    return {
+        name: [
+            {"label": e["label"], "pre_existing": bool(e.get("pre_existing"))}
+            for e in els
+            if e["kind"] == "defect"
+        ]
+        for name, els in spec.items()
+        if any(e["kind"] == "defect" for e in els)
+    }
 
 
 def selfcheck(name, els, a):
@@ -222,9 +268,12 @@ def main():
     if a.old_dir is None:
         print("NEW-only mode: rect self-check skipped, check every rect by eye")
     for name, els in spec.items():
+        validate(name, els)
         selfcheck(name, els, a)
         build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))
         build(name, els, a, False).save(os.path.join(a.out_dir, "clean", name + ".png"))
+    with open(os.path.join(a.out_dir, "defects.json"), "w") as f:
+        json.dump(defects(spec), f, indent=1)
     if WARN:
         print("SELFCHECK WARNING (not a failure, check these rects by eye):")
         for w in sorted(set(WARN)):

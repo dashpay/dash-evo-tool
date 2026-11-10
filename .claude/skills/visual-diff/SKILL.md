@@ -50,25 +50,27 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - *(pair)* Same imported data in both builds.
 - At the end kill only your own PIDs and delete the data dirs (confirm with `ls`).
 
-## 5. Annotate (approved "spotlight" style, do not change it)
-`scripts/render.py SPEC.json --new-dir new --out-dir annotated` (*(pair)* add `--old-dir old`; see `scripts/example-spec.json`; rects in capture pixels, 1x). Per image a list of `{kind, rect, label, pill, inset}`:
+## 5. Annotate (approved "spotlight" style, defect kind included; do not change it)
+`scripts/render.py SPEC.json --new-dir new --out-dir annotated` (*(pair)* add `--old-dir old`; see `scripts/example-spec.json`; rects in capture pixels, 1x). Per image a list of `{kind, rect, label, pill, pre_existing, inset}`:
 - Unchanged area dimmed and desaturated; marked elements stay in full colour with a tight rounded outline.
-- Colours: new = green (0,168,84), changed (moved, reworded, restyled) = violet (123,63,242), removed = red (229,57,53).
-- Pill callout 2-5 words, "New: ...", "Changed: ...", "Removed: ..."; leader line to its outline; the pill must not cover content or the outline's label.
+- Colours: new = green (0,168,84), changed (moved, reworded, restyled) = violet (123,63,242), removed = red (229,57,53), defect = amber (245,124,0).
+- Pill callout 2-5 words, "New: ...", "Changed: ...", "Removed: ...", "Defect: ..."; leader line to its outline; the pill must not cover content or the outline's label.
+- defect: a confirmed bug seen on that screen, reproduced under `docs/gui-testing/README.md` rules — never a suspicion and never an intended change, and it does not replace the bug report. Solid amber outline; render.py adds a ⚠ marker and dark text to the pill, so it reads as a defect without colour, and the key gains a "⚠ Defect" entry only on images that have one. Add `"pre_existing": true` when the OLD build shows it too: the pill then says "Existed before this release", so it does not read as a regression.
 - Label from the diff: name only what the diff changed on this screen, not its unchanged surroundings.
 - *(pair)* removed = dashed outline where it was plus an inset cropped from the OLD capture, labelled "Before (previous build)". If NEW shows nothing there, an empty dashed box confuses: use the inset alone (small rect).
 - wholly new screen: kind `screen`, no dimming, one outline around the screen, "New screen: ...".
-- Key bottom-right, 2x output, labelled image in `out/`, clean variant (no pills, no insets) in `out/clean/`.
+- Key bottom-right, 2x output, labelled image in `out/`, clean variant (no pills, no insets; outlines, defects included, stay) in `out/clean/`, and `out/defects.json` for the gallery.
 - One image per screen of the NEW build, never a before/after pair.
 - Every rect comes from THAT image's own capture. A rect reused from another screen once landed on an error banner.
 
 ## 6. Verify
-- `render.py` exits 1 if a pill leaves the image. *(pair)* It also exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect); a rect that barely differs gets a warning only. Fix and rerun. NEW-only has no pixel check: confirm each rect against the diff by eye.
-- `gallery.py` stops if a listed image lacks its labelled or clean file.
+- `render.py` exits 1 if a pill leaves the image, a defect label lacks "Defect: ", or `pre_existing` is set on another kind. *(pair)* It also exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect); a rect that barely differs gets a warning only. Fix and rerun. NEW-only has no pixel check: confirm each rect against the diff by eye.
+- `gallery.py` stops if a listed image lacks its labelled or clean file, `annotated/defects.json` is missing, or it names an image `meta.json` does not list.
 - After changing a script run `scripts/selftest.py` (synthetic images, no display needed).
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).
 
 ## 7. Gallery and report
 - Write `meta.json` (see `scripts/example-meta.json`), run `scripts/gallery.py --root OUT --meta meta.json --title "Visual diff <date>"`; `spec.json`, `meta.json`, `new/`, `old/` (empty in NEW-only), `annotated/` under OUT. The coverage table lists every user-visible commit of the range: an image, or a note saying why none (backend only, timing behaviour, needs state that was not reachable). In NEW-only mode the intro names both builds and says images mark what the diff says changed; `not_reached` states that OLD screenshots were not taken (NEW-only mode).
+- Images with a defect get a "⚠ Known issue" badge, and every defect is listed under "Known issues" (pre-existing ones marked), both from `annotated/defects.json`; nothing to add to `meta.json`.
 - Report: what was not reached and why (e.g. no open contests on testnet; do not create one); presenter notes: real faces in profile pictures, error banners, data that differs between shots (balances change during a session: data, not UI).
 - Captures, generated images and data dirs never go into the repository.

@@ -236,6 +236,9 @@ class EnvValue(unittest.TestCase):
             f'{self.NAME}="alpha bravo\n',
             f'{self.NAME}="alpha bravo" trailing\n',
             f"{self.NAME} = alpha bravo\n",
+            f"{self.NAME}= alpha bravo\n",
+            f'{self.NAME}= "alpha bravo"\n',
+            f"{self.NAME}=\talpha bravo\n",
         ]:
             code, out = self.value(text)
             self.assertNotEqual(code, 0, repr(text))

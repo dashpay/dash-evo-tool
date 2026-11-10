@@ -1,8 +1,9 @@
 # Prints the value of the variable `name` from an env file, with no trailing
 # newline: without an `export ` prefix, CR line ending, surrounding quotes or
 # trailing `# comment`. Prints nothing and exits 1 when the variable is
-# missing, empty, or written in any other form (an unclosed quote, text after
-# the closing quote, escapes), so a caller never acts on a half-read secret.
+# missing, empty, or written in any other form (blanks around `=`, an unclosed
+# quote, text after the closing quote, escapes), so a caller never acts on a
+# half-read secret.
 # usage: awk -v name=VAR -f env-value.awk FILE
 {
   sub(/\r$/, "")
@@ -11,6 +12,7 @@
   prefix = name "="
   if (substr(line, 1, length(prefix)) != prefix) next
   value = substr(line, length(prefix) + 1)
+  if (value ~ /^[ \t]/) exit 1
   quote = substr(value, 1, 1)
   if (quote == "\"" || quote == "'") {
     rest = substr(value, 2)

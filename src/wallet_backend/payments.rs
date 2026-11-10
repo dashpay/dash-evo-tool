@@ -346,14 +346,19 @@ fn dry_run_asset_lock_amount(
 }
 
 // INTENTIONAL(upstream-bnb-dos): default `BranchAndBound` is algorithmically
-// bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
-// which closes rust-dashcore#918. The aggregate quote still has a deadline
-// because it performs many individually bounded selections under a write lock.
+// bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget
+// (`BNB_NODE_BUDGET`), which closes rust-dashcore#918. That covers every
+// default-strategy build here: the asset-lock dry runs and their Max searches
+// (`dry_run_asset_lock_amount*`), and the Core payment dry run, its Max search
+// and the real send (`dry_run_core_payment`, `largest_core_payment_at_most`,
+// `core_payment_builder`). The aggregate quotes still have a deadline because
+// they perform many individually bounded selections under a write lock.
 // Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
-// 993584a6b53831026f2f5fe30f21a8f4d14a06e8, whose `key-wallet` dep pins
-// rust-dashcore rev 173ffac0, and that rev's `coin_selection.rs` is
-// byte-identical to the one carrying #919. Re-verify whenever either pin
-// moves — the key-wallet reference is a rev, so it cannot drift on its own.
+// 575d961fe0c54bd7e01a3cf3823494e58c6c4fdb, whose workspace pins rust-dashcore
+// (`key-wallet`) to rev aca020263990a86a15cc1d97ae2cbf965d488db5, and that
+// rev's `key-wallet/src/wallet/managed_wallet_info/coin_selection.rs` carries
+// the prune and the budget. Re-verify whenever either pin moves — the
+// key-wallet reference is a rev, so it cannot drift on its own.
 fn dry_run_asset_lock_amount_with_strategy(
     pool: &AssetLockFundingPool,
     amount_duffs: u64,

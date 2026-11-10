@@ -88,7 +88,7 @@ where
     let handle = tokio::runtime::Handle::current();
     run_blocking_dispatch(app_context.subtasks.clone(), move || {
         handle.block_on(async move {
-            let sender = task_reporter(&app_context, &task);
+            let sender = task_reporter(&app_context);
             let result = app_context.run_backend_task(task, sender).await?;
             Ok(lifecycle_tail(result).await)
         })
@@ -99,17 +99,12 @@ where
 /// The sender a requested task reports through. Its results are the
 /// requester's, returned by the call, so the frame loop hears only that cached
 /// data changed: a GUI hosting the server shows no progress or failure of a
-/// request its user did not start. Unfiltered where the task keeps the sender
-/// for good: a network switch installs it on the context it creates, and the
-/// first wallet-touching task wires the wallet backend on it.
-fn task_reporter(app_context: &Arc<AppContext>, task: &BackendTask) -> SenderAsync<TaskResult> {
-    let frame_loop = app_context.frame_loop_sender();
-    let wires_backend =
-        crate::backend_task::is_wallet_touching(task) && app_context.wallet_backend().is_err();
-    if wires_backend || matches!(task, BackendTask::SwitchNetwork { .. }) {
-        return frame_loop;
-    }
-    frame_loop
+/// request its user did not start. What keeps a sender for good (a context's
+/// frame loop, its wallet backend, a network switch's context registration)
+/// takes [`SenderAsync::unfiltered`].
+fn task_reporter(app_context: &Arc<AppContext>) -> SenderAsync<TaskResult> {
+    app_context
+        .frame_loop_sender()
         .keeping_only(|report| matches!(report, TaskResult::CacheUpdated(_) | TaskResult::Repaint))
 }
 
@@ -237,8 +232,8 @@ mod tests {
     /// A request's own results are returned by the call, so the frame loop of
     /// a GUI hosting the server hears only that cached data changed: no
     /// screen or banner shows progress or failures of a request the GUI user
-    /// did not start. A network switch still registers its context there, and
-    /// a task that wires the wallet backend wires it on the frame loop itself.
+    /// did not start. The wallet backend a request wires still reports every
+    /// result there, for the life of the context.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_request_tells_the_frame_loop_only_that_cached_data_changed() {
         use crate::backend_task::identity::IdentityTask;
@@ -255,29 +250,41 @@ mod tests {
                 total: 2,
             }),
         };
-        let identity_task =
-            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames);
-        let drain = |frame_loop: &mut tokio::sync::mpsc::Receiver<TaskResult>| {
-            std::iter::from_fn(|| frame_loop.try_recv().ok()).collect::<Vec<_>>()
-        };
+        let mut drain = || std::iter::from_fn(|| frame_loop.try_recv().ok()).collect::<Vec<_>>();
         // The wired backend may report on its own; only these reports count.
         let is_progress = |report: &TaskResult| {
             matches!(report, TaskResult::Success { result, .. }
                 if matches!(**result, BackendTaskSuccessResult::Progress { .. }))
         };
 
-        // The first wallet-touching request wires the backend, which keeps
-        // its sender for good: that one is the frame loop, unfiltered.
-        let wiring = task_reporter(&app_context, &identity_task);
-        wiring.send(progress()).await.expect("report");
-        assert!(drain(&mut frame_loop).iter().any(is_progress));
-        app_context
-            .ensure_wallet_backend(app_context.frame_loop_sender())
+        // The first wallet-touching request wires the backend.
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+            ),
+            "{result:?}"
+        );
+        drain();
+        let backend = app_context
+            .wallet_backend()
+            .expect("the request wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(progress())
             .await
-            .expect("wire wallet backend");
-        drain(&mut frame_loop);
+            .expect("the backend reports");
+        assert!(
+            drain().iter().any(is_progress),
+            "the backend a request wires reports every result to the frame loop"
+        );
 
-        let reporter = task_reporter(&app_context, &identity_task);
+        let reporter = task_reporter(&app_context);
         let update = CacheUpdate {
             network: app_context.network,
             domain: CacheDomain::Identities,
@@ -297,8 +304,7 @@ mod tests {
             .send(TaskResult::CacheUpdated(update))
             .await
             .expect("a cache change is accepted");
-        reporter.send(TaskResult::Repaint).await.expect("repaint");
-        let reports = drain(&mut frame_loop);
+        let reports = drain();
         assert!(!reports.iter().any(is_progress), "{reports:?}");
         assert!(
             !reports
@@ -313,21 +319,7 @@ mod tests {
             "{reports:?}"
         );
 
-        let switch = task_reporter(
-            &app_context,
-            &BackendTask::SwitchNetwork {
-                network: dash_sdk::dpp::dashcore::Network::Mainnet,
-                start_spv: false,
-            },
-        );
-        switch.send(progress()).await.expect("report");
-        assert!(drain(&mut frame_loop).iter().any(is_progress));
-
-        app_context
-            .wallet_backend()
-            .expect("wired backend")
-            .shutdown()
-            .await;
+        backend.shutdown().await;
     }
 
     #[tokio::test]

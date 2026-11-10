@@ -30,6 +30,17 @@ impl<T> SenderAsync<T> {
         }
     }
 
+    /// This sender without a filter: for a holder that keeps it for good,
+    /// such as a context's frame loop or its wallet backend, which must pass
+    /// every report whoever handed it the sender.
+    pub fn unfiltered(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            ctx: self.ctx.clone(),
+            keep: None,
+        }
+    }
+
     fn drops(&self, value: &T) -> bool {
         self.keep.is_some_and(|keep| !keep(value))
     }
@@ -56,11 +67,6 @@ impl<T> SenderAsync<T> {
             self.ctx.request_repaint();
         }
         result
-    }
-
-    /// Get a reference to the underlying sender
-    pub fn sender(&self) -> &mpsc::Sender<T> {
-        &self.sender
     }
 
     /// Check if the sender is closed
@@ -142,5 +148,38 @@ impl<T> Clone for SenderSync<T> {
             sender: self.sender.clone(),
             ctx: self.ctx.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn even(value: &u32) -> bool {
+        value.is_multiple_of(2)
+    }
+
+    /// A filtered sender drops what it does not keep, reporting success so
+    /// the caller sees no failure, and passes on the rest; its clones filter
+    /// alike, and its unfiltered copy passes everything.
+    #[tokio::test]
+    async fn a_filtered_sender_passes_only_what_it_keeps() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let filtered = SenderAsync::new(tx, egui::Context::default()).keeping_only(even);
+
+        assert!(filtered.send(1).await.is_ok());
+        assert!(filtered.try_send(3).is_ok());
+        filtered.send(2).await.expect("kept");
+        let clone = filtered.clone();
+        assert!(clone.try_send(5).is_ok());
+        clone.try_send(4).expect("kept");
+        filtered.unfiltered().try_send(7).expect("unfiltered");
+
+        drop((filtered, clone));
+        let mut received = Vec::new();
+        while let Some(value) = rx.recv().await {
+            received.push(value);
+        }
+        assert_eq!(received, vec![2, 4, 7]);
     }
 }

@@ -196,6 +196,7 @@ class RenderDefect(Case):
         )
 
     def test_the_pill_is_read_without_colour(self):
+        sys.dont_write_bytecode = True  # no __pycache__ in the repository
         import render
 
         self.assertEqual(render.pill_text(self.defect()), ("\u26a0 Defect: x", None))

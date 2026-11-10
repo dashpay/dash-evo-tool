@@ -1555,7 +1555,7 @@ impl TokensScreen {
     }
 
     /// Shows a popup "Are you sure?" for creating the token contract
-    fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+    pub(super) fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         let base_supply_display = self

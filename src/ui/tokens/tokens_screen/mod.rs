@@ -5196,6 +5196,67 @@ mod tests {
         assert!(!screen.registration_banner_live_for_test());
     }
 
+    /// Confirming sends the registration and the balance refresh each under a
+    /// context of its own, and the creator waits for the registration's.
+    #[test]
+    fn confirming_registration_waits_for_the_registration_dispatch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.selected_key = Some(IdentityPublicKey::random_key(
+            0,
+            None,
+            app_context.platform_version(),
+        ));
+        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (TokensScreen, AppAction)| {
+                let next = screen.render_token_creator_confirmation_popup(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
+        harness.run();
+        harness.get_by_label("Confirm").click();
+        harness.run();
+
+        let (screen, action) = harness.state();
+        let AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Sequential) =
+            action
+        else {
+            panic!("expected the tasks with their contexts, got {action:?}");
+        };
+        let [(register, register_context), (refresh, refresh_context)] = tasks.as_slice() else {
+            panic!("expected the registration and the balance refresh");
+        };
+        assert!(matches!(
+            register,
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::RegisterTokenContract { .. })
+        ));
+        assert!(matches!(
+            refresh,
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
+        ));
+        assert_ne!(register_context, refresh_context);
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+        assert_eq!(
+            screen.token_registration_context.as_ref(),
+            Some(register_context)
+        );
+    }
+
     /// Creating is blocked while a registration is in flight, so a second
     /// confirmation cannot pay a second fee; the outcome unblocks it.
     #[test]

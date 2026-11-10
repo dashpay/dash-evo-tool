@@ -13,7 +13,8 @@ SPEC: {"<image name>": [{"kind": "new|changed|removed|screen|defect",
 
 Reads <new-dir>/<name>.png (and <old-dir>/<name>.png for the self-check and
 insets); writes <out-dir>/<name>.png (labelled) and <out-dir>/clean/<name>.png,
-and <out-dir>/defects.json listing every defect per image for gallery.py.
+and updates <out-dir>/defects.json, the defects per image for gallery.py: the
+images of this spec are replaced, the others kept.
 Without --old-dir (NEW-only mode) the rect self-check is skipped and insets are
 refused. Exit code 1 if a self-check fails (see selfcheck()); warnings do not
 change it.
@@ -61,6 +62,12 @@ def font(size, scale, bold=True):
 
 def rr(d, r, rad, **k):
     d.rounded_rectangle(r, radius=rad, **k)
+
+
+def pill_text(e):
+    """The pill's label and its optional second line."""
+    lab = MARK + e["label"] if e["kind"] == "defect" else e["label"]
+    return lab, PRE_EXISTING if e.get("pre_existing") is True else None
 
 
 def build(name, els, a, labels):
@@ -117,9 +124,7 @@ def build(name, els, a, labels):
             rr(d, box, 10 * s, outline=c, width=4 * s)
         px, py = e["pill"][0] * s, e["pill"][1] * s
         f, f2 = font(20, s), font(14, s, bold=False)
-        if k == "defect":
-            lab = MARK + lab
-        note = PRE_EXISTING if e.get("pre_existing") else None
+        lab, note = pill_text(e)
         w = max(d.textlength(lab, font=f), d.textlength(note or "", font=f2))
         w, h = w + 28 * s, (56 if note else 36) * s
         if px < 0 or py < 0 or px + w > img.width or py + h > img.height:
@@ -204,25 +209,35 @@ def validate(name, els):
             BAD.append(
                 (name, e["label"], f'defect label must start with "{DEFECT_PREFIX}"')
             )
-        if e.get("pre_existing") and e["kind"] != "defect":
+        if "pre_existing" not in e:
+            continue
+        if not isinstance(e["pre_existing"], bool):
+            BAD.append((name, e["label"], "pre_existing must be true or false"))
+        elif e["pre_existing"] and e["kind"] != "defect":
             BAD.append((name, e["label"], "pre_existing applies only to a defect"))
 
 
-def defects(spec):
-    return {
-        name: [
-            {"label": e["label"], "pre_existing": bool(e.get("pre_existing"))}
+def defects(spec, path):
+    """defects.json with the images of `spec` replaced and the rest kept, so
+    re-rendering some images does not drop the others' defects."""
+    known = json.load(open(path)) if os.path.exists(path) else {}
+    for name, els in spec.items():
+        found = [
+            {"label": e["label"], "pre_existing": e.get("pre_existing") is True}
             for e in els
             if e["kind"] == "defect"
         ]
-        for name, els in spec.items()
-        if any(e["kind"] == "defect" for e in els)
-    }
+        if found:
+            known[name] = found
+        else:
+            known.pop(name, None)
+    return dict(sorted(known.items()))
 
 
 def selfcheck(name, els, a):
     """Every new/changed rect must differ between the NEW and OLD capture of the
-    same screen; a highlight over identical pixels means a wrong rect.
+    same screen; a highlight over identical pixels means a wrong rect. A defect
+    only warns when its pixels contradict its pre_existing flag.
 
     Compared in RGB, so a change of colour alone counts. Only a rect with no
     differing pixel at all fails; a rect that differs very little is reported
@@ -235,12 +250,31 @@ def selfcheck(name, els, a):
     n = Image.open(os.path.join(a.new_dir, name + ".png")).convert("RGB")
     o = Image.open(op).convert("RGB")
     for e in els:
-        if e["kind"] not in ("new", "changed"):
+        if e["kind"] not in ("new", "changed", "defect"):
             continue
         ca = np.asarray(n.crop(e["rect"]), dtype=int)
         cb = np.asarray(o.crop(e["rect"]), dtype=int)
         delta = abs(ca - cb).max(axis=2)  # largest channel difference per pixel
-        if not delta.any():
+        if e["kind"] == "defect":
+            # Either look is legitimate; only the pre_existing claim is checked.
+            if e.get("pre_existing") is True:
+                if int((delta > NOISE_LEVEL).sum()) >= NOISE_PIXELS:
+                    WARN.append(
+                        (
+                            name,
+                            e["label"],
+                            "pre-existing defect differs between old and new",
+                        )
+                    )
+            elif not delta.any():
+                WARN.append(
+                    (
+                        name,
+                        e["label"],
+                        "defect identical in old and new: set pre_existing if OLD shows it",
+                    )
+                )
+        elif not delta.any():
             BAD.append((name, e["label"], "rect identical in old and new"))
         elif int((delta > NOISE_LEVEL).sum()) < NOISE_PIXELS:
             WARN.append(
@@ -272,8 +306,10 @@ def main():
         selfcheck(name, els, a)
         build(name, els, a, True).save(os.path.join(a.out_dir, name + ".png"))
         build(name, els, a, False).save(os.path.join(a.out_dir, "clean", name + ".png"))
-    with open(os.path.join(a.out_dir, "defects.json"), "w") as f:
-        json.dump(defects(spec), f, indent=1)
+    path = os.path.join(a.out_dir, "defects.json")
+    merged = defects(spec, path)
+    with open(path, "w") as f:
+        json.dump(merged, f, indent=1)
     if WARN:
         print("SELFCHECK WARNING (not a failure, check these rects by eye):")
         for w in sorted(set(WARN)):

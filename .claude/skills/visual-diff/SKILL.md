@@ -55,16 +55,19 @@ Related: `release-review` (QA campaign, uses this for presentation images), `des
 - Unchanged area dimmed and desaturated; marked elements stay in full colour with a tight rounded outline.
 - Colours: new = green (0,168,84), changed (moved, reworded, restyled) = violet (123,63,242), removed = red (229,57,53), defect = amber (245,124,0).
 - Pill callout 2-5 words, "New: ...", "Changed: ...", "Removed: ...", "Defect: ..."; leader line to its outline; the pill must not cover content or the outline's label.
-- defect: a confirmed bug seen on that screen, reproduced under `docs/gui-testing/README.md` rules — never a suspicion and never an intended change, and it does not replace the bug report. Solid amber outline; render.py adds a ⚠ marker and dark text to the pill, so it reads as a defect without colour, and the key gains a "⚠ Defect" entry only on images that have one. Add `"pre_existing": true` when the OLD build shows it too: the pill then says "Existed before this release", so it does not read as a regression.
+- defect: a confirmed bug seen on that screen, reproduced under `docs/gui-testing/README.md` rules — never a suspicion and never an intended change, and it does not replace the bug report. Solid amber outline; render.py adds a ⚠ marker and dark text to the pill, so it reads as a defect without colour, and the key gains a "⚠ Defect" entry only on images that have one. `"pre_existing"` (JSON `true`/`false`) states its origin only with evidence:
+  - `true` when the OLD build shows the same defect: in pair mode or an A/B run, the same trigger on OLD; in NEW-only mode, a reproduction on the OLD release or a report dated before it. The pill then says "Existed before this release", and the gallery marks it. A diff that does not touch the file is not evidence on its own (see release-review Phase 4).
+  - Otherwise leave it out: the image makes no claim about origin. Whether the defect was introduced by the diff, or its origin is unknown, goes in the report beside the image, in release-review's terms (introduced / pre-existing/unknown), never in the pill.
+  - *(pair)* render.py warns when a defect without the flag is pixel-identical in OLD and NEW, or a flagged one differs: check the flag.
 - Label from the diff: name only what the diff changed on this screen, not its unchanged surroundings.
 - *(pair)* removed = dashed outline where it was plus an inset cropped from the OLD capture, labelled "Before (previous build)". If NEW shows nothing there, an empty dashed box confuses: use the inset alone (small rect).
 - wholly new screen: kind `screen`, no dimming, one outline around the screen, "New screen: ...".
-- Key bottom-right, 2x output, labelled image in `out/`, clean variant (no pills, no insets; outlines, defects included, stay) in `out/clean/`, and `out/defects.json` for the gallery.
+- Key bottom-right, 2x output, labelled image in `out/`, clean variant (no pills, no insets; outlines, defects included, stay) in `out/clean/`, and `out/defects.json` for the gallery. A rerun on part of the spec replaces only its own images' entries in `defects.json`; remove an image's defects by rerunning it without them.
 - One image per screen of the NEW build, never a before/after pair.
 - Every rect comes from THAT image's own capture. A rect reused from another screen once landed on an error banner.
 
 ## 6. Verify
-- `render.py` exits 1 if a pill leaves the image, a defect label lacks "Defect: ", or `pre_existing` is set on another kind. *(pair)* It also exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect); a rect that barely differs gets a warning only. Fix and rerun. NEW-only has no pixel check: confirm each rect against the diff by eye.
+- `render.py` exits 1 if a pill leaves the image, a defect label lacks "Defect: ", or `pre_existing` is not `true`/`false` or is `true` on another kind. *(pair)* It also exits 1 if a new/changed rect is identical in the OLD and NEW capture (wrong rect); a rect that barely differs gets a warning only. Fix and rerun. NEW-only has no pixel check: confirm each rect against the diff by eye.
 - `gallery.py` stops if a listed image lacks its labelled or clean file, `annotated/defects.json` is missing, or it names an image `meta.json` does not list.
 - After changing a script run `scripts/selftest.py` (synthetic images, no display needed).
 - Then READ every labelled image: each outline encloses exactly what its label names; no pill clipped or covering content; the screen is the intended state (no banner, data present).

@@ -22,6 +22,9 @@ GREY = (128, 128, 128)
 RECT = [40, 40, 120, 100]
 PILL = [150, 40]
 AMBER = (245, 124, 0)
+VIOLET = (123, 63, 242)
+INK = (30, 30, 40)
+WHITE = (255, 255, 255)
 
 
 def image(path, *patches):
@@ -125,11 +128,15 @@ class RenderDefect(Case):
     """A defect is outlined in amber, its pill carries a marker and a dark
     label, and render.py lists it in annotated/defects.json for gallery.py."""
 
-    def render(self, *els, old=True):
-        image(self.path("old", "s.png"))
-        image(self.path("new", "s.png"))
+    def render(self, *els, old=True, new_patch=()):
+        return self.render_spec({"s": list(els)}, old=old, new_patch=new_patch)
+
+    def render_spec(self, spec, old=True, new_patch=()):
+        for name in spec:
+            image(self.path("old", name + ".png"))
+            image(self.path("new", name + ".png"), *new_patch)
         with open(self.path("spec.json"), "w") as f:
-            json.dump({"s": list(els)}, f)
+            json.dump(spec, f)
         old_args = ["--old-dir", self.path("old")] if old else []
         return run(
             "render.py",
@@ -151,6 +158,23 @@ class RenderDefect(Case):
         px = Image.open(self.path("out", *parts)).convert("RGB").getdata()
         return sum(1 for p in px if p == AMBER)
 
+    def pill(self, fill):
+        """The labelled pill at PILL (2x): its pixels, found by its fill."""
+        img = Image.open(self.path("out", "s.png")).convert("RGB")
+        x0, y0 = PILL[0] * 2, PILL[1] * 2
+        row = y0 + 18  # below the rounded corners, above the text
+        x1 = x0
+        while x1 < img.width and img.getpixel((x1 + 20, row)) == fill:
+            x1 += 1
+        y1 = y0
+        while y1 < img.height and img.getpixel((x0 + 20, y1)) == fill:
+            y1 += 1
+        return x1 + 20 - x0, list(img.crop((x0, y0, x1 + 20, y1)).getdata())
+
+    def defects_json(self):
+        with open(self.path("out", "defects.json")) as f:
+            return json.load(f)
+
     def test_a_defect_needs_no_change_between_builds(self):
         code, out = self.render(self.defect())
         self.assertEqual(code, 0, out)
@@ -164,12 +188,70 @@ class RenderDefect(Case):
             img = Image.open(self.path("out", *parts)).convert("RGB")
             self.assertEqual(img.getpixel((72, 140)), AMBER, parts)
 
-    def test_the_pill_and_key_add_amber_only_to_the_labelled_variant(self):
+    def test_the_pill_adds_amber_only_to_the_labelled_variant(self):
         code, out = self.render(self.defect())
         self.assertEqual(code, 0, out)
         self.assertGreater(
             self.amber_pixels("s.png"), self.amber_pixels("clean", "s.png")
         )
+
+    def test_the_pill_is_read_without_colour(self):
+        import render
+
+        self.assertEqual(render.pill_text(self.defect()), ("\u26a0 Defect: x", None))
+        self.assertEqual(
+            render.pill_text(self.defect(pre_existing=True)),
+            ("\u26a0 Defect: x", "Existed before this release"),
+        )
+        changed = {"kind": "changed", "label": "Changed: x"}
+        self.assertEqual(render.pill_text(changed), ("Changed: x", None))
+
+    def test_the_marker_widens_the_pill(self):
+        label = {"rect": RECT, "label": "Defect: x", "pill": PILL}
+        self.assertEqual(self.render(dict(label, kind="changed"), old=False)[0], 0)
+        changed_width, _ = self.pill(VIOLET)
+        self.assertEqual(self.render(dict(label, kind="defect"), old=False)[0], 0)
+        defect_width, _ = self.pill(AMBER)
+        self.assertGreater(defect_width, changed_width + 20)
+
+    def test_the_pill_text_is_dark_not_white(self):
+        for el in (self.defect(), self.defect(pre_existing=True)):
+            code, out = self.render(el, old=False)
+            self.assertEqual(code, 0, out)
+            _, pixels = self.pill(AMBER)
+            self.assertGreater(pixels.count(INK), 50, el)
+            self.assertEqual(pixels.count(WHITE), 0, el)
+
+    def test_pre_existing_must_be_a_boolean(self):
+        code, out = self.render(self.defect(pre_existing="false"), old=False)
+        self.assertEqual(code, 1, out)
+        self.assertIn("pre_existing must be true or false", out)
+
+    def test_an_unchanged_defect_not_marked_pre_existing_warns(self):
+        code, out = self.render(self.defect())
+        self.assertEqual(code, 0, out)
+        self.assertIn("defect identical in old and new", out)
+        code, out = self.render(self.defect(pre_existing=True))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("WARNING", out)
+
+    def test_a_changed_defect_marked_pre_existing_warns(self):
+        new = [(RECT, (255, 255, 255))]
+        code, out = self.render(self.defect(pre_existing=True), new_patch=new)
+        self.assertEqual(code, 0, out)
+        self.assertIn("pre-existing defect differs between old and new", out)
+        code, out = self.render(self.defect(), new_patch=new)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("WARNING", out)
+
+    def test_a_partial_render_keeps_the_other_images_defects(self):
+        entry = {"label": "Defect: x", "pre_existing": False}
+        self.assertEqual(self.render_spec({"a": [self.defect()]})[0], 0)
+        self.assertEqual(self.render_spec({"b": [self.defect()]})[0], 0)
+        self.assertEqual(self.defects_json(), {"a": [entry], "b": [entry]})
+        changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}
+        self.assertEqual(self.render_spec({"a": [changed]}, old=False)[0], 0)
+        self.assertEqual(self.defects_json(), {"b": [entry]})
 
     def test_an_image_without_a_defect_shows_no_amber(self):
         changed = {"kind": "changed", "rect": RECT, "label": "Changed: x", "pill": PILL}

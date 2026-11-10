@@ -10,8 +10,6 @@
 # commit or tag as the GUI under test: both open the same database, and a
 # different build may write a schema the GUI cannot read. Neither binary
 # embeds its commit, so this script cannot check it.
-# TODO: allow `Bash(.claude/skills/visual-diff/scripts/provision-wallet.sh *)` in
-# .claude/settings.json beside type-secret.sh; adding it needs the user's approval.
 set -euo pipefail
 usage() {
   echo "usage: provision-wallet.sh DET_CLI DATA_DIR [--env-file FILE] [--alias NAME]" >&2

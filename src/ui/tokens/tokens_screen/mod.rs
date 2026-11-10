@@ -41,6 +41,7 @@ use dash_sdk::dpp::data_contract::group::Group;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
@@ -1173,6 +1174,9 @@ pub struct TokensScreen {
     show_token_creator_confirmation_popup: bool,
     token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
+    /// The dispatch of the registration the creator waits for; only its own
+    /// failure ends the wait.
+    token_registration_context: Option<BackendTaskContext>,
     show_advanced_keeps_history: bool,
     token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
     groups_ui: Vec<GroupConfigUI>,
@@ -1437,9 +1441,10 @@ impl TokensScreen {
     /// Starts a registration as the creator's confirmation does, without
     /// building a contract, and returns a dispatch standing in for it.
     pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
-        self.mark_token_registration_started();
         let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
-        BackendTaskContext::for_dispatch_on(&task, self.app_context.network)
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network);
+        self.mark_token_registration_started(context.clone());
+        context
     }
 
     #[cfg(feature = "testing")]
@@ -1552,6 +1557,7 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
+            token_registration_context: None,
             token_names_input: vec![(
                 String::new(),
                 String::new(),
@@ -1736,15 +1742,22 @@ impl TokensScreen {
             screen.use_custom_order = true;
         }
 
-        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to first.
+        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to
+        // the first identity the creator offers.
         if let Some(preferred_id) = screen.app_context.selected_identity_id()
-            && let Some(qi) = screen.identities.get(&preferred_id)
+            && let Some(qi) = screen
+                .identities
+                .get(&preferred_id)
+                .filter(|qi| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
             screen.identity_id_string = preferred_id.to_string(Encoding::Base58);
         }
         if screen.selected_identity.is_none()
-            && let Some((id, qi)) = screen.identities.iter().next()
+            && let Some((id, qi)) = screen
+                .identities
+                .iter()
+                .find(|(_, qi)| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
             screen.identity_id_string = id.to_string(Encoding::Base58);
@@ -2336,6 +2349,55 @@ impl TokensScreen {
         }
     }
 
+    /// Re-reads every stored identity. Only a successful read refreshes the Token
+    /// Creator's selection, so a failed one does not drop what the user picked.
+    fn reload_identities(&mut self) {
+        match self.app_context.load_local_qualified_identities() {
+            Ok(identities) => {
+                self.identities = identities
+                    .into_iter()
+                    .map(|qi| (qi.identity.id(), qi))
+                    .collect();
+                self.refresh_token_creator_identity();
+            }
+            Err(error) => {
+                tracing::warn!(?error, "Tokens screen could not reload stored identities");
+                self.identities.clear();
+            }
+        }
+    }
+
+    /// Replaces the creator's copy of its selected identity with the one just read
+    /// into `self.identities`, so keys and balance changed elsewhere show here. A
+    /// selected key the identity no longer holds is dropped; an identity that is
+    /// removed, or that the creator does not offer, is deselected so the selector
+    /// picks one it offers.
+    fn refresh_token_creator_identity(&mut self) {
+        let Some(id) = self.selected_identity.as_ref().map(|qi| qi.identity.id()) else {
+            return;
+        };
+        let Some(fresh) = self
+            .identities
+            .get(&id)
+            .filter(|qi| offered_by_token_creator(qi))
+        else {
+            self.identity_id_string.clear();
+            self.selected_identity = None;
+            self.selected_key = None;
+            return;
+        };
+        self.selected_key = self.selected_key.take().and_then(|selected| {
+            fresh
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .map(|key_ref| &key_ref.1.identity_public_key)
+                .find(|key| key.id() == selected.id() && key.data() == selected.data())
+                .cloned()
+        });
+        self.selected_identity = Some(fresh.clone());
+    }
+
     /// Whether this creator sent a registration it has not heard back about. A
     /// network switch resets the creator, so a late result of a registration
     /// sent on the previous network finds it not waiting and is ignored rather
@@ -2360,6 +2422,7 @@ impl TokensScreen {
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
+        self.token_registration_context = None;
         self.token_names_input = vec![(
             String::new(),
             String::new(),
@@ -2727,6 +2790,12 @@ impl TokensScreen {
     }
 }
 
+/// Whether the Token Creator offers `identity` as the contract owner: a user
+/// identity with private keys stored here.
+pub(super) fn offered_by_token_creator(identity: &QualifiedIdentity) -> bool {
+    identity.identity_type == IdentityType::User && !identity.private_keys.is_empty()
+}
+
 // ─────────────────────────────────────────────────────────────────
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
@@ -2749,13 +2818,7 @@ impl ScreenLike for TokensScreen {
                 .unwrap_or_default();
         }
         if identities_changed {
-            self.identities = self
-                .app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|identity| (identity.identity.id(), identity))
-                .collect();
+            self.reload_identities();
         }
         // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
@@ -2771,13 +2834,7 @@ impl ScreenLike for TokensScreen {
             .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
-        self.identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|qi| (qi.identity.id(), qi))
-            .collect();
+        self.reload_identities();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -2811,13 +2868,7 @@ impl ScreenLike for TokensScreen {
             .app_context
             .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
-        self.identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|qi| (qi.identity.id(), qi))
-            .collect();
+        self.reload_identities();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -3091,14 +3142,8 @@ impl ScreenLike for TokensScreen {
         }
 
         match self.tokens_subscreen {
-            TokensSubscreen::TokenCreator => {
-                if (msg.contains("Failed to register token contract")
-                    | msg.contains("Error building contract V1"))
-                    && self.awaits_token_registration()
-                {
-                    self.token_creator_status = TokenCreatorStatus::Error;
-                }
-            }
+            // Registration failures arrive through `display_backend_task_error`.
+            TokensSubscreen::TokenCreator => {}
             TokensSubscreen::MyTokens => {
                 tracing::debug!(
                     msg = msg,
@@ -3125,6 +3170,13 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.awaits_token_registration()
+            && self.token_registration_context.as_ref() == Some(context)
+        {
+            self.token_creator_status = TokenCreatorStatus::Error;
+            self.token_registration_context = None;
+            self.operation_banner.take_and_clear();
+        }
         if self.tokens_subscreen == TokensSubscreen::MyTokens {
             let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
                 && self.pending_operation_context.as_ref() == Some(context);
@@ -3220,6 +3272,7 @@ impl ScreenLike for TokensScreen {
             BackendTaskSuccessResult::RegisteredTokenContract => {
                 if self.awaits_token_registration() {
                     self.token_creator_status = TokenCreatorStatus::Complete;
+                    self.token_registration_context = None;
                 }
                 self.operation_banner.take_and_clear();
             }
@@ -3245,6 +3298,7 @@ mod tests {
     use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
+    use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::platform::{DataContract, Identity};
 
     #[test]
@@ -4531,6 +4585,267 @@ mod tests {
         assert!(!screen.can_create_in_simple_mode());
     }
 
+    /// A user identity holding private keys for `keys`.
+    fn creator_identity(
+        context: &AppContext,
+        keys: &[(KeyID, Purpose, SecurityLevel)],
+    ) -> QualifiedIdentity {
+        identity_holding(context, 0x41, IdentityType::User, keys)
+    }
+
+    /// An identity of `identity_type` holding private keys for `keys`.
+    fn identity_holding(
+        context: &AppContext,
+        id: u8,
+        identity_type: IdentityType,
+        keys: &[(KeyID, Purpose, SecurityLevel)],
+    ) -> QualifiedIdentity {
+        use crate::context::test_support::identity_public_key;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+
+        let mut private_keys = KeyStorage::default();
+        for &(id, purpose, security_level) in keys {
+            let key = identity_public_key(
+                id,
+                purpose,
+                security_level,
+                KeyType::ECDSA_HASH160,
+                vec![id as u8; 20],
+            );
+            private_keys.insert_at(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear(crate::test_support::keys::secret_bytes()),
+                ),
+            );
+        }
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([id; 32]),
+                context.platform_version(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: context.network,
+        }
+    }
+
+    fn selected_key_ids(screen: &TokensScreen) -> Vec<KeyID> {
+        let mut ids: Vec<KeyID> = screen
+            .selected_identity
+            .as_ref()
+            .expect("an identity stays selected")
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .map(|key_ref| key_ref.1.identity_public_key.id())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Regression: the creator kept its own copy of the selected identity, so a
+    /// key added on the identity's key screen never reached it — Simple mode kept
+    /// saying no eligible key exists. Coming back (or a change to identities)
+    /// shows the stored identity, and the form the user filled in is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_shows_the_current_keys_of_the_selected_identity() {
+        use crate::backend_task::{CacheDomain, CacheUpdate};
+
+        for arrival in ["navigation", "cache update"] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+            let stored = creator_identity(
+                &context,
+                &[(1, Purpose::AUTHENTICATION, SecurityLevel::MEDIUM)],
+            );
+            context
+                .insert_local_qualified_identity(&stored, &None)
+                .expect("store identity");
+            let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert_eq!(selected_key_ids(&screen), vec![1]);
+            screen.token_description_input = "Kept across navigation".to_string();
+
+            let with_new_key = creator_identity(
+                &context,
+                &[
+                    (1, Purpose::AUTHENTICATION, SecurityLevel::MEDIUM),
+                    (2, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                ],
+            );
+            context
+                .update_local_qualified_identity(&with_new_key)
+                .expect("add key");
+
+            if arrival == "navigation" {
+                screen.keep_token_creator_across_navigation();
+                screen.refresh_on_arrival();
+            } else {
+                screen.cached_data_changed(CacheUpdate {
+                    network: context.network,
+                    domain: CacheDomain::Identities,
+                });
+            }
+
+            assert_eq!(selected_key_ids(&screen), vec![1, 2], "after {arrival}");
+            assert_eq!(
+                screen.token_description_input, "Kept across navigation",
+                "after {arrival}"
+            );
+            context.wallet_backend().unwrap().shutdown().await;
+        }
+    }
+
+    /// A selected key that the stored identity no longer holds is dropped, so the
+    /// creator never signs with it; a key it still holds stays selected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_drops_a_selected_key_the_identity_no_longer_holds() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let stored = creator_identity(
+            &context,
+            &[
+                (1, Purpose::AUTHENTICATION, SecurityLevel::HIGH),
+                (2, Purpose::AUTHENTICATION, SecurityLevel::CRITICAL),
+            ],
+        );
+        context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("store identity");
+        let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+        let key_of = |id: KeyID| {
+            stored
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .map(|key_ref| key_ref.1.identity_public_key.clone())
+                .find(|key| key.id() == id)
+                .expect("stored key")
+        };
+
+        screen.selected_key = Some(key_of(1));
+        screen.refresh_on_arrival();
+        assert_eq!(screen.selected_key.as_ref().map(|key| key.id()), Some(1));
+
+        screen.selected_key = Some(key_of(2));
+        let without_key_2 = creator_identity(
+            &context,
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        );
+        context
+            .update_local_qualified_identity(&without_key_2)
+            .expect("remove key");
+        screen.refresh_on_arrival();
+        assert!(screen.selected_key.is_none());
+        context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// An identity removed from the store is no longer offered by the creator,
+    /// so it stops being the selected one; the rest of the form is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_deselects_an_identity_that_is_no_longer_stored() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
+
+        screen.keep_token_creator_across_navigation();
+        screen.refresh_on_arrival();
+
+        assert!(screen.selected_identity.is_none());
+        assert!(screen.identity_id_string.is_empty());
+        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
+        app_context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// When stored identities cannot be read, the creator keeps the identity the
+    /// user selected instead of treating it as removed.
+    #[test]
+    fn token_creator_keeps_its_identity_when_identities_cannot_be_read() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        // Without a wallet backend, reading stored identities fails.
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
+
+        screen.refresh_on_arrival();
+
+        assert_eq!(
+            screen.selected_identity.map(|qi| qi.identity.id()),
+            Some(Identifier::from([7; 32]))
+        );
+        assert!(!screen.identity_id_string.is_empty());
+    }
+
+    /// The creator offers only user identities with private keys. An identity it
+    /// does not offer (a masternode one, or one without keys) is never its
+    /// selection: the selector would show "No identities found" next to a list
+    /// of identities, and Simple mode would report a missing key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
+        let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
+        for (case, ineligible) in [
+            ("masternode", IdentityType::Masternode),
+            ("keyless user", IdentityType::User),
+        ] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+            let ineligible_keys: &[_] = if ineligible == IdentityType::User {
+                &[]
+            } else {
+                &key
+            };
+            let ineligible = identity_holding(&context, 0x01, ineligible, ineligible_keys);
+            let ineligible_id = ineligible.identity.id();
+            context
+                .insert_local_qualified_identity(&ineligible, &None)
+                .expect("store ineligible identity");
+            context.set_selected_identity(Some(ineligible_id));
+
+            // Opened before any identity it offers exists: nothing is selected.
+            let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert!(screen.selected_identity.is_none(), "{case}: seed");
+            assert!(screen.identity_id_string.is_empty(), "{case}: seed");
+
+            // A selection made from an older roster is dropped on return, so the
+            // selector picks an identity it offers.
+            let eligible = creator_identity(&context, &key);
+            context
+                .insert_local_qualified_identity(&eligible, &None)
+                .expect("store eligible identity");
+            screen.selected_identity = Some(ineligible.clone());
+            screen.identity_id_string = ineligible_id.to_string(Encoding::Base58);
+            screen.refresh_on_arrival();
+            assert!(screen.selected_identity.is_none(), "{case}: arrival");
+            assert!(screen.identity_id_string.is_empty(), "{case}: arrival");
+
+            // A creator opened now starts from an identity it offers.
+            let screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert_eq!(
+                screen.selected_identity.map(|qi| qi.identity.id()),
+                Some(eligible.identity.id()),
+                "{case}: seed with an offered identity"
+            );
+            context.wallet_backend().unwrap().shutdown().await;
+        }
+    }
+
     /// Every preset picked in a freshly opened creator is built exactly as defined.
     #[test]
     fn token_creator_builds_exactly_the_selected_preset() {
@@ -4856,6 +5171,119 @@ mod tests {
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
     }
 
+    /// A failed registration ends the creator's wait in its error state and
+    /// retires the progress banner; another task's failure leaves it waiting.
+    #[test]
+    fn a_failed_registration_ends_the_wait_in_the_error_state() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let registration = screen.begin_token_registration_for_test();
+        let other = BackendTaskContext::for_dispatch_on(
+            &BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            app_context.network,
+        );
+
+        screen.display_backend_task_error(&other, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+        assert!(screen.registration_banner_live_for_test());
+
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Error);
+        assert!(!screen.registration_banner_live_for_test());
+    }
+
+    /// Confirming sends the registration and the balance refresh each under a
+    /// context of its own, and the creator waits for the registration's.
+    #[test]
+    fn confirming_registration_waits_for_the_registration_dispatch() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        screen.selected_key = Some(IdentityPublicKey::random_key(
+            0,
+            None,
+            app_context.platform_version(),
+        ));
+        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, (screen, action): &mut (TokensScreen, AppAction)| {
+                let next = screen.render_token_creator_confirmation_popup(ui);
+                if !matches!(next, AppAction::None) {
+                    *action = next;
+                }
+            },
+            (screen, AppAction::None),
+        );
+        harness.run();
+        harness.get_by_label("Confirm").click();
+        harness.run();
+
+        let (screen, action) = harness.state();
+        let AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Sequential) =
+            action
+        else {
+            panic!("expected the tasks with their contexts, got {action:?}");
+        };
+        let [(register, register_context), (refresh, refresh_context)] = tasks.as_slice() else {
+            panic!("expected the registration and the balance refresh");
+        };
+        assert!(matches!(
+            register,
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::RegisterTokenContract { .. })
+        ));
+        assert!(matches!(
+            refresh,
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
+        ));
+        assert_ne!(register_context, refresh_context);
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+        assert_eq!(
+            screen.token_registration_context.as_ref(),
+            Some(register_context)
+        );
+    }
+
+    /// Creating is blocked while a registration is in flight, so a second
+    /// confirmation cannot pay a second fee; the outcome unblocks it.
+    #[test]
+    fn create_token_is_blocked_while_a_registration_is_in_flight() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+
+        let registration = screen.begin_token_registration_for_test();
+        let in_flight = Some(
+            "Your token is being created. Wait for the result before creating another token."
+                .to_owned(),
+        );
+        assert_eq!(screen.simple_mode_blocked_reason(), in_flight);
+        assert_eq!(screen.advanced_mode_blocked_reason(), in_flight);
+
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+    }
+
     /// A network switch closes the wallet unlock popup: its wallet belongs to the
     /// previous network, and leaving it open would show it again for the next
     /// wallet the user selects.
@@ -4878,7 +5306,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let registration = screen.begin_token_registration_for_test();
 
         screen.reset_for_network_switch();
         screen.display_backend_task_result(
@@ -4891,10 +5319,7 @@ mod tests {
             "a late success must not show the success screen on the new network"
         );
 
-        screen.display_message(
-            "Failed to register token contract: the old network refused it",
-            MessageType::Error,
-        );
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
         assert_eq!(
             screen.token_creator_status,
             TokenCreatorStatus::NotStarted,

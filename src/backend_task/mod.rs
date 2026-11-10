@@ -1802,7 +1802,9 @@ impl AppContext {
 
         let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
             Ok(()) => {
+                // Registering the context is the frame loop's, whoever requested the switch.
                 if let Err(error) = sender
+                    .unfiltered()
                     .send(TaskResult::unattributed_success(
                         BackendTaskSuccessResult::NetworkContextRegistered {
                             network,
@@ -2020,6 +2022,64 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::context::feature_gate::FeatureGate;
+
+    /// A switch requested through the MCP server reports through a sender
+    /// that passes only cache changes. The context it creates is still
+    /// registered with the frame loop, and that context's frame loop and
+    /// wallet backend pass every report.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_switch_through_a_filtered_sender_installs_the_frame_loop_unfiltered() {
+        use crate::context::test_support::test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let filtered = SenderAsync::new(tx, context.egui_ctx().clone())
+            .keeping_only(|report| matches!(report, TaskResult::CacheUpdated(_)));
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                filtered,
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: new_context,
+            ..
+        } = completed
+        else {
+            panic!("expected the created network context");
+        };
+        let is_registration = |report: &TaskResult| {
+            matches!(report, TaskResult::Success { result, .. }
+                if matches!(**result, BackendTaskSuccessResult::NetworkContextRegistered { .. }))
+        };
+        let mut drain = || std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(drain().iter().any(is_registration));
+
+        let registration = || {
+            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextRegistered {
+                network: Network::Mainnet,
+                context: Arc::clone(&new_context),
+            })
+        };
+        new_context
+            .frame_loop_sender()
+            .send(registration())
+            .await
+            .expect("frame loop");
+        let backend = new_context.wallet_backend().expect("wired backend");
+        backend
+            .frame_loop_for_test()
+            .send(registration())
+            .await
+            .expect("backend frame loop");
+        assert_eq!(drain().iter().filter(|r| is_registration(r)).count(), 2);
+        backend.shutdown().await;
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_keeps_registration_queued_after_completion() {

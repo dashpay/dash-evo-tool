@@ -1,8 +1,9 @@
 //! Dispatch backend tasks from MCP tool handlers.
 
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, TaskResult};
 use crate::context::AppContext;
+use crate::utils::egui_mpsc::SenderAsync;
 use std::sync::Arc;
 
 async fn run_blocking_dispatch<T, F>(
@@ -54,12 +55,13 @@ where
 
 /// Run a single backend task and return its result.
 ///
-/// `run_backend_task` reports progress and cache changes to the context's
-/// frame loop as it runs ([`AppContext::frame_loop_sender`]): the GUI's when
-/// the server is embedded in it, so its screens re-read what the task
-/// changed; a sink in a headless process. The wallet backend a task may wire
-/// keeps that sender for the life of the context, so it is never one made
-/// for a request. The outcome is the result returned by the async call alone.
+/// `run_backend_task` reports cache changes to the context's frame loop as it
+/// runs ([`AppContext::frame_loop_sender`]): the GUI's when the server is
+/// embedded in it, so its screens re-read what the task changed; a sink in a
+/// headless process. Progress and other results stay off it (see
+/// [`task_reporter`]). The wallet backend a task may wire keeps the frame-loop
+/// sender for the life of the context, so it is never one made for a request.
+/// The outcome is the result returned by the async call alone.
 ///
 /// Uses TaskManager-tracked blocking work plus `block_on` to avoid `Send`
 /// bound issues with platform SDK types across await points. This matches
@@ -86,7 +88,7 @@ where
     let handle = tokio::runtime::Handle::current();
     run_blocking_dispatch(app_context.subtasks.clone(), move || {
         handle.block_on(async move {
-            let sender = app_context.frame_loop_sender();
+            let sender = task_reporter(&app_context);
             let result = app_context.run_backend_task(task, sender).await?;
             Ok(lifecycle_tail(result).await)
         })
@@ -94,10 +96,21 @@ where
     .await?
 }
 
+/// The sender a requested task reports through. Its results are the
+/// requester's, returned by the call, so the frame loop hears only that cached
+/// data changed: a GUI hosting the server shows no progress or failure of a
+/// request its user did not start. What keeps a sender for good (a context's
+/// frame loop, its wallet backend, a network switch's context registration)
+/// takes [`SenderAsync::unfiltered`].
+fn task_reporter(app_context: &Arc<AppContext>) -> SenderAsync<TaskResult> {
+    app_context
+        .frame_loop_sender()
+        .keeping_only(|report| matches!(report, TaskResult::CacheUpdated(_) | TaskResult::Repaint))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend_task::TaskResult;
     use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -213,6 +226,99 @@ mod tests {
             .await
             .expect("the backend reports to the installed frame loop");
         assert!(matches!(frame_loop.try_recv(), Ok(TaskResult::Repaint)));
+        backend.shutdown().await;
+    }
+
+    /// A request's own results are returned by the call, so the frame loop of
+    /// a GUI hosting the server hears only that cached data changed: no
+    /// screen or banner shows progress or failures of a request the GUI user
+    /// did not start. The wallet backend a request wires still reports every
+    /// result there, for the life of the context.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_tells_the_frame_loop_only_that_cached_data_changed() {
+        use crate::backend_task::identity::IdentityTask;
+        use crate::backend_task::{BackendTaskContext, CacheDomain, CacheUpdate};
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, mut frame_loop) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        app_context.install_frame_loop(SenderAsync::new(tx, app_context.egui_ctx().clone()));
+        let progress = || TaskResult::Success {
+            context: BackendTaskContext::Unknown,
+            result: Box::new(BackendTaskSuccessResult::Progress {
+                message: "Searching wallet identity index 1 of about 2.".to_owned(),
+                current: 1,
+                total: 2,
+            }),
+        };
+        let mut drain = || std::iter::from_fn(|| frame_loop.try_recv().ok()).collect::<Vec<_>>();
+        // The wired backend may report on its own; only these reports count.
+        let is_progress = |report: &TaskResult| {
+            matches!(report, TaskResult::Success { result, .. }
+                if matches!(**result, BackendTaskSuccessResult::Progress { .. }))
+        };
+
+        // The first wallet-touching request wires the backend.
+        let result = dispatch_task(
+            &app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::RefreshedOwnedDpnsNames)
+            ),
+            "{result:?}"
+        );
+        drain();
+        let backend = app_context
+            .wallet_backend()
+            .expect("the request wires the backend");
+        backend
+            .frame_loop_for_test()
+            .send(progress())
+            .await
+            .expect("the backend reports");
+        assert!(
+            drain().iter().any(is_progress),
+            "the backend a request wires reports every result to the frame loop"
+        );
+
+        let reporter = task_reporter(&app_context);
+        let update = CacheUpdate {
+            network: app_context.network,
+            domain: CacheDomain::Identities,
+        };
+        reporter
+            .send(progress())
+            .await
+            .expect("progress is accepted");
+        reporter
+            .send(TaskResult::Error {
+                context: BackendTaskContext::Unknown,
+                error: TaskError::TaskManagerShuttingDown,
+            })
+            .await
+            .expect("a failure is accepted");
+        reporter
+            .send(TaskResult::CacheUpdated(update))
+            .await
+            .expect("a cache change is accepted");
+        let reports = drain();
+        assert!(!reports.iter().any(is_progress), "{reports:?}");
+        assert!(
+            !reports
+                .iter()
+                .any(|report| matches!(report, TaskResult::Error { .. })),
+            "{reports:?}"
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|report| matches!(report, TaskResult::CacheUpdated(u) if *u == update)),
+            "{reports:?}"
+        );
+
         backend.shutdown().await;
     }
 

@@ -5196,6 +5196,33 @@ mod tests {
         assert!(!screen.registration_banner_live_for_test());
     }
 
+    /// Creating is blocked while a registration is in flight, so a second
+    /// confirmation cannot pay a second fee; the outcome unblocks it.
+    #[test]
+    fn create_token_is_blocked_while_a_registration_is_in_flight() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.change_to_preset(owner_preset(
+            TokenConfigurationPresetFeatures::WithExtremeActions,
+        ));
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+
+        let registration = screen.begin_token_registration_for_test();
+        let in_flight = Some(
+            "Your token is being created. Wait for the result before creating another token."
+                .to_owned(),
+        );
+        assert_eq!(screen.simple_mode_blocked_reason(), in_flight);
+        assert_eq!(screen.advanced_mode_blocked_reason(), in_flight);
+
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(screen.simple_mode_blocked_reason(), None);
+        assert_eq!(screen.advanced_mode_blocked_reason(), None);
+    }
+
     /// A network switch closes the wallet unlock popup: its wallet belongs to the
     /// previous network, and leaving it open would show it again for the next
     /// wallet the user selects.

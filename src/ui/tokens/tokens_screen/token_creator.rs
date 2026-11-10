@@ -1493,10 +1493,12 @@ impl TokensScreen {
     }
 
     /// Why Simple mode's "Create Token" is blocked, shown next to the button:
-    /// missing inputs first, then the preset, then a setting the network does
-    /// not accept.
+    /// a registration in flight first, then missing inputs, then the preset,
+    /// then a setting the network does not accept.
     pub(super) fn simple_mode_blocked_reason(&self) -> Option<String> {
-        if self.token_names_input[0].0.trim().is_empty() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if self.token_names_input[0].0.trim().is_empty() {
             Some("Enter a token name to continue.".to_owned())
         } else if self.base_supply_amount.is_none() {
             Some("Enter an initial supply to continue.".to_owned())
@@ -1508,9 +1510,12 @@ impl TokensScreen {
     }
 
     /// Why Advanced mode's "Register Token Contract" is blocked, shown next to
-    /// the button: the preset first, then a setting the network does not accept.
+    /// the button: a registration in flight first, then the preset, then a
+    /// setting the network does not accept.
     pub(super) fn advanced_mode_blocked_reason(&self) -> Option<String> {
-        if !self.preset_chosen() {
+        if self.awaits_token_registration() {
+            Some(REGISTRATION_IN_FLIGHT_HINT.to_owned())
+        } else if !self.preset_chosen() {
             Some(ADVANCED_PRESET_HINT.to_owned())
         } else {
             self.creation_blocked_reason()
@@ -1815,6 +1820,11 @@ impl TokensScreen {
 /// accept such tokens. Names where the option is, since it is offered only under
 /// Advanced and may be hidden.
 const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
+
+/// Why creating is blocked while a registration is in flight: a second one
+/// would pay a second fee.
+const REGISTRATION_IN_FLIGHT_HINT: &str =
+    "Your token is being created. Wait for the result before creating another token.";
 
 /// Why Simple mode's "Create Token" is blocked until a preset is chosen.
 const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";

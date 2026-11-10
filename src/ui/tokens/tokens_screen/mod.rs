@@ -3019,6 +3019,10 @@ impl ScreenLike for TokensScreen {
                 self.operation_banner = Some(handle);
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
+                // The screen stops waiting, so the result will not retire the banner.
+                if self.refreshing_status == RefreshingStatus::Refreshing {
+                    self.operation_banner.take_and_clear();
+                }
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.pending_operation_context = None;
 
@@ -3430,6 +3434,51 @@ mod tests {
 
             assert!(!handle.is_live(), "{control}");
         }
+    }
+
+    /// Leaving My Tokens while its balance refresh runs retires the refresh
+    /// banner: the screen stops waiting, so the result will not retire it.
+    #[test]
+    fn leaving_during_a_balance_refresh_retires_its_banner() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let screen = TokensScreen::new(&app_context, TokensSubscreen::MyTokens);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 900.0))
+            .build_ui_state(
+                |ui, screen: &mut TokensScreen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness.get_by_label("Refresh").click();
+        harness.run();
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::Refreshing
+        );
+        let handle = harness
+            .state()
+            .operation_banner
+            .clone()
+            .expect("refresh banner");
+        assert!(handle.is_live());
+
+        // The nav entry is an icon and a label, both clickable.
+        harness
+            .query_all_by_label("Wallets")
+            .next()
+            .expect("nav entry")
+            .click();
+        harness.run();
+
+        assert_eq!(
+            harness.state().refreshing_status,
+            RefreshingStatus::NotRefreshing
+        );
+        assert!(!handle.is_live());
     }
 
     #[test]

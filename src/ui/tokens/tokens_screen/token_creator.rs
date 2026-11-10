@@ -1883,10 +1883,14 @@ impl PresetRules {
         static TABLE: LazyLock<[PresetRules; CREATOR_PRESETS.len()]> = LazyLock::new(|| {
             CREATOR_PRESETS.map(|features| PresetRules::from_preset(&creator_preset(features)))
         });
-        let index = CREATOR_PRESETS
-            .iter()
-            .position(|preset| *preset == features)
-            .expect("every preset feature set is offered by the creator");
+        // Positions in `CREATOR_PRESETS`; the match keeps every preset covered.
+        let index = match features {
+            MostRestrictive => 0,
+            WithOnlyEmergencyAction => 1,
+            WithMintingAndBurningActions => 2,
+            WithAllAdvancedActions => 3,
+            WithExtremeActions => 4,
+        };
         &TABLE[index]
     }
 

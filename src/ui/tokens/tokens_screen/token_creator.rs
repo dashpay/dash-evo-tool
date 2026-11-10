@@ -15,7 +15,7 @@ use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
 use crate::context::feature_gate::FeatureGate;
@@ -40,9 +40,11 @@ use crate::ui::tokens::tokens_screen::{
 };
 
 impl TokensScreen {
-    /// The creator waits for its registration, under a progress banner.
-    pub(super) fn mark_token_registration_started(&mut self) {
+    /// The creator waits for the registration sent under `context`, under a
+    /// progress banner.
+    pub(super) fn mark_token_registration_started(&mut self, context: BackendTaskContext) {
         self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        self.token_registration_context = Some(context);
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Creating token...",
@@ -1642,18 +1644,26 @@ impl TokensScreen {
                             }
                         };
 
-                    // Now create your tasks
-                    let tasks = vec![
+                    let network = self.app_context.network;
+                    let register =
                         BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
                             identity,
                             signing_key: Box::new(signing_key),
                             params: Box::new(args.into_contract_params()),
-                        })),
-                        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+                        }));
+                    let register_context = BackendTaskContext::for_dispatch_on(&register, network);
+                    let refresh = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+                    let refresh_context = BackendTaskContext::for_dispatch_on(&refresh, network);
+                    let tasks = vec![
+                        (register, register_context.clone()),
+                        (refresh, refresh_context),
                     ];
 
-                    action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.mark_token_registration_started();
+                    action = AppAction::BackendTasksWithContexts(
+                        tasks,
+                        BackendTasksExecutionMode::Sequential,
+                    );
+                    self.mark_token_registration_started(register_context);
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {

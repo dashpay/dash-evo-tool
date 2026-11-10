@@ -1174,6 +1174,9 @@ pub struct TokensScreen {
     show_token_creator_confirmation_popup: bool,
     token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
+    /// The dispatch of the registration the creator waits for; only its own
+    /// failure ends the wait.
+    token_registration_context: Option<BackendTaskContext>,
     show_advanced_keeps_history: bool,
     token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
     groups_ui: Vec<GroupConfigUI>,
@@ -1438,9 +1441,10 @@ impl TokensScreen {
     /// Starts a registration as the creator's confirmation does, without
     /// building a contract, and returns a dispatch standing in for it.
     pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
-        self.mark_token_registration_started();
         let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
-        BackendTaskContext::for_dispatch_on(&task, self.app_context.network)
+        let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network);
+        self.mark_token_registration_started(context.clone());
+        context
     }
 
     #[cfg(feature = "testing")]
@@ -1553,6 +1557,7 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
+            token_registration_context: None,
             token_names_input: vec![(
                 String::new(),
                 String::new(),
@@ -2417,6 +2422,7 @@ impl TokensScreen {
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
+        self.token_registration_context = None;
         self.token_names_input = vec![(
             String::new(),
             String::new(),
@@ -3136,14 +3142,8 @@ impl ScreenLike for TokensScreen {
         }
 
         match self.tokens_subscreen {
-            TokensSubscreen::TokenCreator => {
-                if (msg.contains("Failed to register token contract")
-                    | msg.contains("Error building contract V1"))
-                    && self.awaits_token_registration()
-                {
-                    self.token_creator_status = TokenCreatorStatus::Error;
-                }
-            }
+            // Registration failures arrive through `display_backend_task_error`.
+            TokensSubscreen::TokenCreator => {}
             TokensSubscreen::MyTokens => {
                 tracing::debug!(
                     msg = msg,
@@ -3170,6 +3170,13 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.awaits_token_registration()
+            && self.token_registration_context.as_ref() == Some(context)
+        {
+            self.token_creator_status = TokenCreatorStatus::Error;
+            self.token_registration_context = None;
+            self.operation_banner.take_and_clear();
+        }
         if self.tokens_subscreen == TokensSubscreen::MyTokens {
             let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
                 && self.pending_operation_context.as_ref() == Some(context);
@@ -3265,6 +3272,7 @@ impl ScreenLike for TokensScreen {
             BackendTaskSuccessResult::RegisteredTokenContract => {
                 if self.awaits_token_registration() {
                     self.token_creator_status = TokenCreatorStatus::Complete;
+                    self.token_registration_context = None;
                 }
                 self.operation_banner.take_and_clear();
             }
@@ -5163,6 +5171,31 @@ mod tests {
         assert_eq!(screen.advanced_mode_blocked_reason(), None);
     }
 
+    /// A failed registration ends the creator's wait in its error state and
+    /// retires the progress banner; another task's failure leaves it waiting.
+    #[test]
+    fn a_failed_registration_ends_the_wait_in_the_error_state() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let registration = screen.begin_token_registration_for_test();
+        let other = BackendTaskContext::for_dispatch_on(
+            &BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+            app_context.network,
+        );
+
+        screen.display_backend_task_error(&other, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(
+            screen.token_creator_status,
+            TokenCreatorStatus::WaitingForResult
+        );
+        assert!(screen.registration_banner_live_for_test());
+
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Error);
+        assert!(!screen.registration_banner_live_for_test());
+    }
+
     /// A network switch closes the wallet unlock popup: its wallet belongs to the
     /// previous network, and leaving it open would show it again for the next
     /// wallet the user selects.
@@ -5185,7 +5218,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
+        let registration = screen.begin_token_registration_for_test();
 
         screen.reset_for_network_switch();
         screen.display_backend_task_result(
@@ -5198,10 +5231,7 @@ mod tests {
             "a late success must not show the success screen on the new network"
         );
 
-        screen.display_message(
-            "Failed to register token contract: the old network refused it",
-            MessageType::Error,
-        );
+        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
         assert_eq!(
             screen.token_creator_status,
             TokenCreatorStatus::NotStarted,

@@ -59,11 +59,22 @@ fn build_ctx() -> (
     (h, ctx)
 }
 
+/// Stores a user identity holding one private key, as the Token Creator offers
+/// only identities with keys.
 fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
     let pv = PlatformVersion::latest();
     let identity =
         Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("basic identity");
     let id = identity.id();
+    let key = dash_sdk::platform::IdentityPublicKey::default_versioned(pv)
+        .expect("identity key structure");
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(rand::random()),
+        ),
+    )]));
     let qi = QualifiedIdentity {
         identity,
         associated_voter_identity: None,
@@ -71,7 +82,7 @@ fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> 
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage::default(),
+        private_keys,
         dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
             name: alias.to_string(),
             acquired_at: 0,

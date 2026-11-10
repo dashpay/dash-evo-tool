@@ -1737,15 +1737,22 @@ impl TokensScreen {
             screen.use_custom_order = true;
         }
 
-        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to first.
+        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to
+        // the first identity the creator offers.
         if let Some(preferred_id) = screen.app_context.selected_identity_id()
-            && let Some(qi) = screen.identities.get(&preferred_id)
+            && let Some(qi) = screen
+                .identities
+                .get(&preferred_id)
+                .filter(|qi| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
             screen.identity_id_string = preferred_id.to_string(Encoding::Base58);
         }
         if screen.selected_identity.is_none()
-            && let Some((id, qi)) = screen.identities.iter().next()
+            && let Some((id, qi)) = screen
+                .identities
+                .iter()
+                .find(|(_, qi)| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
             screen.identity_id_string = id.to_string(Encoding::Base58);
@@ -2337,15 +2344,38 @@ impl TokensScreen {
         }
     }
 
+    /// Re-reads every stored identity. Only a successful read refreshes the Token
+    /// Creator's selection, so a failed one does not drop what the user picked.
+    fn reload_identities(&mut self) {
+        match self.app_context.load_local_qualified_identities() {
+            Ok(identities) => {
+                self.identities = identities
+                    .into_iter()
+                    .map(|qi| (qi.identity.id(), qi))
+                    .collect();
+                self.refresh_token_creator_identity();
+            }
+            Err(error) => {
+                tracing::warn!(?error, "Tokens screen could not reload stored identities");
+                self.identities.clear();
+            }
+        }
+    }
+
     /// Replaces the creator's copy of its selected identity with the one just read
     /// into `self.identities`, so keys and balance changed elsewhere show here. A
-    /// selected key the identity no longer holds is dropped; a removed identity is
-    /// deselected.
+    /// selected key the identity no longer holds is dropped; an identity that is
+    /// removed, or that the creator does not offer, is deselected so the selector
+    /// picks one it offers.
     fn refresh_token_creator_identity(&mut self) {
         let Some(id) = self.selected_identity.as_ref().map(|qi| qi.identity.id()) else {
             return;
         };
-        let Some(fresh) = self.identities.get(&id) else {
+        let Some(fresh) = self
+            .identities
+            .get(&id)
+            .filter(|qi| offered_by_token_creator(qi))
+        else {
             self.identity_id_string.clear();
             self.selected_identity = None;
             self.selected_key = None;
@@ -2754,6 +2784,12 @@ impl TokensScreen {
     }
 }
 
+/// Whether the Token Creator offers `identity` as the contract owner: a user
+/// identity with private keys stored here.
+pub(super) fn offered_by_token_creator(identity: &QualifiedIdentity) -> bool {
+    identity.identity_type == IdentityType::User && !identity.private_keys.is_empty()
+}
+
 // ─────────────────────────────────────────────────────────────────
 // ScreenLike implementation
 // ─────────────────────────────────────────────────────────────────
@@ -2776,14 +2812,7 @@ impl ScreenLike for TokensScreen {
                 .unwrap_or_default();
         }
         if identities_changed {
-            self.identities = self
-                .app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|identity| (identity.identity.id(), identity))
-                .collect();
-            self.refresh_token_creator_identity();
+            self.reload_identities();
         }
         // My Tokens joins both: one recomputation after whichever side changed.
         self.my_tokens = my_tokens(
@@ -2799,14 +2828,7 @@ impl ScreenLike for TokensScreen {
             .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
-        self.identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|qi| (qi.identity.id(), qi))
-            .collect();
-        self.refresh_token_creator_identity();
+        self.reload_identities();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -2840,14 +2862,7 @@ impl ScreenLike for TokensScreen {
             .app_context
             .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
-        self.identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|qi| (qi.identity.id(), qi))
-            .collect();
-        self.refresh_token_creator_identity();
+        self.reload_identities();
 
         // Clear pricing data to force re-fetching when tokens are selected
         // This ensures we get updated pricing after changes like SetPrice
@@ -4567,6 +4582,16 @@ mod tests {
         context: &AppContext,
         keys: &[(KeyID, Purpose, SecurityLevel)],
     ) -> QualifiedIdentity {
+        identity_holding(context, 0x41, IdentityType::User, keys)
+    }
+
+    /// An identity of `identity_type` holding private keys for `keys`.
+    fn identity_holding(
+        context: &AppContext,
+        id: u8,
+        identity_type: IdentityType,
+        keys: &[(KeyID, Purpose, SecurityLevel)],
+    ) -> QualifiedIdentity {
         use crate::context::test_support::identity_public_key;
         use crate::model::qualified_identity::PrivateKeyTarget;
         use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
@@ -4591,14 +4616,14 @@ mod tests {
         }
         QualifiedIdentity {
             identity: Identity::create_basic_identity(
-                Identifier::from([0x41; 32]),
+                Identifier::from([id; 32]),
                 context.platform_version(),
             )
             .expect("basic identity"),
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
+            identity_type,
             alias: None,
             private_keys,
             dpns_names: vec![],
@@ -4723,12 +4748,13 @@ mod tests {
 
     /// An identity removed from the store is no longer offered by the creator,
     /// so it stops being the selected one; the rest of the form is kept.
-    #[test]
-    fn token_creator_deselects_an_identity_that_is_no_longer_stored() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_deselects_an_identity_that_is_no_longer_stored() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
 
         screen.keep_token_creator_across_navigation();
         screen.refresh_on_arrival();
@@ -4736,6 +4762,80 @@ mod tests {
         assert!(screen.selected_identity.is_none());
         assert!(screen.identity_id_string.is_empty());
         assert_eq!(screen.token_names_input[0].0, "PresetCoin");
+        app_context.wallet_backend().unwrap().shutdown().await;
+    }
+
+    /// When stored identities cannot be read, the creator keeps the identity the
+    /// user selected instead of treating it as removed.
+    #[test]
+    fn token_creator_keeps_its_identity_when_identities_cannot_be_read() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        // Without a wallet backend, reading stored identities fails.
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        fill_minimal_creator_inputs(&mut screen, &app_context);
+        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
+
+        screen.refresh_on_arrival();
+
+        assert_eq!(
+            screen.selected_identity.map(|qi| qi.identity.id()),
+            Some(Identifier::from([7; 32]))
+        );
+        assert!(!screen.identity_id_string.is_empty());
+    }
+
+    /// The creator offers only user identities with private keys. An identity it
+    /// does not offer (a masternode one, or one without keys) is never its
+    /// selection: the selector would show "No identities found" next to a list
+    /// of identities, and Simple mode would report a missing key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
+        let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
+        for (case, ineligible) in [
+            ("masternode", IdentityType::Masternode),
+            ("keyless user", IdentityType::User),
+        ] {
+            let tmp = tempfile::tempdir().expect("test tmpdir");
+            let context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
+            let ineligible_keys: &[_] = if ineligible == IdentityType::User {
+                &[]
+            } else {
+                &key
+            };
+            let ineligible = identity_holding(&context, 0x01, ineligible, ineligible_keys);
+            let ineligible_id = ineligible.identity.id();
+            context
+                .insert_local_qualified_identity(&ineligible, &None)
+                .expect("store ineligible identity");
+            context.set_selected_identity(Some(ineligible_id));
+
+            // Opened before any identity it offers exists: nothing is selected.
+            let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert!(screen.selected_identity.is_none(), "{case}: seed");
+            assert!(screen.identity_id_string.is_empty(), "{case}: seed");
+
+            // A selection made from an older roster is dropped on return, so the
+            // selector picks an identity it offers.
+            let eligible = creator_identity(&context, &key);
+            context
+                .insert_local_qualified_identity(&eligible, &None)
+                .expect("store eligible identity");
+            screen.selected_identity = Some(ineligible.clone());
+            screen.identity_id_string = ineligible_id.to_string(Encoding::Base58);
+            screen.refresh_on_arrival();
+            assert!(screen.selected_identity.is_none(), "{case}: arrival");
+            assert!(screen.identity_id_string.is_empty(), "{case}: arrival");
+
+            // A creator opened now starts from an identity it offers.
+            let screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
+            assert_eq!(
+                screen.selected_identity.map(|qi| qi.identity.id()),
+                Some(eligible.identity.id()),
+                "{case}: seed with an offered identity"
+            );
+            context.wallet_backend().unwrap().shutdown().await;
+        }
     }
 
     /// Every preset picked in a freshly opened creator is built exactly as defined.

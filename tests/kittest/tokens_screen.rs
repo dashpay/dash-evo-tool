@@ -1274,12 +1274,12 @@ fn advanced_register_requires_a_preset_choice() {
     });
 }
 
-/// The token sub-navigation shows each label on one line at the user's window
-/// size and keeps one width across the token screens, also after the window
-/// was briefly narrower: the panel takes its width from the previous frame, so
-/// labels that wrapped once kept it narrow for good.
+/// The token sub-navigation shows each label on one line at the window sizes
+/// users run, and keeps one width across the token screens, also after the
+/// window was briefly narrower: the panel takes its width from the previous
+/// frame, so labels that wrapped once kept it narrow for good.
 #[test]
-fn token_subnav_labels_stay_on_one_line_at_1050x700() {
+fn token_subnav_labels_stay_on_one_line() {
     use dash_evo_tool::ui::theme::Typography;
     use egui::accesskit::Role;
 
@@ -1289,11 +1289,6 @@ fn token_subnav_labels_stay_on_one_line_at_1050x700() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
         let mut harness = mount_app(RootScreenType::RootScreenTokenSearch);
-        harness.set_size(egui::vec2(300.0, 700.0));
-        harness.run_steps(3);
-        harness.set_size(egui::vec2(1050.0, 700.0));
-        harness.run_steps(5);
-
         let nav_button = |harness: &Harness<'static, dash_evo_tool::app::AppState>, label: &str| {
             harness
                 .query_all_by_label(label)
@@ -1301,48 +1296,58 @@ fn token_subnav_labels_stay_on_one_line_at_1050x700() {
                 .unwrap_or_else(|| panic!("no {label:?} navigation button"))
                 .rect()
         };
-        let mut panel_widths = Vec::new();
-        for (screen, root) in [
-            ("Search Tokens", RootScreenType::RootScreenTokenSearch),
-            ("My Tokens", RootScreenType::RootScreenMyTokenBalances),
-            ("Token Creator", RootScreenType::RootScreenTokenCreator),
-        ] {
-            harness
-                .query_all_by_label(screen)
-                .find(|node| node.accesskit_node().role() == Role::Button)
-                .expect("navigation button")
-                .click();
+
+        for window in [egui::vec2(1050.0, 700.0), egui::vec2(1260.0, 780.0)] {
+            harness.set_size(egui::vec2(300.0, window.y));
+            harness.run_steps(3);
+            harness.set_size(window);
             harness.run_steps(5);
-            assert_eq!(harness.state().selected_main_screen, root, "{screen}");
-            for label in LABELS {
-                let text_width = harness.ctx.fonts_mut(|fonts| {
-                    fonts
-                        .layout_no_wrap(
-                            label.to_owned(),
-                            egui::FontId::proportional(Typography::SCALE_SM),
-                            egui::Color32::WHITE,
-                        )
-                        .size()
-                        .x
-                });
-                let button = nav_button(&harness, label);
-                assert!(
-                    button.width() > text_width,
-                    "{screen}: the {label:?} button ({button:?}) wraps its {text_width}px label"
-                );
+
+            let mut panel_widths = Vec::new();
+            for (screen, root) in [
+                ("Search Tokens", RootScreenType::RootScreenTokenSearch),
+                ("My Tokens", RootScreenType::RootScreenMyTokenBalances),
+                ("Token Creator", RootScreenType::RootScreenTokenCreator),
+            ] {
+                harness
+                    .query_all_by_label(screen)
+                    .find(|node| node.accesskit_node().role() == Role::Button)
+                    .expect("navigation button")
+                    .click();
+                harness.run_steps(5);
+                assert_eq!(harness.state().selected_main_screen, root, "{screen}");
+                for label in LABELS {
+                    let text_width = harness.ctx.fonts_mut(|fonts| {
+                        fonts
+                            .layout_no_wrap(
+                                label.to_owned(),
+                                egui::FontId::proportional(Typography::SCALE_SM),
+                                egui::Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    });
+                    let button = nav_button(&harness, label);
+                    assert!(
+                        button.width() > text_width,
+                        "{window:?} {screen}: the {label:?} button ({button:?}) wraps its \
+                         {text_width}px label"
+                    );
+                }
+                let panel = egui::containers::panel::PanelState::load(
+                    &harness.ctx,
+                    egui::Id::new("tokens_subscreen_chooser_panel"),
+                )
+                .expect("tokens sub-navigation panel");
+                panel_widths.push(panel.size().x);
             }
-            let panel = egui::containers::panel::PanelState::load(
-                &harness.ctx,
-                egui::Id::new("tokens_subscreen_chooser_panel"),
-            )
-            .expect("tokens sub-navigation panel");
-            panel_widths.push(panel.size().x);
+            let narrowest = panel_widths.iter().copied().fold(f32::INFINITY, f32::min);
+            let widest = panel_widths.iter().copied().fold(0.0, f32::max);
+            assert!(
+                widest - narrowest < 1.0,
+                "{window:?}: the sub-navigation width changes between token screens: \
+                 {panel_widths:?}"
+            );
         }
-        let narrowest = panel_widths.iter().copied().fold(f32::INFINITY, f32::min);
-        let widest = panel_widths.iter().copied().fold(0.0, f32::max);
-        assert!(
-            widest - narrowest < 1.0,
-            "the sub-navigation width changes between token screens: {panel_widths:?}"
-        );
     });
 }

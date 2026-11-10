@@ -1289,6 +1289,7 @@ fn token_subnav_labels_stay_on_one_line() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
         let mut harness = mount_app(RootScreenType::RootScreenTokenSearch);
+        let button_padding = harness.ctx.global_style().spacing.button_padding;
         let nav_button = |harness: &Harness<'static, dash_evo_tool::app::AppState>, label: &str| {
             harness
                 .query_all_by_label(label)
@@ -1317,7 +1318,9 @@ fn token_subnav_labels_stay_on_one_line() {
                 harness.run_steps(5);
                 assert_eq!(harness.state().selected_main_screen, root, "{screen}");
                 for label in LABELS {
-                    let text_width = harness.ctx.fonts_mut(|fonts| {
+                    // A wrapped label adds a line; half a line of slack absorbs
+                    // rounding without letting a second line through.
+                    let line_height = harness.ctx.fonts_mut(|fonts| {
                         fonts
                             .layout_no_wrap(
                                 label.to_owned(),
@@ -1325,13 +1328,14 @@ fn token_subnav_labels_stay_on_one_line() {
                                 egui::Color32::WHITE,
                             )
                             .size()
-                            .x
+                            .y
                     });
+                    let one_line = line_height * 1.5 + 2.0 * button_padding.y;
                     let button = nav_button(&harness, label);
                     assert!(
-                        button.width() > text_width,
+                        button.height() < one_line,
                         "{window:?} {screen}: the {label:?} button ({button:?}) wraps its \
-                         {text_width}px label"
+                         label onto more than one line"
                     );
                 }
                 let panel = egui::containers::panel::PanelState::load(

@@ -1,0 +1,269 @@
+SCENE 00 | Welcome from Czatosław
+SCREEN: Official opening slide. Narrator name written with Polish diacritics. Discreet AI-generated narration disclosure.
+CONTROLS: opening, disclosure
+VOICE: Hey there! I'm Czatosław Klałdowski — your slightly overconfident guide to Dash Evolution. Today, we'll create a simple token, then explore the advanced controls: who can mint, who can freeze, and what the fine print actually allows. Relax. I'll explain every switch before we touch it. The only thing we're minting recklessly is my confidence.
+
+SCENE 01 | What this lesson covers
+SCREEN: Chapter overview. Basic token; advanced settings; permissions; groups; distribution recipes; documents; final review.
+CONTROLS: scope, examples
+VOICE: Here is the plan. First, a small, fixed-supply token that we actually register. Then, a complete tour of the token creator, including every option we reveal on screen. We will use small worked examples, and separate configuration experiments from the settings we finally publish. Opening a panel does not enable its features. Publishing a contract does. The chapter list lets you return to a particular recipe without inviting me to repeat the entire lecture. A mercy for both of us.
+
+SCENE 02 | Prepare the right account
+SCREEN: Settings on Testnet; green connection status. Identity home showing funded identity. No recovery phrases or private key screens.
+CONTROLS: network, connection, identity, wallet, signing-key, prerequisites
+VOICE: This is testnet. Check the network in Settings, and wait for synchronization before continuing. You need a funded Platform identity and access to an Authentication key at High or Critical security level. A public identity identifier alone is not enough to sign. If the key is derived from a wallet, import and unlock that wallet first. An imported identity with its own available private key does not require a separate wallet merely to register this contract. Wallet setup and identity funding are prerequisites, not steps we will secretly skip and pretend happened by magic.
+
+SCENE 03 | Find the token workspace
+SCREEN: Tokens sidebar; My Tokens, Search Tokens, Token Creator. Hover help icons; top Refresh, Import Token and Create Token only where present.
+CONTROLS: tokens-navigation, my-tokens, search-tokens, creator, import-token, refresh, help
+VOICE: Open Tokens. My Tokens lists the tokens you track. Search Tokens helps you discover existing contracts. Import Token is for an existing token identifier; it does not create a new token. Refresh fetches current information. For this lesson, choose Token Creator, or the Create Token shortcut. The small information buttons explain nearby fields. We will use them as reminders, while checking the actual rules rather than treating every tooltip as a sacred tablet.
+
+SCENE 04 | A simple token: identity and name
+SCREEN: Simple creator, Advanced off. Explicitly select funded identity. Enter CloudCredit and a short description.
+CONTROLS: simple-mode, identity-selector, load-identity, simple-key-selection, token-name, description
+VOICE: Leave Show Advanced Options off. Select the funded identity that will own the contract; verify the selection inside the form. If none is available, Load Identity takes you to the import flow. Simple mode selects a suitable available key for you. Our token is CloudCredit, written as one word, with the description: A fixed-supply token for learning. The description explains the purpose; it is not a permission rule. A name is a label, not a unique identifier or a promise of value.
+
+SCENE 05 | Initial and maximum supply
+SCREEN: Initial Supply 1000, Max Supply 1000. Point to token amount inputs, not identity DASH balance.
+CONTROLS: initial-supply, maximum-supply, unlimited-supply
+VOICE: Enter one thousand for Initial Supply and one thousand for Max Supply. These fields use whole-token amounts, including any fractional part you type. They are not Dash amounts and are not raw base units. The initial supply is created when registration succeeds. The maximum is the supply ceiling under the rules you choose. Leaving the maximum empty, or using zero where the form treats it as no maximum, means you have not set a numerical ceiling. For this first example, we want an explicit ceiling and no future minting power.
+
+SCENE 06 | Presets in plain English
+SCREEN: Open simple preset menu; highlight each of the five entries, without accidentally committing a different choice.
+CONTROLS: most-restrictive, emergency-preset, mint-burn-preset, advanced-actions-preset, all-allowed-preset
+VOICE: Presets fill in permission rules. Most Restrictive disables the additional actions and their administrators. Only Emergency Action adds the pause-and-resume mechanism. Minting and Burning grants those actions. Advanced Actions grants broader owner controls, including freezing, destroying frozen balances, and changing the maximum supply. All Allowed also enables more permissive changes to the rules themselves. Those last two are not gentle suggestions: they grant real authority. We will inspect the actual fields in the advanced section. For CloudCredit, select Most Restrictive.
+
+SCENE 07 | What fixed means here
+SCREEN: Most Restrictive selected. Create Token enabled.
+CONTROLS: preset-consequences, immutable-permissions, simple-plural
+VOICE: With this preset, the extra powers cannot simply be enabled later. Together with an initial and maximum supply of one thousand, that gives our example its fixed configuration. In simple mode, the app supplies the plural name from the singular name. If you need deliberate plural forms, translations, or custom permissions, use Advanced Options instead. Decide before registration. My confidence is reversible; a deliberately locked permission may not be.
+
+SCENE 08 | Review and register the simple token
+SCREEN: Click Create Token, read actual confirmation. Explain marketplace warning and displayed estimated cost. Confirm once; wait on observed state, not a scheduled delay.
+CONTROLS: create-token, confirmation, cancel, confirm, estimated-fee, marketplace-warning, pending
+VOICE: Click Create Token. Check the name, both supplies, and the estimated registration cost. The fee comes from this identity's Platform credits; the dialog displays an equivalent in Dash. It is not a separate payment from your wallet, and an estimate is not an exact receipt. Read the permanent marketplace warning. It concerns marketplace sales, not ordinary transfers between holders. Cancel returns you to editing. Confirm submits the registration. Click once and wait for the result. If the network is slow, another click is not a clever networking technique.
+
+SCENE 09 | Verify the result and keep the identifiers
+SCREEN: Observed success; My Tokens; token balance; More Info with full Token ID and Contract ID. Highlight Back/reset separately.
+CONTROLS: success, back-reset, my-tokens-balance, more-info, token-id, contract-id
+VOICE: After a confirmed success, open My Tokens and select the token name to inspect balances. In this example, the creator identity receives one thousand tokens. More Info shows the full Token ID and Contract ID. Save those after registration; identical display names can belong to different tokens. The Back button on the success screen resets the creator form for another example. A configuration preview is not a substitute for these final identifiers. We are checking the actual result, not awarding ourselves a ceremonial green tick.
+
+SCENE 10 | Start the advanced example
+SCREEN: Open fresh creator; enable Advanced. Explicitly select identity and available Authentication High/Critical key. Show eligible key selector without revealing private bytes.
+CONTROLS: advanced-mode, advanced-identity, advanced-key, wallet-unlock
+VOICE: Start a new token and enable Show Advanced Options. Check the identity again, then the signing key. This selector contains eligible identity keys, not private-key text. A disabled key or a key with the wrong purpose is not a useful substitute. If the relevant wallet is locked, unlock it before continuing. We are going to tour the available settings, then deliberately set our final configuration. Temporary examples in the following panels will be reset before we publish CloudPoint.
+
+SCENE 11 | Names, plural forms, and translations
+SCREEN: Enter CloudPoint / CloudPoints in English. Add Polish localization Punkt / Punkty. Remove the added localization after demonstrating. Use language menu and remove-language control.
+CONTROLS: singular-name, plural-name, language, add-language, remove-language, capitalization
+VOICE: Advanced mode gives each language its own singular and plural name. Enter CloudPoint and CloudPoints in English. Add Language creates another localization; for example, Polish names could be Punkt and Punkty. Choose the language that those words belong to, rather than adding two entries for the same language. The remove control deletes an extra localization before registration. We will remove this practice translation for our final English example. Localized names describe the same token; they do not create separate balances or separate supplies.
+
+SCENE 12 | Supply, keywords, and description
+SCREEN: Base Supply 1000, Max Supply 10000. Additional keywords field blank; briefly enter then remove education. Description filled.
+CONTROLS: base-supply, max-supply, keywords, keyword-cost, advanced-description
+VOICE: Base Supply is the advanced form's name for the initial supply. Set it to one thousand, and set Max Supply to ten thousand. Keep the additional Contract Keywords field empty for the final example. In this build, the singular name is still registered as a searchable keyword and counted in the fee estimate. An extra keyword, such as education, adds another searchable term and another keyword charge; remove it if you do not need it. Add a short, honest description. Keywords help discovery. They do not make a token official, safe, or economically sensible.
+
+SCENE 13 | Decimal places and the base-unit conversion
+SCREEN: Expand Advanced; Max Decimals 2. Recheck supply fields after precision change. Overlay: 1 token = 100 base units; 1000 = 100000 base units.
+CONTROLS: decimals, precision-change, supply-recheck, base-units
+VOICE: Max Decimals determines the smallest representable fraction. Two means one hundred base units per token, so one base unit is one hundredth of a token. Zero means indivisible whole tokens. After setting two, recheck that the supply fields still read one thousand and ten thousand. The form scales those amounts for you. Later, JSON will show one hundred thousand and one million base units. Do not divide the values in the supply fields by a hundred. I am fond of smaller numbers, but not accidental hundredfold mistakes.
+
+SCENE 14 | Pause and transferability
+SCREEN: Start as paused, Holders can send... and info icons. Demonstrate check/uncheck, restore paused off / transferable on. If unavailable, show reason without enabling unsupported config.
+CONTROLS: start-paused, transferable, protocol-feature-gate, emergency-prerequisite
+VOICE: Start as paused controls the initial transfer state. If you start paused, you need a permitted emergency action to resume transfers later. A permanently paused token with nobody allowed to resume it is usually an expensive souvenir. Holders can send this token to other identities controls transferability. Turning transfers off is different from starting paused, and requires network support. If the connected network disables the option, read the explanation rather than trying to bypass it. Our final example starts unpaused and keeps ordinary transfers enabled.
+
+SCENE 15 | History ledgers and capitalization
+SCREEN: Keep history parent checkbox; Advanced [+]; all six child toggles, mixed parent state, restore all enabled. Name should be capitalized checkbox.
+CONTROLS: keep-history, history-all, history-mixed, transfers-history, freeze-history, mint-history, burn-history, pricing-history, purchase-history, name-capitalization
+VOICE: Keep history controls six history ledgers. Expand its Advanced button to choose transfers, freezes and unfreezes, mints, burns, direct-pricing changes, and direct purchases separately. For example, a payment token may need transfer records, while a token with direct sales may also need price-change and purchase records. The parent checkbox turns all six on or off; a mixed state means only some are selected. This is a contract configuration choice, not a local privacy switch. We will retain all six. Name should be capitalized is presentation guidance for clients; it does not change the token's identifier or create another localization.
+
+SCENE 16 | Advanced presets are authority bundles
+SCREEN: Action Rules; preset selector including Custom. Highlight Advanced Actions, All Allowed and Custom; use practice preset and inspect key rows.
+CONTROLS: action-presets, custom, owner-authority, preset-overwrite
+VOICE: Open Action Rules. A preset is a bundle of settings; selecting another one can overwrite rules you just edited. Custom means we are choosing the rules ourselves. Advanced Actions grants the contract owner substantial power, including changing the supply ceiling and destroying frozen balances. All Allowed also permits more aggressive changes to who holds the powers. We will inspect these capabilities, then customize the final example. The important question is not whether a preset sounds advanced. It is whether future holders would agree with the powers it grants.
+
+SCENE 17 | Who performs an action
+SCREEN: Expand Manual Mint as representative rule. Open Authorized to perform action selector. Show No One / Contract Owner / Identity / Main Group / Group N. Enter valid public identity example only; demonstrate validation marker; restore owner.
+CONTROLS: authorized-performer, no-one, contract-owner, specific-identity, identity-validation, main-group, numbered-group
+VOICE: Each action has a performer. No One disables that action. Contract Owner gives it to the identity that owns the contract. Identity lets you name a particular identity using its full Base58 identifier; the check mark confirms the format, not that you possess that identity's keys. Main Group refers to the configured main control group, while Group followed by a number refers to a particular contract group. Those choices require a real group configuration. A sensible use case is a treasury identity that can mint, or a group that must approve new issuance together.
+
+SCENE 18 | Who may change the rule
+SCREEN: Authorized to change rules selector and all three boolean switches. Use an example before/after diagram, not a signed update.
+CONTROLS: rule-admin, allow-performer-to-no-one, allow-admin-to-no-one, self-changing-admin
+VOICE: The second selector answers a different question: who may change this permission rule later? Giving a group the minting action but leaving its administrator as a single owner can still let that owner change the arrangement. The first switch permits changing the action taker to No One, which can permanently disable the action. The second permits changing the administrator to No One, which can lock future rule updates. The third permits an administrator to change its own administrator assignment. These switches constrain later updates; they are not independent grants to every user. For an unchangeable rule, decide both selectors before registration.
+
+SCENE 19 | Make the supply ceiling genuinely permanent
+SCREEN: Max Supply Change expanded. Set performer No One and administrator No One for final example. Show 10000 supply cap in summary.
+CONTROLS: max-supply-action, permanent-cap, disable-admin
+VOICE: Here is the correction that matters most. Ten thousand in Max Supply is not automatically a permanent promise. A rule can allow the maximum to change later. For our final hard-capped CloudPoint example, set both Max Supply Change selectors to No One before registration. Minting can still be permitted within that ceiling. If your project needs an adjustable ceiling instead, choose and disclose who may change it. A limit with an administrator is a limit with an administrator, however reassuringly I pronounce the number.
+
+SCENE 20 | Minting and the mint destination
+SCREEN: Manual Mint performer Contract Owner, administrator No One. Default-to-owner, default-other-identity and per-mint destination checkbox. Demonstrate each with a public treasury identity; restore owner and per-mint selection on.
+CONTROLS: manual-mint, mint-admin, default-owner, destination-identity, choose-mint-destination
+VOICE: Manual Mint authorizes additional issuance, subject to the supply ceiling and the rest of the token rules. For example, the owner could issue ten reward tokens after a completed task. We will keep the owner as the performer and lock the minting administrator to No One. The destination controls determine who receives tokens: the contract owner, a specified default identity, or a destination chosen for each mint when that option is allowed. A project treasury is a useful default recipient. These destination settings can also affect the initial allocation, so review them before assuming the creator receives everything.
+
+SCENE 21 | Destination rule changes
+SCREEN: Minting Allow Choosing Destination Rules; relevant default-recipient change controls, if offered. Show actor/admin/boolean pattern, then final choice and summary.
+CONTROLS: choosing-destination-rule, new-token-destination-rule, destination-admin
+VOICE: The nested destination rules govern who can change those destination policies later. They reuse the performer, administrator, and change-limit pattern we just explained. For example, you might allow the owner to mint to an approved treasury while preventing anyone from changing that default policy. Or you might permit per-mint choice and retain an administrator who can revise that permission. Configure the capability and the right to change it separately. For this demonstration, we will return the default recipient to the owner and explicitly review whether per-mint choice is enabled.
+
+SCENE 22 | Burning is not confiscation
+SCREEN: Manual Burn rule. Owner performer and No One admin for final sample. Illustrative balance 100→90 and supply 1000→990.
+CONTROLS: manual-burn, burn-example, burn-vs-destroy
+VOICE: Manual Burn reduces the executing identity's balance and the token's current supply. For example, an authorized identity with one hundred tokens could burn ten, leaving ninety. That does not automatically give it a burn-from-anyone button. The separate frozen-funds action is the one we will discuss in a moment. Burning is not a transfer to a recovery account, and you should not expect an undo operation. Our final example permits owner burn and locks the administrator of that permission.
+
+SCENE 23 | Freeze and unfreeze
+SCREEN: Freeze, allow transfers to frozen identities, Unfreeze. Explain with a paused membership-account example. Restore both action and admin No One in final sample.
+CONTROLS: freeze, frozen-receive, unfreeze, freeze-admin
+VOICE: Freeze prevents a particular identity from sending this token. The additional checkbox controls whether a frozen identity may still receive transfers. For example, a project could suspend an account's outgoing activity while allowing incoming funds, or prohibit incoming transfers as well. Unfreeze is a separate permission that restores the relevant ability to move tokens. Do not assume the same identity automatically holds both powers. We will demonstrate the settings, then disable both freeze and unfreeze, including their administrators, in our final example.
+
+SCENE 24 | Destroying frozen funds
+SCREEN: Destroy Frozen Funds action and admin. Explicit whole-balance diagram. Restore both No One. Explain difference from All Allowed / Advanced Actions presets.
+CONTROLS: destroy-frozen-funds, whole-target-balance, irreversible-destruction
+VOICE: Destroy Frozen Funds is considerably stronger. An authorized controller can target another identity that is frozen and destroy that identity's entire balance of this token. It is not a field for choosing a small partial amount. Unfreezing later does not restore the destroyed tokens. Advanced Actions grants this power to the owner, which is why reading only the friendly preset name is not enough. For our final example, both selectors are No One. If a real project needs this authority, explain it plainly to holders before they acquire the token.
+
+SCENE 25 | Emergency actions and convention changes
+SCREEN: Emergency Action owner performer / No One admin; Conventions Change No One / No One. Briefly indicate decimals and localization protected by conventions rule.
+CONTROLS: emergency-action, pause-resume, conventions-change
+VOICE: Emergency Action allows token-wide pause and resume control. For example, a project might pause transfers while it investigates an operational problem. It is not the same as freezing one holder. Our final example keeps this authority with the owner and locks its administrator. Conventions Change concerns the token's naming and decimal conventions. Changing those conventions can affect how clients present amounts and names, so treat it carefully. We will disable both convention-change selectors for the published example. Being able to rename a thing is not a substitute for deciding what the thing should be.
+
+SCENE 26 | Marketplace and direct-pricing permissions
+SCREEN: Marketplace Trade Mode Change and Direct Purchase Pricing Change actor/admin. Keep owner performer / No One admin for final example; no direct sale submitted.
+CONTROLS: marketplace-mode-change, pricing-change, marketplace-vs-transfer
+VOICE: Marketplace Trade Mode Change controls who may change the token's marketplace trading mode. Direct Purchase Pricing Change controls who may set or change direct-purchase pricing. These permissions do not by themselves publish a sale or choose a price in this creator. For example, an owner-managed reward token might later offer direct purchases, while an immutable giveaway token might deliberately forbid them. Marketplace eligibility and normal holder-to-holder transfers are different settings. We will keep these two management actions with the owner, lock their administrators, and review the exact result in JSON before registration.
+
+SCENE 27 | Main control group changes
+SCREEN: Main Control Group Change dropdown and conditional identity/group inputs. Restore No One. Point toward Groups section next.
+CONTROLS: main-control-group-change, change-main-group-identity, change-main-group-position
+VOICE: Main Control Group Change determines who may replace the contract's main control group. No One disables that change; the other choices identify an owner, an identity, or a group authority. Where the form asks for a group position, use the contract's actual position, not an identity identifier or a made-up group name. This setting does not create a group. We will build a small example next, then leave the final example without a group and with main-control changes disabled.
+
+SCENE 28 | A two-person group
+SCREEN: Groups, Add New Group, Group 0, Add Member twice; two public identity IDs, each Power 1; Required Power 2; Main Control Group Position 0. No group action broadcast.
+CONTROLS: groups, add-group, group-position, add-member, member-id, member-power, required-power, main-control-group-position
+VOICE: A group combines member identities with voting power and a required threshold. For a two-person treasury, add two different member identities, each with power one, and set Required Power to two. Both members are then needed to reach that threshold. Group zero is its position inside this contract. Set Main Control Group Position to zero only if you want this group to be the main group. Defining it does not automatically hand it every token permission; each relevant action must explicitly reference the group.
+
+SCENE 29 | Editing and assigning a group
+SCREEN: Remove Member, Add Member, Remove This Group; action performer selector Group 0 / Main Group. Restore no group / blank main position before continuing.
+CONTROLS: remove-member, remove-group, assign-group-rule, main-group-reference, group-threshold-check
+VOICE: Add Member and Remove Member edit the proposed membership before registration. Remove This Group deletes the group from this draft. Keep the threshold reachable from the remaining members' combined power; a two-of-two threshold with only one power-one member is not a workable plan. To use a group, select Group zero or Main Group in the appropriate action rule, and decide who may later change that rule. After the demonstration, remove the practice group, clear its references and main position, and restore the final owner-based rules. This tour is not silently creating a second governance system.
+
+SCENE 30 | Distribution controls: what they do
+SCREEN: Distribution, enable/disable Perpetual, Pre-Programmed, Once-per-identity. Explain practice-preview status and final all-off policy.
+CONTROLS: perpetual-enable, scheduled-enable, once-enable, distribution-vs-initial-supply, claim
+VOICE: Distribution settings describe additional allocations beyond the supply created at registration. Perpetual Distribution uses recurring periods and an emission function. Pre-Programmed Distribution lists scheduled entries for specific identities. Once-per-identity Distribution, when supported by the network, lets each identity claim an allowance once. These are not three names for Initial Supply. We will configure illustrative recipes, then turn all three off for our final registration. Recurring and scheduled entitlements must be collected through the appropriate Claim action; a schedule is not an invisible wallet transfer running on your computer.
+
+SCENE 31 | Choose the period
+SCREEN: Enable perpetual; Time-Based, Epoch-Based, Block-Based selectors; interval numeric and unit dropdown. Small examples one day, one epoch, ten blocks.
+CONTROLS: time-interval, interval-unit, epoch-interval, block-interval
+VOICE: The interval determines when an emission period advances. Time-Based uses a duration and a unit; one day is a straightforward demonstration. Epoch-Based uses Platform epochs, not an assumed fixed number of clock hours. Block-Based uses block intervals, so ten blocks is a block-count example rather than a guaranteed wall-clock duration. The amount function is evaluated for those periods. Choose the period that matches your policy, not the one whose name sounds most official. We will use one-day periods for the ordinary worked examples.
+
+SCENE 32 | Recipients and emission units
+SCREEN: Recipient selector: owner, specific identity, evonodes. Only pair Evonodes with Epoch-Based. Base-units overlay for decimals=2.
+CONTROLS: distribution-owner, distribution-identity, evonodes, epoch-recipient-constraint, emission-units
+VOICE: The recipient can be the contract owner, a specific identity, or the eligible evonode recipient category offered here. Use the evonode recipient only with an Epoch-Based distribution; selecting it beside another interval type does not make that combination valid. Our examples use the owner or an explicitly named treasury identity. Now the crucial unit change: emission amounts are entered in base units. With two decimals, one thousand base units means ten tokens. The Supply fields already scaled full-token amounts, but these distribution parameters do not all use that amount-input widget.
+
+SCENE 33 | Read the emission examples
+SCREEN: Function selector and information button/formula view. Overlay k and base-unit conventions; no registration.
+CONTROLS: distribution-function, function-help, example-index, raw-amounts
+VOICE: The Function selector changes how much may be distributed in each period. Each recipe that follows uses small base-unit numbers, with two decimals, so you can compare the first outputs. Information buttons provide a formula or explanation, but parameter names still matter. A minimum, maximum, or trailing amount can change the result. A field called Start Period Offset is not a promise to wait that many days after registration. We will use the exact interpretation from this build's code and leave offsets empty in the simplest recipes.
+
+SCENE 34 | Period indices and the first five periods
+SCREEN: Period-index overlay k=0..5, Initial Supply shown separately. One-day interval, owner recipient, precision2. No live claim promise.
+CONTROLS: start-index, interval-boundaries, initial-vs-periodic
+VOICE: In these examples, k is the period index measured from the registration period. Leave the optional start field empty. The displayed row starts at k equals zero to explain the formula, but that value is not an extra initial payout. For a five-period interval, the calculation adds the values at one through five. Period boundaries depend on the network's indices, so this is not a stopwatch promising the first claim exactly twenty-four hours after Confirm. Initial Supply remains separate. The table illustrates calculations, not five transactions we have already performed.
+
+SCENE 35 | FixedAmount
+SCREEN: FixedAmount, Fixed Amount per Interval100. Overlay k0..5:100 each; five-period sum500=5.00tokens.
+CONTROLS: fixed-amount
+VOICE: FixedAmount is the simplest recipe. Enter one hundred in Fixed Amount per Interval. Each period contributes one hundred base units, which is one token at two decimals. Five eligible periods contribute five hundred base units, or five tokens, before any other applicable restrictions. A fixed allowance for a treasury is a straightforward use. Fixed refers to the recurring amount, not to the token's total supply or an automatic transfer.
+
+SCENE 36 | StepDecreasing
+SCREEN: StepDecreasing. StepCount2, numerator1, denominator2, startblank, initial100, minimum10, maxintervalcount3, trailing10. Overlay f0..8=100,100,50,50,25,25,12,12,10.
+CONTROLS: step-count, decrease-numerator, decrease-denominator, decreasing-start, decreasing-initial, decreasing-minimum, max-interval-count, trailing-amount
+VOICE: StepDecreasing reduces a reward in stages. Set Step Count to two, Decrease Numerator to one, and Decrease Denominator to two. That fraction is the part removed at each reduction: one half is removed, leaving one half. Leave Start Period Offset empty. Set Initial Token Emission Amount to one hundred, Minimum Emission Value to ten, Maximum Interval Count to three, and the trailing amount to ten. The formula gives one hundred, one hundred, fifty, fifty, twenty-five, twenty-five, twelve, twelve, then ten. The maximum interval count limits reduction eras, not individual days; the trailing branch starts after that era count is exceeded. Its value is a separate choice, not automatically raised by the minimum. This is useful for a reward programme that tapers toward a small continuing allowance.
+
+SCENE 37 | Stepwise
+SCREEN: Stepwise AddStep3times. StartStep/Amount0:10,3:5,5:0. Add/remove extra practice row. Overlay f0..6=10,10,10,5,5,0,0.
+CONTROLS: stepwise-start, stepwise-amount, add-step, remove-step, duplicate-step
+VOICE: Stepwise lets you write an explicit table. Add three steps: start zero with amount ten, start three with amount five, and start five with amount zero. The latest step whose start has been reached supplies the amount. That gives ten through index two, five at indices three and four, and zero from five onward. Zero stops future emissions; it does not erase existing balances. Add Step creates a row, and Remove deletes it from this draft. Use at least two different start indices. A duplicate index replaces an earlier value rather than creating a second payment. A campaign with distinct reward phases fits this function well.
+
+SCENE 38 | Linear
+SCREEN: Linear a2,d1,sblank,b10,min0,max20. Overlay formula2k+10 clipped20; f0..5=10,12,14,16,18,20.
+CONTROLS: linear-a, linear-d, linear-s, linear-b, linear-min, linear-max
+VOICE: Linear changes the reward by a constant amount each period. Set Slope Numerator a to two, Slope Divisor d to one, leave Start Step s empty, set Starting Amount b to ten, Min Emission to zero, and Max Emission to twenty. The results are ten, twelve, fourteen, sixteen, eighteen, and twenty, then the upper bound holds the amount at twenty. The divisor must be positive. Negative slopes can describe a decline, but keep the bounds intentional. This maximum limits the function's per-period result; it is a different setting from Max Supply, which limits the token's outstanding supply.
+
+SCENE 39 | Polynomial
+SCREEN: Polynomial a1,m2,n1,d1,sblank,o1,b0,min0,max100. Overlay (k+1)^2; f0..5=1,4,9,16,25,36.
+CONTROLS: polynomial-a, polynomial-m, polynomial-n, polynomial-d, polynomial-s, polynomial-o, polynomial-b, polynomial-min, polynomial-max
+VOICE: Polynomial supports a power curve. Enter a equals one, m equals two, n equals one, and d equals one. Leave s empty. Set the argument offset o to one, the added amount b to zero, minimum zero, and maximum one hundred. Here m divided by n is the exponent, so this recipe is k plus one, squared: one, four, nine, sixteen, twenty-five, thirty-six. The offset moves the input inside the power; b adds to the result. Fractional powers involve rounding, so do not assume every recipe produces exact squares. A positive exponent of one belongs in Linear. Quadratic growth is useful only when you deliberately want accelerating rewards and have bounded their cost.
+
+SCENE 40 | Exponential
+SCREEN: Exponential a10,m1,n1,d1,sblank,o0,b0,min0,max100. Overlay 10exp(k), floor/clamp; f0..5=10,27,73,100,100,100.
+CONTROLS: exponential-a, exponential-m, exponential-n, exponential-d, exponential-s, exponential-o, exponential-b, exponential-min, exponential-max
+VOICE: Exponential grows or declines much faster. Enter a ten, m one, n one, d one, leave s empty, set o zero, b zero, minimum zero, and maximum one hundred. This uses the natural exponential, with base e, not base two. Our results are ten, twenty-seven, seventy-three, then one hundred once the bound is reached. The m-over-n ratio scales the exponent; d divides the result, o shifts its input, and b adds an amount. A positive-growth recipe requires a maximum here. The fact that a curve looks elegant does not mean the treasury has volunteered to fund infinity.
+
+SCENE 41 | Logarithmic
+SCREEN: Logarithmic a10,d1,m1,n1,sblank,o1,b10,min0,max100. Overlay floor(10ln(k+1))+10; f0..5=10,16,20,23,26,27.
+CONTROLS: logarithmic-a, logarithmic-d, logarithmic-m, logarithmic-n, logarithmic-s, logarithmic-o, logarithmic-b, logarithmic-min, logarithmic-max
+VOICE: Logarithmic can grow while slowing down. Set a ten, d one, m one, n one, leave s empty, set o one, b ten, minimum zero, and maximum one hundred. The formula uses the natural logarithm of k plus one. The outputs are ten, sixteen, twenty, twenty-three, twenty-six, and twenty-seven. Here m and n scale the logarithm's input; despite the generic label in the form, they do not create a power exponent. The offset keeps that input positive at the start. The implementation rounds the logarithmic part down before adding b. This recipe suits a deliberately slowing reward curve.
+
+SCENE 42 | InvertedLogarithmic
+SCREEN: InvertedLogarithmic a10,d1,m1,n1,sblank,o1,b40,min0,max100. Overlay floor(10ln(1/(k+1)))+40; f0..5=40,33,29,26,23,22.
+CONTROLS: inverted-a, inverted-d, inverted-m, inverted-n, inverted-s, inverted-o, inverted-b, inverted-min, inverted-max
+VOICE: InvertedLogarithmic takes the logarithm of a reciprocal. Keep a ten, d one, m one, n one, s empty, and o one, but set b to forty, minimum zero, and maximum one hundred. The outputs are forty, thirty-three, twenty-nine, twenty-six, twenty-three, and twenty-two. Rounding a negative logarithmic part down explains thirty-three rather than thirty-four. The reciprocal reverses the input ratio: n is above m times the shifted period. This is not one divided by a logarithm. It can describe rewards that decline gradually, with zero as the eventual floor in this example. All eight functions are alternatives; selecting one does not run the other seven alongside it.
+
+SCENE 43 | Intervals, bounds and recipe checks
+SCREEN: TimeUnit selector all entries; oneDay finalpractice. Info popup staticillustration, close. Summary of blank optional vs zero. Reset perpetualFixed100forpermissiontour.
+CONTROLS: time-second, time-minute, time-hour, time-day, time-week, time-month, time-year, function-bounds, function-offsets, function-illustration
+VOICE: The time-unit menu includes seconds, minutes, hours, days, weeks, months, and years. These are fixed multipliers, not a calendar scheduler. Network validation still applies: this build requires supported time intervals to align to whole minutes, so a one-second interval is not a valid recipe. Month and year multipliers can also produce an interval that fails that alignment check; use the verified one-day example for this tour. Epoch intervals and block intervals have their own constraints. Empty optional bounds can mean no bound, while zero may have field-specific meaning. Use the parameter table supplied with this lesson. The information illustration is explanatory artwork, not a live plot of your entries. No selectable Random function is available in this build.
+
+SCENE 44 | Changing recurring emissions
+SCREEN: Distribution rules expand Perpetual Distribution Change and Perpetual Distribution Recipient Change; actor/admin +3switches. Owner/NoOne illustrated; final disabledall.
+CONTROLS: perpetual-change, perpetual-change-admin, perpetual-recipient-change, perpetual-recipient-admin, repeated-rule-flags
+VOICE: Recurring issuance has its own change rules. Perpetual Distribution Change controls who may later change the emission arrangement. Perpetual Distribution Recipient Change controls who may redirect its recipient. Both use the same performer, administrator, and three rule-change switches we already examined. For example, a treasury may permit its group to adjust a reward while permanently locking the recipient. Check both authorities: a reassuring formula is less reassuring if someone can redirect the proceeds. Our final token will disable recurring distribution and these practice rules.
+
+SCENE 45 | A scheduled allocation
+SCREEN: Perpetualoff. PreProgrammedon, Days1,Hours0,Minutes0,realpublicIdentity,Amount250. AddsecondrowDays2,Amount100; removesecond. No submit.
+CONTROLS: scheduled-days, scheduled-hours, scheduled-minutes, scheduled-recipient, scheduled-amount, add-entry, remove-entry, scheduled-timestamp
+VOICE: Pre-Programmed Distribution describes scheduled allocations. For example, set one day, zero hours, zero minutes, a recipient's public identity identifier, and amount two hundred fifty. At two decimals, that is two and a half tokens. Add New Distribution Entry adds another allocation; Remove deletes a draft entry. Use a distinct time or recipient for a separate entry, since identical timestamp-and-identity keys can overwrite an earlier amount. The form converts the relative time into a timestamp when it parses the configuration. It is not guaranteed to be exactly one day after registration finishes, and reopening a preview can recalculate it. The eligible recipient later uses Claim. We will remove the practice rows and turn this distribution off.
+
+SCENE 46 | Once per identity
+SCREEN: OncePerIdentity featuregateifavailable; Amount100; info; finaloff. If unavailable show disabled reason and labeled instructional callout instead of pretending enabled.
+CONTROLS: once-per-identity, once-amount, once-protocol-gate, identity-vs-person
+VOICE: Once Per Identity Distribution gives each identity one claim of a configured amount when the network supports this feature. In this build, it requires a known supported protocol version of at least fourteen. If the option is unavailable, we explain the gate instead of pretending it is enabled. A hundred base units would give one token at two decimals when an eligible identity claims. One identity is not one unique person: a user can control multiple identities. This is not a proof-of-personhood giveaway. Available supply can still limit claims. Our final sample leaves this feature off.
+
+SCENE 47 | Reset the emission practice
+SCREEN: Allthreeoff. No groups. DefaultdestinationOwner. Restore final actionrules using exactfinalconfigmanifest; overlay states tourvsfinal.
+CONTROLS: distribution-reset, final-state-check, final-no-groups, no-hidden-practice
+VOICE: The emission recipes were configuration examples, not eight registered tokens or completed claims. Now turn all three distribution systems off, remove the practice group and its references, and restore the final rules. Collapsing a section does not disable it. We want a transparent final CloudPoint token: one thousand initially, a permanent ten-thousand ceiling, two decimals, ordinary transfers enabled, and the owner able to mint within the cap or burn its own balance. Freeze, unfreeze, and destruction of frozen funds remain disabled. We will inspect every authority again in JSON before submitting.
+
+SCENE 48 | Document Schemas
+SCREEN: DocumentSchemas JSON note example from sidecar. Show parsegreen; malformedJSON localerror; restoreexample; ViewJSON constructiononly if successful. Clearfinal. No docscreated.
+CONTROLS: document-schemas, schema-map, schema-validation, schema-error, schema-clear
+VOICE: Document Schemas adds document types to the same data contract. It does not create documents, upload a token logo, or change token balances. The example on screen defines a note type with a required text field, a maximum length of one hundred twenty, and no extra properties. Paste the map of type names to schemas, not an entire contract or a single document. The green parse message only confirms this field's basic structure; it does not prove full Platform acceptance. A developer must validate the complete contract before publishing it. A malformed JSON example shows the local error. We will clear the field for our final token, which needs no document types.
+
+SCENE 49 | View JSON
+SCREEN: ViewJSON, scroll, resize, rawamounts and permissions; Close/X/Escoutside behavior briefly. Save approved final snapshot to artifacts, no editimport claim.
+CONTROLS: json-preview, json-scroll, json-resize, json-close, preview-id, json-unit-check, final-authority-check
+VOICE: View JSON builds a contract preview without registering it. Scroll or resize the window to inspect it; Close, the window cross, Escape, or an outside click dismisses it. This view does not offer a JSON import or a copy button. Check decimals two, base supply one hundred thousand, and maximum supply one million. Those are base units. Check the owner destination, transferability, history flags, disabled distributions, and each action and administrator. The preview's contract identifier is temporary because registration builds the contract again. Save the actual identifiers from the successful registration, not this preview.
+
+SCENE 50 | Final advanced authority review
+SCREEN: Finalmanifest table; spotlight each actualrule thenJSON. AlladministratorsNoOne; allruleflagsfalse. Mint/Burn/Emergency/Marketplace/PricingOwner; Freeze/Unfreeze/Destroy/Max/ConventionsNoOne. AllnestedchangesNoOne. MintdestinationOwner, per-minttrue.
+CONTROLS: final-config, final-mint-destination, final-per-mint-choice, final-rule-administrators, final-disabled-changes
+VOICE: Here is the complete authority decision for this example. The owner may mint within the hard cap, burn its own tokens, pause or resume the token, change marketplace eligibility, and manage direct-purchase pricing. Freeze, unfreeze, destroy frozen funds, maximum-supply changes, convention changes, and main-control-group changes are disabled. Every rule administrator is No One, and all three later-rule-change switches are off. The default mint destination is the owner; choosing a recipient for an individual mint is allowed, but the rules for changing those destination settings are locked. These are real owner powers, not decentralization by adjective. If they do not suit your project, change the draft before registration.
+
+SCENE 51 | Register CloudPoint
+SCREEN: RegisterTokenContract confirmation; actualvalues estimate; CanceloneillustratedreviewthenConfirmlastonce. Waitrealresult savedpublicreceipt. No fabricatedsuccess.
+CONTROLS: register-contract, final-confirmation, registration-fee, final-submit, final-result
+VOICE: Click Register Token Contract and compare the confirmation with our final plan. The compact dialog does not repeat every advanced permission, which is why we reviewed JSON first. The estimated fee is paid in this identity's Platform credits, with a Dash equivalent displayed. Extra keywords and distribution features can change that estimate. Cancel lets you correct the draft. When everything agrees, Confirm once and wait for the actual result. We will show the observed outcome and then verify the token in My Tokens. A submitted request and a confirmed registration are different states.
+
+SCENE 52 | Verify and recover
+SCREEN: Successonlyifobserved, MyTokens refresh, selectedtokenbalance1000, MoreInfo publicIDs. If failure actualmessage pause production and fix; do not narrate hypotheticalsuccessasdone.
+CONTROLS: result-verification, balance-refresh, final-token-id, final-contract-id, slow-network, error-recovery
+VOICE: After success, refresh My Tokens if needed, inspect CloudPoint, and save its full Token ID and Contract ID. Verify that the creator identity received the intended one thousand tokens. Configuration powers describe possible later actions; registration has not already performed a mint, a burn, a freeze, or a sale. If a request is slow or its result is unclear, check the existing token and contract state before trying again. Read an actual error and correct its cause. Do not create a second paid contract merely because the first response took longer than my attention span.
+
+SCENE 53 | Closing
+SCREEN: Official DashEvolution closing slide1920x1080, finalnarratorname, captions, AI narration notice. Credits officiallogo in linkedcompanionpage.
+CONTROLS: closing-slide, references, chapters
+VOICE: You have now seen a simple token, the advanced permission system, all eight emission functions, scheduled and once-per-identity allocations, groups, document schemas, and the final registration checks. Use the chapters and parameter tables when building your own draft. Decide who can act, who can change the rules, and which choices are permanent. I'm Czatosław Klałdowski. Thanks for watching, and may your token policies be more carefully tested than my confidence.

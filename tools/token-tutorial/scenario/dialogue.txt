@@ -1,0 +1,402 @@
+Creating tokens in Dash Evolution: a conversation
+
+[Scene 00] Welcome from Chad
+Chad G. P. Taylor: Hello, I'm Chad G. P. Taylor. We're going to create tokens in Dash Evolution, starting with a simple example and working through the advanced controls.
+Ewa Dashwood: I'm Ewa Dashwood. I'd like to understand the choices, especially the ones I can't change afterward. Can we build something small before tackling all the permissions?
+Chad G. P. Taylor: Absolutely. We'll register a small token, then examine a more detailed example. I'll explain the switches as we reach them. My confidence may arrive slightly ahead of the explanation.
+Ewa Dashwood: I'll keep an eye on both. Let's start with what the token creator actually does.
+
+[Scene 01] What this lesson covers
+Ewa Dashwood: Are we registering every example we try, or working toward one final configuration?
+Chad G. P. Taylor: Two registrations: a simple fixed-supply token first, then our final advanced token. Between them, we'll experiment with permissions, groups, distribution recipes, and document schemas without publishing those practice settings.
+Ewa Dashwood: So I can explore a panel without committing to its features?
+Chad G. P. Taylor: Yes. Opening a panel doesn't enable its features, and editing a draft doesn't publish it. We will distinguish each experiment from the final settings.
+
+[Scene 02] Prepare the right account
+Chad G. P. Taylor: First, check Testnet in Settings and wait for synchronization. We need a funded Platform identity with an available Authentication key at High or Critical security level.
+Ewa Dashwood: Does having its public identity identifier satisfy that requirement?
+Chad G. P. Taylor: No, we also need the ability to sign. If that key comes from a wallet, import and unlock the wallet beforehand, with recording stopped.
+Ewa Dashwood: What if I imported an identity with its own available private key?
+Chad G. P. Taylor: You don't need a separate wallet merely to register this contract. Wallet setup, identity funding, and secret handling happen before this lesson. We'll show the prepared public state, never recovery phrases or private keys.
+
+[Scene 03] Find the token workspace
+Ewa Dashwood: Tokens has several destinations. Which one creates something new?
+Chad G. P. Taylor: Token Creator, or the Create Token shortcut. My Tokens lists tokens you track; Search Tokens helps find existing contracts. Import Token takes an existing token identifier. It doesn't create a token.
+Ewa Dashwood: And Refresh updates the information already on screen?
+Chad G. P. Taylor: It fetches current information. We'll use it when checking results. The small information buttons explain nearby fields, and we can open those as reminders. We'll also check what the settings actually do, because a short tooltip cannot describe every consequence. For now, choose Token Creator and leave the advanced options closed.
+
+[Scene 04] A simple token: identity and name
+Chad G. P. Taylor: Select the funded identity inside this form. It will own the contract. With Show Advanced Options off, the app selects a suitable available signing key for us.
+Ewa Dashwood: If the list is empty, is Load Identity the next step?
+Chad G. P. Taylor: Yes, it opens the import flow; complete that separately before continuing. For our prepared identity, enter CloudCredit as one word and the description, A fixed-supply token for learning.
+Ewa Dashwood: Does the description enforce that policy?
+Chad G. P. Taylor: No. Permissions enforce it. Names and descriptions explain the token; they aren't unique identifiers or promises of value. We'll configure the actual supply next.
+
+[Scene 05] Initial and maximum supply
+Ewa Dashwood: Both fields say supply. What happens if I put one thousand in each?
+Chad G. P. Taylor: Initial Supply creates one thousand tokens when registration succeeds. Max Supply sets a ceiling of one thousand under the rules we choose. These inputs use displayed token amounts, including fractions you enter; they aren't Dash amounts or raw base units.
+Ewa Dashwood: Could I leave the maximum blank if I haven't decided?
+Chad G. P. Taylor: An empty maximum, or zero where this form treats it as no maximum, leaves no numerical ceiling. For CloudCredit, enter one thousand in both fields. We'll also remove future minting authority, so the ceiling and permissions agree.
+
+[Scene 06] Presets in plain English
+Chad G. P. Taylor: Presets fill in permission bundles. Most Restrictive disables additional actions and administrators. Only Emergency Action adds pause and resume.
+Ewa Dashwood: Does Minting and Burning grant exactly those two powers?
+Chad G. P. Taylor: More than its name suggests: owner emergency control, convention changes, destination-policy changes, marketplace mode changes, and direct-purchase pricing too. The comparison table shows the full bundle.
+Ewa Dashwood: What do Advanced Actions and All Allowed add?
+Chad G. P. Taylor: Advanced Actions grants broader owner powers, including freeze, destruction of frozen balances, and maximum-supply changes. All Allowed also makes later rule changes more permissive. We'll inspect performers, administrators, and switches in Advanced Options. For CloudCredit, choose Most Restrictive.
+
+[Scene 07] What fixed means here
+Ewa Dashwood: With Most Restrictive, could the owner turn minting back on after registration?
+Chad G. P. Taylor: Those extra powers and their administrators are disabled. They can't simply be enabled later. Together with initial and maximum supply of one thousand, that gives this example its fixed configuration.
+Ewa Dashwood: I only entered a singular name. Where does the plural come from?
+Chad G. P. Taylor: Simple mode supplies it from the singular. For deliberate plural forms, translations, or custom permissions, use Advanced Options before registering. We're choosing the simple version deliberately, rather than postponing a decision the contract may lock permanently.
+
+[Scene 08] Review and register the simple token
+Chad G. P. Taylor: Click Create Token and compare the name, both supplies, and estimated registration cost with our plan.
+Ewa Dashwood: The cost is displayed in Dash. Is that a separate wallet payment?
+Chad G. P. Taylor: It comes from this identity's Platform credits; Dash is the displayed equivalent. The estimate isn't an exact receipt. Also read the permanent marketplace warning: it concerns marketplace sales, not ordinary transfers between holders.
+Ewa Dashwood: If something differs, Cancel takes me back to editing?
+Chad G. P. Taylor: Yes. Otherwise, Confirm once and wait for the observed result. We won't treat a slow response as an invitation to submit another paid registration.
+
+[Scene 09] Verify the result and keep the identifiers
+Ewa Dashwood: Once success is confirmed, what should I check independently?
+Chad G. P. Taylor: Open My Tokens, select CloudCredit, and inspect the balance. For this example, the creator identity should receive one thousand tokens. More Info shows the full Token ID and Contract ID; save both after registration.
+Ewa Dashwood: Why not just save the name or an earlier preview?
+Chad G. P. Taylor: Different tokens can share a display name, and the preview doesn't substitute for final identifiers. We're checking the actual registered result. The success screen's Back button resets the creator form for another example. We'll use a fresh form for CloudPoint and its custom permissions.
+
+[Scene 10] Start the advanced example
+Chad G. P. Taylor: Open a fresh creator and enable Show Advanced Options. Check the selected identity again, then choose an eligible Authentication key at High or Critical security level.
+Ewa Dashwood: Are we exposing private-key material in this selector?
+Chad G. P. Taylor: No, it lists identity keys, not their private bytes. A disabled key or one with the wrong purpose won't do. Unlock the relevant wallet separately if needed.
+Ewa Dashwood: Will every setting we demonstrate remain in CloudPoint?
+Chad G. P. Taylor: No. We'll try some alternatives, then reset them to a specific final plan. Keep that distinction in mind throughout: a configuration experiment is useful precisely because we haven't published it yet.
+
+[Scene 11] Names, plural forms, and translations
+Ewa Dashwood: Here I can choose the plural explicitly. Let's use CloudPoint and CloudPoints.
+Chad G. P. Taylor: In the English row, yes. Add Language creates another localization. Choose Polish and enter Punkt and Punkty for a small example. Avoid duplicate entries for the same language.
+Ewa Dashwood: Does that give Polish users a different token or balance?
+Chad G. P. Taylor: No, those are names for the same token and supply. The remove control deletes an extra localization from the draft. We'll remove the practice translation and keep English for our final example.
+
+[Scene 12] Supply, keywords, and description
+Chad G. P. Taylor: Base Supply is the advanced form's initial supply. Set one thousand, then set Max Supply to ten thousand. We'll make that ceiling permanent through its permissions later.
+Ewa Dashwood: If Contract Keywords is blank, is the token unsearchable?
+Chad G. P. Taylor: No. This build still registers the singular name as a searchable keyword and counts it in the estimate. Try education as an additional keyword, then remove it for our final setup.
+Ewa Dashwood: So an extra keyword adds discovery information and another keyword charge?
+Chad G. P. Taylor: Exactly. Add a short, honest description too.
+
+[Scene 13] Decimal places and the base-unit conversion
+Ewa Dashwood: What does setting Max Decimals to two change?
+Chad G. P. Taylor: One token represents one hundred base units; the smallest unit is one hundredth of a token. Zero decimals would mean indivisible whole tokens.
+Ewa Dashwood: Should I divide our supply entries by a hundred now?
+Chad G. P. Taylor: No. After changing precision, recheck that the displayed fields still read one thousand and ten thousand. The form scales them for you. JSON will later show one hundred thousand and one million base units.
+Ewa Dashwood: So the different numbers describe the same amounts.
+Chad G. P. Taylor: Correct. We'll be especially careful when distribution fields ask for base units directly.
+
+[Scene 14] Pause and transferability
+Chad G. P. Taylor: Start as paused controls the initial transfer state. If we use it, someone needs Emergency Action authority to resume transfers later.
+Ewa Dashwood: Is unchecking Holders can send this token to other identities another kind of pause?
+Chad G. P. Taylor: No. Transferability can change in the draft, but it cannot change after registration. Creating a non-transferable token requires a known supported protocol version of at least fourteen.
+Ewa Dashwood: So I mustn't publish it expecting an unpause button to restore transfers.
+Chad G. P. Taylor: Exactly. If the option is unavailable, read its explanation rather than bypassing it. Our final token starts unpaused, with ordinary transfers enabled.
+
+[Scene 15] History ledgers and capitalization
+Ewa Dashwood: Does Keep history mean the app stores records only on this computer?
+Chad G. P. Taylor: It's a contract configuration choice, not a local privacy switch. Expand Advanced to see six ledgers: transfers, freezes and unfreezes, mints, burns, direct-pricing changes, and direct purchases.
+Ewa Dashwood: Can a payment token retain transfers while choosing other ledgers separately?
+Chad G. P. Taylor: Yes. A token with direct sales may also need pricing and purchase records. The parent checkbox changes all six; a mixed state means only some are selected. We'll keep all six enabled.
+Ewa Dashwood: And Name should be capitalized?
+Chad G. P. Taylor: Presentation guidance for clients. It doesn't change the identifier or add a localization.
+
+[Scene 16] Advanced presets are authority bundles
+Chad G. P. Taylor: Open Action Rules. The preset selector includes Custom, where we choose rules ourselves.
+Ewa Dashwood: If I select another preset after editing, will it preserve my individual changes?
+Chad G. P. Taylor: Don't assume so; it can overwrite them. Compare the full permission table first. Advanced Actions includes substantial owner authority, such as changing the supply ceiling and destroying frozen balances. All Allowed permits broader changes to the authorities themselves.
+Ewa Dashwood: So the useful comparison is who can do what, and who can change that arrangement.
+Chad G. P. Taylor: Precisely. We'll inspect both, then customize our final setup.
+
+[Scene 17] Who performs an action
+Ewa Dashwood: In Manual Mint, what does Authorized to perform action select?
+Chad G. P. Taylor: Its performer. No One disables the action. Contract Owner gives it to the identity owning the contract. Identity names a particular identity using its complete Base58 identifier.
+Ewa Dashwood: Does the validation check mark prove that I control the identity?
+Chad G. P. Taylor: Only that the identifier has the expected format. It doesn't prove possession of its keys. A treasury identity could be our minting authority, for example.
+Ewa Dashwood: I see No Groups Added Yet rather than a group choice.
+Chad G. P. Taylor: Those choices appear once a group exists. We'll return to Main Group and Group zero after creating one.
+
+[Scene 18] Who may change the rule
+Ewa Dashwood: If a group performs minting but the owner can change its rule, is the group really the final authority?
+Chad G. P. Taylor: The owner may still change that arrangement. That's why Authorized to change rules matters separately from the performer.
+Ewa Dashwood: What do these three switches constrain?
+Chad G. P. Taylor: The first allows changing the performer to No One, potentially disabling the action permanently. The second allows changing the administrator to No One, locking future rule updates. The third allows an administrator to change its own administrator assignment.
+Ewa Dashwood: They don't grant those actions to everybody?
+Chad G. P. Taylor: No. They constrain later authorized updates. Decide both selectors and all three switches before registration.
+
+[Scene 19] Make the supply ceiling genuinely permanent
+Ewa Dashwood: We entered a maximum of ten thousand. Which permission makes it a permanent ceiling?
+Chad G. P. Taylor: Max Supply Change. Set both its performer and administrator to No One, with later rule-change switches off. A numerical maximum alone isn't a promise that nobody can revise it.
+Ewa Dashwood: Can the owner still mint below that ceiling?
+Chad G. P. Taylor: Yes, if Manual Mint permits it. Those are separate decisions. A project needing an adjustable ceiling should instead choose and disclose who can change it. Our CloudPoint example deliberately fixes ten thousand.
+
+[Scene 20] Minting and the mint destination
+Chad G. P. Taylor: Set Manual Mint to Contract Owner, with its administrator No One. The owner could issue ten reward tokens after a completed task, within the supply ceiling.
+Ewa Dashwood: Where would those new tokens go?
+Chad G. P. Taylor: The destination settings choose the owner, a specified default identity, or a recipient chosen per mint when allowed. A treasury is a useful example of a specific default.
+Ewa Dashwood: Does that default affect only future mints?
+Chad G. P. Taylor: It can also affect the initial allocation. We'll leave the specific treasury option visible briefly to inspect its nested rule. Then we'll lock that rule and restore the owner as our final default.
+
+[Scene 21] Destination rule changes
+Ewa Dashwood: Why lock the destination rule before switching the default back to the owner?
+Chad G. P. Taylor: New Tokens Destination Identity Rules is visible only while the specific-identity option is enabled. Set its performer and administrator to No One, and all three switches off. Then restore the owner as default.
+Ewa Dashwood: Otherwise the hidden rule could retain permission to change that policy?
+Chad G. P. Taylor: Yes. Hiding a panel doesn't reset its values. Now leave per-mint recipient choice enabled, but set both selectors in Minting Allow Choosing Destination Rules to No One, with all three switches off.
+Ewa Dashwood: We allow choosing a recipient, while locking who can revise that capability.
+
+[Scene 22] Burning is not confiscation
+Ewa Dashwood: With Manual Burn, could the owner remove tokens from any holder?
+Chad G. P. Taylor: This burn action reduces the executing identity's own balance and current supply. An authorized identity holding one hundred tokens could burn ten, leaving ninety. If total supply was one thousand, it becomes nine hundred ninety.
+Ewa Dashwood: That's different from sending ten tokens somewhere recoverable.
+Chad G. P. Taylor: Exactly. Burning isn't a transfer to a recovery account, and you shouldn't expect an undo. Destroying another frozen identity's balance is a separate power, which we'll examine shortly. For CloudPoint, allow the owner to burn its own tokens and set the administrator to No One.
+
+[Scene 23] Freeze and unfreeze
+Chad G. P. Taylor: Freeze prevents a particular identity from sending this token. The accompanying checkbox decides whether that frozen identity can still receive transfers.
+Ewa Dashwood: So a project could suspend outgoing account activity while allowing incoming tokens, or block those too?
+Chad G. P. Taylor: Yes. Unfreeze is a separate permission that restores the relevant ability to move tokens. Don't assume whoever may freeze automatically has permission to unfreeze.
+Ewa Dashwood: Would our final token allow either intervention?
+Chad G. P. Taylor: No. We'll demonstrate both settings and the incoming-transfer checkbox, then set the freeze and unfreeze performers and administrators to No One.
+
+[Scene 24] Destroying frozen funds
+Ewa Dashwood: How much can Destroy Frozen Funds remove from a frozen identity?
+Chad G. P. Taylor: Its entire balance of this token. An authorized controller targets another frozen identity; there isn't a field here for selecting a small partial amount.
+Ewa Dashwood: And unfreezing afterward wouldn't restore those tokens?
+Chad G. P. Taylor: Correct. This is destruction, not a temporary hold. Advanced Actions grants the power to the owner, which is why we inspected the preset rather than relying on its friendly name.
+Ewa Dashwood: We don't need that authority for our example.
+Chad G. P. Taylor: Then both selectors stay No One. Any project that does need it should explain the consequence plainly to holders beforehand.
+
+[Scene 25] Emergency actions and convention changes
+Chad G. P. Taylor: Emergency Action is token-wide pause and resume. A project might use it while investigating an operational problem.
+Ewa Dashwood: Unlike Freeze, which singles out an identity?
+Chad G. P. Taylor: Exactly. Our final configuration keeps emergency authority with the owner and locks its administrator. Conventions Change is different again: it concerns naming and decimal conventions.
+Ewa Dashwood: Could a convention change affect how balances look in clients?
+Chad G. P. Taylor: It can affect presentation of names and amounts, so we should decide deliberately. We'll set both convention-change selectors to No One. Pausing transfers, freezing one holder, and changing presentation are three separate choices; none should be inferred from the others.
+
+[Scene 26] Marketplace and direct-pricing permissions
+Ewa Dashwood: Do these marketplace and pricing rules put CloudPoint on sale immediately?
+Chad G. P. Taylor: No. Marketplace Trade Mode Change controls who may change marketplace eligibility. Direct Purchase Pricing Change controls who may set or change direct-purchase pricing. Neither publishes a sale or chooses a price here.
+Ewa Dashwood: An owner-managed reward token could retain those powers for a later sale, while a giveaway token might forbid them?
+Chad G. P. Taylor: Yes. We'll retain both performers as Contract Owner and set their administrators to No One. Remember, marketplace eligibility is separate from normal transfers between holders.
+
+[Scene 27] Main control group changes
+Ewa Dashwood: Does Main Control Group Change create the group that will govern our token?
+Chad G. P. Taylor: No, it chooses who may replace the contract's main control group. No One disables that change. Other choices refer to owner, identity, or group authority.
+Ewa Dashwood: If a group-position field appears, do I put an identity identifier there?
+Chad G. P. Taylor: Use the group's actual position inside this contract, not an identity identifier or a group nickname. We'll create a small group next so those references become concrete. After the experiment, our final example will have no group, no main-group position, and main-control-group changes disabled.
+
+[Scene 28] A two-person group
+Chad G. P. Taylor: Click Add New Group and expand Group zero. Two member rows already exist: the owner and a second row to fill. We don't need Add Member yet.
+Ewa Dashwood: For a two-person treasury, we use two distinct public identity identifiers, power one each, and Required Power two?
+Chad G. P. Taylor: Exactly. Both members are needed to reach that threshold. Zero is this group's position within the contract. Set Main Control Group Position to zero if this is to be the main group.
+Ewa Dashwood: Does that assign all token permissions to it?
+Chad G. P. Taylor: No. Each relevant action must explicitly reference this group. We're only defining membership and the threshold here.
+
+[Scene 29] Editing and assigning a group
+Ewa Dashwood: Now can we try adding a third member without changing the two-person example?
+Chad G. P. Taylor: Add one temporary row, then Remove Member to remove it. Keep the threshold reachable: two required power with one power-one member wouldn't work.
+Ewa Dashwood: Where do we assign the group to an action?
+Chad G. P. Taylor: The performer selector now offers Group zero and Main Group. Choose the reference intentionally, then decide who can change that action rule.
+Ewa Dashwood: And our final cleanup?
+Chad G. P. Taylor: Restore the owner-based rules, clear group references and the main position, and use Remove This Group to delete the practice group. We'll verify that no hidden references remain.
+
+[Scene 30] Distribution controls: what they do
+Ewa Dashwood: Are these distribution settings different ways to deliver the Initial Supply?
+Chad G. P. Taylor: They describe additional allocations. Perpetual Distribution uses recurring periods and an emission function. Pre-Programmed Distribution lists scheduled allocations to specific identities. Once Per Identity offers one claim per identity when the network supports it.
+Ewa Dashwood: If a period passes, will tokens automatically appear in my wallet?
+Chad G. P. Taylor: Recurring and scheduled entitlements are collected through the appropriate Claim action. A schedule isn't an invisible transfer running on this computer. We'll inspect example recipes, not perform claims, and all three systems will be off in the final CloudPoint registration. Their change permissions will be locked too.
+
+[Scene 31] Choose the period
+Chad G. P. Taylor: Enable Perpetual Distribution. Time-Based measures a duration with a unit; one day will be our main example.
+Ewa Dashwood: Why might I choose Epoch-Based or Block-Based instead?
+Chad G. P. Taylor: Epoch-Based follows Platform epochs. Don't assume a fixed number of clock hours. Block-Based follows block counts: ten blocks is a count, not a guaranteed wall-clock duration.
+Ewa Dashwood: The function then provides an amount for each of those periods?
+Chad G. P. Taylor: Yes. Choose the period that matches the policy you intend. We'll show one day, one epoch, and ten blocks to distinguish the inputs, then return to one-day periods for the ordinary worked recipes.
+
+[Scene 32] Recipients and emission units
+Ewa Dashwood: Can recurring emissions go somewhere other than the owner?
+Chad G. P. Taylor: Choose Contract Owner, a Specific Identity, or the evonode recipient category. Evonodes requires Epoch-Based distribution; selecting it with another interval doesn't make that combination valid. Our ordinary examples use the owner or a named treasury.
+Ewa Dashwood: Are these amounts entered like Base Supply?
+Chad G. P. Taylor: Here's the important difference: emission amounts use base units. With two decimals, one thousand base units means ten tokens. The Supply fields scale displayed token amounts; these distribution parameters don't all use that widget. Keep the units overlay visible as we change functions. A familiar-looking number can represent a different amount here.
+
+[Scene 33] Read the emission examples
+Chad G. P. Taylor: The Function selector determines the amount for each period. Information buttons explain formulas, and our tables show small worked examples in base units.
+Ewa Dashwood: Can I treat minimum, maximum, and trailing amount as interchangeable safeguards?
+Chad G. P. Taylor: No, each changes a particular part of the calculation. We'll name every parameter we enter rather than copying a curve by appearance.
+Ewa Dashwood: And Start Period Offset means a delay after registration?
+Chad G. P. Taylor: Don't read it that way. It isn't simply a number of days to wait. We'll leave the optional start field empty in these recipes and use this build's precise interpretation.
+
+[Scene 34] Period indices and the first five periods
+Ewa Dashwood: Our table begins at k equals zero. Is that an extra allocation at registration?
+Chad G. P. Taylor: No. Initial Supply is separate. Here k measures the period index from the registration period, with the optional start field empty. We include zero to illustrate the formula.
+Ewa Dashwood: Which values contribute over five eligible periods?
+Chad G. P. Taylor: One through five, excluding the starting boundary and including the end. Network period indices determine those boundaries. Don't interpret the table as a stopwatch promising a first claim exactly twenty-four hours after Confirm.
+Ewa Dashwood: So these are calculation examples, not five payments we've already made.
+Chad G. P. Taylor: Exactly. No claim is being performed here.
+
+[Scene 35] FixedAmount
+Chad G. P. Taylor: Choose FixedAmount and enter one hundred in Fixed Amount per Interval. Each period contributes one hundred base units, or one token at two decimals.
+Ewa Dashwood: Five eligible periods would contribute five hundred base units: five tokens?
+Chad G. P. Taylor: Before other applicable restrictions, yes. A fixed recurring treasury allowance is a straightforward use for this recipe.
+Ewa Dashwood: Does fixed mean the total token supply is fixed too?
+Chad G. P. Taylor: Only the recurring amount is fixed here. Supply limits and permission rules are separate settings, and Claim still matters.
+
+[Scene 36] StepDecreasing
+Ewa Dashwood: How would we taper a reward toward a small continuing allowance?
+Chad G. P. Taylor: Choose StepDecreasing. Set Step Count two, Decrease Numerator one, and Denominator two. That fraction is removed each reduction, leaving half. Leave the start field empty; use initial amount one hundred, minimum ten, maximum interval count three, and trailing amount ten.
+Ewa Dashwood: What sequence should the table show?
+Chad G. P. Taylor: One hundred twice, fifty twice, twenty-five twice, twelve twice, then ten. Maximum Interval Count limits reduction eras, not individual days. The trailing branch begins after that era count is exceeded.
+Ewa Dashwood: Does the minimum automatically raise the trailing amount?
+Chad G. P. Taylor: No. The trailing value is a separate choice.
+
+[Scene 37] Stepwise
+Chad G. P. Taylor: Stepwise gives us an explicit table. Ensure there are exactly three rows: start zero, amount ten; start three, amount five; start five, amount zero.
+Ewa Dashwood: So the latest start we've reached supplies the amount?
+Chad G. P. Taylor: Yes: ten through index two, five at three and four, then zero. That stops future emissions; it doesn't erase existing balances.
+Ewa Dashwood: Can we add two rows with the same start to combine rewards?
+Chad G. P. Taylor: A duplicate index replaces an earlier value rather than adding another payment. Use at least two distinct starts. Add Step and Remove edit draft rows; we'll briefly add and remove an extra practice row. This suits a campaign with distinct reward phases.
+
+[Scene 38] Linear
+Ewa Dashwood: For a reward rising by the same amount each period, should I choose Linear?
+Chad G. P. Taylor: Yes. Set slope numerator a to two, divisor d to one, leave s empty, and set starting amount b to ten. Use minimum zero and maximum twenty.
+Ewa Dashwood: That gives ten, twelve, fourteen, sixteen, eighteen, twenty, then stays at twenty?
+Chad G. P. Taylor: Correct. The positive divisor controls the slope's scale. Negative slopes can model a decline, with deliberate bounds.
+Ewa Dashwood: Is maximum twenty our token supply limit?
+Chad G. P. Taylor: It's the function's per-period maximum. Max Supply is the separate ceiling on outstanding token supply.
+
+[Scene 39] Polynomial
+Chad G. P. Taylor: Polynomial supports a power curve. Enter a one, m two, n one, d one; leave s empty. Set argument offset o one, added amount b zero, minimum zero, maximum one hundred.
+Ewa Dashwood: With m divided by n as the exponent, that's k plus one, squared?
+Chad G. P. Taylor: Yes: one, four, nine, sixteen, twenty-five, thirty-six. The offset changes the input inside the power; b adds to the result.
+Ewa Dashwood: What if the exponent is fractional, or just one?
+Chad G. P. Taylor: Fractional powers involve rounding. A positive exponent of one belongs in Linear. Use accelerating rewards only deliberately, with their cost bounded; the curve doesn't make that decision for us.
+
+[Scene 40] Exponential
+Ewa Dashwood: Does Exponential use powers of two?
+Chad G. P. Taylor: The natural exponential uses base e. It can also describe decline. Set a ten, m one, n one, d one; leave s empty. Set o and b to zero, minimum zero, maximum one hundred.
+Ewa Dashwood: What does that produce?
+Chad G. P. Taylor: Ten, twenty-seven, seventy-three, then one hundred as the bound takes effect. The m-over-n ratio scales the exponent; d divides the result, o shifts its input, and b adds an amount. Positive growth requires a maximum here.
+Ewa Dashwood: Much faster growth than our linear example.
+Chad G. P. Taylor: Exactly. I enjoy an elegant curve, but my enthusiasm isn't an emission budget.
+
+[Scene 41] Logarithmic
+Ewa Dashwood: Can we keep increasing a reward while slowing its growth?
+Chad G. P. Taylor: Logarithmic can do that. Set a ten, d one, m one, n one; leave s empty. Use o one, b ten, minimum zero, maximum one hundred.
+Ewa Dashwood: What happens to the first outputs?
+Chad G. P. Taylor: Ten, sixteen, twenty, twenty-three, twenty-six, twenty-seven. This uses the natural logarithm of k plus one. The offset keeps the starting input positive.
+Ewa Dashwood: Do m and n form a power exponent here too?
+Chad G. P. Taylor: They scale the logarithm's input, despite the generic form label. The logarithmic part is rounded down before b is added.
+
+[Scene 42] InvertedLogarithmic
+Chad G. P. Taylor: InvertedLogarithmic takes the logarithm of a reciprocal. Keep a ten, d one, m one, n one, s empty, o one; change b to forty, with minimum zero and maximum one hundred.
+Ewa Dashwood: What values should we see?
+Chad G. P. Taylor: Forty, thirty-three, twenty-nine, twenty-six, twenty-three, twenty-two. Rounding the negative logarithmic part down gives thirty-three rather than thirty-four.
+Ewa Dashwood: Is the formula one divided by a logarithm?
+Chad G. P. Taylor: No. The reciprocal is inside the logarithm: n above m times the shifted period. This example declines toward a zero floor. All eight functions are alternatives; selecting one doesn't run the others alongside it.
+
+[Scene 43] Intervals, bounds and recipe checks
+Ewa Dashwood: Which time units are actually available?
+Chad G. P. Taylor: Seconds, minutes, hours, days, weeks, and years. They are fixed multipliers, not a calendar scheduler. There's no Month option in this build.
+Ewa Dashwood: Does every selectable interval pass network validation?
+Chad G. P. Taylor: No. Supported time intervals must align to whole minutes; one second fails. The year multiplier also makes one year fail that alignment. We'll use the verified one-day example. Epoch and block intervals have their own constraints.
+Ewa Dashwood: And the help illustration follows my current parameters?
+Chad G. P. Taylor: It's static explanatory artwork. An empty optional bound can mean no bound; zero has field-specific meaning. Consult the parameter table for these and offsets. Random isn't a selectable function here.
+
+[Scene 44] Changing recurring emissions
+Ewa Dashwood: Could we allow changes to the emission formula while separately locking its recipient?
+Chad G. P. Taylor: This creator offers one Perpetual Distribution Rules section for changes to the recurring configuration, including its recipient. There isn't a separate recipient-change rule. Whoever may change that configuration can potentially affect both.
+Ewa Dashwood: So we should review the performer, administrator, and three switches as a single policy.
+Chad G. P. Taylor: Yes. For our final token, set both selectors to No One and all three switches off while perpetual distribution is still enabled. Then turn it off.
+Ewa Dashwood: Lock first, hide second, just like the default mint destination rule.
+Chad G. P. Taylor: Exactly. The hidden settings still matter.
+
+[Scene 45] A scheduled allocation
+Chad G. P. Taylor: With perpetual distribution off, enable Pre-Programmed Distribution. Enter one day, zero hours, zero minutes, a public recipient identity, and amount two hundred fifty: two and a half tokens at two decimals.
+Ewa Dashwood: Can I add another allocation for two days and one hundred base units?
+Chad G. P. Taylor: Use Add New Distribution Entry, then Remove it after the example. Distinct time or recipient matters; identical timestamp-and-identity keys can overwrite an earlier amount.
+Ewa Dashwood: Does one day mean exactly a day after registration completes?
+Chad G. P. Taylor: The timestamp is calculated when the form parses, and reopening preview can recalculate it. The recipient later uses Claim. Remove practice entries and disable this feature afterward.
+
+[Scene 46] Once per identity
+Ewa Dashwood: Would Once Per Identity Distribution make a giveaway limited to one claim per person?
+Chad G. P. Taylor: Per identity, not per person. A user can control several identities. This feature isn't proof of personhood.
+Ewa Dashwood: When can we configure it?
+Chad G. P. Taylor: This build requires a known supported protocol version of at least fourteen. If unavailable, we'll show the disabled explanation and an instructional callout rather than pretend it's enabled. Amount one hundred means one token at two decimals when an eligible identity claims.
+Ewa Dashwood: Is that claim guaranteed regardless of supply?
+Chad G. P. Taylor: Available supply can still limit claims. We'll leave the feature off for our final registration.
+
+[Scene 47] Reset the emission practice
+Ewa Dashwood: Before moving on, how do we distinguish our experiments from the token we'll actually publish?
+Chad G. P. Taylor: Turn all three distribution systems off, keep their change rules locked, remove the practice group and its references, and restore the final owner-based rules. Collapsing a section isn't disabling it.
+Ewa Dashwood: CloudPoint should have one thousand initially, a permanent ten-thousand ceiling, two decimals, and ordinary transfers enabled?
+Chad G. P. Taylor: Yes. The owner may mint within the cap and burn its own balance. Freeze, unfreeze, and destruction of frozen funds stay disabled. Those eight emission recipes were examples, not eight registered tokens or completed claims. We'll inspect every authority again in JSON.
+
+[Scene 48] Document Schemas
+Ewa Dashwood: Would Document Schemas create documents automatically or let me upload a token logo?
+Chad G. P. Taylor: Neither. It adds document types to the same data contract, without creating documents or changing balances. Our example defines a note type with required text, maximum length one hundred twenty, and no extra properties.
+Ewa Dashwood: What do I paste: a complete contract or a document?
+Chad G. P. Taylor: A map of type names to schemas. The green parse message confirms basic field structure, not full Platform acceptance. We'll show a malformed JSON error, restore the example, and inspect construction only if it succeeds. Developers must validate the full contract. Clear this field for our final token.
+
+[Scene 49] View JSON
+Chad G. P. Taylor: View JSON builds a contract preview without registering it. Scroll or resize the window; Close, the cross, Escape, or an outside click dismisses it.
+Ewa Dashwood: Can I edit it and import those changes here?
+Chad G. P. Taylor: This view has no JSON import or copy button. Check that decimals is two. Base supply should be one hundred thousand and maximum supply one million, both expressed in base units.
+Ewa Dashwood: Then check recipient, transferability, histories, distributions, and every performer and administrator?
+Chad G. P. Taylor: Exactly, including hidden rules. Save the approved configuration for review, but not its identifier as the final Contract ID. Registration rebuilds the contract, so the preview identifier is temporary.
+
+[Scene 50] Final advanced authority review
+Ewa Dashwood: Let's state the final permissions together before we sign anything.
+Chad G. P. Taylor: Owner: mint within the hard cap, burn its own tokens, pause or resume, manage marketplace eligibility, and manage direct-purchase pricing. No One: freeze, unfreeze, destroy frozen funds, change maximum supply or conventions, and change the main control group.
+Ewa Dashwood: Every rule administrator No One, and every later-rule-change switch off, including nested rules?
+Chad G. P. Taylor: Yes: destination-policy changes and perpetual-distribution changes are locked too. All distributions are off and no groups remain. Default mint recipient is the owner; individual mint recipients may still be chosen. These are explicit owner powers. Change any unsuitable choice before registration.
+
+[Scene 51] Register CloudPoint
+Chad G. P. Taylor: Click Register Token Contract and compare the confirmation with our final plan. The compact dialog doesn't repeat every advanced permission; that's why we inspected JSON.
+Ewa Dashwood: The estimated fee still comes from the identity's Platform credits, with a Dash equivalent displayed?
+Chad G. P. Taylor: Yes. Keywords and distribution features can affect that estimate. It isn't the price of CloudPoint or an exact receipt. If something differs, Cancel, correct the draft, and review it again.
+Ewa Dashwood: Then Confirm once and wait for the actual result.
+Chad G. P. Taylor: Exactly. We will show the observed outcome and verify the token in My Tokens. Submission and confirmed registration are different states.
+
+[Scene 52] Verify and recover
+Ewa Dashwood: After confirmed success, I'll refresh My Tokens if needed and inspect CloudPoint. We expect one thousand tokens in the creator identity because the default recipient is the owner.
+Chad G. P. Taylor: Right. Save the full Token ID and Contract ID from the result. Registration hasn't already performed a later mint, burn, freeze, or sale merely because we configured permissions for some of those actions.
+Ewa Dashwood: If the request is slow or the result unclear, should I check existing token and contract state before retrying?
+Chad G. P. Taylor: Yes. Read the actual error and correct its cause. Don't create another paid contract just because the response outlasted my attention span.
+
+[Scene 53] Closing
+Ewa Dashwood: I started by asking which choices become permanent. Now I'd check who can act, who can change the rules, and whether the final configuration matches the policy we described.
+Chad G. P. Taylor: That's the useful habit. We've covered simple creation, advanced permissions, groups, all eight emission functions, scheduled and once-per-identity allocations, document schemas, and registration checks.
+Ewa Dashwood: And the chapters and parameter tables let us revisit a recipe before using it.
+Chad G. P. Taylor: Exactly. I'm Chad G. P. Taylor. Thanks for joining us. May your token policies be more carefully tested than my confidence, which remains the least thoroughly audited system in this tutorial.
+
+Standalone episode bridges (excluded from combined):
+
+[Part 1 intro]
+Chad G. P. Taylor: Start here: prepare a testnet identity, configure a simple token, and verify its registration.
+[Part 1 outro]
+Ewa Dashwood: Keep the final identifiers. Next, we will examine advanced settings and who may change the rules.
+[Part 2 intro]
+Ewa Dashwood: This part begins a fresh CloudPoint draft: names, precision, transferability, histories, and the structure of permissions.
+[Part 2 outro]
+Chad G. P. Taylor: Keep this as a draft. Next comes each action, its consequences, and a small group example.
+[Part 3 intro]
+Chad G. P. Taylor: Continue the CloudPoint draft with supply limits, mint destinations, intervention powers, and group authority.
+[Part 3 outro]
+Ewa Dashwood: Our practice group is removed. Next, we will compare recurring distribution recipes without publishing them.
+[Part 4 intro]
+Ewa Dashwood: This part compares all eight recurring emission functions. Keep the base-unit tables beside the draft.
+[Part 4 outro]
+Chad G. P. Taylor: Recurring rules are locked and the feature is off. Next: scheduled allocations, document schemas, and JSON.
+[Part 5 intro]
+Chad G. P. Taylor: We continue with scheduled and once-per-identity allocations, then inspect document schemas and the contract preview.
+[Part 5 outro]
+Ewa Dashwood: The practice features are cleared. The final part reviews authority, registers CloudPoint, and checks the result.
+[Part 6 intro]
+Ewa Dashwood: Use this final part with the reviewed CloudPoint draft. We will verify permissions before confirming registration.
+[Part 6 outro]
+Chad G. P. Taylor: Keep your confirmed identifiers and reviewed configuration. Revisit the relevant chapter before changing your next draft.

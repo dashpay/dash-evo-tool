@@ -341,8 +341,12 @@ impl BackendTask {
     // Known limit: two overlapping paid tasks for the same payer can store
     // the older read last; there is no ordering guard until that migration.
     pub(crate) fn fee_payer(&self) -> Option<Identifier> {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
         let payer = match self {
             Self::TokenTask(task) => match task.as_ref() {
+                TokenTask::SubmitTokenCreation { prepared } => {
+                    return Some(prepared.contract.owner_id());
+                }
                 TokenTask::RegisterTokenContract { identity, .. }
                 | TokenTask::PurchaseTokens { identity, .. }
                 | TokenTask::SetDirectPurchasePrice { identity, .. } => identity,
@@ -363,7 +367,9 @@ impl BackendTask {
                     identity_token_info,
                     ..
                 } => &identity_token_info.identity,
-                TokenTask::QueryMyTokenBalances
+                TokenTask::PrepareTokenCreation { .. }
+                | TokenTask::CheckTokenCreation
+                | TokenTask::QueryMyTokenBalances
                 | TokenTask::QueryIdentityTokenBalance(_)
                 | TokenTask::StopTrackingTokenBalance(_)
                 | TokenTask::ClearOncePerIdentityClaimHint(_)
@@ -1347,6 +1353,8 @@ pub enum BackendTaskSuccessResult {
     FetchedNonce,
     RegisteredContract(FeeResult),
     RegisteredTokenContract,
+    TokenCreationPrepared(Box<crate::model::token_creator::registration::PreparedRegistration>),
+    TokenCreationOutcome(Box<crate::model::token_creator::registration::RegistrationOutcome>),
     SavedContract,
     ContractNotFound,
     TokenNotFound,

@@ -1,10 +1,12 @@
 //! Canonical token drafts and pure validation shared by the form and backend.
 
 pub mod amount;
+pub mod contract;
 pub mod distributions;
 mod document_json;
 pub mod groups;
 mod parse;
+pub mod registration;
 pub mod rules;
 
 use amount::{AmountError, TokenAmountInput};
@@ -154,12 +156,16 @@ pub enum DraftIssue {
     Language,
     #[error("Use names with 3 to 25 characters, without spaces or control characters.")]
     NameFormat,
-    #[error("Leave the description empty or enter 3 to 100 characters.")]
+    #[error("Leave the description empty or enter 3 to 100 UTF-8 bytes.")]
     Description,
     #[error(transparent)]
     Amount(#[from] AmountError),
     #[error("Choose a maximum supply at least as large as the initial supply.")]
     Supply,
+    #[error(
+        "Choose a default recipient, allow a recipient choice, or remove both authorities that can change recipient choice."
+    )]
+    MintDestination,
     #[error("Enter a valid Base58 identity ID.")]
     Identity,
     #[error("Choose an existing group, and select a main group before using its alias.")]
@@ -446,7 +452,7 @@ impl TokenDraft {
     pub fn example_proposal(&self, limited_owner: bool) -> Self {
         let example = Self::example(limited_owner);
         let mut proposal = self.clone();
-        proposal.decimals = example.decimals;
+        let _ = proposal.change_precision(example.decimals);
         proposal.initial = example.initial;
         proposal.maximum = example.maximum;
         proposal.no_maximum = false;
@@ -464,37 +470,57 @@ impl TokenDraft {
         proposal
     }
 
-    /// Changes precision atomically, preserving every displayed token amount.
-    pub fn change_precision(&mut self, decimals: u8) -> Result<(), AmountError> {
+    /// Changes precision without rounding or discarding invalid or inactive inputs.
+    /// An active invalid amount is reported after applying the precision so it can be edited.
+    pub fn change_precision(&mut self, decimals: u8) -> Result<(), DraftError> {
         if decimals > 16 {
-            return Err(AmountError::Decimals);
+            return Err(DraftError::new(
+                Section::Basics,
+                "Decimal precision",
+                AmountError::Decimals.into(),
+            ));
         }
         let old = self.decimals;
-        let mut next = self.clone();
-        for amount in [&mut next.initial, &mut next.maximum, &mut next.once_amount] {
-            amount.change_precision(old, decimals)?;
-        }
-        for row in &mut next.scheduled {
-            row.amount.change_precision(old, decimals)?;
-        }
-        for function in &mut next.recurring.functions {
-            for (parameter, text) in &mut function.values {
-                if parameter.is_amount() {
-                    let mut amount = TokenAmountInput {
-                        text: text.clone(),
-                        base_units: function.amounts_in_base_units,
-                    };
-                    amount.change_precision(old, decimals)?;
-                    *text = amount.text;
+        let mut error = None;
+        let mut retarget = |amount: &mut TokenAmountInput, active: bool, section, field| {
+            if let Err(source) = amount.change_precision(old, decimals) {
+                if active && error.is_none() {
+                    error = Some(DraftError::new(section, field, source.into()));
                 }
             }
+        };
+        retarget(&mut self.initial, true, Section::Supply, "Initial supply");
+        retarget(
+            &mut self.maximum,
+            !self.no_maximum,
+            Section::Supply,
+            "Maximum supply",
+        );
+        retarget(
+            &mut self.once_amount,
+            self.once_enabled,
+            Section::Distribution,
+            "Amount per identity",
+        );
+        for row in &mut self.scheduled {
+            retarget(
+                &mut row.amount,
+                self.scheduled_enabled,
+                Section::Distribution,
+                "Scheduled amount",
+            );
+        }
+        for function in &mut self.recurring.functions {
+            let active = self.recurring.enabled && function.kind == self.recurring.function;
+            for (parameter, amount) in &mut function.amounts {
+                retarget(amount, active, Section::Distribution, parameter.label());
+            }
             for (_, amount) in &mut function.steps {
-                amount.change_precision(old, decimals)?;
+                retarget(amount, active, Section::Distribution, "Phase amount");
             }
         }
-        next.decimals = decimals;
-        *self = next;
-        Ok(())
+        self.decimals = decimals;
+        error.map_or(Ok(()), Err)
     }
 
     /// A legacy template replaces permissions only; other configuration stays intact.
@@ -536,5 +562,65 @@ impl TokenDraft {
         let length = self.groups.len();
         self.groups.retain(|group| group.position != position);
         length != self.groups.len()
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    #[test]
+    fn unused_examples_do_not_block_whole_token_precision() {
+        let mut draft = TokenDraft::default();
+        let latent = draft.recurring.clone();
+        draft.change_precision(0).unwrap();
+        assert_eq!(draft.decimals, 0);
+        assert_eq!(draft.recurring, latent);
+        draft.change_precision(1).unwrap();
+        assert_eq!(draft.decimals, 1);
+    }
+
+    #[test]
+    fn active_fraction_survives_precision_change_as_an_editable_error() {
+        let mut draft = TokenDraft::example(false);
+        draft.initial = TokenAmountInput::tokens("1.23");
+        assert!(draft.change_precision(0).is_err());
+        assert_eq!(draft.decimals, 0);
+        assert_eq!(draft.initial.text, "1.23");
+        assert!(draft.initial.parse(draft.decimals).is_err());
+    }
+    #[test]
+    fn checkpoint_review_example_preserves_latent_raw_allocation_value() {
+        let mut draft = TokenDraft {
+            decimals: 3,
+            ..Default::default()
+        };
+        draft.scheduled.push(ScheduleDraft {
+            id: 0,
+            timestamp: Some(100_000),
+            recipient: Recipient::Owner,
+            amount: TokenAmountInput {
+                text: "1000".into(),
+                base_units: true,
+            },
+        });
+        let proposal = draft.example_proposal(false);
+        assert_eq!(
+            proposal.scheduled[0]
+                .amount
+                .parse(proposal.decimals)
+                .unwrap(),
+            100
+        );
+        assert_eq!(
+            amount::format_amount(
+                proposal.scheduled[0]
+                    .amount
+                    .parse(proposal.decimals)
+                    .unwrap(),
+                proposal.decimals
+            ),
+            "1"
+        );
     }
 }

@@ -44,12 +44,12 @@ pub(super) fn show(
                 let function = &mut recurring.functions[recurring.function as usize];
                 if ui.button("Load this function's worked example").clicked() { *function = FunctionDraft::example(recurring.function); }
                 ui.small("Worked examples use 2 decimal places. At other precision, the displayed amounts stay the same and the raw coefficients have different effects.");
-                let mut raw = function.amounts_in_base_units;
-                if ui.checkbox(&mut raw,"Enter function amounts in base units").changed() {
-                    if let Err(error) = function.change_units(raw,state.draft.decimals) { state.error = Some(error); }
-                }
                 for parameter in recurring.function.parameters() {
-                    text(ui,parameter.label(),parameter.help_key(),function.values.entry(*parameter).or_default(),&mut state.help);
+                    if parameter.is_amount() {
+                        amount(ui, parameter.label(), parameter.help_key(), function.amounts.entry(*parameter).or_default(), state.draft.decimals, &mut state.help);
+                    } else {
+                        text(ui,parameter.label(),parameter.help_key(),function.values.entry(*parameter).or_default(),&mut state.help);
+                    }
                     if parameter.optional() { ui.small("Blank means absent; zero is an explicit value."); }
                 }
                 if recurring.function == FunctionKind::Stepwise {

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
 use dash_sdk::dpp::version::PlatformVersion;
 use super::{DraftError, DraftIssue, Section};
-use super::amount::{TokenAmountInput, parse_amount};
+use super::amount::{TokenAmountInput};
 
 /// The eight supported recurring functions. Random is not accepted by Platform.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -166,7 +166,7 @@ pub struct FunctionDraft {
     pub kind: FunctionKind,
     pub values: BTreeMap<Parameter, String>,
     pub steps: Vec<(String, TokenAmountInput)>,
-    pub amounts_in_base_units: bool,
+    pub amounts: BTreeMap<Parameter, TokenAmountInput>,
 }
 
 impl FunctionDraft {
@@ -243,9 +243,14 @@ impl FunctionDraft {
             kind,
             values: entries
                 .iter()
+                .filter(|(key, _)| !key.is_amount())
                 .map(|(key, value)| (*key, (*value).into()))
                 .collect(),
-            amounts_in_base_units: false,
+            amounts: entries
+                .iter()
+                .filter(|(key, _)| key.is_amount())
+                .map(|(key, value)| (*key, TokenAmountInput::tokens(*value)))
+                .collect(),
             steps: if kind == FunctionKind::Stepwise {
                 vec![
                     ("0".into(), TokenAmountInput::tokens("0.10")),
@@ -285,18 +290,19 @@ impl FunctionDraft {
         }
     }
     fn amount(&self, key: Parameter, decimals: u8) -> Result<u64, DraftError> {
-        parse_amount(
-            self.text(key),
-            if self.amounts_in_base_units {
-                0
-            } else {
-                decimals
-            },
-        )
-        .map_err(|source| self.error(key, DraftIssue::Amount(source)))
+        self.amounts
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+            .parse(decimals)
+            .map_err(|source| self.error(key, DraftIssue::Amount(source)))
     }
     fn optional_amount(&self, key: Parameter, decimals: u8) -> Result<Option<u64>, DraftError> {
-        if self.text(key).is_empty() {
+        if self
+            .amounts
+            .get(&key)
+            .is_none_or(|amount| amount.text.trim().is_empty())
+        {
             Ok(None)
         } else {
             self.amount(key, decimals).map(Some)
@@ -420,41 +426,6 @@ impl FunctionDraft {
         }
         Ok(function)
     }
-
-    /// Changes all amount representations atomically; coefficients never change units.
-    pub fn change_units(&mut self, base_units: bool, decimals: u8) -> Result<(), DraftError> {
-        if self.amounts_in_base_units == base_units {
-            return Ok(());
-        }
-        let mut converted = self.clone();
-        for key in self
-            .kind
-            .parameters()
-            .iter()
-            .copied()
-            .filter(|key| key.is_amount())
-        {
-            if key.optional() && self.text(key).is_empty() {
-                continue;
-            }
-            let mut amount = TokenAmountInput {
-                text: self.text(key).into(),
-                base_units: self.amounts_in_base_units,
-            };
-            amount
-                .change_units(base_units, decimals)
-                .map_err(|source| self.error(key, DraftIssue::Amount(source)))?;
-            converted.values.insert(key, amount.text);
-        }
-        for (_, amount) in &mut converted.steps {
-            amount
-                .change_units(base_units, decimals)
-                .map_err(|source| self.error(Parameter::Amount, DraftIssue::Amount(source)))?;
-        }
-        converted.amounts_in_base_units = base_units;
-        *self = converted;
-        Ok(())
-    }
 }
 
 /// An illustrative evaluated period, excluding index zero from cumulative allocation.
@@ -554,7 +525,9 @@ mod tests {
     #[test]
     fn negative_linear_added_amount_is_not_supported_by_pinned_protocol() {
         let mut draft = FunctionDraft::example(FunctionKind::Linear);
-        draft.values.insert(Parameter::B, "-0.10".into());
+        draft
+            .amounts
+            .insert(Parameter::B, TokenAmountInput::tokens("-0.10"));
         assert!(draft.parse(2, 0, PlatformVersion::latest()).is_err());
     }
 }

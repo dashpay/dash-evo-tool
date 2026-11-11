@@ -128,7 +128,7 @@ impl TokenDraft {
         }
         let token_names = self.parse_names(version)?;
         let description = self.description.trim();
-        if !description.is_empty() && !(3..=100).contains(&description.chars().count()) {
+        if !description.is_empty() && !(3..=100).contains(&description.len()) {
             return Err(DraftError::new(
                 Section::Basics,
                 "Description",
@@ -139,6 +139,13 @@ impl TokenDraft {
             .initial
             .parse(self.decimals)
             .map_err(|source| DraftError::new(Section::Supply, "Initial supply", source.into()))?;
+        if base_supply > i64::MAX as u64 {
+            return Err(DraftError::new(
+                Section::Supply,
+                "Initial supply",
+                DraftIssue::Allocation,
+            ));
+        }
         let max_supply = if self.no_maximum {
             None
         } else {
@@ -211,6 +218,18 @@ impl TokenDraft {
                 DraftError::new(Section::Supply, "Default mint recipient", issue)
             })?),
         };
+        let override_rule = self.permissions.get(RuleKind::Override);
+        if destination.is_none()
+            && !self.permissions.allow_mint_recipient_choice
+            && (override_rule.performer != ActorDraft::NoOne
+                || override_rule.administrator != ActorDraft::NoOne)
+        {
+            return Err(DraftError::new(
+                Section::Supply,
+                "Default mint recipient",
+                DraftIssue::MintDestination,
+            ));
+        }
         let perpetual_distribution = self.recurring.parse(self.decimals, network, version)?;
         let pre_programmed_distribution = self.parse_schedule(owner, now_ms)?;
         let once_amount = if self.once_enabled {
@@ -370,7 +389,21 @@ impl TokenDraft {
             crate::model::token::validate_contract_keyword(text).map_err(|_| {
                 DraftError::new(Section::Documents, "Search keywords", DraftIssue::Keyword)
             })?;
+            if !(3..=50).contains(&text.len()) {
+                return Err(DraftError::new(
+                    Section::Documents,
+                    "Search keywords",
+                    DraftIssue::Keyword,
+                ));
+            }
             keywords.insert(text.to_owned());
+        }
+        if keywords.len() > 50 {
+            return Err(DraftError::new(
+                Section::Documents,
+                "Search keywords",
+                DraftIssue::Keyword,
+            ));
         }
         Ok(keywords.into_iter().collect())
     }
@@ -439,6 +472,15 @@ impl TokenDraft {
                 .is_some()
             {
                 return Err(error(DraftIssue::DuplicateSchedule));
+            }
+        }
+        for allocations in distributions.values() {
+            if allocations
+                .values()
+                .try_fold(0u64, |sum, amount| sum.checked_add(*amount))
+                .is_none_or(|sum| sum > i64::MAX as u64)
+            {
+                return Err(error(DraftIssue::Allocation));
             }
         }
         Ok(Some(TokenPreProgrammedDistribution::V0(
@@ -640,5 +682,51 @@ mod tests {
             parse(&draft).unwrap_err().issue,
             DraftIssue::DuplicateSchedule
         ));
+    }
+    #[test]
+    fn token_registration_protocol_limits_are_enforced_before_signing() {
+        let owner = Identifier::from([9; 32]);
+        let version = PlatformVersion::latest();
+        let mut draft = TokenDraft::example(false);
+        draft.initial = TokenAmountInput {
+            text: (i64::MAX as u64 + 1).to_string(),
+            base_units: true,
+        };
+        draft.no_maximum = true;
+        assert!(draft.parse(owner, Network::Testnet, version, 0).is_err());
+        let mut draft = TokenDraft::example(false);
+        draft.keywords = "é".repeat(30);
+        assert!(draft.parse(owner, Network::Testnet, version, 0).is_err());
+        draft.keywords = (0..51)
+            .map(|i| format!("key{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(draft.parse(owner, Network::Testnet, version, 0).is_err());
+        let mut draft = TokenDraft::example(false);
+        draft.scheduled_enabled = true;
+        draft.scheduled =
+            vec![
+                ScheduleDraft {
+                    id: 0,
+                    timestamp: Some(100_000),
+                    recipient: Recipient::Owner,
+                    amount: TokenAmountInput {
+                        text: i64::MAX.to_string(),
+                        base_units: true,
+                    },
+                },
+                ScheduleDraft {
+                    id: 1,
+                    timestamp: Some(100_000),
+                    recipient: Recipient::Identity(Identifier::from([8; 32]).to_string(
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                    )),
+                    amount: TokenAmountInput {
+                        text: "1".into(),
+                        base_units: true,
+                    },
+                },
+            ];
+        assert!(draft.parse(owner, Network::Testnet, version, 0).is_err());
     }
 }

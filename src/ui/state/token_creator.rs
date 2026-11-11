@@ -35,6 +35,17 @@ pub struct CreatorWorkspace {
     pub schedule_inputs: BTreeMap<u64, LocalScheduleInput>,
     pub next_schedule_id: u64,
     pub preview_reference: String,
+    pub pending: Option<crate::backend_task::BackendTaskContext>,
+    pub pending_draft: Option<TokenDraft>,
+    pub prepared: Option<crate::model::token_creator::registration::PreparedRegistration>,
+    pub reviewed_draft: Option<TokenDraft>,
+    pub recovery: Option<crate::model::token_creator::registration::RegistrationRecord>,
+    pub outcome: Option<crate::model::token_creator::registration::RegistrationOutcome>,
+    pub recovery_loaded: bool,
+    pub dismissed_receipt: Option<[u8; 32]>,
+    pub acknowledged: bool,
+    pub error_section: Option<Section>,
+    pub last_navigation: Option<(Section, u32)>,
 }
 
 impl CreatorWorkspace {
@@ -56,6 +67,7 @@ impl CreatorWorkspace {
         if let Some(proposal) = self.proposal.take() {
             self.undo = Some(std::mem::replace(&mut self.draft, proposal.draft));
             self.error = None;
+            self.restore_schedule_inputs();
         }
     }
 
@@ -64,7 +76,25 @@ impl CreatorWorkspace {
         if let Some(previous) = self.undo.take() {
             self.draft = previous;
             self.error = None;
+            self.restore_schedule_inputs();
         }
+    }
+    fn restore_schedule_inputs(&mut self) {
+        self.schedule_inputs = self
+            .draft
+            .scheduled
+            .iter()
+            .map(|row| {
+                let input = row
+                    .timestamp
+                    .and_then(|ms| i64::try_from(ms).ok())
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .map_or_else(LocalScheduleInput::new, |time| {
+                        LocalScheduleInput::new().with_time(time)
+                    });
+                (row.id, input)
+            })
+            .collect();
     }
 }
 
@@ -115,5 +145,34 @@ mod tests {
         assert!(!state.draft.recurring.enabled);
         state.undo_proposal();
         assert_eq!(state.draft, original);
+    }
+    #[test]
+    fn checkpoint_review_undo_restores_the_shown_schedule_instant() {
+        use crate::model::token_creator::{Recipient, ScheduleDraft, amount::TokenAmountInput};
+        use crate::ui::components::Component;
+        let first = 1_900_000_020_000;
+        let second = 1_900_086_420_000;
+        let mut state = CreatorWorkspace::default();
+        state.draft.scheduled_enabled = true;
+        state.draft.scheduled.push(ScheduleDraft {
+            id: 0,
+            timestamp: Some(first),
+            recipient: Recipient::Owner,
+            amount: TokenAmountInput::tokens("1"),
+        });
+        state.proposal = Some(Proposal {
+            title: "Fixed",
+            draft: state.draft.example_proposal(false),
+        });
+        state.apply_proposal();
+        state.draft.scheduled[0].timestamp = Some(second);
+        state.schedule_inputs.insert(
+            0,
+            LocalScheduleInput::new()
+                .with_time(chrono::DateTime::from_timestamp_millis(second as i64).unwrap()),
+        );
+        state.undo_proposal();
+        assert_eq!(state.draft.scheduled[0].timestamp, Some(first));
+        assert_eq!(state.schedule_inputs[&0].current_value(), Some(first));
     }
 }

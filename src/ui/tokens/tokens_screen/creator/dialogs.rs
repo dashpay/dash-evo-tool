@@ -7,6 +7,7 @@ struct HelpTopic {
     title: String,
     body: String,
     example: String,
+    consequence: Option<String>,
 }
 static TOPICS: LazyLock<BTreeMap<String, HelpTopic>> =
     LazyLock::new(|| serde_json::from_str(include_str!("help.json")).unwrap_or_default());
@@ -23,6 +24,11 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 ui.add_space(10.0);
                 ui.strong("Example");
                 ui.label(&topic.example);
+                if let Some(consequence) = &topic.consequence {
+                    ui.add_space(10.0);
+                    ui.strong("Consequence");
+                    ui.label(consequence);
+                }
             } else {
                 ui.heading("Help is unavailable");
                 ui.label("Return to the form and open the tutorial for this setting.");
@@ -242,5 +248,18 @@ mod tests {
             TUTORIAL_URL,
             "https://drive.google.com/drive/folders/1ECWS2d_-OeHXTW-Ur-qFlf_mZzYUIqQ1?usp=sharing"
         );
+    }
+    #[test]
+    fn checkpoint_review_help_renders_the_approved_consequence() {
+        use egui_kittest::kittest::Queryable;
+        let mut state = CreatorWorkspace {
+            help: Some("transferable".into()),
+            ..Default::default()
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui(move |ui| show(ui.ctx(), &mut state));
+        harness.run();
+        harness.get_by_label("Transferability cannot change after creation. Non-transferable tokens require protocol 14 or later.");
     }
 }

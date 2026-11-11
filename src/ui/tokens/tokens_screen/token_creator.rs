@@ -920,7 +920,7 @@ impl TokensScreen {
         action
     }
 
-    fn update_selected_wallet(&mut self) {
+    pub(super) fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
             let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
                 .unwrap_or_else(|e| {
@@ -939,7 +939,7 @@ impl TokensScreen {
         }
     }
 
-    fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
+    pub(super) fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
         if let Some(wallet) = &self.selected_wallet {
             use crate::ui::components::wallet_unlock_popup::{
                 try_open_wallet_no_password, wallet_needs_unlock,

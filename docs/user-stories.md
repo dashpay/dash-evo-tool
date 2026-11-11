@@ -1217,7 +1217,11 @@ As a developer, I want to create a new token contract with full configuration so
 - Configure names and languages, exact token amounts and precision, all action performers and administrators, all recurring functions, absolute scheduled allocations, groups, history, search, and document types.
 - Compare all changes before applying a supply example or protocol template, cancel without changes, and undo an applied proposal.
 - Reject duplicate members, unreachable group power, duplicate recipient/time allocations, external document references, and duplicate JSON names without silently replacing input.
-- Contract is registered via state transition.
+- Prepare an immutable review bound to the current network, owner, signing key and exact contract ID, then acknowledge the irreversible choices separately before paying.
+- Inspect, copy or save the complete reviewed contract; show the protocol registration charge separately from additional processing and storage charges.
+- Sign the reviewed payload unchanged. A changed creation sequence or expired allocation returns to review before any broadcast.
+- Retain a public recovery record before sending. An unconfirmed or conflicting result blocks another paid attempt across navigation and restart; Check status only reads the network.
+- Show final token and contract IDs from the accepted contract. A local cache or receipt-save failure does not turn confirmed creation into a failed payment.
 
 ### TOK-006: Mint tokens [Implemented]
 **Persona:** Jordan

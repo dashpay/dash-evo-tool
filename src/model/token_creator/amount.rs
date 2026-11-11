@@ -57,7 +57,15 @@ impl TokenAmountInput {
         }
         if self.base_units {
             let shown = format_amount(self.parse(old)?, old);
-            self.text = parse_amount(&shown, new)?.to_string();
+            match parse_amount(&shown, new) {
+                Ok(raw) => self.text = raw.to_string(),
+                Err(error) => {
+                    // Retain the exact token value for correction at the new precision.
+                    self.text = shown;
+                    self.base_units = false;
+                    return Err(error);
+                }
+            }
         } else {
             self.parse(new)?;
         }

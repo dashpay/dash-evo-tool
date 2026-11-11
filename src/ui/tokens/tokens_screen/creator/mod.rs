@@ -5,6 +5,7 @@ mod dialogs;
 mod distribution;
 mod documents;
 mod groups;
+mod review;
 mod supply;
 
 use super::TokensScreen;
@@ -24,6 +25,15 @@ impl TokensScreen {
     pub(super) fn render_token_workspace(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         self.creator_workspace.draft.reconcile_policy();
+        if self
+            .creator_workspace
+            .reviewed_draft
+            .as_ref()
+            .is_some_and(|draft| *draft != self.creator_workspace.draft)
+        {
+            self.creator_workspace.prepared = None;
+            self.creator_workspace.acknowledged = false;
+        }
         ui.horizontal(|ui| {
             ui.heading("Token Creator");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -80,6 +90,11 @@ impl TokensScreen {
         if let Some(notice) = &self.creator_workspace.notice {
             ui.horizontal_wrapped(|ui| {
                 ui.label(notice);
+                if let Some(section) = self.creator_workspace.error_section {
+                    if ui.link(format!("Go to {}", section.label())).clicked() {
+                        self.creator_workspace.section = section;
+                    }
+                }
             });
         }
         let wide = ui.available_width() >= 950.0;
@@ -153,52 +168,6 @@ impl TokensScreen {
                 .show(ui, |ui| summary(ui, &mut self.creator_workspace));
         }
         dialogs::show(context, &mut self.creator_workspace);
-        action
-    }
-
-    fn render_workspace_review(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        card(ui, |ui| {
-            heading(
-                ui,
-                "Review your token",
-                "review",
-                &mut self.creator_workspace.help,
-            );
-            ui.label("Preparing a review requires an identity and a signing key. Editing the draft does not spend credits.");
-            action |= crate::ui::helpers::add_identity_key_chooser(
-                ui,
-                &self.app_context,
-                self.identities.values(),
-                &mut self.selected_identity,
-                &mut self.selected_key,
-                crate::ui::helpers::TransactionType::RegisterContract,
-            );
-            if self.identities.is_empty() && ui.button("Load identity").clicked() {
-                action = AppAction::AddScreen(
-                    crate::ui::ScreenType::AddExistingIdentity.create_screen(&self.app_context),
-                );
-            }
-            if ui.button("Check draft").clicked() {
-                let owner = self
-                    .selected_identity
-                    .as_ref()
-                    .map(|identity| identity.identity.id())
-                    .unwrap_or_default();
-                match self.creator_workspace.draft.parse(
-                    owner,
-                    self.app_context.network,
-                    self.app_context.platform_version(),
-                    chrono::Utc::now().timestamp_millis().max(0) as u64,
-                ) {
-                    Ok(_) => {
-                        self.creator_workspace.error = None;
-                        self.creator_workspace.notice = Some("The editable fields pass input checks. Preparation must still validate the full contract and current owner before registration.".into());
-                    }
-                    Err(error) => self.creator_workspace.error = Some(error),
-                }
-            }
-        });
         action
     }
 }

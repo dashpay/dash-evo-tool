@@ -1,6 +1,6 @@
 use super::super::TokenNameLanguage;
 use super::*;
-use crate::model::token_creator::{DraftError, NameDraft, Section};
+use crate::model::token_creator::{NameDraft, Section};
 use crate::ui::state::token_creator::Proposal;
 
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
@@ -86,14 +86,10 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
             .changed()
         {
             if let Err(error) = state.draft.change_precision(precision) {
-                state.error = Some(DraftError::new(
-                    Section::Basics,
-                    "Decimal precision",
-                    error.into(),
-                ));
+                state.error = Some(error);
             }
         }
-        ui.small("Changing precision preserves displayed token amounts. Values that would need rounding must be corrected first.");
+        ui.small("Changing precision preserves displayed token amounts. Amounts that cannot be represented remain visible for correction.");
     });
     card(ui, |ui| {
         heading(ui, "Choose a supply policy", "policy", &mut state.help);

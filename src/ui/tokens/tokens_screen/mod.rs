@@ -2412,6 +2412,7 @@ impl TokensScreen {
     /// Drops the Token Creator form after a network switch: its identity, key and
     /// wallet belong to the previous network.
     pub(crate) fn reset_for_network_switch(&mut self) {
+        self.creator_workspace = Default::default();
         self.selected_wallet = None;
         self.wallet_open_attempted = false;
         // Its wallet belongs to the previous network; left open, it would come
@@ -3173,6 +3174,7 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.workspace_error(context, _error);
         if self.awaits_token_registration()
             && self.token_registration_context.as_ref() == Some(context)
         {
@@ -3203,6 +3205,7 @@ impl ScreenLike for TokensScreen {
         context: &BackendTaskContext,
         backend_task_success_result: BackendTaskSuccessResult,
     ) {
+        self.workspace_result(context, &backend_task_success_result);
         let completes_pending = completes_pending_operation(
             self.pending_operation_context.as_ref(),
             context,
@@ -5386,9 +5389,10 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        recurring.functions[0]
-            .values
-            .insert(Parameter::Amount, "not-an-amount".into());
+        recurring.functions[0].amounts.insert(
+            Parameter::Amount,
+            crate::model::token_creator::amount::TokenAmountInput::tokens("not-an-amount"),
+        );
         assert!(
             recurring
                 .parse(

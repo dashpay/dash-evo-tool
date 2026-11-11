@@ -87,9 +87,9 @@ impl CreatorWorkspace {
                 row.timestamp
                     .and_then(|ms| i64::try_from(ms).ok())
                     .and_then(chrono::DateTime::from_timestamp_millis)
-                    .map_or_else(LocalScheduleInput::new, |time| {
-                        LocalScheduleInput::new().with_time(time)
-                    })
+                    .map(|time| LocalScheduleInput::new().with_time(time))
+                    .unwrap_or_default()
+                    .with_label("Allocation date and time")
             });
         }
     }

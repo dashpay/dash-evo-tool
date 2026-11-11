@@ -111,7 +111,7 @@ impl LocalScheduleInput {
         self
     }
 
-    /// Replace the leading label.
+    /// Replace the leading text while retaining the local time zone offset.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -144,16 +144,15 @@ impl LocalScheduleInput {
         })
     }
 
-    /// The default label names the offset at the shown time, because daylight
+    /// Every label names the offset at the shown time, because daylight
     /// saving time moves it, and the present offset while no time is shown.
     fn label(&self) -> String {
+        let offset = self
+            .zone
+            .utc_offset(self.instant().unwrap_or_else(Utc::now));
         match &self.label {
-            Some(label) => label.clone(),
-            None => schedule_label(
-                &self
-                    .zone
-                    .utc_offset(self.instant().unwrap_or_else(Utc::now)),
-            ),
+            Some(label) => format!("{label} (your local time, {offset}):"),
+            None => schedule_label(&offset),
         }
     }
 }
@@ -169,7 +168,7 @@ impl Component for LocalScheduleInput {
     type Response = LocalScheduleInputResponse;
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
-        let InnerResponse { inner, response } = ui.horizontal(|ui| {
+        let InnerResponse { inner, response } = ui.horizontal_wrapped(|ui| {
             let caption = ui.label(self.label());
             let mut changed = ui
                 .add(
@@ -288,6 +287,18 @@ mod tests {
             input.current_value(),
             Some(at(2031, 2, 3, 4, 5).timestamp_millis() as u64)
         );
+    }
+
+    #[test]
+    fn token_creator_schedule_custom_label_preserves_selected_time_zone() {
+        for (occurrence, offset) in [(1, "UTC+02:00"), (2, "UTC+01:00")] {
+            let input = shown_in_central_europe(half_past_two(occurrence))
+                .with_label("Allocation date and time");
+            assert_eq!(
+                input.label(),
+                format!("Allocation date and time (your local time, {offset}):")
+            );
+        }
     }
 
     #[test]

@@ -220,7 +220,7 @@ pub enum DraftIssue {
     Keyword,
     #[error("Enter a JSON object mapping document names to object schemas, or clear the field.")]
     DocumentsShape,
-    #[error("The document JSON could not be read. Correct its syntax and try again.")]
+    #[error("The document JSON could not be read. Use valid syntax and unique property names.")]
     DocumentsJson {
         #[source]
         source: serde_json::Error,

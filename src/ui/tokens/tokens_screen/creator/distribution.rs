@@ -115,8 +115,8 @@ pub(super) fn show(
                         &mut state.help,
                     );
                     let input = state.schedule_inputs.entry(row.id).or_insert_with(|| {
-                        let input = LocalScheduleInput::new()
-                            .with_label("Allocation date and time (local time):");
+                        let input =
+                            LocalScheduleInput::new().with_label("Allocation date and time");
                         row.timestamp
                             .and_then(|ms| i64::try_from(ms).ok())
                             .and_then(chrono::DateTime::from_timestamp_millis)

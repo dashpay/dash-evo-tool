@@ -347,6 +347,7 @@ fn recipient_label(recipient: &Recipient) -> String {
 }
 
 fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
+    state.draft.reconcile_policy();
     card(ui, |ui| {
         ui.heading("Your token");
         ui.label(

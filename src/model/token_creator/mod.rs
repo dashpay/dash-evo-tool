@@ -547,15 +547,42 @@ impl TokenDraft {
         }
     }
 
-    /// Does not silently keep a template label after its authority bundle changes.
+    /// Keeps example labels only while their applied policy settings still match.
+    /// Permission-only SDK templates are classified by their authority bundle.
     pub fn reconcile_policy(&mut self) {
-        let expected = match self.policy {
-            Policy::Fixed => Some(RuleBundle::default()),
-            Policy::LimitedOwner => Some(RuleBundle::limited_owner()),
-            Policy::Preset(features) => Some(RuleBundle::from_preset(features)),
-            _ => None,
+        let matches = match self.policy {
+            Policy::Fixed | Policy::LimitedOwner => {
+                let limited_owner = self.policy == Policy::LimitedOwner;
+                let amount_matches = |input: &TokenAmountInput, tokens| {
+                    matches!(
+                        (input.parse(self.decimals), TokenAmountInput::tokens(tokens).parse(self.decimals)),
+                        (Ok(actual), Ok(expected)) if actual == expected
+                    )
+                };
+                self.permissions
+                    == if limited_owner {
+                        RuleBundle::limited_owner()
+                    } else {
+                        RuleBundle::default()
+                    }
+                    && self.decimals == 2
+                    && amount_matches(&self.initial, "1000")
+                    && !self.no_maximum
+                    && amount_matches(&self.maximum, if limited_owner { "10000" } else { "1000" })
+                    && self.transferable
+                    && !self.start_paused
+                    && !self.allow_receive_frozen
+                    && self.mint_recipient == Recipient::Owner
+                    && self.main_group.is_none()
+                    && self.history == [true; 6]
+                    && !self.recurring.enabled
+                    && !self.scheduled_enabled
+                    && !self.once_enabled
+            }
+            Policy::Preset(features) => self.permissions == RuleBundle::from_preset(features),
+            _ => true,
         };
-        if expected.is_some_and(|rules| rules != self.permissions) {
+        if !matches {
             self.policy = Policy::Custom;
         }
     }
@@ -636,6 +663,73 @@ mod precision_tests {
                 proposal.decimals
             ),
             "1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    fn assert_policy_edits_become_custom(limited_owner: bool) {
+        let edits: &[fn(&mut TokenDraft)] = &[
+            |draft| draft.no_maximum = true,
+            |draft| draft.initial.text = "500".into(),
+            |draft| draft.maximum.text = "15000".into(),
+            |draft| draft.transferable = false,
+            |draft| draft.start_paused = true,
+            |draft| draft.allow_receive_frozen = true,
+            |draft| draft.recurring.enabled = true,
+            |draft| draft.scheduled_enabled = true,
+            |draft| draft.once_enabled = true,
+            |draft| draft.mint_recipient = Recipient::Identity("unfinished".into()),
+            |draft| draft.main_group = Some(0),
+            |draft| draft.history[0] = false,
+        ];
+        for (index, edit) in edits.iter().enumerate() {
+            let mut draft = TokenDraft::example(limited_owner);
+            edit(&mut draft);
+            let before = draft.clone();
+            draft.reconcile_policy();
+            assert_eq!(draft.policy, Policy::Custom, "policy edit {index}");
+            draft.policy = before.policy;
+            assert_eq!(draft, before, "classification must not modify settings");
+        }
+    }
+
+    #[test]
+    fn creator_policy_label_tracks_fixed_example_settings() {
+        assert_policy_edits_become_custom(false);
+    }
+
+    #[test]
+    fn creator_policy_label_tracks_owner_example_settings() {
+        assert_policy_edits_become_custom(true);
+    }
+
+    #[test]
+    fn creator_policy_label_ignores_names_units_and_inactive_recipes() {
+        for limited_owner in [false, true] {
+            let mut draft = TokenDraft::example(limited_owner);
+            let policy = draft.policy;
+            draft.names[0].singular = "Renamed".into();
+            draft.initial = TokenAmountInput {
+                text: "100000".into(),
+                base_units: true,
+            };
+            draft.recurring.interval = "unfinished".into();
+            draft.once_amount.text = "unfinished".into();
+            draft.reconcile_policy();
+            assert_eq!(draft.policy, policy);
+        }
+        let mut draft = TokenDraft::default()
+            .preset_proposal(TokenConfigurationPresetFeatures::WithOnlyEmergencyAction);
+        let policy = draft.policy;
+        draft.no_maximum = true;
+        draft.reconcile_policy();
+        assert_eq!(
+            draft.policy, policy,
+            "SDK templates describe permissions only"
         );
     }
 }

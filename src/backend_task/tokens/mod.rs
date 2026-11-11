@@ -4,7 +4,6 @@ use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_ti
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
@@ -25,17 +24,12 @@ use dash_sdk::{
                 },
                 token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
-                token_keeps_history_rules::TokenKeepsHistoryRules,
                 token_marketplace_rules::{
                     TokenMarketplaceRules,
                     v0::{TokenMarketplaceRulesV0, TokenTradeMode},
                 },
             },
-            change_control_rules::{
-                ChangeControlRules, authorized_action_takers::AuthorizedActionTakers,
-            },
             config::DataContractConfig,
-            group::Group,
             v1::DataContractV1,
         },
         identity::accessors::IdentityGettersV0,
@@ -65,42 +59,7 @@ mod transfer_tokens;
 mod unfreeze_tokens;
 mod update_token_config;
 
-/// All token-configuration inputs for
-/// [`AppContext::build_data_contract_v1_with_one_token`], grouped to keep the
-/// builder and its task variant from carrying two dozen positional fields.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TokenContractParams {
-    pub token_names: Vec<(String, String, String)>,
-    pub contract_keywords: Vec<String>,
-    pub token_description: Option<String>,
-    pub should_capitalize: bool,
-    pub decimals: u8,
-    pub base_supply: TokenAmount,
-    pub max_supply: Option<TokenAmount>,
-    pub start_paused: bool,
-    pub allow_transfers_to_frozen_identities: bool,
-    pub keeps_history: TokenKeepsHistoryRules,
-    pub main_control_group: Option<GroupContractPosition>,
-
-    pub manual_minting_rules: ChangeControlRules,
-    pub manual_burning_rules: ChangeControlRules,
-    pub freeze_rules: ChangeControlRules,
-    pub unfreeze_rules: ChangeControlRules,
-    pub destroy_frozen_funds_rules: ChangeControlRules,
-    pub emergency_action_rules: ChangeControlRules,
-    pub max_supply_change_rules: ChangeControlRules,
-    pub conventions_change_rules: ChangeControlRules,
-
-    pub main_control_group_change_authorized: AuthorizedActionTakers,
-
-    pub distribution_rules: TokenDistributionRules,
-    pub groups: BTreeMap<GroupContractPosition, Group>,
-    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_rules: ChangeControlRules,
-    /// Whether holders may move the token to another identity. `false` needs
-    /// a version 1 token configuration (protocol version 14).
-    pub transferable: bool,
-}
+pub use crate::model::token_creator::TokenContractParams;
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]

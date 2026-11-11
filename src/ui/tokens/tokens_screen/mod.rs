@@ -1,4 +1,5 @@
 mod contract_details;
+mod creator;
 mod data_contract_json_pop_up;
 mod distributions;
 mod groups;
@@ -1148,6 +1149,7 @@ pub struct TokensScreen {
     // ====================================
     //           Token Creator
     // ====================================
+    creator_workspace: crate::ui::state::token_creator::CreatorWorkspace,
     show_advanced_token_creator: bool,
     selected_token_preset: TokenPresetSelection,
     show_pop_up_info: Option<String>,
@@ -1545,6 +1547,7 @@ impl TokensScreen {
             show_token_info_popup: None,
 
             // Token Creator
+            creator_workspace: Default::default(),
             show_advanced_token_creator: false,
             selected_token_preset: TokenPresetSelection::Unselected,
             show_pop_up_info: None,
@@ -3005,7 +3008,7 @@ impl ScreenLike for TokensScreen {
                             }
                         }
                         TokensSubscreen::TokenCreator => {
-                            inner_action |= self.render_token_creator(ctx, ui);
+                            inner_action |= self.render_token_workspace(ctx, ui);
                         }
                     }
 
@@ -5340,5 +5343,89 @@ mod tests {
 
         assert!(!screen.show_json_popup);
         assert!(screen.json_popup_text.is_empty());
+    }
+    #[test]
+    fn creator_rejects_duplicate_group_members_without_overwriting_power() {
+        use crate::model::token_creator::groups::{GroupDraft, MemberDraft};
+        let mut group = GroupDraft::new(0);
+        group.members = ["1", "2"]
+            .map(|weight| MemberDraft {
+                identity: Identifier::from([1; 32]).to_string(Encoding::Base58),
+                weight: weight.into(),
+            })
+            .into();
+        assert!(
+            group
+                .parse(dash_sdk::dpp::version::PlatformVersion::latest())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn creator_rejects_unreachable_group_threshold() {
+        use crate::model::token_creator::groups::{GroupDraft, MemberDraft};
+        let mut group = GroupDraft::new(0);
+        group.threshold = "3".into();
+        group.members = [1, 2]
+            .map(|id| MemberDraft {
+                identity: Identifier::from([id; 32]).to_string(Encoding::Base58),
+                weight: "1".into(),
+            })
+            .into();
+        assert!(
+            group
+                .parse(dash_sdk::dpp::version::PlatformVersion::latest())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn creator_rejects_malformed_recurring_amount_instead_of_zero() {
+        use crate::model::token_creator::{RecurringDraft, distributions::Parameter};
+        let mut recurring = RecurringDraft {
+            enabled: true,
+            ..Default::default()
+        };
+        recurring.functions[0]
+            .values
+            .insert(Parameter::Amount, "not-an-amount".into());
+        assert!(
+            recurring
+                .parse(
+                    2,
+                    Network::Testnet,
+                    dash_sdk::dpp::version::PlatformVersion::latest()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn creator_rejects_duplicate_schedule_recipient_at_same_time() {
+        use crate::model::token_creator::{
+            Recipient, ScheduleDraft, TokenDraft, amount::TokenAmountInput,
+        };
+        let mut draft = TokenDraft::example(false);
+        draft.scheduled_enabled = true;
+        draft.scheduled = ["10", "20"]
+            .into_iter()
+            .enumerate()
+            .map(|(id, value)| ScheduleDraft {
+                id: id as u64,
+                timestamp: Some(100_000),
+                recipient: Recipient::Owner,
+                amount: TokenAmountInput::tokens(value),
+            })
+            .collect();
+        assert!(
+            draft
+                .parse(
+                    Identifier::from([7; 32]),
+                    Network::Testnet,
+                    dash_sdk::dpp::version::PlatformVersion::latest(),
+                    1000
+                )
+                .is_err()
+        );
     }
 }

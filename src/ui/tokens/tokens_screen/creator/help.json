@@ -1,0 +1,548 @@
+{
+  "basics": {
+    "title": "Start with your token's purpose",
+    "body": "Choose a recognizable name and decide who should control the supply. Names describe the token; its saved rules determine what the owner and holders can do.",
+    "example": "A studio could issue Studio Credits for its rewards programme.",
+    "scene": "04"
+  },
+  "policy": {
+    "title": "Choose a starting policy",
+    "body": "A policy fills in supply amounts and permissions together. Compare the proposed changes before applying an example, then review every rule you customize.",
+    "example": "Choose fixed supply for a one-time issue, or owner-managed supply for later rewards.",
+    "scene": "06"
+  },
+  "fixed-policy": {
+    "title": "Fixed supply example",
+    "body": "This example creates 1,000 tokens and locks the maximum at 1,000. It disables additional issuer actions, their administrators and later-change allowances; ordinary transfers remain available.",
+    "example": "Issue 1,000 credits once, with no authority to mint more.",
+    "consequence": "Marketplace sales and direct purchases cannot be enabled under these example rules.",
+    "scene": "07"
+  },
+  "owner-policy": {
+    "title": "Owner-managed example",
+    "body": "This example starts with 1,000 tokens and a permanent 10,000-token cap. The owner may mint, burn their own tokens, and pause or resume transfers. Other issuer powers and rule changes are disabled.",
+    "example": "The owner can issue another 100 reward tokens while staying below the cap.",
+    "scene": "19"
+  },
+  "name": {
+    "title": "Token name",
+    "body": "The display name helps people recognize your token. It does not prove ownership or make the token unique; the confirmed token identifier distinguishes it from other tokens.",
+    "example": "Studio Credit is a name; two different tokens could use it.",
+    "scene": "04"
+  },
+  "plural": {
+    "title": "Plural name",
+    "body": "Choose the name clients should use when displaying more than one token. This changes the wording, not the number of tokens or their value.",
+    "example": "One Studio Credit; ten Studio Credits.",
+    "scene": "11"
+  },
+  "decimals": {
+    "title": "Decimal places",
+    "body": "Choose how finely a token can be divided. Enter amounts in tokens in this prototype; precision determines the smallest unit those amounts can represent.",
+    "example": "With 2 decimal places, 1 token contains 100 smallest units and 1.25 tokens is valid.",
+    "scene": "13"
+  },
+  "description": {
+    "title": "Token description",
+    "body": "Explain what the token is intended for in plain language. The description helps readers understand your plan; permissions and supply settings enforce the actual policy.",
+    "example": "Credits awarded for participating in studio workshops.",
+    "scene": "12"
+  },
+  "capitalization": {
+    "title": "Name capitalization",
+    "body": "This is a display convention that clients can use when showing token names. It does not change the token identifier, create a translation, or affect balances.",
+    "example": "A client can use a capitalized name such as Studio Credit.",
+    "scene": "15"
+  },
+  "localizations": {
+    "title": "Names in other languages",
+    "body": "Add one set of singular and plural names for each language you need. All translations describe the same token and share the same supply.",
+    "example": "English: Point and Points. Polish: Punkt and Punkty.",
+    "scene": "11"
+  },
+  "initial": {
+    "title": "Initial supply",
+    "body": "These tokens are created when registration succeeds. They go to the default new-token recipient; if no default is configured, the contract owner receives the initial supply.",
+    "example": "An initial supply of 1,000 creates 1,000 tokens, not 1,000 DASH.",
+    "scene": "20"
+  },
+  "maximum": {
+    "title": "Maximum outstanding supply",
+    "body": "This limits how many tokens may exist at once. Burning tokens frees capacity for future minting if minting is allowed. Review who may change this maximum.",
+    "example": "With a 1,000-token cap, burning 100 can leave room to mint 100 again.",
+    "consequence": "The number alone is not a permanent cap if its change permissions remain available.",
+    "scene": "19"
+  },
+  "noMaximum": {
+    "title": "No numerical maximum",
+    "body": "This removes the numerical supply ceiling. It does not itself give anyone permission to mint; minting and distribution rules still decide how new tokens can be created.",
+    "example": "A token can have no numerical cap while manual minting remains disabled.",
+    "scene": "05"
+  },
+  "transferable": {
+    "title": "Transfers between holders",
+    "body": "Allow holders to send tokens to other identities. This choice is separate from a temporary pause and from permissions for minting, burning or other actions.",
+    "example": "A transferable reward can be sent to another member.",
+    "consequence": "Transferability cannot change after creation. Non-transferable tokens require protocol 14 or later.",
+    "scene": "14"
+  },
+  "paused": {
+    "title": "Start with transfers paused",
+    "body": "Start the token with ordinary transfers stopped. Someone needs pause/resume authority to resume them later. Distributions and other configured actions follow their own rules.",
+    "example": "Prepare an initial allocation, then let the authorized owner resume transfers at launch.",
+    "scene": "14"
+  },
+  "mintRecipient": {
+    "title": "Default new-token recipient",
+    "body": "Choose where new tokens go by default. This recipient also receives the initial supply; without a default, the initial supply goes to the contract owner.",
+    "example": "Choose a treasury identity to receive both the initial allocation and default future mints.",
+    "scene": "20"
+  },
+  "mintIdentity": {
+    "title": "Recipient identity ID",
+    "body": "Enter the complete public identity ID of the intended recipient. A correctly formatted ID does not prove that you control that identity or its signing keys.",
+    "example": "Copy your treasury's full identity ID from its identity details.",
+    "scene": "20"
+  },
+  "mintOverride": {
+    "title": "Choose a recipient for each mint",
+    "body": "Allow an authorized minter to name a recipient for an individual mint instead of using the default. This does not grant minting authority or change the initial allocation.",
+    "example": "Mint 10 new reward tokens directly to a member instead of the treasury.",
+    "scene": "21"
+  },
+  "allowFrozen": {
+    "title": "Transfers to frozen identities",
+    "body": "Choose whether an identity whose token balance is frozen can still receive transfers. Receiving tokens does not remove the freeze or let that identity spend them.",
+    "example": "An account can receive a payment while its outgoing transfers remain blocked.",
+    "scene": "23"
+  },
+  "performer": {
+    "title": "Who can perform this action",
+    "body": "Choose the owner, a specific identity, or a group allowed to carry out this action. No one disables it now, but an administrator may still be able to change that choice.",
+    "example": "A group may approve mints while a different identity controls changes to that rule.",
+    "scene": "17"
+  },
+  "administrator": {
+    "title": "Who can change this rule",
+    "body": "The rule administrator can change the action's permission settings within the selected allowances. This authority is separate from permission to perform the action itself.",
+    "example": "If the owner can change the mint rule, a group is not necessarily the final minting authority.",
+    "scene": "18"
+  },
+  "flags.0": {
+    "title": "Allow removing all performers",
+    "body": "Allow the rule administrator to set the action's performer to No one. This constrains a later rule change; it does not give everyone permission to edit the rule.",
+    "example": "The administrator could disable future minting by removing its performer.",
+    "scene": "18"
+  },
+  "flags.1": {
+    "title": "Allow removing all administrators",
+    "body": "Allow the rule administrator to set the administrator to No one. Once no administrator remains, this rule can no longer be updated through that authority.",
+    "example": "Lock the chosen minting authority by removing its rule administrator.",
+    "scene": "18"
+  },
+  "flags.2": {
+    "title": "Allow replacing the administrator",
+    "body": "Allow the current rule administrator to change who administers this rule. This is a permission for an authorized update, not an extra power granted to every holder.",
+    "example": "Move administration of the mint rule from the owner to a governance group.",
+    "scene": "18"
+  },
+  "identity": {
+    "title": "Public identity ID",
+    "body": "An identity is a Platform account used to own tokens or hold authority. Use its complete public ID. A format check does not establish ownership or access to signing keys.",
+    "example": "A group member is identified by their public identity ID, not their wallet address.",
+    "scene": "17"
+  },
+  "groups": {
+    "title": "Shared authority through groups",
+    "body": "A group acts when the total power of approving members reaches its threshold. Creating the group does not grant powers automatically; assign it to the relevant action rules. Group labels and stable draft IDs are local. Review shows the contiguous positions written to the contract; references follow the same members when an unrelated group is removed.",
+    "example": "Two members with power 1 each and required power 2 must both approve.",
+    "scene": "28"
+  },
+  "groupName": {
+    "title": "Group label",
+    "body": "Give the group a useful label for this draft. The contract refers to groups by their positions; a label is not a public identity ID.",
+    "example": "Treasury approvers can be your local label for Group 0.",
+    "scene": "27"
+  },
+  "threshold": {
+    "title": "Required approval power",
+    "body": "Set the approval power needed for the group to act. It must be positive and reachable using the members' combined power; approvals are weighted rather than counted by people. A group needs at least two different members. Required power and each member’s power must be between 1 and 65,535.",
+    "example": "With member powers 2, 1 and 1, a threshold of 3 needs the first member and one other.",
+    "scene": "28"
+  },
+  "weight": {
+    "title": "Member approval power",
+    "body": "This is how much the member's approval contributes toward the group's required power. Equal powers give members equal weight; a larger number gives that member more influence.",
+    "example": "Three members with power 1 and required power 2 form a two-of-three group.",
+    "scene": "28"
+  },
+  "mainGroup": {
+    "title": "Main control group",
+    "body": "Choose which existing group the Main group option refers to. Each action still needs an explicit permission assignment; selecting a main group does not give it every power.",
+    "example": "Set Treasury approvers as the main group, then assign Main group to minting.",
+    "scene": "28"
+  },
+  "mainChange": {
+    "title": "Who can replace the main group",
+    "body": "Choose who may change the contract's main control group after creation. This selects change authority; it does not create a group or assign all token actions to one.",
+    "example": "Let the owner replace the main group while minting refers to Main group.",
+    "scene": "27"
+  },
+  "history": {
+    "title": "Token history records",
+    "body": "Choose which on-chain token history ledgers to retain. Transfers, freezes, mints, burns, direct-pricing changes and direct purchases have separate switches. These are contract settings, not local privacy controls.",
+    "example": "Retain transfer history so the token's transfer records can be queried.",
+    "scene": "15"
+  },
+  "keywords": {
+    "title": "Search keywords",
+    "body": "Keywords help people find the contract. The token name is included automatically in this build; additional keywords can add to the registration estimate.",
+    "example": "Add education for a learning reward token.",
+    "scene": "12"
+  },
+  "documents": {
+    "title": "Document types",
+    "body": "Advanced users can define document types in the same contract using a JSON map of names to schemas. This does not create documents or change token balances. Paste a map of document types, not an entire contract. External references are not loaded; use local fragments. Syntax checks do not replace full contract validation during preparation.",
+    "example": "Define a note type with a required text field limited to 120 characters.",
+    "consequence": "Valid JSON syntax does not prove that the complete contract will pass Platform validation.",
+    "scene": "48"
+  },
+  "review": {
+    "title": "Review before creating",
+    "body": "Check amounts, recipients, permanent choices, and every performer and administrator. Hidden or disabled sections can retain change permissions. The creation fee comes from the issuer's Platform balance.",
+    "example": "Confirm the maximum-supply rule is locked if you promise a permanent cap.",
+    "scene": "50"
+  },
+  "readiness": {
+    "title": "Issuer readiness",
+    "body": "The real app needs the intended network, a funded Platform identity and an available eligible signing key. Draft checks alone do not confirm network acceptance or successful registration.",
+    "example": "An identity with only public information cannot sign the creation request.",
+    "scene": "02"
+  },
+  "rule.mint": {
+    "title": "Mint additional tokens",
+    "body": "Minting creates new tokens within the current supply limit. The authorized actor can mint; the destination settings determine who receives the new tokens.",
+    "example": "Mint 10 reward tokens when the outstanding supply has room for them.",
+    "scene": "20"
+  },
+  "rule.burn": {
+    "title": "Burn the actor's own tokens",
+    "body": "Burning removes tokens from the executing identity's own balance and reduces outstanding supply. It does not let the actor take tokens from another holder.",
+    "example": "Burning 10 from your balance of 100 leaves you with 90.",
+    "consequence": "Burned tokens are destroyed; burning is not a recoverable transfer.",
+    "scene": "22"
+  },
+  "rule.freeze": {
+    "title": "Freeze one holder",
+    "body": "Prevent a particular identity from sending this token. Receiving while frozen is a separate setting, and permission to unfreeze is a separate action rule.",
+    "example": "Freeze one account while other holders continue transferring normally.",
+    "scene": "23"
+  },
+  "rule.unfreeze": {
+    "title": "Unfreeze one holder",
+    "body": "Remove an identity's freeze so it can spend again when the token's other transfer rules permit. Freeze and unfreeze can have different authorized actors.",
+    "example": "A governance group can unfreeze an account after reviewing the reason for its freeze.",
+    "scene": "23"
+  },
+  "rule.destroy": {
+    "title": "Destroy a frozen balance",
+    "body": "Allow the authorized actor to destroy the target identity's entire frozen token balance. This is separate from burning the actor's own tokens and does not select a partial amount.",
+    "example": "A frozen balance of 100 is reduced to zero.",
+    "consequence": "Unfreezing the identity later does not restore destroyed tokens.",
+    "scene": "24"
+  },
+  "rule.pause": {
+    "title": "Pause or resume transfers",
+    "body": "Temporarily stop or resume ordinary transfers for all holders. This does not change permanent transferability; other actions and distributions remain subject to their own rules.",
+    "example": "Pause transfers during an operational issue, then resume them when ready.",
+    "scene": "25"
+  },
+  "rule.cap": {
+    "title": "Change maximum supply",
+    "body": "Choose who can change the numerical supply ceiling and who can change that permission. A permanent cap needs both selectors set to No one and all three change allowances off.",
+    "example": "Keep minting available below 10,000 while locking the ceiling at 10,000.",
+    "scene": "19"
+  },
+  "rule.conventions": {
+    "title": "Change display conventions",
+    "body": "Allow later changes to naming and decimal conventions. These can affect how clients present token names and amounts, so choose this authority separately from minting or pausing.",
+    "example": "An authorized actor could update localized token names.",
+    "scene": "25"
+  },
+  "rule.recurring": {
+    "title": "Change recurring distribution",
+    "body": "This authority can enable, change or disable recurring distribution, including its recipient. Turning distribution off in the draft does not remove this permission.",
+    "example": "If the owner retains this power, recurring rewards could be enabled after creation.",
+    "scene": "44"
+  },
+  "rule.destination": {
+    "title": "Change the default mint recipient",
+    "body": "Choose who may change the default identity for newly minted tokens. This controls future destination changes; it does not move tokens already issued.",
+    "example": "An authorized actor could switch future default mints from the owner to a treasury.",
+    "scene": "21"
+  },
+  "rule.override": {
+    "title": "Change per-mint recipient choice",
+    "body": "Choose who may enable or disable selecting a recipient for each mint. This changes the recipient-choice policy, not who has permission to mint.",
+    "example": "Lock this rule while keeping individual recipient choice permanently enabled.",
+    "scene": "21"
+  },
+  "rule.marketplace": {
+    "title": "Change marketplace trade mode",
+    "body": "Choose who may change the token's marketplace trading settings later. This rule does not put tokens on sale and is separate from ordinary transfers between holders.",
+    "example": "Keep transfers available while marketplace sales remain unavailable.",
+    "scene": "26"
+  },
+  "rule.pricing": {
+    "title": "Change direct-purchase pricing",
+    "body": "Choose who may set or change the price used for direct token purchases. Assigning this authority does not set an initial price or make a purchase.",
+    "example": "An authorized owner could configure a direct-purchase price later.",
+    "scene": "26"
+  },
+  "distribution": {
+    "title": "Additional token allocations",
+    "body": "Recurring, scheduled and once-per-identity distributions provide additional allocations beyond the initial supply. Eligible recipients must claim them; enabling a schedule does not automatically transfer tokens.",
+    "example": "A treasury can claim recurring allocations after eligible periods have passed.",
+    "scene": "30"
+  },
+  "recurring": {
+    "title": "Recurring distribution",
+    "body": "Allocate tokens over repeated periods using the chosen amount function and recipient. Review its change rule even when this feature starts off; retained authority can enable it later.",
+    "example": "A fixed function can allocate 1 token per eligible daily period for the treasury to claim.",
+    "scene": "30"
+  },
+  "scheduled": {
+    "title": "Scheduled distributions",
+    "body": "Set specific dates, recipients and token amounts. A date makes an allocation eligible under the distribution rules; recipients still need to claim it.",
+    "example": "Make 25 tokens available to a treasury on a chosen date.",
+    "scene": "45"
+  },
+  "once": {
+    "title": "Once per identity",
+    "body": "Each eligible identity can claim the configured amount once. One person can control several identities, and available supply can limit claims. This feature requires protocol 14 or later.",
+    "example": "Offer a 1-token allocation per eligible identity, not per person.",
+    "scene": "46"
+  },
+  "interval": {
+    "title": "Repeat interval",
+    "body": "Set how many time units, epochs or blocks make up one recurring period. The function uses period indices to calculate allocations; the interval does not guarantee an exact claim time.",
+    "example": "Every 1 day and every 10 blocks describe different kinds of periods.",
+    "scene": "31"
+  },
+  "intervalKind": {
+    "title": "What measures a period",
+    "body": "Choose elapsed time, Platform epochs, or blocks. Epochs are network accounting periods, and block counts are network progress; neither promises a fixed number of clock hours.",
+    "example": "Choose time for a daily allowance, or epochs for EvoNode participation allocations.",
+    "scene": "31"
+  },
+  "timeUnit": {
+    "title": "Time unit",
+    "body": "Time units use fixed durations, not calendar scheduling. Supported intervals must align to whole minutes; a selectable unit alone does not guarantee the chosen interval is valid.",
+    "example": "The verified one-day interval is 1,440 minutes; one second is not supported.",
+    "scene": "43"
+  },
+  "recipient": {
+    "title": "Distribution recipient",
+    "body": "Choose who can receive this allocation. Recurring distribution supports the owner, a specific identity, or EvoNodes by participation; EvoNode allocations require epoch-based intervals.",
+    "example": "Use your treasury identity for recurring project rewards.",
+    "scene": "32"
+  },
+  "scheduledDate": {
+    "title": "Scheduled date and time",
+    "body": "Choose the local date and time when this allocation becomes eligible. Check the displayed time zone and converted time during review; the recipient must still claim the allocation.",
+    "example": "A 09:00 allocation uses the time zone shown beside this form.",
+    "scene": "45"
+  },
+  "onceAmount": {
+    "title": "Amount per identity",
+    "body": "Enter the number of tokens each eligible identity may claim once. The amount is per identity, not a guaranteed payout to each person, and available supply can limit claims.",
+    "example": "An amount of 1 gives each eligible identity one 1-token claim.",
+    "scene": "46"
+  },
+  "function.FixedAmount": {
+    "title": "Fixed amount",
+    "body": "Use the same allocation for every eligible period. Fixed describes the recurring amount, not the token's total supply; supply limits and claims still apply.",
+    "example": "At 1 token per period, five eligible periods contribute 5 tokens before other restrictions.",
+    "scene": "35"
+  },
+  "function.StepDecreasing": {
+    "title": "Step decreasing",
+    "body": "Keep an amount for several periods, then reduce it by a chosen fraction. A minimum and a separate trailing amount can shape the later allocations.",
+    "example": "The audited example starts 1.00, 1.00, 0.50, 0.50, then 0.25 tokens per index.",
+    "scene": "36"
+  },
+  "function.Stepwise": {
+    "title": "Stepwise",
+    "body": "Define exact amounts starting at chosen period indices. Each index uses the amount from the latest start reached; setting a later amount to zero stops future emissions.",
+    "example": "Use 0.10 tokens from index 0, 0.05 from index 3, then zero from index 5.",
+    "scene": "37"
+  },
+  "function.Linear": {
+    "title": "Linear",
+    "body": "Increase or decrease the allocation by a steady amount each period, within the chosen bounds. The function's maximum limits each period, not total token supply.",
+    "example": "The audited example gives 0.10, 0.12, 0.14 tokens, rising to a 0.20-token limit.",
+    "scene": "38"
+  },
+  "function.Polynomial": {
+    "title": "Polynomial",
+    "body": "Shape how fast allocations grow or shrink using a curved pattern. The m/n ratio sets the power, while the offset changes its input. Bounds limit the amount in each period.",
+    "example": "The audited square curve starts 0.01, 0.04, 0.09, then 0.16 tokens.",
+    "scene": "39"
+  },
+  "function.Exponential": {
+    "title": "Exponential",
+    "body": "Allocations can grow very quickly with this curve, so check the example and bounds carefully. It uses a natural exponential curve; m/n controls its rate and bounds limit each period’s amount.",
+    "example": "The audited example starts 0.10, 0.27, 0.73 tokens, then reaches its 1.00-token maximum.",
+    "scene": "40"
+  },
+  "function.Logarithmic": {
+    "title": "Logarithmic",
+    "body": "Use a natural logarithm to produce a curve that can rise more slowly over time. The m/n ratio scales the input, and rounding happens before the added amount b.",
+    "example": "The audited example starts 0.10, 0.16, 0.20, then 0.23 tokens.",
+    "scene": "41"
+  },
+  "function.InvertedLogarithmic": {
+    "title": "Inverted logarithmic",
+    "body": "The example allocations fall quickly at first, then more slowly. This curve uses the natural logarithm of a reciprocal input, not one divided by a logarithm.",
+    "example": "The audited example starts 0.40, 0.33, 0.29, then 0.26 tokens.",
+    "scene": "42"
+  },
+  "param.a": {
+    "title": "a: scaling coefficient",
+    "body": "This whole-number coefficient scales the changing part of the function together with divisor d. It uses the function's base-unit calculation, so it is not an amount entered directly in tokens.",
+    "example": "For Linear at 2 decimals, a = 2 and d = 1 add 0.02 tokens per index.",
+    "scene": "38"
+  },
+  "param.b": {
+    "title": "b: added amount",
+    "body": "This amount is added to the function's changing part. It is not always the first output because the chosen curve, offsets, rounding and bounds also affect that result.",
+    "example": "In the audited logarithmic example, b adds 0.10 tokens after the logarithmic part is rounded.",
+    "scene": "41"
+  },
+  "param.d": {
+    "title": "d: scaling divisor",
+    "body": "This positive whole number divides the function's scaled part. It works with coefficient a and the base-unit calculation; it is not a token amount.",
+    "example": "For Linear at 2 decimals, a = 2 and d = 2 give a 0.01-token increase per index.",
+    "scene": "38"
+  },
+  "param.m": {
+    "title": "m: ratio numerator",
+    "body": "Use m together with denominator n. In Polynomial, m/n is the power; in Exponential it scales the exponent; in the logarithmic functions it scales the input.",
+    "example": "In Polynomial, m = 2 and n = 1 select a square curve.",
+    "scene": "39"
+  },
+  "param.n": {
+    "title": "n: ratio denominator",
+    "body": "This positive whole number is the denominator paired with m. The pair controls a power or input scale depending on the selected function; it is not a token amount.",
+    "example": "In Polynomial, m = 1 and n = 2 select a square-root power.",
+    "scene": "39"
+  },
+  "param.o": {
+    "title": "o: input offset",
+    "body": "Shift the period input before applying the curve. This changes the curve's calculation, not the calendar start date, and differs from adding an amount afterward with b.",
+    "example": "In the audited square curve, o = 1 makes the input k + 1 before squaring.",
+    "scene": "39"
+  },
+  "param.s": {
+    "title": "s: optional start index",
+    "body": "This advanced setting changes the function's period reference. It is not simply a number of days to wait after registration. Leave it blank to use the verified examples' default reference.",
+    "example": "The audited recipe tables all leave s blank.",
+    "scene": "33"
+  },
+  "param.initial": {
+    "title": "Initial recurring amount",
+    "body": "This starts the step-decreasing function before its reductions. It is an amount within the recurring formula, separate from the token supply created at registration.",
+    "example": "An initial recurring amount of 1.00 token is held for two indices in the audited example.",
+    "scene": "36"
+  },
+  "param.minimum": {
+    "title": "Minimum per interval",
+    "body": "This sets a lower bound for the function's regular calculation. Blank means no optional lower bound; zero is an explicit value. Step-decreasing trailing emission is a separate choice.",
+    "example": "A 0.10-token minimum need not raise a separately configured zero trailing amount.",
+    "scene": "36"
+  },
+  "param.maximum": {
+    "title": "Maximum per interval",
+    "body": "This bounds the amount calculated for one period. It does not set the maximum outstanding token supply, which is configured separately in Supply & permissions.",
+    "example": "The linear example stops increasing at 0.20 tokens per index.",
+    "scene": "38"
+  },
+  "param.step_count": {
+    "title": "Intervals per decrease",
+    "body": "Choose how many period indices share an amount before the next reduction. This is a count of function periods; its clock duration depends on the selected interval.",
+    "example": "With 2 intervals per decrease, the example uses 1.00 twice, then 0.50 twice.",
+    "scene": "36"
+  },
+  "param.decrease_numerator": {
+    "title": "Reduction fraction numerator",
+    "body": "Together with the denominator, this sets the fraction removed at each reduction. It describes the reduction, not the fraction that remains afterward.",
+    "example": "A numerator of 1 and denominator of 4 remove one quarter, leaving three quarters.",
+    "scene": "36"
+  },
+  "param.decrease_denominator": {
+    "title": "Reduction fraction denominator",
+    "body": "This positive whole number completes the reduction fraction. Each reduction removes that fraction of the previous amount, with integer rounding in the calculation.",
+    "example": "A numerator of 1 and denominator of 2 halve the amount at each reduction.",
+    "scene": "36"
+  },
+  "param.maximum_interval_count": {
+    "title": "Maximum reduction era count",
+    "body": "This optional limit counts reduction eras, not individual periods. The trailing amount is used after this era count is exceeded; intervals per decrease determine each era's length.",
+    "example": "With 2 intervals per decrease and a limit of 3, the audited trailing amount starts at index 8.",
+    "scene": "36"
+  },
+  "param.trailing": {
+    "title": "Trailing amount",
+    "body": "This is the recurring amount used after the step-decreasing era limit is exceeded. It is chosen separately from the normal minimum, so a minimum does not automatically raise it.",
+    "example": "The audited example settles at 0.10 tokens from index 8 onward.",
+    "scene": "36"
+  },
+  "param.amount": {
+    "title": "Amount per interval",
+    "body": "This is the fixed allocation for each eligible recurring period. Enter tokens in this prototype; the real contract stores the equivalent number of smallest units.",
+    "example": "With 2 decimals, 1.00 token corresponds to 100 smallest units.",
+    "scene": "35"
+  },
+  "param.steps": {
+    "title": "Step starts and amounts",
+    "body": "Give each distinct starting index its token amount. The latest start reached selects the amount. Use at least two distinct starts; duplicate indices do not add their amounts together.",
+    "example": "0: 0.10, 3: 0.05, 5: 0 means 0.10 until index 3, then 0.05 until index 5.",
+    "scene": "37"
+  },
+  "period-index": {
+    "title": "Reading the period index",
+    "body": "The index labels a period in the function's calculation. Index zero illustrates the starting boundary; it is not an extra initial-supply payment. Claimable periods follow the network's boundaries.",
+    "example": "The tutorial's first five eligible periods use indices 1 through 5.",
+    "scene": "34"
+  },
+  "static-preview": {
+    "title": "Worked example preview",
+    "body": "The preview recalculates the current parameters with the selected network protocol. It shows raw units, displayed tokens, and cumulative allocations. The assumed registration reference is explicit; this is an illustration, not a promise of a future claim.",
+    "example": "Changing the linear slope recalculates the table. Index zero is illustrative and is not added to the cumulative allocations.",
+    "scene": "43"
+  },
+  "scheduledAmount": {
+    "title": "Amount for this allocation",
+    "body": "Enter the tokens assigned to this scheduled recipient at this date. This is one allocation, not an amount repeated each period. The recipient must claim it when eligible.",
+    "example": "Assign 25 tokens to the treasury on the chosen date.",
+    "scene": "45"
+  },
+  "permissions": {
+    "title": "Understand the token’s permissions",
+    "body": "For each action, inspect who can act, who can change that rule, and the three change allowances. A disabled action can become available later if its administrator retains the necessary authority.",
+    "example": "Minting set to No one is not permanently disabled while the owner can change its rule.",
+    "scene": "18"
+  },
+  "fee": {
+    "title": "Estimated creation fee",
+    "body": "Registration is paid from the issuer identity’s Platform credits; the app can show their DASH equivalent. Keywords and distribution features can affect the estimate. This is not the token’s purchase price.",
+    "example": "Adding a search keyword can increase the estimated registration cost.",
+    "scene": "51"
+  },
+  "unknownOutcome": {
+    "title": "Registration result is unclear",
+    "body": "A slow or missing response does not prove registration failed. Check the token list and confirmed contract state before submitting again, so you avoid creating another paid contract unintentionally.",
+    "example": "Refresh My Tokens and inspect the token and contract identifiers before considering a retry.",
+    "scene": "52"
+  }
+}

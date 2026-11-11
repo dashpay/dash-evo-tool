@@ -35,6 +35,8 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "575d961fe0c54bd
     "shielded",
 ] }
 rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb" }
+# Full draft validation uses the same pinned DPP instance as dash-sdk.
+dpp = { git = "https://github.com/dashpay/platform", rev = "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb", default-features = false, features = ["validation"] }
 platform-wallet = { git = "https://github.com/dashpay/platform", rev = "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb", features = [
     "serde",
     "shielded",

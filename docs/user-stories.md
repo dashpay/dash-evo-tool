@@ -1213,7 +1213,10 @@ As a user, I want to transfer tokens to another identity so that I can send toke
 
 As a developer, I want to create a new token contract with full configuration so that I can issue a custom token on Dash Platform.
 
-- Configure naming, supply, decimals, action rules, distribution, and groups.
+- Draft without an identity in seven sequential sections, with contextual help and the tutorial link.
+- Configure names and languages, exact token amounts and precision, all action performers and administrators, all recurring functions, absolute scheduled allocations, groups, history, search, and document types.
+- Compare all changes before applying a supply example or protocol template, cancel without changes, and undo an applied proposal.
+- Reject duplicate members, unreachable group power, duplicate recipient/time allocations, external document references, and duplicate JSON names without silently replacing input.
 - Contract is registered via state transition.
 
 ### TOK-006: Mint tokens [Implemented]

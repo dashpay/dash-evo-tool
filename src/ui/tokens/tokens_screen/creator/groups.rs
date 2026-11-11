@@ -37,12 +37,11 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         if let Some(id) = remove {
             state.draft.remove_group(id);
         }
-        if ui.button("Add group").clicked() {
-            if let Some(id) = (0..=u16::MAX)
+        if ui.button("Add group").clicked()
+            && let Some(id) = (0..=u16::MAX)
                 .find(|id| state.draft.groups.iter().all(|group| group.position != *id))
-            {
-                state.draft.groups.push(GroupDraft::new(id));
-            }
+        {
+            state.draft.groups.push(GroupDraft::new(id));
         }
     });
     card(ui, |ui| {

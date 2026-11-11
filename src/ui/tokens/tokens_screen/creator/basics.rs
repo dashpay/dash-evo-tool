@@ -25,6 +25,33 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 );
             });
         }
+        label(ui, "Choose a supply policy", "policy", &mut state.help);
+        ui.horizontal_wrapped(|ui| {
+            for (limited, caption, title) in [
+                (false, "Compare fixed example", "Fixed supply"),
+                (
+                    true,
+                    "Compare owner example",
+                    "Owner-managed, with a hard cap",
+                ),
+            ] {
+                if ui.button(caption).clicked() {
+                    state.proposal = Some(Proposal {
+                        title,
+                        draft: state.draft.example_proposal(limited),
+                    });
+                }
+            }
+            if ui.button("Choose custom rules →").clicked() {
+                state.draft.policy = Policy::Custom;
+                state.section = Section::Supply;
+            }
+        });
+        ui.label(policy_label(state.draft.policy));
+        if state.undo.is_some() && ui.button("Undo last example or template").clicked() {
+            state.undo_proposal();
+        }
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             let caption = label(ui, "Decimal precision", "decimals", &mut state.help);
             let mut precision = state.draft.decimals;
@@ -32,10 +59,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 .add(egui::DragValue::new(&mut precision).range(0..=16))
                 .labelled_by(caption.id)
                 .changed()
+                && let Err(error) = state.draft.change_precision(precision)
             {
-                if let Err(error) = state.draft.change_precision(precision) {
-                    state.error = Some(error);
-                }
+                state.error = Some(error);
             }
         });
         egui::CollapsingHeader::new("Names, languages and description").show(ui, |ui| {
@@ -68,21 +94,17 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         ui.small("Changing precision preserves displayed token amounts. Amounts that cannot be represented remain visible for correction.");
     });
     card(ui, |ui| {
-        heading(ui, "Choose a supply policy", "policy", &mut state.help);
+        heading(ui, "About the starting policies", "policy", &mut state.help);
         ui.label(
             "A starting point is a choice about power. Compare all changes before applying it.",
         );
-        ui.strong(policy_label(state.draft.policy));
-        ui.add_space(8.0);
-        for (limited, title, body, key) in [
+        for (title, body, key) in [
             (
-                false,
                 "Fixed supply",
                 "1,000 tokens, permanently capped at 1,000. No issuer powers or rule administrators.",
                 "fixed-policy",
             ),
             (
-                true,
                 "Owner-managed, with a hard cap",
                 "Start with 1,000 tokens, capped at 10,000. The owner can mint, burn their own tokens, and pause or resume transfers.",
                 "owner-policy",
@@ -90,27 +112,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         ] {
             label(ui, title, key, &mut state.help);
             ui.label(body);
-            if ui
-                .button(if limited {
-                    "Compare owner example"
-                } else {
-                    "Compare fixed example"
-                })
-                .clicked()
-            {
-                state.proposal = Some(Proposal {
-                    title,
-                    draft: state.draft.example_proposal(limited),
-                });
-            }
             ui.add_space(12.0);
-        }
-        if ui.button("Choose custom rules →").clicked() {
-            state.draft.policy = Policy::Custom;
-            state.section = Section::Supply;
-        }
-        if state.undo.is_some() && ui.button("Undo last example or template").clicked() {
-            state.undo_proposal();
         }
         egui::CollapsingHeader::new("Existing protocol templates").show(ui, |ui| {
             ui.label("These retain the original protocol permissions. They differ from the two examples above. Compare every performer, administrator and allowance.");

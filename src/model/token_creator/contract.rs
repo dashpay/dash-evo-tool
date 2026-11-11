@@ -29,7 +29,7 @@ pub fn assemble_contract(
     contract_id: Identifier,
     params: TokenContractParams,
     version: &PlatformVersion,
-) -> Result<DataContract, ProtocolError> {
+) -> Result<DataContract, Box<ProtocolError>> {
     let TokenContractParams {
         token_names,
         contract_keywords,
@@ -245,14 +245,13 @@ pub fn validate_submission_time(contract: &DataContract, now_ms: u64) -> Result<
     for token in contract.tokens().values() {
         if let Some(TokenPreProgrammedDistribution::V0(schedule)) =
             token.distribution_rules().pre_programmed_distribution()
+            && schedule.distributions.keys().any(|time| *time <= now_ms)
         {
-            if schedule.distributions.keys().any(|time| *time <= now_ms) {
-                return Err(DraftError::new(
-                    Section::Distribution,
-                    "Scheduled allocation",
-                    super::DraftIssue::ScheduleTime,
-                ));
-            }
+            return Err(DraftError::new(
+                Section::Distribution,
+                "Scheduled allocation",
+                super::DraftIssue::ScheduleTime,
+            ));
         }
     }
     Ok(())

@@ -2785,6 +2785,6 @@ mod tests {
 pub fn token_creator_registration_charge(
     contract: &dash_sdk::platform::DataContract,
     version: &dash_sdk::dpp::version::PlatformVersion,
-) -> Result<u64, dash_sdk::dpp::ProtocolError> {
-    contract.registration_cost(version)
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
+    contract.registration_cost(version).map_err(Box::new)
 }

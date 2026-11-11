@@ -99,10 +99,10 @@ impl TokensScreen {
         if let Some(notice) = &self.creator_workspace.notice {
             ui.horizontal_wrapped(|ui| {
                 ui.label(notice);
-                if let Some(section) = self.creator_workspace.error_section {
-                    if ui.link(format!("Go to {}", section.label())).clicked() {
-                        self.creator_workspace.section = section;
-                    }
+                if let Some(section) = self.creator_workspace.error_section
+                    && ui.link(format!("Go to {}", section.label())).clicked()
+                {
+                    self.creator_workspace.section = section;
                 }
             });
         }

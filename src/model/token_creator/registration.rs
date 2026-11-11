@@ -63,19 +63,20 @@ impl RegistrationRecord {
         )
     }
     /// Decodes an already validated recovery payload with bounded allocation and its original version.
-    pub fn contract(&self) -> Result<DataContract, ProtocolError> {
+    pub fn contract(&self) -> Result<DataContract, Box<ProtocolError>> {
         DataContract::versioned_deserialize_untrusted(
             &self.contract_bytes,
             false,
-            PlatformVersion::get(self.protocol_version)?,
+            PlatformVersion::get(self.protocol_version).map_err(ProtocolError::from)?,
         )
+        .map_err(Box::new)
     }
     /// Acceptance is about every authored field, not just the deterministic ID.
-    pub fn matches_contract(&self, accepted: &DataContract) -> Result<bool, ProtocolError> {
+    pub fn matches_contract(&self, accepted: &DataContract) -> Result<bool, Box<ProtocolError>> {
         let expected = self.contract()?;
-        let version = PlatformVersion::get(self.protocol_version)?;
+        let version = PlatformVersion::get(self.protocol_version).map_err(ProtocolError::from)?;
         let normalize =
-            |contract: &DataContract| -> Result<DataContractInSerializationFormat, ProtocolError> {
+            |contract: &DataContract| -> Result<DataContractInSerializationFormat, Box<ProtocolError>> {
                 let mut shape = DataContractInSerializationFormat::try_from_platform_versioned(
                     contract, version,
                 )?;

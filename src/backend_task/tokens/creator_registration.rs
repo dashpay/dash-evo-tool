@@ -42,8 +42,8 @@ fn settings() -> Option<PutSettings> {
     settings.request_settings.retries = Some(0);
     Some(settings)
 }
-fn protocol(source: ProtocolError) -> TaskError {
-    TaskError::from(dash_sdk::Error::Protocol(source))
+fn protocol(source: impl Into<Box<ProtocolError>>) -> TaskError {
+    TaskError::from(dash_sdk::Error::Protocol(*source.into()))
 }
 
 async fn reserve_reviewed_nonce(

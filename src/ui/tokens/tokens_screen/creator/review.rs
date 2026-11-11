@@ -59,10 +59,10 @@ impl TokensScreen {
                 }
                 if record.status == RegistrationStatus::Confirmed {
                     ui.label("These identifiers come from the accepted contract. A draft or a broadcast alone is not proof of creation.");
-                    if let Some(outcome) = &self.creator_workspace.outcome {
-                        if !outcome.local_cache_saved || !outcome.journal_saved {
-                            ui.label("The token was created, but a local save did not finish. Check status to save the receipt and token again; this does not create or pay for another token.");
-                        }
+                    if let Some(outcome) = &self.creator_workspace.outcome
+                        && (!outcome.local_cache_saved || !outcome.journal_saved)
+                    {
+                        ui.label("The token was created, but a local save did not finish. Restore the local receipt to save it and the token again; this does not create or pay for another token.");
                     }
                     if ui.button("Open contract").clicked() {
                         self.tokens_subscreen = super::super::TokensSubscreen::SearchTokens;
@@ -189,17 +189,15 @@ impl TokensScreen {
                     egui::Button::new("Check settings"),
                 )
                 .clicked()
+                && let Some((owner, key)) = binding
             {
-                if let Some((owner, key)) = binding {
-                    let task = TokenTask::PrepareTokenCreation {
-                        draft: Box::new(self.creator_workspace.draft.clone()),
-                        owner: owner.identity.id(),
-                        signing_key: Box::new(key.clone()),
-                    };
-                    self.creator_workspace.pending_draft =
-                        Some(self.creator_workspace.draft.clone());
-                    action = self.begin_workspace_task(task);
-                }
+                let task = TokenTask::PrepareTokenCreation {
+                    draft: Box::new(self.creator_workspace.draft.clone()),
+                    owner: owner.identity.id(),
+                    signing_key: Box::new(key.clone()),
+                };
+                self.creator_workspace.pending_draft = Some(self.creator_workspace.draft.clone());
+                action = self.begin_workspace_task(task);
             }
         });
         if self.creator_workspace.prepared.is_none() {
@@ -251,13 +249,13 @@ impl TokensScreen {
                         ui.visuals().warn_fg_color,
                         "Add credits to this identity, then prepare the review again.",
                     );
-                    if let Some(identity) = self.selected_identity.clone() {
-                        if ui.button("Add identity credits").clicked() {
-                            action = AppAction::AddScreen(
-                                crate::ui::ScreenType::TopUpIdentity(identity)
-                                    .create_screen(&self.app_context),
-                            );
-                        }
+                    if let Some(identity) = self.selected_identity.clone()
+                        && ui.button("Add identity credits").clicked()
+                    {
+                        action = AppAction::AddScreen(
+                            crate::ui::ScreenType::TopUpIdentity(identity)
+                                .create_screen(&self.app_context),
+                        );
                     }
                 }
                 human_review(ui, &draft);
@@ -363,10 +361,11 @@ fn json_tools(ui: &mut Ui, contract: &dash_sdk::platform::DataContract, version:
         Ok(json) => {
             ui.horizontal(|ui| {
                 if ui.button("Copy contract JSON").clicked(){ui.ctx().copy_text(json.clone());}
-                if ui.button("Save contract JSON").clicked() {
-                    if let Some(path)=rfd::FileDialog::new().set_file_name("token-contract.json").add_filter("JSON",&["json"]).save_file() {
-                        if let Err(error)=std::fs::write(path,&json) {MessageBanner::set_global(ui.ctx(),"The contract file could not be saved. Choose a writable folder and try again.",MessageType::Error).with_details(error);}
-                    }
+                if ui.button("Save contract JSON").clicked()
+                    && let Some(path) = rfd::FileDialog::new().set_file_name("token-contract.json").add_filter("JSON", &["json"]).save_file()
+                    && let Err(error) = std::fs::write(path, &json)
+                {
+                    MessageBanner::set_global(ui.ctx(), "The contract file could not be saved. Choose a writable folder and try again.", MessageType::Error).with_details(error);
                 }
             });
             egui::CollapsingHeader::new("Inspect complete contract JSON · amounts are base units")

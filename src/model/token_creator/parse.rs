@@ -195,10 +195,10 @@ impl TokenDraft {
         }
         let mut rules = self.permissions.parse(&positions, self.main_group)?;
         let remap_actor = |actor: &mut AuthorizedActionTakers| {
-            if let AuthorizedActionTakers::Group(position) = actor {
-                if let Some(mapped) = remap.get(position) {
-                    *position = *mapped;
-                }
+            if let AuthorizedActionTakers::Group(position) = actor
+                && let Some(mapped) = remap.get(position)
+            {
+                *position = *mapped;
             }
         };
         for rule in &mut rules {

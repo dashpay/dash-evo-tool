@@ -119,12 +119,16 @@ impl DraftError {
         }
     }
     /// Preserves a protocol failure without displaying its technical text.
-    pub fn protocol(section: Section, field: &'static str, source: ProtocolError) -> Self {
+    pub fn protocol(
+        section: Section,
+        field: &'static str,
+        source: impl Into<Box<ProtocolError>>,
+    ) -> Self {
         Self::new(
             section,
             field,
             DraftIssue::Protocol {
-                source: Box::new(source),
+                source: source.into(),
             },
         )
     }
@@ -493,10 +497,11 @@ impl TokenDraft {
         let old = self.decimals;
         let mut error = None;
         let mut retarget = |amount: &mut TokenAmountInput, active: bool, section, field| {
-            if let Err(source) = amount.change_precision(old, decimals) {
-                if active && error.is_none() {
-                    error = Some(DraftError::new(section, field, source.into()));
-                }
+            if let Err(source) = amount.change_precision(old, decimals)
+                && active
+                && error.is_none()
+            {
+                error = Some(DraftError::new(section, field, source.into()));
             }
         };
         retarget(&mut self.initial, true, Section::Supply, "Initial supply");

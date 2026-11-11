@@ -61,27 +61,34 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
             ui.set_width(800.0_f32.min(context.content_rect().width() - 60.0));
             ui.heading(format!("Compare {}",proposal.title));
             ui.label("Your names, description, document types, keywords, and groups are kept. Inactive allocation parameters and scheduled rows are retained.");
-            egui::ScrollArea::vertical().max_height(context.content_rect().height() * 0.62).show(ui, |ui| {
-                egui::Grid::new("proposal_diff").num_columns(3).striped(true).show(ui, |ui| {
-                    ui.strong("Setting"); ui.strong("Your draft"); ui.strong("After applying"); ui.end_row();
-                    for (name,before,after) in comparison(&state.draft,&proposal.draft) { ui.label(name); ui.label(before); ui.label(after); ui.end_row(); }
-                });
-                ui.add_space(12.0);
-                ui.strong("Every performer, administrator and later-change allowance");
-                for kind in RuleKind::ALL {
-                    let before = state.draft.permissions.get(kind);
-                    let after = proposal.draft.permissions.get(kind);
-                    ui.separator(); ui.strong(kind.label());
-                    ui.label(format!("Performer: {} → {}",before.performer.label(),after.performer.label()));
-                    ui.label(format!("Administrator: {} → {}",before.administrator.label(),after.administrator.label()));
-                    for (name,old,new) in [
-                        ("Disable action",before.allow_disable_action,after.allow_disable_action),
-                        ("Remove administrator",before.allow_remove_administrator,after.allow_remove_administrator),
-                        ("Replace administrator",before.allow_replace_administrator,after.allow_replace_administrator),
-                    ] { ui.small(format!("{name}: {} → {}",supply::yes(old),supply::yes(new))); }
+            let mut rows: Vec<_> = comparison(&state.draft, &proposal.draft)
+                .into_iter()
+                .map(|(caption, before, after)| (caption.to_owned(), before, after))
+                .collect();
+            for kind in RuleKind::ALL {
+                let before = state.draft.permissions.get(kind);
+                let after = proposal.draft.permissions.get(kind);
+                rows.push((format!("{} · performer", kind.label()), before.performer.label(), after.performer.label()));
+                rows.push((format!("{} · administrator", kind.label()), before.administrator.label(), after.administrator.label()));
+                for (caption, old, new) in [
+                    ("allow disabling action", before.allow_disable_action, after.allow_disable_action),
+                    ("allow removing administrator", before.allow_remove_administrator, after.allow_remove_administrator),
+                    ("allow replacing administrator", before.allow_replace_administrator, after.allow_replace_administrator),
+                ] {
+                    rows.push((format!("{} · {caption}", kind.label()), supply::yes(old).into(), supply::yes(new).into()));
                 }
+            }
+            egui::ScrollArea::vertical().max_height(context.content_rect().height() * 0.62).show(ui, |ui| {
+                ui.strong("Changes to your draft");
+                comparison_table(ui, "changed_settings", &rows, true);
+                egui::CollapsingHeader::new("Full comparison including unchanged settings").show(ui, |ui| {
+                    comparison_table(ui, "all_settings", &rows, false);
+                });
             });
-            ui.horizontal(|ui| { if ui.button("Keep my draft").clicked() { cancel = true; } if ComponentStyles::add_primary_button(ui,"Apply these changes").clicked() { apply = true; } });
+            ui.horizontal(|ui| {
+                if ui.button("Keep my draft").clicked() { cancel = true; }
+                if ComponentStyles::add_primary_button(ui,"Apply these changes").clicked() { apply = true; }
+            });
         });
         if apply {
             state.apply_proposal();
@@ -121,6 +128,29 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
             state.rule_editor = None;
         }
     }
+}
+
+fn comparison_table(ui: &mut Ui, id: &str, rows: &[(String, String, String)], changed_only: bool) {
+    let column_width = ((ui.available_width() - 16.0) / 3.0).max(1.0);
+    egui::Grid::new(id)
+        .num_columns(3)
+        .max_col_width(column_width)
+        .striped(true)
+        .show(ui, |ui| {
+            for caption in ["Setting", "Your draft", "After applying"] {
+                ui.strong(caption);
+            }
+            ui.end_row();
+            for (caption, before, after) in rows
+                .iter()
+                .filter(|(_, before, after)| !changed_only || before != after)
+            {
+                for value in [caption, before, after] {
+                    ui.add(egui::Label::new(value).wrap());
+                }
+                ui.end_row();
+            }
+        });
 }
 
 fn comparison(before: &TokenDraft, after: &TokenDraft) -> Vec<(&'static str, String, String)> {

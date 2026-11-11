@@ -42,6 +42,63 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[test]
+fn creator_workspace_comparison_prioritizes_changed_authority() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(5);
+        h.get_by_label("Compare owner example").click();
+        h.run_steps(5);
+        h.get_by_label("Changes to your draft");
+        let apply = h.get_by_label("Apply these changes").rect();
+        for caption in [
+            "Mint more tokens · performer",
+            "Burn the actor's own tokens · performer",
+            "Pause or resume transfers · performer",
+        ] {
+            let changed = h.get_by_label(caption).rect();
+            assert!(
+                changed.bottom() < apply.top(),
+                "Changed authority must precede the visible Apply action: {changed:?} / {apply:?}"
+            );
+        }
+        h.get_by_label("Full comparison including unchanged settings");
+    });
+}
+
+#[test]
+fn creator_workspace_shows_policy_choices_before_continuing_with_a_banner() {
+    use dash_evo_tool::ui::{MessageType, components::MessageBanner};
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        MessageBanner::set_global(
+            &h.ctx,
+            "Disconnected. Reconnect from the Network screen.",
+            MessageType::Warning,
+        )
+        .disable_auto_dismiss();
+        h.run_steps(5);
+        let footer = h.get_by_label("Continue →").rect();
+        for caption in [
+            "Compare fixed example",
+            "Compare owner example",
+            "Choose custom rules →",
+        ] {
+            let choice = h.get_by_label(caption).rect();
+            assert!(
+                choice.bottom() < footer.top() - 12.0,
+                "The policy choice {caption} must be visible before Continue, without scrolling: {choice:?} / {footer:?}"
+            );
+        }
+    });
+}
+
+#[test]
 fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
     use egui::accesskit::Role;
     with_isolated_data_dir(|| {

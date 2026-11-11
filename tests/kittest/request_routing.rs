@@ -901,7 +901,7 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
             );
             assert!(
                 creator.token_registration_pending_for_test(),
-                "its progress banner stays (fails: {fails})"
+                "its pending request stays (fails: {fails})"
             );
             let failure_reported = harness
                 .query_all_by_label_contains(&TaskError::TaskManagerShuttingDown.to_string())
@@ -916,7 +916,7 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
 }
 
 /// A failed registration reaches the Token Creator that sent it: the creator
-/// leaves its wait in the error state and drops its progress banner, while the
+/// leaves its wait in the error state and clears its pending request, while the
 /// failure itself is reported by a banner.
 #[test]
 fn a_failed_registration_puts_the_token_creator_in_its_error_state() {
@@ -959,7 +959,7 @@ fn a_failed_registration_puts_the_token_creator_in_its_error_state() {
 
 /// A scheduled-vote sweep that ran on the previous network reaches no screen
 /// of the new one when it ends after a switch. The Token Creator, in view and
-/// registering a token on the new network, keeps its progress banner through
+/// registering a token on the new network, keeps its pending request through
 /// the sweep's failure and its completion. The failure is still reported by
 /// a banner.
 #[test]
@@ -1011,7 +1011,7 @@ fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() 
             );
             assert!(
                 creator.token_registration_pending_for_test(),
-                "its progress banner stays (fails: {fails})"
+                "its pending request stays (fails: {fails})"
             );
             let failure_reported = harness
                 .query_all_by_label_contains(&failure().to_string())

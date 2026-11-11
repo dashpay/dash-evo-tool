@@ -7,88 +7,64 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
         heading(ui, "What are you creating?", "basics", &mut state.help);
         ui.label("Give people a recognizable name, then choose how the supply should work.");
-        let mut remove = None;
-        for (index, name) in state.draft.names.iter_mut().enumerate() {
-            ui.push_id(index, |ui| {
-                if index > 0 {
-                    ui.separator();
-                }
-                ui.horizontal(|ui| {
-                    label(ui, "Language", "localizations", &mut state.help);
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(&name.language)
-                        .show_ui(ui, |ui| {
-                            for language in TokenNameLanguage::selection_order() {
-                                ui.selectable_value(
-                                    &mut name.language,
-                                    language.iso_code().into(),
-                                    language.ui_label(),
-                                );
-                            }
-                        });
-                    if index > 0 && ui.small_button("Remove language").clicked() {
-                        remove = Some(index);
-                    }
-                });
+        if let Some(name) = state.draft.names.first_mut() {
+            ui.columns(2, |columns| {
                 text(
-                    ui,
+                    &mut columns[0],
                     "Singular token name",
                     "name",
                     &mut name.singular,
                     &mut state.help,
                 );
                 text(
-                    ui,
+                    &mut columns[1],
                     "Plural token name",
                     "plural",
                     &mut name.plural,
                     &mut state.help,
                 );
-                checkbox(
-                    ui,
-                    "Include this name in search",
-                    "keywords",
-                    &mut name.searchable,
-                    &mut state.help,
-                );
             });
         }
-        if let Some(index) = remove {
-            state.draft.names.remove(index);
-        }
-        if ui.button("Add language").clicked() {
-            state.draft.names.push(NameDraft {
-                language: "es".into(),
-                singular: String::new(),
-                plural: String::new(),
-                searchable: false,
-            });
-        }
-        checkbox(
-            ui,
-            "Capitalize token names",
-            "capitalization",
-            &mut state.draft.capitalize,
-            &mut state.help,
-        );
-        text(
-            ui,
-            "Description (optional)",
-            "description",
-            &mut state.draft.description,
-            &mut state.help,
-        );
-        ui.small("Names require 3 to 25 characters without spaces. A description may contain spaces and must have 3 to 100 characters when provided.");
-        label(ui, "Decimal precision", "decimals", &mut state.help);
-        let mut precision = state.draft.decimals;
-        if ui
-            .add(egui::DragValue::new(&mut precision).range(0..=16))
-            .changed()
-        {
-            if let Err(error) = state.draft.change_precision(precision) {
-                state.error = Some(error);
+        ui.horizontal(|ui| {
+            let caption = label(ui, "Decimal precision", "decimals", &mut state.help);
+            let mut precision = state.draft.decimals;
+            if ui
+                .add(egui::DragValue::new(&mut precision).range(0..=16))
+                .labelled_by(caption.id)
+                .changed()
+            {
+                if let Err(error) = state.draft.change_precision(precision) {
+                    state.error = Some(error);
+                }
             }
-        }
+        });
+        egui::CollapsingHeader::new("Names, languages and description").show(ui, |ui| {
+            let mut remove = None;
+            for (index, name) in state.draft.names.iter_mut().enumerate() {
+                ui.push_id(index, |ui| {
+                    let caption = label(ui, "Language", "localizations", &mut state.help);
+                    egui::ComboBox::from_id_salt("language").selected_text(&name.language)
+                        .show_ui(ui, |ui| {
+                            for language in TokenNameLanguage::selection_order() {
+                                ui.selectable_value(&mut name.language, language.iso_code().into(), language.ui_label());
+                            }
+                        }).response.labelled_by(caption.id);
+                    if index > 0 {
+                        text(ui, "Singular token name", "name", &mut name.singular, &mut state.help);
+                        text(ui, "Plural token name", "plural", &mut name.plural, &mut state.help);
+                        if ui.button("Remove language").clicked() { remove = Some(index); }
+                    }
+                    checkbox(ui, "Include this name in search", "keywords", &mut name.searchable, &mut state.help);
+                });
+            }
+            if let Some(index) = remove { state.draft.names.remove(index); }
+            if ui.button("Add language").clicked() {
+                state.draft.names.push(NameDraft { language: "es".into(), singular: String::new(), plural: String::new(), searchable: false });
+            }
+            checkbox(ui, "Capitalize token names", "capitalization", &mut state.draft.capitalize, &mut state.help);
+            text(ui, "Description (optional)", "description", &mut state.draft.description, &mut state.help);
+            ui.small("Names require 3 to 25 characters without spaces. A description may contain spaces and must use 3 to 100 UTF-8 bytes when provided.");
+        });
         ui.small("Changing precision preserves displayed token amounts. Amounts that cannot be represented remain visible for correction.");
     });
     card(ui, |ui| {

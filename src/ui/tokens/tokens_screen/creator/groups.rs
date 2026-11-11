@@ -47,7 +47,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
     });
     card(ui, |ui| {
         heading(ui, "Main control group", "mainGroup", &mut state.help);
-        egui::ComboBox::from_id_salt("main_group")
+        egui::ComboBox::from_label("Main control group")
             .selected_text(
                 state
                     .draft

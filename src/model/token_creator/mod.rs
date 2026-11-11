@@ -148,6 +148,10 @@ impl DraftError {
 /// Actionable input failures; technical sources remain in Debug and the error chain.
 #[derive(Debug, thiserror::Error)]
 pub enum DraftIssue {
+    #[error(
+        "Reduce document schemas, groups or allocations. The creation request is larger than this network allows."
+    )]
+    CreationSize,
     #[error("Choose a starting example, an existing template, or Custom rules.")]
     Policy,
     #[error("Enter both the singular and plural token names.")]
@@ -202,7 +206,13 @@ pub enum DraftIssue {
     EmptySchedule,
     #[error("Enter an allocation greater than zero and within the supported balance range.")]
     Allocation,
-    #[error("Use search keywords with 3 to 50 characters.")]
+    #[error(
+        "Remove moderator action fees. This token contract does not declare a moderation team."
+    )]
+    DocumentModeratorFees,
+    #[error(
+        "Use at most 50 distinct search keywords, each 3 to 50 UTF-8 bytes after lowercase conversion, without spaces or control characters."
+    )]
     Keyword,
     #[error("Enter a JSON object mapping document names to object schemas, or clear the field.")]
     DocumentsShape,

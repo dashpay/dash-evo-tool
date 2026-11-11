@@ -895,12 +895,12 @@ fn a_registration_result_from_the_previous_network_leaves_the_token_creator_alon
 
             let creator = token_creator(&mut harness);
             assert_eq!(
-                *creator.token_creator_status_for_test(),
+                creator.token_creator_status_for_test(),
                 TokenCreatorStatus::WaitingForResult,
                 "the new network's registration is still waiting (fails: {fails})"
             );
             assert!(
-                creator.registration_banner_live_for_test(),
+                creator.token_registration_pending_for_test(),
                 "its progress banner stays (fails: {fails})"
             );
             let failure_reported = harness
@@ -943,10 +943,10 @@ fn a_failed_registration_puts_the_token_creator_in_its_error_state() {
 
         let creator = token_creator(&mut harness);
         assert_eq!(
-            *creator.token_creator_status_for_test(),
+            creator.token_creator_status_for_test(),
             TokenCreatorStatus::Error
         );
-        assert!(!creator.registration_banner_live_for_test());
+        assert!(!creator.token_registration_pending_for_test());
         assert!(
             harness
                 .query_all_by_label_contains(&TaskError::TaskManagerShuttingDown.to_string())
@@ -1005,12 +1005,12 @@ fn a_scheduled_vote_sweep_from_the_previous_network_stays_off_the_new_network() 
 
             let creator = token_creator(&mut harness);
             assert_eq!(
-                *creator.token_creator_status_for_test(),
+                creator.token_creator_status_for_test(),
                 TokenCreatorStatus::WaitingForResult,
                 "the new network's registration is still waiting (fails: {fails})"
             );
             assert!(
-                creator.registration_banner_live_for_test(),
+                creator.token_registration_pending_for_test(),
                 "its progress banner stays (fails: {fails})"
             );
             let failure_reported = harness

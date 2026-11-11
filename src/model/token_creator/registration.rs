@@ -26,9 +26,10 @@ pub struct PreparedRegistration {
     pub owner_balance: u64,
 }
 
-/// Only confirmed acceptance releases the paid-registration lock.
+/// Only confirmed acceptance or proven zero dispatches release the paid-registration lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegistrationStatus {
+    NotSubmitted,
     Submitted,
     Unknown,
     Confirmed,
@@ -54,7 +55,12 @@ pub struct RegistrationRecord {
 impl RegistrationRecord {
     /// Whether another paid attempt remains unsafe.
     pub fn blocks_registration(&self) -> bool {
-        self.status != RegistrationStatus::Confirmed
+        matches!(
+            self.status,
+            RegistrationStatus::Submitted
+                | RegistrationStatus::Unknown
+                | RegistrationStatus::Conflict
+        )
     }
     /// Decodes an already validated recovery payload with bounded allocation and its original version.
     pub fn contract(&self) -> Result<DataContract, ProtocolError> {

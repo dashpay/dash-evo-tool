@@ -21,8 +21,10 @@ impl TokensScreen {
             match self.app_context.token_registration_record() {
                 Ok(record) => {
                     self.creator_workspace.recovery = record.filter(|record| {
-                        record.blocks_registration()
-                            || Some(record.attempt_id) != self.creator_workspace.dismissed_receipt
+                        record.status != RegistrationStatus::NotSubmitted
+                            && (record.blocks_registration()
+                                || Some(record.attempt_id)
+                                    != self.creator_workspace.dismissed_receipt)
                     });
                     self.creator_workspace.recovery_loaded = true;
                 }
@@ -52,6 +54,9 @@ impl TokensScreen {
                     copy_id(ui, "Token ID", record.token_id);
                 }
                 copy_id(ui, "Owner", record.owner);
+                if record.blocks_registration() {
+                    help(ui, &mut self.creator_workspace.help, "unknownOutcome");
+                }
                 if record.status == RegistrationStatus::Confirmed {
                     ui.label("These identifiers come from the accepted contract. A draft or a broadcast alone is not proof of creation.");
                     if let Some(outcome) = &self.creator_workspace.outcome {
@@ -81,7 +86,14 @@ impl TokensScreen {
                     ui.label(if record.status==RegistrationStatus::Conflict {"A contract with this ID contains different settings. This app will not treat it as your reviewed token or make another paid attempt."}else{"The result may still arrive. Check status without paying again. Closing this screen or restarting the app preserves this record and the block on another creation."});
                 }
                 if ui
-                    .add_enabled(!pending, egui::Button::new("Check status · no payment"))
+                    .add_enabled(
+                        !pending,
+                        egui::Button::new(if record.status == RegistrationStatus::Confirmed {
+                            "Restore local receipt · no payment"
+                        } else {
+                            "Check status · no payment"
+                        }),
+                    )
                     .clicked()
                 {
                     action = self.begin_workspace_task(TokenTask::CheckTokenCreation);
@@ -190,6 +202,13 @@ impl TokensScreen {
                 }
             }
         });
+        if self.creator_workspace.prepared.is_none() {
+            card(ui, |ui| {
+                ui.heading("Draft overview");
+                ui.label("Inspect these settings while drafting. Preparation binds the final review to an owner, a signing key and the current network.");
+                human_review(ui, &self.creator_workspace.draft);
+            });
+        }
         if let (Some(prepared), Some(draft)) = (
             self.creator_workspace.prepared.clone(),
             self.creator_workspace.reviewed_draft.clone(),
@@ -206,6 +225,12 @@ impl TokensScreen {
                     copy_id(ui, "Token ID to be created", id);
                 }
                 ui.label("These IDs are prepared, not registered. If another operation changes the creation details, a new review is required.");
+                label(
+                    ui,
+                    "Creation charge",
+                    "fee",
+                    &mut self.creator_workspace.help,
+                );
                 ui.label(format!(
                     "Registration charge: {} credits",
                     prepared.registration_cost
@@ -310,7 +335,9 @@ impl TokensScreen {
         self.creator_workspace.pending = None;
         self.creator_workspace.prepared = None;
         self.creator_workspace.notice = Some(error.to_string());
+        self.creator_workspace.error_section = None;
         if let TaskError::InvalidTokenDraft { source } = error {
+            self.creator_workspace.notice = Some(format!("{}: {source}", source.field));
             self.creator_workspace.error_section = Some(source.section);
         }
         self.creator_workspace.recovery_loaded = false;
@@ -432,6 +459,41 @@ mod tests {
             "Edited while waiting"
         );
         assert!(screen.creator_workspace.pending.is_none());
+    }
+    #[test]
+    fn checkpoint_p4_invalid_draft_keeps_the_field_and_safe_correction() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let mut screen =
+            TokensScreen::new(&context, super::super::super::TokensSubscreen::TokenCreator);
+        let request = BackendTaskContext::for_dispatch_on(&BackendTask::None, context.network);
+        screen.creator_workspace.pending = Some(request.clone());
+        let mut draft = TokenDraft::example(false);
+        draft.initial.text = "100".into();
+        draft.maximum.text = "10".into();
+        let source = draft
+            .parse(
+                dash_sdk::platform::Identifier::from([8; 32]),
+                context.network,
+                PlatformVersion::latest(),
+                0,
+            )
+            .unwrap_err();
+        let expected = format!("{}: {source}", source.field);
+        screen.workspace_error(
+            &request,
+            &TaskError::InvalidTokenDraft {
+                source: Box::new(source),
+            },
+        );
+        assert_eq!(
+            screen.creator_workspace.notice.as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            screen.creator_workspace.error_section,
+            Some(Section::Supply)
+        );
     }
     #[test]
     fn token_registration_unrelated_error_does_not_finish_the_current_request() {

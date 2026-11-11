@@ -71,15 +71,17 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
             &mut state.help,
         );
         ui.label("Paste a JSON object mapping document type names to schemas. This is not a full-contract import. Clearing the field removes every document type from this draft.");
+        let caption = ui.label("Document schema JSON");
         ui.add(
             egui::TextEdit::multiline(&mut state.draft.documents)
                 .code_editor()
                 .desired_rows(15)
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .labelled_by(caption.id);
         match state.draft.parse_documents() {
             Ok(Some(schemas)) => {
-                ui.label(format!("JSON object parsed: {} document types. Full contract validation runs during preparation.",schemas.len()));
+                ui.label(format!("JSON object parsed: {} document types. Document schema and token rule checks run during preparation.",schemas.len()));
             }
             Ok(None) => {
                 ui.label("No document types are included.");

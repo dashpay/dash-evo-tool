@@ -1,58 +1,27 @@
 mod contract_details;
 mod creator;
 mod data_contract_json_pop_up;
-mod distributions;
-mod groups;
 mod keyword_search;
 mod my_tokens;
 mod structs;
-mod token_creator;
 
 pub use structs::*;
 
-pub use groups::*;
-
 use crate::wallet_backend::poison::MutexRecover;
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::error;
 
-use serde_json;
-
-use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::{TokenAmount};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
-use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::DistributionFunction;
+use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_type::RewardDistributionType;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::v0::TokenPerpetualDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::TokenPerpetualDistribution;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::v0::TokenPreProgrammedDistributionV0;
-use dash_sdk::dpp::data_contract::associated_token::token_pre_programmed_distribution::TokenPreProgrammedDistribution;
-use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
-use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
-use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Ui};
-use crate::ui::theme::{DashColors, ResponseExt};
-use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
+use eframe::egui::{self, Ui};
 use enum_iterator::Sequence;
-use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
@@ -61,15 +30,11 @@ use crate::backend_task::{BackendTask, BackendTaskContext};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
-use crate::model::amount::Amount;
-use crate::model::fee_estimation::{
-    TokenRegistrationFeatures, estimate_token_contract_registration,
-};
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
+use crate::ui::components::Component;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -80,31 +45,8 @@ use crate::ui::components::top_panel::{
     add_top_panel, add_top_panel_with_global_nav, subdued_everyday_spec,
 };
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::ModalOpeningGuard;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
-
-const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
-const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/inv_log_function.png");
-const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.png");
-const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/linear_function.png");
-const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/polynomial_function.png");
-
-const DEFAULT_DECIMALS: u8 = 8;
-
-pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
-    let image = ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .expect("Failed to guess image format")
-        .decode()
-        .expect("Failed to decode image")
-        .to_rgba8();
-
-    let size = [image.width() as usize, image.height() as usize];
-    let pixels = image.as_flat_samples();
-
-    ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
-}
 
 pub fn validate_perpetual_distribution_recipient(
     contract_owner_id: Identifier,
@@ -143,38 +85,6 @@ pub fn validate_perpetual_distribution_recipient(
 pub struct ContractDescriptionInfo {
     pub data_contract_id: Identifier,
     pub description: String,
-}
-
-/* helper: tiny checkbox with no extra spacing */
-fn sub_checkbox(ui: &mut Ui, flag: &mut bool, label: &str) {
-    ui.horizontal(|ui| {
-        ui.checkbox(flag, label);
-    });
-}
-
-/// helper: draw a tri-state parent checkbox backed by `Option<bool>`
-fn tri_state(ui: &mut Ui, state: &mut Option<bool>, label: &str) -> Response {
-    // temporary bool just for the click interaction
-    let mut tmp = state.unwrap_or(false);
-
-    let resp = ui.add(Checkbox::new(&mut tmp, label).indeterminate(state.is_none()));
-
-    if resp.clicked() {
-        *state = match *state {
-            Some(false) => Some(true),
-            Some(true) => Some(false),
-            None => Some(true),
-        };
-    }
-    resp
-}
-
-fn sanitize_i64(input: &mut String) {
-    input.retain(|c| c.is_ascii_digit() || c == '-' || c == '+');
-}
-
-fn sanitize_u64(input: &mut String) {
-    input.retain(|c| c.is_ascii_digit());
 }
 
 /// Which token sub-screen is currently showing.
@@ -261,18 +171,7 @@ pub enum ContractSearchStatus {
     Error,
 }
 
-/// What the Token Creator's preset selector shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TokenPresetSelection {
-    /// No preset chosen and no rule edited yet: "Select a preset...".
-    #[default]
-    Unselected,
-    /// The rules are exactly this preset's.
-    Preset(TokenConfigurationPresetFeatures),
-    /// The rules were chosen individually, or no longer match the preset picked earlier.
-    Custom,
-}
-
+#[cfg(feature = "testing")]
 #[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
     #[default]
@@ -294,468 +193,6 @@ enum SortColumn {
 enum SortOrder {
     Ascending,
     Descending,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-pub struct ChangeControlRulesUI {
-    pub rules: ChangeControlRulesV0,
-    pub authorized_identity: Option<String>,
-    pub admin_identity: Option<String>,
-}
-
-impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
-    fn from(rules: ChangeControlRulesV0) -> Self {
-        ChangeControlRulesUI {
-            rules,
-            authorized_identity: None,
-            admin_identity: None,
-        }
-    }
-}
-
-/// Extra "minting destination" controls appended below the manual-mint rule grid.
-///
-/// Passed to [`ChangeControlRulesUI::render_control_change_rules_ui`] only for the
-/// Manual Mint action; every other action passes `None`.
-pub struct MintRecipientSection<'a> {
-    pub should_default_to_contract_owner: &'a mut bool,
-    pub destination_identity_enabled: &'a mut bool,
-    pub allow_choosing_destination: &'a mut bool,
-    pub destination_identity_rules: &'a mut ChangeControlRulesUI,
-    pub destination_identity: &'a mut String,
-    pub allow_choosing_destination_rules: &'a mut ChangeControlRulesUI,
-    pub destination_expanded: &'a mut bool,
-    pub allow_choosing_expanded: &'a mut bool,
-}
-
-impl ChangeControlRulesUI {
-    /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
-    ///
-    /// `special_case_option` carries the Freeze-only "allow transfers to frozen
-    /// identities" toggle; `mint_section` carries the Manual-Mint-only destination
-    /// controls. Both are `None` for every other action.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_control_change_rules_ui(
-        &mut self,
-        ui: &mut Ui,
-        current_groups: &[GroupConfigUI],
-        action_name: &str,
-        special_case_option: Option<&mut bool>,
-        is_expanded: &mut bool,
-        mint_section: Option<MintRecipientSection>,
-    ) {
-        ui.horizontal(|ui| {
-            // +/- button
-            let button_text = if *is_expanded { "−" } else { "+" };
-            let button_response = ui.add(
-                egui::Button::new(
-                    RichText::new(button_text)
-                        .size(20.0)
-                        .color(DashColors::DASH_BLUE),
-                )
-                .fill(Color32::TRANSPARENT)
-                .stroke(egui::Stroke::NONE),
-            );
-            if button_response.clicked() {
-                *is_expanded = !*is_expanded;
-            }
-            ui.label(action_name);
-        });
-
-        if *is_expanded {
-            ui.indent(format!("{}_content", action_name), |ui| {
-                egui::Grid::new(format!("{}_grid", action_name))
-                    .num_columns(2)
-                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                    .show(ui, |ui| {
-                    // Authorized action takers
-                    ui.horizontal(|ui| {
-                        ui.label("Authorized to perform action:");
-                        ComboBox::from_id_salt(format!("Authorized {} {}", action_name, current_groups.len()))
-                            .selected_text(match self.rules.authorized_to_make_change {
-                                AuthorizedActionTakers::NoOne => "No One".to_string(),
-                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
-                                AuthorizedActionTakers::Identity(id) => {
-                                    if id == Identifier::default() {
-                                        "Identity".to_string()
-                                    } else {
-                                        format!("Identity({})", id)
-                                    }
-                                },
-                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
-                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::NoOne,
-                                    "No One",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::ContractOwner,
-                                    "Contract Owner",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::Identity(Identifier::default()),
-                                    "Identity",
-                                );
-                                if current_groups.is_empty() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
-                                    });
-                                } else {
-                                    ui.selectable_value(
-                                        &mut self.rules.authorized_to_make_change,
-                                        AuthorizedActionTakers::MainGroup,
-                                        "Main Group",
-                                    );
-                                }
-                                for (group_position, _group) in current_groups.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut self.rules.authorized_to_make_change,
-                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
-                                        format!("Group {}", group_position),
-                                    );
-                                }
-                            });
-
-                        // If user selected Identity or Group, show text edit
-                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
-                            self.authorized_identity.get_or_insert_with(String::new);
-                            if let Some(ref mut id_str) = self.authorized_identity {
-                                ui.horizontal(|ui| {
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    ui.add_sized(
-                                        [300.0, 22.0],
-                                        TextEdit::singleline(id_str)
-                                            .hint_text("Enter base58 id")
-                                            .text_color(DashColors::text_primary(dark_mode))
-                                            .background_color(DashColors::input_background(dark_mode)),
-                                    );
-
-                                    if !id_str.is_empty() {
-                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
-
-                                        let (symbol, color) = if is_valid {
-                                            ("✔", Color32::DARK_GREEN)
-                                        } else {
-                                            ("×", Color32::DARK_RED)
-                                        };
-
-                                        ui.label(RichText::new(symbol).color(color).strong());
-                                    }
-                                });
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    // Admin action takers
-                    ui.horizontal(|ui| {
-                        ui.label("Authorized to change rules:");
-                        ComboBox::from_id_salt(format!("Admin {} {}", action_name, current_groups.len()))
-                            .selected_text(match self.rules.admin_action_takers {
-                                AuthorizedActionTakers::NoOne => "No One".to_string(),
-                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
-                                AuthorizedActionTakers::Identity(id) => {
-                                    if id == Identifier::default() {
-                                        "Identity".to_string()
-                                    } else {
-                                        format!("Identity({})", id)
-                                    }
-                                },
-                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
-                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::NoOne,
-                                    "No One",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::ContractOwner,
-                                    "Contract Owner",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::Identity(Identifier::default()),
-                                    "Identity",
-                                );
-                                if current_groups.is_empty() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
-                                    });
-                                } else {
-                                    ui.selectable_value(
-                                        &mut self.rules.admin_action_takers,
-                                        AuthorizedActionTakers::MainGroup,
-                                        "Main Group",
-                                    );
-                                }
-                                for (group_position, _group) in current_groups.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut self.rules.admin_action_takers,
-                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
-                                        format!("Group {}", group_position),
-                                    );
-                                }
-                            });
-
-                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
-                            self.admin_identity.get_or_insert_with(String::new);
-                            if let Some(ref mut id_str) = self.admin_identity {
-                                ui.horizontal(|ui| {
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    ui.add_sized(
-                                        [300.0, 22.0],
-                                        TextEdit::singleline(id_str)
-                                            .hint_text("Enter base58 id")
-                                            .text_color(DashColors::text_primary(dark_mode))
-                                            .background_color(DashColors::input_background(dark_mode)),
-                                    );
-
-                                    if !id_str.is_empty() {
-                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
-
-                                        let (symbol, color) = if is_valid {
-                                            ("✔", Color32::DARK_GREEN)
-                                        } else {
-                                            ("×", Color32::DARK_RED)
-                                        };
-
-                                        ui.label(RichText::new(symbol).color(color).strong());
-                                    }
-                                });
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    // Booleans
-                    ui.checkbox(
-                        &mut self
-                            .rules
-                            .changing_authorized_action_takers_to_no_one_allowed,
-                        "Changing authorized action takers to no one allowed",
-                    );
-                    ui.end_row();
-
-                    ui.checkbox(
-                        &mut self.rules.changing_admin_action_takers_to_no_one_allowed,
-                        "Changing admin action takers to no one allowed",
-                    );
-                    ui.end_row();
-
-                    ui.checkbox(
-                        &mut self.rules.self_changing_admin_action_takers_allowed,
-                        "Self-changing admin action takers allowed",
-                    );
-                    ui.end_row();
-
-                    if let Some(special_case_option) = special_case_option
-                        && action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
-                            ui.horizontal(|ui| {
-                                ui.checkbox(
-                                    special_case_option,
-                                    "Allow transfers to frozen identities",
-                                );
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new("ℹ")
-                                        .monospace()
-                                        .color(Color32::LIGHT_BLUE),
-                                )
-                                    .info_tooltip("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
-                            });
-                            ui.end_row();
-                        }
-
-                    if let Some(mint) = mint_section
-                        && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne
-                    {
-                        let mut default_to_owner_clicked = false;
-                        let mut default_to_identity_clicked = false;
-
-                        if ui
-                            .checkbox(
-                                mint.should_default_to_contract_owner,
-                                "Newly minted tokens should default to going to contract owner",
-                            )
-                            .clicked()
-                        {
-                            default_to_owner_clicked = true;
-                        }
-
-                        if ui
-                            .checkbox(
-                                mint.destination_identity_enabled,
-                                "Use a default identity to receive newly minted tokens",
-                            )
-                            .clicked()
-                        {
-                            default_to_identity_clicked = true;
-                        }
-
-                        // Apply exclusivity
-                        if default_to_owner_clicked {
-                            *mint.destination_identity_enabled = false;
-                        }
-
-                        if default_to_identity_clicked {
-                            *mint.should_default_to_contract_owner = false;
-                        }
-
-                        if *mint.destination_identity_enabled {
-                            ui.end_row();
-
-                            ui.label("Default Destination Identity (Base58):");
-                            ui.text_edit_singleline(mint.destination_identity);
-                            ui.end_row();
-
-                            mint.destination_identity_rules.render_control_change_rules_ui(
-                                ui,
-                                current_groups,
-                                "New Tokens Destination Identity Rules",
-                                None,
-                                mint.destination_expanded,
-                                None,
-                            );
-                        }
-
-                        ui.end_row();
-
-                        ui.checkbox(
-                            mint.allow_choosing_destination,
-                            "Allow user to pick a destination identity on each mint",
-                        );
-
-                        if *mint.allow_choosing_destination {
-                            ui.end_row();
-                            mint.allow_choosing_destination_rules.render_control_change_rules_ui(
-                                ui,
-                                current_groups,
-                                "Minting Allow Choosing Destination Rules",
-                                None,
-                                mint.allow_choosing_expanded,
-                                None,
-                            );
-                        }
-                        ui.end_row();
-
-                        let none_selected = !*mint.destination_identity_enabled
-                            && !*mint.should_default_to_contract_owner
-                            && !*mint.allow_choosing_destination;
-
-                        if none_selected {
-                            ui.colored_label(
-                                Color32::RED,
-                                "At least one minting destination mode must be enabled (default to contract owner, default to identity, or picked on each mint).",
-                            );
-                        }
-                    }
-                });
-            });
-        }
-    }
-
-    pub fn extract_change_control_rules(
-        &mut self,
-        action_name: &str,
-    ) -> Result<ChangeControlRules, String> {
-        // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change
-            && let Some(ref id_str) = self.authorized_identity
-        {
-            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                format!(
-                    "Invalid base58 identifier for {} authorized identity",
-                    action_name
-                )
-            })?;
-            self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
-        }
-
-        // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers
-            && let Some(ref id_str) = self.admin_identity
-        {
-            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                format!(
-                    "Invalid base58 identifier for {} admin identity",
-                    action_name
-                )
-            })?;
-            self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-        }
-
-        // 3) Construct the ChangeControlRules
-        let rules = ChangeControlRules::V0(self.rules.clone());
-
-        Ok(rules)
-    }
-}
-
-/// A lightweight enum for the user’s choice of distribution type
-#[derive(Debug, Clone, PartialEq)]
-pub enum PerpetualDistributionIntervalTypeUI {
-    None,
-    BlockBased,
-    TimeBased,
-    EpochBased,
-}
-
-/// A lightweight enum for the user’s choice of distribution function
-#[derive(Debug, Clone, PartialEq, Ord, PartialOrd, Eq, Hash)]
-pub enum DistributionFunctionUI {
-    FixedAmount,
-    StepDecreasingAmount,
-    Stepwise,
-    Linear,
-    Polynomial,
-    Exponential,
-    Logarithmic,
-    InvertedLogarithmic,
-}
-
-impl DistributionFunctionUI {
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            DistributionFunctionUI::FixedAmount => "fixed_amount",
-            DistributionFunctionUI::StepDecreasingAmount => "step_decreasing_amount",
-            DistributionFunctionUI::Stepwise => "stepwise",
-            DistributionFunctionUI::Linear => "linear",
-            DistributionFunctionUI::Polynomial => "polynomial",
-            DistributionFunctionUI::Exponential => "exponential",
-            DistributionFunctionUI::Logarithmic => "logarithmic",
-            DistributionFunctionUI::InvertedLogarithmic => "inverted_logarithmic",
-        }
-    }
-}
-
-/// A lightweight enum for the user’s recipient selection
-#[derive(Debug, Clone, PartialEq)]
-pub enum TokenDistributionRecipientUI {
-    ContractOwner,
-    Identity,
-    EvonodesByParticipation,
-}
-
-#[derive(Default, Clone)]
-pub struct DistributionEntry {
-    /// Time from token contract registration when the distribution should occur
-    pub days: i32,
-    pub hours: i32,
-    pub minutes: i32,
-
-    /// The base58 identity to receive distribution
-    pub identity_str: String,
-
-    /// The distribution amount
-    pub amount_str: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Sequence)]
@@ -993,77 +430,6 @@ impl TokenNameLanguage {
     }
 }
 
-#[derive(Clone, Debug)]
-/// All arguments needed by `build_data_contract_v1_with_one_token`.
-pub struct TokenBuildArgs {
-    pub identity_id: Identifier,
-
-    pub token_names: Vec<(String, String, String)>,
-    pub contract_keywords: Vec<String>,
-    pub token_description: Option<String>,
-    pub should_capitalize: bool,
-    pub decimals: u8,
-    pub base_supply: u64,
-    pub max_supply: Option<u64>,
-    pub start_paused: bool,
-    pub allow_transfers_to_frozen_identities: bool,
-    pub keeps_history: TokenKeepsHistoryRules,
-    pub main_control_group: Option<u16>,
-
-    pub manual_minting_rules: ChangeControlRules,
-    pub manual_burning_rules: ChangeControlRules,
-    pub freeze_rules: ChangeControlRules,
-    pub unfreeze_rules: ChangeControlRules,
-    pub destroy_frozen_funds_rules: ChangeControlRules,
-    pub emergency_action_rules: ChangeControlRules,
-    pub max_supply_change_rules: ChangeControlRules,
-    pub conventions_change_rules: ChangeControlRules,
-    pub main_control_group_change_authorized: AuthorizedActionTakers,
-
-    pub distribution_rules: TokenDistributionRules,
-    pub groups: BTreeMap<u16, Group>,
-    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_rules: ChangeControlRules,
-    pub change_direct_purchase_pricing_rules: ChangeControlRules,
-    pub transferable: bool,
-}
-
-impl TokenBuildArgs {
-    /// Converts parsed UI inputs into the backend token-contract parameters
-    /// consumed by `AppContext::build_data_contract_v1_with_one_token`.
-    pub fn into_contract_params(self) -> crate::backend_task::tokens::TokenContractParams {
-        crate::backend_task::tokens::TokenContractParams {
-            token_names: self.token_names,
-            contract_keywords: self.contract_keywords,
-            token_description: self.token_description,
-            should_capitalize: self.should_capitalize,
-            decimals: self.decimals,
-            base_supply: self.base_supply,
-            max_supply: self.max_supply,
-            start_paused: self.start_paused,
-            allow_transfers_to_frozen_identities: self.allow_transfers_to_frozen_identities,
-            keeps_history: self.keeps_history,
-            main_control_group: self.main_control_group,
-            manual_minting_rules: self.manual_minting_rules,
-            manual_burning_rules: self.manual_burning_rules,
-            freeze_rules: self.freeze_rules,
-            unfreeze_rules: self.unfreeze_rules,
-            destroy_frozen_funds_rules: self.destroy_frozen_funds_rules,
-            emergency_action_rules: self.emergency_action_rules,
-            max_supply_change_rules: self.max_supply_change_rules,
-            conventions_change_rules: self.conventions_change_rules,
-            main_control_group_change_authorized: self.main_control_group_change_authorized,
-            distribution_rules: self.distribution_rules,
-            groups: self.groups,
-            document_schemas: self.document_schemas,
-            marketplace_rules: self.marketplace_rules,
-            transferable: self.transferable,
-        }
-    }
-}
-
-pub type TokenSearchable = bool;
-
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
@@ -1086,31 +452,6 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
     pending_operation_context: Option<BackendTaskContext>,
-    should_reset_collapsing_states: bool,
-    // Token Creator expanded sections
-    token_creator_advanced_expanded: bool,
-    token_creator_action_rules_expanded: bool,
-    token_creator_main_control_expanded: bool,
-    token_creator_distribution_expanded: bool,
-    token_creator_groups_expanded: bool,
-    token_creator_groups_items_expanded: std::collections::HashSet<String>,
-    token_creator_document_schemas_expanded: bool,
-    // Individual action rules expanded states
-    token_creator_manual_mint_expanded: bool,
-    token_creator_manual_burn_expanded: bool,
-    token_creator_freeze_expanded: bool,
-    token_creator_unfreeze_expanded: bool,
-    token_creator_destroy_frozen_expanded: bool,
-    token_creator_emergency_action_expanded: bool,
-    token_creator_max_supply_change_expanded: bool,
-    token_creator_conventions_change_expanded: bool,
-    token_creator_marketplace_expanded: bool,
-    token_creator_direct_purchase_pricing_expanded: bool,
-    // Nested rules expanded states
-    token_creator_new_tokens_destination_expanded: bool,
-    token_creator_minting_allow_choosing_expanded: bool,
-    token_creator_perpetual_distribution_rules_expanded: bool,
-
     // Contract Search
     pub selected_contract_id: Option<Identifier>,
     selected_contract_description: Option<ContractDescriptionInfo>,
@@ -1146,262 +487,21 @@ pub struct TokensScreen {
     // Token info popup
     show_token_info_popup: Option<Identifier>,
 
-    // ====================================
-    //           Token Creator
-    // ====================================
     creator_workspace: crate::ui::state::token_creator::CreatorWorkspace,
-    show_advanced_token_creator: bool,
-    selected_token_preset: TokenPresetSelection,
-    show_pop_up_info: Option<String>,
-    identity_id_string: String,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
-    token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
-    contract_keywords_input: String,
-    token_description_input: String,
-    should_capitalize_input: bool,
-    decimals_input: String,
-    base_supply_amount: Option<Amount>,
-    base_supply_input: Option<AmountInput>,
-    max_supply_amount: Option<Amount>,
-    max_supply_input: Option<AmountInput>,
-    start_as_paused_input: bool,
-    /// Whether holders may send the token to other identities. Turning it off
-    /// needs a network that accepts version 1 token configurations.
-    transferable_input: bool,
-    main_control_group_input: String,
-    show_token_creator_confirmation_popup: bool,
-    token_creator_confirmation_dialog: Option<ConfirmationDialog>,
-    token_creator_status: TokenCreatorStatus,
-    /// The dispatch of the registration the creator waits for; only its own
-    /// failure ends the wait.
-    token_registration_context: Option<BackendTaskContext>,
-    show_advanced_keeps_history: bool,
-    token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
-    groups_ui: Vec<GroupConfigUI>,
-    cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
     json_popup_opening_guard: ModalOpeningGuard,
     token_info_popup_opening_guard: ModalOpeningGuard,
     explanation_popup_opening_guard: ModalOpeningGuard,
-    allow_transfers_to_frozen_identities: bool,
-
-    // Action Rules
-    manual_minting_rules: ChangeControlRulesUI,
-    manual_burning_rules: ChangeControlRulesUI,
-    freeze_rules: ChangeControlRulesUI,
-    unfreeze_rules: ChangeControlRulesUI,
-    destroy_frozen_funds_rules: ChangeControlRulesUI,
-    emergency_action_rules: ChangeControlRulesUI,
-    max_supply_change_rules: ChangeControlRulesUI,
-    conventions_change_rules: ChangeControlRulesUI,
-    authorized_main_control_group_change: AuthorizedActionTakers,
-    main_control_group_change_authorized_identity: Option<String>,
-    main_control_group_change_authorized_group: Option<String>,
-
-    // Marketplace rules
-    marketplace_rules: ChangeControlRulesUI,
-    change_direct_purchase_pricing_rules: ChangeControlRulesUI,
-
-    // Perpetual Distribution
-    pub enable_perpetual_distribution: bool,
-    pub perpetual_distribution_rules: ChangeControlRulesUI,
-    pub perpetual_dist_type: PerpetualDistributionIntervalTypeUI,
-    pub perpetual_dist_interval_input: String,
-    pub perpetual_dist_interval_unit: IntervalTimeUnit,
-    pub perpetual_dist_function: DistributionFunctionUI,
-    pub perpetual_dist_recipient: TokenDistributionRecipientUI,
-    pub perpetual_dist_recipient_identity_input: Option<String>,
-
-    // Pre-programmed distribution
-    pub enable_pre_programmed_distribution: bool,
-    pub pre_programmed_distributions: Vec<DistributionEntry>,
-
-    // Once-per-identity distribution (protocol version 14)
-    pub enable_once_per_identity_distribution: bool,
-    /// The amount, in base token units, every identity may claim once.
-    pub once_per_identity_amount_input: String,
-    /// Why the once-per-identity amount is not valid, shown under the field.
-    once_per_identity_amount_error: Option<String>,
-
-    // New Tokens Destination Identity
-    pub new_tokens_destination_identity_should_default_to_contract_owner: bool,
-    pub new_tokens_destination_other_identity_enabled: bool,
-    pub new_tokens_destination_other_identity: String,
-    pub new_tokens_destination_identity_rules: ChangeControlRulesUI,
-
-    // Minting Allow Choosing Destination
-    pub minting_allow_choosing_destination: bool,
-    pub minting_allow_choosing_destination_rules: ChangeControlRulesUI,
-
-    // --- FixedAmount ---
-    pub fixed_amount_input: String,
-
-    // --- Random ---  -  not supported
-    // pub random_min_input: String,
-    // pub random_max_input: String,
-
-    // --- StepDecreasingAmount ---
-    pub step_count_input: String,
-    pub decrease_per_interval_numerator_input: String,
-    pub decrease_per_interval_denominator_input: String,
-    pub step_decreasing_start_period_offset_input: String,
-    pub step_decreasing_initial_emission_input: String,
-    pub step_decreasing_min_value_input: String,
-    pub step_decreasing_max_interval_count_input: String,
-    pub step_decreasing_trailing_distribution_interval_amount_input: String,
-
-    // --- Stepwise ---
-    pub stepwise_steps: Vec<(String, String)>,
-
-    // --- Linear ---
-    pub linear_int_a_input: String,
-    pub linear_int_d_input: String,
-    pub linear_int_start_step_input: String,
-    pub linear_int_starting_amount_input: String,
-    pub linear_int_min_value_input: String,
-    pub linear_int_max_value_input: String,
-
-    // --- Polynomial ---
-    pub poly_int_a_input: String,
-    pub poly_int_m_input: String,
-    pub poly_int_n_input: String,
-    pub poly_int_d_input: String,
-    pub poly_int_s_input: String,
-    pub poly_int_o_input: String,
-    pub poly_int_b_input: String,
-    pub poly_int_min_value_input: String,
-    pub poly_int_max_value_input: String,
-
-    // --- Exponential ---
-    pub exp_a_input: String,
-    pub exp_m_input: String,
-    pub exp_n_input: String,
-    pub exp_d_input: String,
-    pub exp_s_input: String,
-    pub exp_o_input: String,
-    pub exp_b_input: String,
-    pub exp_min_value_input: String,
-    pub exp_max_value_input: String,
-
-    // --- Logarithmic ---
-    pub log_a_input: String,
-    pub log_d_input: String,
-    pub log_m_input: String,
-    pub log_n_input: String,
-    pub log_s_input: String,
-    pub log_o_input: String,
-    pub log_b_input: String,
-    pub log_min_value_input: String,
-    pub log_max_value_input: String,
-
-    // --- Inverted Logarithmic ---
-    pub inv_log_a_input: String,
-    pub inv_log_d_input: String,
-    pub inv_log_m_input: String,
-    pub inv_log_n_input: String,
-    pub inv_log_s_input: String,
-    pub inv_log_o_input: String,
-    pub inv_log_b_input: String,
-    pub inv_log_min_value_input: String,
-    pub inv_log_max_value_input: String,
-
-    pub function_images: BTreeMap<DistributionFunctionUI, ColorImage>,
-    pub function_textures: BTreeMap<DistributionFunctionUI, TextureHandle>,
-
-    // Token adding status
+    show_pop_up_info: Option<String>,
     adding_token_start_time: Option<DateTime<Utc>>,
     adding_token_name: Option<String>,
-
-    // Banner handle for elapsed-time progress display
     operation_banner: Option<BannerHandle>,
-
-    // Document Schemas
-    document_schemas_input: String,
-    parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    document_schemas_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IntervalTimeUnit {
-    Second,
-    Minute,
-    Hour,
-    Day,
-    Week,
-    Year,
-}
-
-impl IntervalTimeUnit {
-    /// Returns the equivalent duration in milliseconds
-    /// for the given amount of the unit.
-    pub fn ms_for_amount(&self, amount: u64) -> TimestampMillisInterval {
-        match self {
-            IntervalTimeUnit::Second => amount.saturating_mul(1_000),
-            IntervalTimeUnit::Minute => amount.saturating_mul(60_000),
-            IntervalTimeUnit::Hour => amount.saturating_mul(3_600_000),
-            IntervalTimeUnit::Day => amount.saturating_mul(86_400_000),
-            IntervalTimeUnit::Week => amount.saturating_mul(7).saturating_mul(86_400_000),
-            IntervalTimeUnit::Year => amount.saturating_mul(31_556_952_000),
-        }
-    }
-    pub fn label_for_amount(&self, amount_str: &str) -> &'static str {
-        let is_singular = amount_str == "1";
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "second",
-            (IntervalTimeUnit::Second, false) => "seconds",
-            (IntervalTimeUnit::Minute, true) => "minute",
-            (IntervalTimeUnit::Minute, false) => "minutes",
-            (IntervalTimeUnit::Hour, true) => "hour",
-            (IntervalTimeUnit::Hour, false) => "hours",
-            (IntervalTimeUnit::Day, true) => "day",
-            (IntervalTimeUnit::Day, false) => "days",
-            (IntervalTimeUnit::Week, true) => "week",
-            (IntervalTimeUnit::Week, false) => "weeks",
-            (IntervalTimeUnit::Year, true) => "year",
-            (IntervalTimeUnit::Year, false) => "years",
-        }
-    }
-
-    pub fn label_for_num_amount(&self, amount: u64) -> &'static str {
-        let is_singular = amount == 1;
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "second",
-            (IntervalTimeUnit::Second, false) => "seconds",
-            (IntervalTimeUnit::Minute, true) => "minute",
-            (IntervalTimeUnit::Minute, false) => "minutes",
-            (IntervalTimeUnit::Hour, true) => "hour",
-            (IntervalTimeUnit::Hour, false) => "hours",
-            (IntervalTimeUnit::Day, true) => "day",
-            (IntervalTimeUnit::Day, false) => "days",
-            (IntervalTimeUnit::Week, true) => "week",
-            (IntervalTimeUnit::Week, false) => "weeks",
-            (IntervalTimeUnit::Year, true) => "year",
-            (IntervalTimeUnit::Year, false) => "years",
-        }
-    }
-
-    pub fn capitalized_label_for_num_amount(&self, amount: u64) -> &'static str {
-        let is_singular = amount == 1;
-        match (self, is_singular) {
-            (IntervalTimeUnit::Second, true) => "Second",
-            (IntervalTimeUnit::Second, false) => "Seconds",
-            (IntervalTimeUnit::Minute, true) => "Minute",
-            (IntervalTimeUnit::Minute, false) => "Minutes",
-            (IntervalTimeUnit::Hour, true) => "Hour",
-            (IntervalTimeUnit::Hour, false) => "Hours",
-            (IntervalTimeUnit::Day, true) => "Day",
-            (IntervalTimeUnit::Day, false) => "Days",
-            (IntervalTimeUnit::Week, true) => "Week",
-            (IntervalTimeUnit::Week, false) => "Weeks",
-            (IntervalTimeUnit::Year, true) => "Year",
-            (IntervalTimeUnit::Year, false) => "Years",
-        }
-    }
 }
 
 fn my_tokens(
@@ -1440,29 +540,29 @@ fn my_tokens(
 impl TokensScreen {
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Starts a registration as the creator's confirmation does, without
-    /// building a contract, and returns a dispatch standing in for it.
     pub fn begin_token_registration_for_test(&mut self) -> BackendTaskContext {
-        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+        let task = BackendTask::TokenTask(Box::new(TokenTask::CheckTokenCreation));
         let context = BackendTaskContext::for_dispatch_on(&task, self.app_context.network);
-        self.mark_token_registration_started(context.clone());
+        self.creator_workspace.pending = Some(context.clone());
         context
     }
-
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Where the Token Creator's registration stands.
-    pub fn token_creator_status_for_test(&self) -> &TokenCreatorStatus {
-        &self.token_creator_status
+    pub fn token_creator_status_for_test(&self) -> TokenCreatorStatus {
+        if self.creator_workspace.pending.is_some() {
+            TokenCreatorStatus::WaitingForResult
+        } else if self.creator_workspace.notice.is_some() {
+            TokenCreatorStatus::Error
+        } else if self.creator_workspace.outcome.is_some() {
+            TokenCreatorStatus::Complete
+        } else {
+            TokenCreatorStatus::NotStarted
+        }
     }
-
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    /// Whether the registration's progress banner is still shown.
-    pub fn registration_banner_live_for_test(&self) -> bool {
-        self.operation_banner
-            .as_ref()
-            .is_some_and(|banner| banner.is_live())
+    pub fn token_registration_pending_for_test(&self) -> bool {
+        self.creator_workspace.pending.is_some()
     }
 
     pub fn new(app_context: &Arc<AppContext>, tokens_subscreen: TokensSubscreen) -> Self {
@@ -1481,29 +581,6 @@ impl TokensScreen {
             &identities,
             &all_known_tokens,
             &IndexMap::new(),
-        );
-
-        let mut function_images = BTreeMap::new();
-
-        function_images.insert(
-            DistributionFunctionUI::Exponential,
-            load_formula_image(EXP_FORMULA_PNG),
-        );
-        function_images.insert(
-            DistributionFunctionUI::Logarithmic,
-            load_formula_image(LOG_FORMULA_PNG),
-        );
-        function_images.insert(
-            DistributionFunctionUI::InvertedLogarithmic,
-            load_formula_image(INV_LOG_FORMULA_PNG),
-        );
-        function_images.insert(
-            DistributionFunctionUI::Polynomial,
-            load_formula_image(POLYNOMIAL_FORMULA_PNG),
-        );
-        function_images.insert(
-            DistributionFunctionUI::Linear,
-            load_formula_image(LINEAR_FORMULA_PNG),
         );
 
         let mut screen = Self {
@@ -1546,198 +623,21 @@ impl TokensScreen {
             show_explanation_popup: None,
             show_token_info_popup: None,
 
-            // Token Creator
             creator_workspace: Default::default(),
-            show_advanced_token_creator: false,
-            selected_token_preset: TokenPresetSelection::Unselected,
-            show_pop_up_info: None,
-            identity_id_string: String::new(),
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
             wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            show_token_creator_confirmation_popup: false,
-            token_creator_confirmation_dialog: None,
-            token_creator_status: TokenCreatorStatus::NotStarted,
-            token_registration_context: None,
-            token_names_input: vec![(
-                String::new(),
-                String::new(),
-                TokenNameLanguage::English,
-                true,
-            )],
-            contract_keywords_input: String::new(),
-            token_description_input: String::new(),
-            should_capitalize_input: true,
-            decimals_input: DEFAULT_DECIMALS.to_string(),
-            base_supply_amount: None,
-            base_supply_input: None,
-            max_supply_amount: None,
-            max_supply_input: None,
-            start_as_paused_input: false,
-            transferable_input: true,
-            show_advanced_keeps_history: false,
-            token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
-                true,
-            ),
-            main_control_group_input: String::new(),
-            groups_ui: Vec::new(),
-            cached_build_args: None,
             show_json_popup: false,
             json_popup_text: String::new(),
             json_popup_opening_guard: ModalOpeningGuard::default(),
             token_info_popup_opening_guard: ModalOpeningGuard::default(),
             explanation_popup_opening_guard: ModalOpeningGuard::default(),
-
-            // Action rules
-            allow_transfers_to_frozen_identities: true,
-            manual_minting_rules: ChangeControlRulesUI::default(),
-            manual_burning_rules: ChangeControlRulesUI::default(),
-            freeze_rules: ChangeControlRulesUI::default(),
-            unfreeze_rules: ChangeControlRulesUI::default(),
-            destroy_frozen_funds_rules: ChangeControlRulesUI::default(),
-            emergency_action_rules: ChangeControlRulesUI::default(),
-            max_supply_change_rules: ChangeControlRulesUI::default(),
-            conventions_change_rules: ChangeControlRulesUI::default(),
-
-            // Main control group change rules
-            authorized_main_control_group_change: AuthorizedActionTakers::NoOne,
-            main_control_group_change_authorized_identity: None,
-            main_control_group_change_authorized_group: None,
-
-            // Marketplace rules
-            marketplace_rules: ChangeControlRulesUI::default(),
-            change_direct_purchase_pricing_rules: ChangeControlRulesUI::default(),
-
-            // Distribution (perpetual) toggles/fields
-            enable_perpetual_distribution: false,
-            perpetual_distribution_rules: ChangeControlRulesUI::default(),
-
-            // Which distribution type is selected?
-            perpetual_dist_type: PerpetualDistributionIntervalTypeUI::None,
-
-            // Block-based / time-based / epoch-based inputs
-            perpetual_dist_interval_input: String::new(),
-
-            // Distribution function selection
-            perpetual_dist_interval_unit: IntervalTimeUnit::Day,
-            perpetual_dist_function: DistributionFunctionUI::FixedAmount,
-            fixed_amount_input: String::new(),
-            // random_min_input: String::new(),
-            // random_max_input: String::new(),
-            step_count_input: String::new(),
-            decrease_per_interval_numerator_input: String::new(),
-            decrease_per_interval_denominator_input: String::new(),
-            step_decreasing_start_period_offset_input: String::new(),
-            step_decreasing_initial_emission_input: String::new(),
-            step_decreasing_min_value_input: String::new(),
-            step_decreasing_max_interval_count_input: String::new(),
-            step_decreasing_trailing_distribution_interval_amount_input: String::new(),
-            stepwise_steps: Vec::new(),
-            linear_int_a_input: String::new(),
-            linear_int_d_input: String::new(),
-            linear_int_start_step_input: String::new(),
-            linear_int_starting_amount_input: String::new(),
-            linear_int_min_value_input: String::new(),
-            linear_int_max_value_input: String::new(),
-            poly_int_a_input: String::new(),
-            poly_int_m_input: String::new(),
-            poly_int_n_input: String::new(),
-            poly_int_d_input: String::new(),
-            poly_int_s_input: String::new(),
-            poly_int_o_input: String::new(),
-            poly_int_b_input: String::new(),
-            poly_int_min_value_input: String::new(),
-            poly_int_max_value_input: String::new(),
-            exp_a_input: String::new(),
-            exp_m_input: String::new(),
-            exp_n_input: String::new(),
-            exp_d_input: String::new(),
-            exp_s_input: String::new(),
-            exp_o_input: String::new(),
-            exp_b_input: String::new(),
-            exp_min_value_input: String::new(),
-            exp_max_value_input: String::new(),
-            log_a_input: String::new(),
-            log_d_input: String::new(),
-            log_m_input: String::new(),
-            log_n_input: String::new(),
-            log_s_input: String::new(),
-            log_o_input: String::new(),
-            log_b_input: String::new(),
-            log_min_value_input: String::new(),
-            log_max_value_input: String::new(),
-            inv_log_a_input: String::new(),
-            inv_log_d_input: String::new(),
-            inv_log_m_input: String::new(),
-            inv_log_n_input: String::new(),
-            inv_log_s_input: String::new(),
-            inv_log_o_input: String::new(),
-            inv_log_b_input: String::new(),
-            inv_log_min_value_input: String::new(),
-            inv_log_max_value_input: String::new(),
-
-            // Similarly for identity recipients, you might store:
-            perpetual_dist_recipient: TokenDistributionRecipientUI::ContractOwner,
-            perpetual_dist_recipient_identity_input: None,
-
-            // Pre-programmed distribution
-            enable_pre_programmed_distribution: false,
-            enable_once_per_identity_distribution: false,
-            once_per_identity_amount_input: String::new(),
-            once_per_identity_amount_error: None,
-            // Possibly let them paste in a JSON schedule, or some minimal UI for (timestamp -> {id -> amount}).
-            // For an example, we'll keep it simple:
-            pre_programmed_distributions: Vec::new(),
-
-            // new_tokens_destination_identity
-            new_tokens_destination_identity_should_default_to_contract_owner: true,
-            new_tokens_destination_other_identity_enabled: false,
-            new_tokens_destination_other_identity: String::new(),
-            new_tokens_destination_identity_rules: ChangeControlRulesUI::default(),
-
-            // minting_allow_choosing_destination
-            minting_allow_choosing_destination: false,
-            minting_allow_choosing_destination_rules: ChangeControlRulesUI::default(),
-            function_images,
-            function_textures: BTreeMap::default(),
-            should_reset_collapsing_states: false,
-            // Token Creator expanded sections
-            token_creator_advanced_expanded: false,
-            token_creator_action_rules_expanded: false,
-            token_creator_main_control_expanded: false,
-            token_creator_distribution_expanded: false,
-            token_creator_groups_expanded: false,
-            token_creator_groups_items_expanded: std::collections::HashSet::new(),
-            token_creator_document_schemas_expanded: false,
-            // Individual action rules expanded states
-            token_creator_manual_mint_expanded: false,
-            token_creator_manual_burn_expanded: false,
-            token_creator_freeze_expanded: false,
-            token_creator_unfreeze_expanded: false,
-            token_creator_destroy_frozen_expanded: false,
-            token_creator_emergency_action_expanded: false,
-            token_creator_max_supply_change_expanded: false,
-            token_creator_conventions_change_expanded: false,
-            token_creator_marketplace_expanded: false,
-            token_creator_direct_purchase_pricing_expanded: false,
-            // Nested rules expanded states
-            token_creator_new_tokens_destination_expanded: false,
-            token_creator_minting_allow_choosing_expanded: false,
-            token_creator_perpetual_distribution_rules_expanded: false,
-
-            // Token adding status
+            show_pop_up_info: None,
             adding_token_start_time: None,
             adding_token_name: None,
-
-            // Banner handle for elapsed-time progress display
             operation_banner: None,
-
-            // Document Schemas
-            document_schemas_input: String::new(),
-            parsed_document_schemas: None,
-            document_schemas_error: None,
         };
 
         if let Ok(saved_ids) = screen.app_context.load_token_order() {
@@ -1754,16 +654,14 @@ impl TokensScreen {
                 .filter(|qi| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
-            screen.identity_id_string = preferred_id.to_string(Encoding::Base58);
         }
         if screen.selected_identity.is_none()
-            && let Some((id, qi)) = screen
+            && let Some((_, qi)) = screen
                 .identities
                 .iter()
                 .find(|(_, qi)| offered_by_token_creator(qi))
         {
             screen.selected_identity = Some(qi.clone());
-            screen.identity_id_string = id.to_string(Encoding::Base58);
         }
 
         screen
@@ -1838,520 +736,6 @@ impl TokensScreen {
 
     // Message display is handled by the global MessageBanner
 
-    fn history_row(&mut self, ui: &mut Ui) {
-        // --- 1.  pull or create the rules object --------------------------------
-        let rules = self.token_advanced_keeps_history;
-
-        let TokenKeepsHistoryRulesV0 {
-            keeps_transfer_history,
-            keeps_freezing_history,
-            keeps_minting_history,
-            keeps_burning_history,
-            keeps_direct_pricing_history,
-            keeps_direct_purchase_history,
-        } = rules;
-
-        let flags = [
-            keeps_transfer_history,
-            keeps_freezing_history,
-            keeps_minting_history,
-            keeps_burning_history,
-            keeps_direct_pricing_history,
-            keeps_direct_purchase_history,
-        ];
-
-        let all_on = flags.iter().all(|b| *b);
-        let none_on = flags.iter().all(|b| !*b);
-
-        // --- 2.  parent tri-state checkbox --------------------------------------
-        let mut parent_state: Option<bool> = if all_on {
-            Some(true)
-        } else if none_on {
-            Some(false)
-        } else {
-            None // ⇒ indeterminate
-        };
-
-        //--------------------------------------------------------------
-        // 2. parent tri-state + “Advanced” button in **one** cell
-        //--------------------------------------------------------------
-        ui.horizontal(|ui| {
-            // tri-state checkbox
-            let response = tri_state(ui, &mut parent_state, "Keep history");
-
-            // propagate changes from parent to all children
-            if response.clicked()
-                && let Some(val) = parent_state
-            {
-                self.token_advanced_keeps_history.keeps_transfer_history = val;
-                self.token_advanced_keeps_history.keeps_freezing_history = val;
-                self.token_advanced_keeps_history.keeps_minting_history = val;
-                self.token_advanced_keeps_history.keeps_burning_history = val;
-                self.token_advanced_keeps_history
-                    .keeps_direct_pricing_history = val;
-                self.token_advanced_keeps_history
-                    .keeps_direct_purchase_history = val;
-            }
-
-            ui.add_space(8.0);
-            let arrow = if self.show_advanced_keeps_history {
-                "[-]"
-            } else {
-                "[+]"
-            };
-            if ui
-                .small_button(format!("Advanced {arrow}"))
-                .clickable_tooltip("Configure individual history ledgers")
-                .clicked()
-            {
-                self.show_advanced_keeps_history = !self.show_advanced_keeps_history;
-            }
-        });
-
-        // --- 4.  indented sub-checkboxes when advanced is open ------------------
-        if self.show_advanced_keeps_history {
-            sub_checkbox(
-                ui,
-                &mut self.token_advanced_keeps_history.keeps_transfer_history,
-                "Transfers",
-            );
-            sub_checkbox(
-                ui,
-                &mut self.token_advanced_keeps_history.keeps_freezing_history,
-                "Freezes / unfreezes",
-            );
-            sub_checkbox(
-                ui,
-                &mut self.token_advanced_keeps_history.keeps_minting_history,
-                "Mints",
-            );
-            sub_checkbox(
-                ui,
-                &mut self.token_advanced_keeps_history.keeps_burning_history,
-                "Burns",
-            );
-            sub_checkbox(
-                ui,
-                &mut self
-                    .token_advanced_keeps_history
-                    .keeps_direct_pricing_history,
-                "Direct-pricing changes",
-            );
-            sub_checkbox(
-                ui,
-                &mut self
-                    .token_advanced_keeps_history
-                    .keeps_direct_purchase_history,
-                "Direct purchases",
-            );
-        }
-    }
-
-    fn estimate_registration_cost(&self) -> Credits {
-        let contract_keyword_count = if self.contract_keywords_input.trim().is_empty() {
-            0
-        } else {
-            self.contract_keywords_input
-                .split(',')
-                .filter(|s| (3..=50).contains(&s.trim().len()))
-                .count()
-        };
-        let searchable_count = self
-            .token_names_input
-            .iter()
-            .filter(|(_, _, _, searchable)| *searchable)
-            .count();
-        estimate_token_contract_registration(
-            &self
-                .app_context
-                .platform_version()
-                .fee_version
-                .data_contract_registration,
-            TokenRegistrationFeatures {
-                perpetual_distribution: self.enable_perpetual_distribution,
-                pre_programmed_distribution: self.enable_pre_programmed_distribution,
-                once_per_identity_distribution: self.enable_once_per_identity_distribution,
-                search_keyword_count: contract_keyword_count + searchable_count,
-            },
-        )
-    }
-
-    fn build_distribution_rules(&mut self) -> Result<TokenDistributionRulesV0, String> {
-        // 1) Validate distribution input, parse numeric fields, etc.
-        let distribution_function = match self.perpetual_dist_function {
-            DistributionFunctionUI::FixedAmount => DistributionFunction::FixedAmount {
-                amount: self.fixed_amount_input.parse::<u64>().unwrap_or(0),
-            },
-            DistributionFunctionUI::StepDecreasingAmount => {
-                DistributionFunction::StepDecreasingAmount {
-                    step_count: self.step_count_input.parse::<u32>().unwrap_or(0),
-                    decrease_per_interval_numerator: self
-                        .decrease_per_interval_numerator_input
-                        .parse::<u16>()
-                        .unwrap_or(0),
-                    decrease_per_interval_denominator: self
-                        .decrease_per_interval_denominator_input
-                        .parse::<u16>()
-                        .unwrap_or(0),
-                    start_decreasing_offset: if self
-                        .step_decreasing_start_period_offset_input
-                        .is_empty()
-                    {
-                        None
-                    } else {
-                        match self
-                            .step_decreasing_start_period_offset_input
-                            .parse::<u64>()
-                        {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err("Invalid start decreasing offset for StepDecreasingAmount distribution. Put 0 for None.".to_string());
-                            }
-                        }
-                    },
-                    distribution_start_amount: self
-                        .step_decreasing_initial_emission_input
-                        .parse::<u64>()
-                        .unwrap_or(0),
-                    min_value: if self.step_decreasing_min_value_input.is_empty() {
-                        None
-                    } else {
-                        match self.step_decreasing_min_value_input.parse::<u64>() {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err(
-                                    "Invalid min value for StepDecreasingAmount distribution. Put 0 for None."
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    },
-                    max_interval_count: if self.step_decreasing_max_interval_count_input.is_empty()
-                    {
-                        None
-                    } else {
-                        match self.step_decreasing_max_interval_count_input.parse::<u16>() {
-                            Ok(0) => None,
-                            Ok(v) => Some(v),
-                            Err(_) => {
-                                return Err(
-                                    "Invalid max interval count for StepDecreasingAmount distribution. Put 0 for None."
-                                        .to_string(),
-                                );
-                            }
-                        }
-                    },
-                    trailing_distribution_interval_amount: self
-                        .step_decreasing_trailing_distribution_interval_amount_input
-                        .parse::<u64>()
-                        .unwrap_or(0),
-                }
-            }
-            DistributionFunctionUI::Stepwise => {
-                let steps: BTreeMap<u64, TokenAmount> = self
-                    .stepwise_steps
-                    .iter()
-                    .map(|(k, v)| (k.parse::<u64>().unwrap_or(0), v.parse::<u64>().unwrap_or(0)))
-                    .collect();
-                DistributionFunction::Stepwise(steps)
-            }
-            DistributionFunctionUI::Linear => DistributionFunction::Linear {
-                a: self.linear_int_a_input.parse::<i64>().unwrap_or(0),
-                d: self.linear_int_d_input.parse::<u64>().unwrap_or(1),
-                start_step: self
-                    .linear_int_start_step_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                starting_amount: self
-                    .linear_int_starting_amount_input
-                    .parse::<u64>()
-                    .unwrap_or(0),
-                min_value: self
-                    .linear_int_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .linear_int_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Polynomial => DistributionFunction::Polynomial {
-                a: self.poly_int_a_input.parse::<i64>().unwrap_or(0),
-                m: self.poly_int_m_input.parse::<i64>().unwrap_or(0),
-                n: self.poly_int_n_input.parse::<u64>().unwrap_or(0),
-                d: self.poly_int_d_input.parse::<u64>().unwrap_or(0),
-                start_moment: self
-                    .poly_int_s_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                o: self.poly_int_o_input.parse::<i64>().unwrap_or(0),
-                b: self.poly_int_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .poly_int_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .poly_int_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Exponential => DistributionFunction::Exponential {
-                a: self.exp_a_input.parse::<u64>().unwrap_or(0),
-                d: self.exp_d_input.parse::<u64>().unwrap_or(0),
-                m: self.exp_m_input.parse::<i64>().unwrap_or(0),
-                n: self.exp_n_input.parse::<u64>().unwrap_or(0),
-                o: self.exp_o_input.parse::<i64>().unwrap_or(0),
-                start_moment: self.exp_s_input.parse::<u64>().map(Some).unwrap_or(None),
-                b: self.exp_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .exp_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .exp_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::Logarithmic => DistributionFunction::Logarithmic {
-                a: self.log_a_input.parse::<i64>().unwrap_or(0),
-                d: self.log_d_input.parse::<u64>().unwrap_or(0),
-                m: self.log_m_input.parse::<u64>().unwrap_or(0),
-                n: self.log_n_input.parse::<u64>().unwrap_or(0),
-                start_moment: self.log_s_input.parse::<u64>().map(Some).unwrap_or(None),
-                o: self.log_o_input.parse::<i64>().unwrap_or(0),
-                b: self.log_b_input.parse::<u64>().unwrap_or(0),
-                min_value: self
-                    .log_min_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-                max_value: self
-                    .log_max_value_input
-                    .parse::<u64>()
-                    .map(Some)
-                    .unwrap_or(None),
-            },
-            DistributionFunctionUI::InvertedLogarithmic => {
-                DistributionFunction::InvertedLogarithmic {
-                    a: self.inv_log_a_input.parse::<i64>().unwrap_or(0),
-                    d: self.inv_log_d_input.parse::<u64>().unwrap_or(0),
-                    m: self.inv_log_m_input.parse::<u64>().unwrap_or(0),
-                    n: self.inv_log_n_input.parse::<u64>().unwrap_or(0),
-                    start_moment: self
-                        .inv_log_s_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                    o: self.inv_log_o_input.parse::<i64>().unwrap_or(0),
-                    b: self.inv_log_b_input.parse::<u64>().unwrap_or(0),
-                    min_value: self
-                        .inv_log_min_value_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                    max_value: self
-                        .inv_log_max_value_input
-                        .parse::<u64>()
-                        .map(Some)
-                        .unwrap_or(None),
-                }
-            }
-        };
-        let maybe_perpetual_distribution = if self.enable_perpetual_distribution {
-            // Construct the `TokenPerpetualDistributionV0` from your selected type + function
-            let dist_type =
-                match self.perpetual_dist_type {
-                    PerpetualDistributionIntervalTypeUI::BlockBased => {
-                        // parse interval, parse emission
-                        // parse distribution function
-                        RewardDistributionType::BlockBasedDistribution {
-                            interval: self.perpetual_dist_interval_input.parse::<u64>().map_err(
-                                |_| "Distribution interval not a valid number".to_string(),
-                            )?,
-                            function: distribution_function,
-                        }
-                    }
-                    PerpetualDistributionIntervalTypeUI::EpochBased => {
-                        RewardDistributionType::EpochBasedDistribution {
-                            interval: self.perpetual_dist_interval_input.parse::<u16>().map_err(
-                                |_| "Distribution interval not a valid number".to_string(),
-                            )?,
-                            function: distribution_function,
-                        }
-                    }
-                    PerpetualDistributionIntervalTypeUI::TimeBased => {
-                        RewardDistributionType::TimeBasedDistribution {
-                            interval: self.perpetual_dist_interval_unit.ms_for_amount(
-                                self.perpetual_dist_interval_input.parse::<u64>().map_err(
-                                    |_| "Distribution interval not a valid number".to_string(),
-                                )?,
-                            ),
-                            function: distribution_function,
-                        }
-                    }
-                    _ => RewardDistributionType::BlockBasedDistribution {
-                        interval: 0,
-                        function: DistributionFunction::FixedAmount { amount: 0 },
-                    },
-                };
-
-            let recipient = match self.perpetual_dist_recipient {
-                TokenDistributionRecipientUI::ContractOwner => {
-                    TokenDistributionRecipient::ContractOwner
-                }
-                TokenDistributionRecipientUI::Identity => {
-                    if let Some(id) = self.perpetual_dist_recipient_identity_input.as_ref() {
-                        let id_res = Identifier::from_string(id, Encoding::Base58);
-                        TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
-                    } else {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "Invalid base58 identifier for perpetual distribution recipient",
-                            MessageType::Error,
-                        );
-                        return Err(
-                            "Invalid base58 identifier for perpetual distribution recipient"
-                                .to_string(),
-                        );
-                    }
-                }
-                TokenDistributionRecipientUI::EvonodesByParticipation => {
-                    TokenDistributionRecipient::EvonodesByParticipation
-                }
-            };
-
-            Some(TokenPerpetualDistribution::V0(
-                TokenPerpetualDistributionV0 {
-                    distribution_type: dist_type,
-                    distribution_recipient: recipient,
-                },
-            ))
-        } else {
-            None
-        };
-
-        // 2) Build the distribution rules structure
-        let dist_rules_v0 = TokenDistributionRulesV0 {
-            perpetual_distribution: maybe_perpetual_distribution,
-            perpetual_distribution_rules: self
-                .perpetual_distribution_rules
-                .extract_change_control_rules("Perpetual Distribution")?,
-            pre_programmed_distribution: if self.enable_pre_programmed_distribution {
-                let distributions: BTreeMap<u64, BTreeMap<Identifier, u64>> =
-                    match self.parse_pre_programmed_distributions() {
-                        Ok(distributions) => distributions,
-                        Err(err) => {
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                &err,
-                                MessageType::Error,
-                            );
-                            return Err(err.to_string());
-                        }
-                    };
-
-                Some(TokenPreProgrammedDistribution::V0(
-                    TokenPreProgrammedDistributionV0 { distributions },
-                ))
-            } else {
-                None
-            },
-            new_tokens_destination_identity: if self
-                .new_tokens_destination_identity_should_default_to_contract_owner
-            {
-                Some(
-                    self.selected_identity
-                        .as_ref()
-                        .ok_or("No selected identity".to_string())?
-                        .identity
-                        .id(),
-                )
-            } else if self.new_tokens_destination_other_identity_enabled {
-                Some(
-                    Identifier::from_string(
-                        &self.new_tokens_destination_other_identity,
-                        Encoding::Base58,
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
-            } else {
-                None
-            },
-            new_tokens_destination_identity_rules: self
-                .new_tokens_destination_identity_rules
-                .extract_change_control_rules("New Tokens Destination Identity")?,
-            minting_allow_choosing_destination: self.minting_allow_choosing_destination,
-            minting_allow_choosing_destination_rules: self
-                .minting_allow_choosing_destination_rules
-                .extract_change_control_rules("Minting Allow Choosing Destination")?,
-            change_direct_purchase_pricing_rules: self
-                .change_direct_purchase_pricing_rules
-                .extract_change_control_rules("Change Direct Purchase Pricing")?,
-        };
-
-        Ok(dist_rules_v0)
-    }
-
-    /// Attempts to parse the `pre_programmed_distributions` into a BTreeMap.
-    /// Returns an error string if any row fails.
-    /// Now supports multiple identities per timestamp.
-    pub fn parse_pre_programmed_distributions(
-        &mut self,
-    ) -> Result<BTreeMap<u64, BTreeMap<Identifier, u64>>, String> {
-        let mut map: BTreeMap<u64, BTreeMap<Identifier, u64>> = BTreeMap::new();
-
-        let now = Utc::now();
-
-        for (i, entry) in self.pre_programmed_distributions.iter().enumerate() {
-            // Convert days/hours/minutes into a timestamp.
-            let offset = Duration::days(entry.days as i64)
-                + Duration::hours(entry.hours as i64)
-                + Duration::minutes(entry.minutes as i64);
-            let timestamp = (now + offset).timestamp_millis() as u64;
-
-            // Parse identity
-            let id =
-                Identifier::from_string(&entry.identity_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Row {}: invalid base58 identity '{}'",
-                        i + 1,
-                        entry.identity_str
-                    )
-                })?;
-
-            // Parse amount
-            let amount = entry.amount_str.parse::<u64>().map_err(|_| {
-                format!(
-                    "Row {}: invalid distribution amount (expected u64). Got '{}'",
-                    i + 1,
-                    entry.amount_str
-                )
-            })?;
-
-            // Insert into the map, supporting multiple identities per timestamp
-            map.entry(timestamp).or_default().insert(id, amount);
-        }
-        Ok(map)
-    }
-
-    /// Leaving the screen keeps the Token Creator form (e.g. to top up the
-    /// identity and come back); only a finished creation starts over.
-    fn keep_token_creator_across_navigation(&mut self) {
-        if self.token_creator_status == TokenCreatorStatus::Complete {
-            self.reset_token_creator();
-        }
-    }
-
     /// Re-reads every stored identity. Only a successful read refreshes the Token
     /// Creator's selection, so a failed one does not drop what the user picked.
     fn reload_identities(&mut self) {
@@ -2384,7 +768,6 @@ impl TokensScreen {
             .get(&id)
             .filter(|qi| offered_by_token_creator(qi))
         else {
-            self.identity_id_string.clear();
             self.selected_identity = None;
             self.selected_key = None;
             return;
@@ -2401,157 +784,18 @@ impl TokensScreen {
         self.selected_identity = Some(fresh.clone());
     }
 
-    /// Whether this creator sent a registration it has not heard back about. A
-    /// network switch resets the creator, so a late result of a registration
-    /// sent on the previous network finds it not waiting and is ignored rather
-    /// than showing success (or failure) on the new network.
-    fn awaits_token_registration(&self) -> bool {
-        self.token_creator_status == TokenCreatorStatus::WaitingForResult
-    }
-
-    /// Drops the Token Creator form after a network switch: its identity, key and
-    /// wallet belong to the previous network.
+    /// A network switch drops only this screen's draft and signing choices.
+    /// The network-bound durable registration journal is retained.
     pub(crate) fn reset_for_network_switch(&mut self) {
         self.creator_workspace = Default::default();
-        self.selected_wallet = None;
-        self.wallet_open_attempted = false;
-        // Its wallet belongs to the previous network; left open, it would come
-        // back for the next wallet the user selects.
-        self.wallet_unlock_popup.close();
-        self.reset_token_creator();
-    }
-
-    fn reset_token_creator(&mut self) {
-        self.identity_id_string = String::new();
         self.selected_identity = None;
         self.selected_key = None;
-        self.token_creator_status = TokenCreatorStatus::NotStarted;
-        self.token_registration_context = None;
-        self.token_names_input = vec![(
-            String::new(),
-            String::new(),
-            TokenNameLanguage::English,
-            true,
-        )];
-        self.contract_keywords_input = "".to_string();
-        self.token_description_input = "".to_string();
-        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
-        self.base_supply_input = None;
-        self.base_supply_amount = None;
-        self.max_supply_input = None;
-        self.max_supply_amount = None;
-        self.start_as_paused_input = false;
-        self.transferable_input = true;
-        self.should_capitalize_input = true;
-        self.token_advanced_keeps_history =
-            TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
-        self.show_advanced_keeps_history = false;
-        self.manual_minting_rules = ChangeControlRulesUI::default();
-        self.manual_burning_rules = ChangeControlRulesUI::default();
-        self.freeze_rules = ChangeControlRulesUI::default();
-        self.unfreeze_rules = ChangeControlRulesUI::default();
-        self.destroy_frozen_funds_rules = ChangeControlRulesUI::default();
-        self.emergency_action_rules = ChangeControlRulesUI::default();
-        self.max_supply_change_rules = ChangeControlRulesUI::default();
-        self.conventions_change_rules = ChangeControlRulesUI::default();
-        self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
-        self.main_control_group_change_authorized_identity = None;
-        self.main_control_group_change_authorized_group = None;
-        self.marketplace_rules = ChangeControlRulesUI::default();
-        self.change_direct_purchase_pricing_rules = ChangeControlRulesUI::default();
-        self.main_control_group_input = "".to_string();
-        self.groups_ui = vec![];
-
-        self.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
-        self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
-        self.perpetual_dist_interval_input = "".to_string();
-        self.fixed_amount_input = "".to_string();
-        // self.random_min_input = "".to_string();
-        // self.random_max_input = "".to_string();
-        self.step_count_input = "".to_string();
-        self.decrease_per_interval_numerator_input = "".to_string();
-        self.decrease_per_interval_denominator_input = "".to_string();
-        self.step_decreasing_start_period_offset_input = "".to_string();
-        self.step_decreasing_initial_emission_input = "".to_string();
-        self.step_decreasing_min_value_input = "".to_string();
-        self.step_decreasing_max_interval_count_input = "".to_string();
-        self.step_decreasing_trailing_distribution_interval_amount_input = "".to_string();
-        self.stepwise_steps = vec![(String::new(), String::new())];
-        self.linear_int_a_input = "".to_string();
-        self.linear_int_d_input = "".to_string();
-        self.linear_int_start_step_input = "".to_string();
-        self.linear_int_starting_amount_input = "".to_string();
-        self.linear_int_min_value_input = "".to_string();
-        self.linear_int_max_value_input = "".to_string();
-        self.poly_int_a_input = "".to_string();
-        self.poly_int_m_input = "".to_string();
-        self.poly_int_n_input = "".to_string();
-        self.poly_int_d_input = "".to_string();
-        self.poly_int_s_input = "".to_string();
-        self.poly_int_o_input = "".to_string();
-        self.poly_int_b_input = "".to_string();
-        self.poly_int_min_value_input = "".to_string();
-        self.poly_int_max_value_input = "".to_string();
-        self.exp_a_input = "".to_string();
-        self.exp_m_input = "".to_string();
-        self.exp_n_input = "".to_string();
-        self.exp_d_input = "".to_string();
-        self.exp_s_input = "".to_string();
-        self.exp_o_input = "".to_string();
-        self.exp_b_input = "".to_string();
-        self.exp_min_value_input = "".to_string();
-        self.exp_max_value_input = "".to_string();
-        self.log_a_input = "".to_string();
-        self.log_d_input = "".to_string();
-        self.log_m_input = "".to_string();
-        self.log_n_input = "".to_string();
-        self.log_s_input = "".to_string();
-        self.log_o_input = "".to_string();
-        self.log_b_input = "".to_string();
-        self.log_min_value_input = "".to_string();
-        self.log_max_value_input = "".to_string();
-        self.inv_log_a_input = "".to_string();
-        self.inv_log_d_input = "".to_string();
-        self.inv_log_m_input = "".to_string();
-        self.inv_log_n_input = "".to_string();
-        self.inv_log_s_input = "".to_string();
-        self.inv_log_o_input = "".to_string();
-        self.inv_log_b_input = "".to_string();
-        self.inv_log_min_value_input = "".to_string();
-        self.inv_log_max_value_input = "".to_string();
-        self.perpetual_dist_recipient = TokenDistributionRecipientUI::ContractOwner;
-        self.perpetual_dist_recipient_identity_input = None;
-        self.enable_perpetual_distribution = false;
-        self.perpetual_distribution_rules = ChangeControlRulesUI::default();
-        self.enable_pre_programmed_distribution = false;
-        self.pre_programmed_distributions = Vec::new();
-        self.enable_once_per_identity_distribution = false;
-        self.once_per_identity_amount_input = String::new();
-        self.once_per_identity_amount_error = None;
-        self.new_tokens_destination_other_identity_enabled = false;
-        self.new_tokens_destination_identity_rules = ChangeControlRulesUI::default();
-        self.new_tokens_destination_other_identity = "".to_string();
-        self.minting_allow_choosing_destination = false;
-        self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
-        self.new_tokens_destination_identity_should_default_to_contract_owner = true;
-        self.allow_transfers_to_frozen_identities = true;
-        self.perpetual_dist_interval_unit = IntervalTimeUnit::Day;
-
-        // The rules above are back to their defaults, so no preset applies any more.
-        self.selected_token_preset = TokenPresetSelection::Unselected;
-        self.cached_build_args = None;
-        self.show_token_creator_confirmation_popup = false;
-        // The dialog caches its summary text; drop it so it is rebuilt from the new form.
-        self.token_creator_confirmation_dialog = None;
-        // The "View JSON" popup shows the contract built from the old form.
+        self.selected_wallet = None;
+        self.wallet_open_attempted = false;
+        self.wallet_unlock_popup.close();
         self.show_json_popup = false;
         self.json_popup_text.clear();
         self.json_popup_opening_guard = ModalOpeningGuard::default();
-
-        // Reset document schemas
-        self.document_schemas_input = String::new();
-        self.parsed_document_schemas = None;
-        self.document_schemas_error = None;
     }
 
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
@@ -2752,50 +996,8 @@ impl TokensScreen {
             }
         }
     }
-
-    /// Renders the base supply amount input using AmountInput component
-    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
-        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
-        let input = self
-            .base_supply_input
-            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
-
-        if decimals != input.decimal_places() {
-            // Update decimals; it will change actual value but I guess this is what user expects
-            input.set_decimal_places(decimals);
-        }
-
-        let response = input.show(ui);
-        response.inner.update(&mut self.base_supply_amount);
-    }
-
-    /// Renders the max supply amount input using AmountInput component
-    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
-        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
-
-        let input = self.max_supply_input.get_or_insert_with(|| {
-            let initial_amount = Amount::new(
-                TokenConfigurationV0::default_most_restrictive()
-                    .max_supply()
-                    .unwrap_or(0),
-                decimals,
-            );
-
-            AmountInput::new(initial_amount)
-        });
-
-        if decimals != input.decimal_places() {
-            // Update decimals; it will change actual value but I guess this is what user expects
-            input.set_decimal_places(decimals);
-        }
-
-        let response = input.show(ui);
-        response.inner.update(&mut self.max_supply_amount);
-    }
 }
 
-/// Whether the Token Creator offers `identity` as the contract owner: a user
-/// identity with private keys stored here.
 pub(super) fn offered_by_token_creator(identity: &QualifiedIdentity) -> bool {
     identity.identity_type == IdentityType::User && !identity.private_keys.is_empty()
 }
@@ -2866,7 +1068,6 @@ impl ScreenLike for TokensScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.selected_token = None;
-        self.should_reset_collapsing_states = true;
 
         self.all_known_tokens = self
             .app_context
@@ -2989,6 +1190,9 @@ impl ScreenLike for TokensScreen {
 
         // Main panel
         action |= island_central_panel(ui, |ui| {
+            if self.tokens_subscreen == TokensSubscreen::TokenCreator {
+                return self.render_token_workspace(ctx, ui);
+            }
             egui::ScrollArea::vertical()
                 .show(ui, |ui| {
                     let mut inner_action = AppAction::None;
@@ -3008,9 +1212,7 @@ impl ScreenLike for TokensScreen {
                                 inner_action |= self.render_keyword_search(ui);
                             }
                         }
-                        TokensSubscreen::TokenCreator => {
-                            inner_action |= self.render_token_workspace(ctx, ui);
-                        }
+                        TokensSubscreen::TokenCreator => {}
                     }
 
                     // Elapsed display for refreshing is handled by the global MessageBanner
@@ -3087,8 +1289,6 @@ impl ScreenLike for TokensScreen {
                 self.search_results = Arc::new(Mutex::new(Vec::new()));
                 self.selected_contract_id = None;
                 self.selected_contract_description = None;
-
-                self.keep_token_creator_across_navigation();
             }
             AppAction::Custom(ref s) if s == "Back to tokens" => {
                 self.selected_token = None;
@@ -3175,13 +1375,6 @@ impl ScreenLike for TokensScreen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         self.workspace_error(context, _error);
-        if self.awaits_token_registration()
-            && self.token_registration_context.as_ref() == Some(context)
-        {
-            self.token_creator_status = TokenCreatorStatus::Error;
-            self.token_registration_context = None;
-            self.operation_banner.take_and_clear();
-        }
         if self.tokens_subscreen == TokensSubscreen::MyTokens {
             let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
                 && self.pending_operation_context.as_ref() == Some(context);
@@ -3275,13 +1468,6 @@ impl ScreenLike for TokensScreen {
                     &self.token_pricing_data,
                 );
             }
-            BackendTaskSuccessResult::RegisteredTokenContract => {
-                if self.awaits_token_registration() {
-                    self.token_creator_status = TokenCreatorStatus::Complete;
-                    self.token_registration_context = None;
-                }
-                self.operation_banner.take_and_clear();
-            }
             _ => {}
         }
     }
@@ -3289,23 +1475,16 @@ impl ScreenLike for TokensScreen {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
-
-    use crate::app_dir::copy_env_file_if_not_exists;
-    use crate::database::Database;
+    use super::*;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-
-    use super::*;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
-    use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
-    use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
-    use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
     use dash_sdk::dpp::data_contract::TokenConfiguration;
-    use dash_sdk::dpp::identifier::Identifier;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
-    use dash_sdk::platform::{DataContract, Identity};
+    use dash_sdk::platform::DataContract;
+    use dash_sdk::platform::Identity;
+    use std::collections::BTreeMap;
 
     #[test]
     fn in_flight_token_refresh_failure_requires_the_matching_backend_task() {
@@ -3375,57 +1554,6 @@ mod tests {
         status.stop_on_failure(Some(&expected), &expected);
         assert_eq!(status, RefreshingStatus::NotRefreshing);
     }
-
-    fn ensure_test_env() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            copy_env_file_if_not_exists(); // required by AppContext::new()
-
-            // Ensure minimum required configs exist even if .env isn't loaded.
-            // Safety: tests set env vars once to ensure deterministic config.
-            // No other test mutates these values.
-            unsafe {
-                std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
-                std::env::set_var("MAINNET_core_host", "127.0.0.1");
-                std::env::set_var("MAINNET_core_rpc_port", "9998");
-                std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
-                std::env::set_var("MAINNET_core_rpc_password", "password");
-
-                std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
-                std::env::set_var("LOCAL_core_host", "127.0.0.1");
-                std::env::set_var("LOCAL_core_rpc_port", "20302");
-                std::env::set_var("LOCAL_core_rpc_user", "dashmate");
-                std::env::set_var("LOCAL_core_rpc_password", "password");
-            }
-        });
-    }
-
-    #[test]
-    fn registered_token_contract_clears_creation_banner() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        let handle = MessageBanner::set_global(
-            app_context.egui_ctx(),
-            "Creating token...",
-            MessageType::Info,
-        );
-        screen.operation_banner = Some(handle.clone());
-        // As set when the registration was sent.
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
-
-        screen.display_backend_task_result(
-            &BackendTaskContext::Other,
-            BackendTaskSuccessResult::RegisteredTokenContract,
-        );
-
-        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
-        assert!(screen.operation_banner.is_none());
-        assert!(handle.elapsed().is_none());
-    }
-
-    /// A token DET knows about, as the registry would list it, with a contract
-    /// that holds nothing else.
     fn known_token(token_id: Identifier, context: &AppContext) -> TokenInfoWithDataContract {
         use dash_sdk::dpp::data_contract::config::DataContractConfig;
         use dash_sdk::dpp::data_contract::v1::DataContractV1;
@@ -3459,9 +1587,6 @@ mod tests {
             description: None,
         }
     }
-
-    /// A screen holding an identity and a token that are not in the store, so
-    /// a re-read of either domain is visible as that entry going away.
     fn screen_with_unstored_entries()
     -> (TokensScreen, Identifier, Arc<AppContext>, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
@@ -3492,7 +1617,6 @@ mod tests {
             .insert(marker, known_token(marker, &context));
         (screen, marker, context, tmp)
     }
-
     fn other_network(network: Network) -> Network {
         if network == Network::Mainnet {
             Network::Testnet
@@ -3522,8 +1646,6 @@ mod tests {
         assert!(screen.token_pricing_data.contains_key(&marker));
     }
 
-    /// A change to identities re-reads identities alone; a change to tokens
-    /// re-reads tokens alone. Neither touches what the user selected.
     #[test]
     fn a_cache_update_re_reads_only_the_domain_it_names() {
         use crate::backend_task::{CacheDomain, CacheUpdate};
@@ -3555,9 +1677,6 @@ mod tests {
         }
     }
 
-    /// My Tokens joins identities and tokens, so it is recomputed after a
-    /// change to either domain, or to all; a change to a domain it does not
-    /// join leaves it as it was.
     #[test]
     fn my_tokens_is_recomputed_after_a_change_to_a_domain_it_joins() {
         use crate::backend_task::{CacheDomain, CacheUpdate};
@@ -3602,1004 +1721,12 @@ mod tests {
             );
         }
     }
-
-    impl ChangeControlRulesUI {
-        /// Sets every field to some dummy/test value to ensure coverage in tests.
-        pub fn set_all_fields_for_testing(&mut self) {
-            self.rules.authorized_to_make_change =
-                AuthorizedActionTakers::Identity(Identifier::default());
-            self.authorized_identity =
-                Some("ACMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
-
-            self.rules.admin_action_takers =
-                AuthorizedActionTakers::Identity(Identifier::default());
-            self.admin_identity = Some("CCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_owned());
-
-            self.rules
-                .changing_authorized_action_takers_to_no_one_allowed = true;
-            self.rules.changing_admin_action_takers_to_no_one_allowed = true;
-            self.rules.self_changing_admin_action_takers_allowed = true;
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixture setup/teardown outside any production deletion path"
-    )]
-    fn test_token_creator_ui_builds_correct_contract() {
-        let db_file_path = "test_db_token_creator";
-        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        // Force legacy wallet-family schema for tests — `initialize`
-        // gates these out for truly-fresh installs post-T-DEV-01.
-        db.create_tables(true).unwrap();
-        db.set_default_version().unwrap();
-
-        ensure_test_env();
-        // The upstream SQLite persister that backs `app_kv` is not safe
-        // to re-open concurrently from multiple tests on the same file,
-        // so each test gets its own scratch directory. Production opens
-        // a single persister per process via `AppContext::open_app_kv`.
-        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
-        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
-        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
-        // Identity selection
-        let test_identity_id = Identifier::from_string(
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        let mock =
-            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
-                .expect("Expected to create Identity");
-        let mock_identity = QualifiedIdentity {
-            identity: mock,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Mainnet,
-        };
-
-        token_creator_ui.selected_identity = Some(mock_identity);
-
-        // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
-        token_creator_ui.selected_key = Some(mock_key);
-
-        // Basic token info
-        token_creator_ui.token_names_input = vec![(
-            "AcmeCoin".to_string(),
-            "AcmeCoins".to_string(),
-            TokenNameLanguage::English,
-            true,
-        )];
-        token_creator_ui.base_supply_input = None;
-        token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
-        token_creator_ui.max_supply_input = None;
-        token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
-        token_creator_ui.decimals_input = DEFAULT_DECIMALS.to_string();
-        token_creator_ui.start_as_paused_input = true;
-        token_creator_ui.token_advanced_keeps_history =
-            TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
-        token_creator_ui.should_capitalize_input = true;
-
-        // Main control group
-        token_creator_ui.main_control_group_input = "2".to_string();
-
-        // Each action's rules
-        token_creator_ui
-            .manual_minting_rules
-            .set_all_fields_for_testing();
-        token_creator_ui
-            .manual_burning_rules
-            .set_all_fields_for_testing();
-        token_creator_ui.freeze_rules.set_all_fields_for_testing();
-        token_creator_ui.unfreeze_rules.set_all_fields_for_testing();
-        token_creator_ui
-            .destroy_frozen_funds_rules
-            .set_all_fields_for_testing();
-        token_creator_ui
-            .emergency_action_rules
-            .set_all_fields_for_testing();
-        token_creator_ui
-            .max_supply_change_rules
-            .set_all_fields_for_testing();
-        token_creator_ui
-            .conventions_change_rules
-            .set_all_fields_for_testing();
-
-        // main_control_group_change_authorized
-        token_creator_ui.authorized_main_control_group_change = AuthorizedActionTakers::Group(99);
-        token_creator_ui.main_control_group_change_authorized_group = Some("99".to_string());
-
-        // -------------------------------------------------
-        // Distribution
-        // -------------------------------------------------
-        // Perpetual distribution
-        token_creator_ui.enable_perpetual_distribution = true;
-        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::BlockBased;
-        token_creator_ui.perpetual_dist_interval_input = "42".to_string();
-        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
-        token_creator_ui.fixed_amount_input = "12345".to_string();
-        token_creator_ui.perpetual_dist_recipient = TokenDistributionRecipientUI::Identity;
-        token_creator_ui.perpetual_dist_recipient_identity_input =
-            Some("DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string());
-        token_creator_ui
-            .perpetual_distribution_rules
-            .set_all_fields_for_testing();
-
-        // new_tokens_destination_identity
-        token_creator_ui.new_tokens_destination_other_identity_enabled = true;
-        token_creator_ui.new_tokens_destination_other_identity =
-            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string();
-        token_creator_ui
-            .new_tokens_destination_identity_rules
-            .set_all_fields_for_testing();
-
-        // minting_allow_choosing_destination
-        token_creator_ui.minting_allow_choosing_destination = true;
-        token_creator_ui
-            .minting_allow_choosing_destination_rules
-            .set_all_fields_for_testing();
-
-        // -------------------------------------------------
-        // Groups
-        // -------------------------------------------------
-        // We'll define 2 groups for testing: positions 0 (main) and 1
-        token_creator_ui.groups_ui = vec![
-            GroupConfigUI {
-                required_power_str: "2".to_string(),
-                members: vec![
-                    GroupMemberUI {
-                        identity_str: "HCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
-                        power_str: "5".to_string(),
-                    },
-                    GroupMemberUI {
-                        identity_str: "JCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9".to_string(),
-                        power_str: "5".to_string(),
-                    },
-                ],
-            },
-            GroupConfigUI {
-                required_power_str: "1".to_string(),
-                members: vec![],
-            },
-        ];
-
-        // -------------------------------------------------
-        // 3) Parse arguments, then build the DataContract
-        // -------------------------------------------------
-        let build_args = token_creator_ui
-            .parse_token_build_args()
-            .expect("parse_token_build_args should succeed");
-        let owner_id = build_args.identity_id;
-        let data_contract = app_context
-            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
-            .expect("Contract build failed");
-
-        // -------------------------------------------------
-        // 4) Validate the result
-        // -------------------------------------------------
-        // Unwrap it to the V1
-        let DataContract::V1(contract_v1) = data_contract else {
-            panic!("Expected DataContract::V1");
-        };
-
-        // A) Check the top-level fields
-        assert_eq!(contract_v1.version, 1);
-        assert_eq!(
-            contract_v1.tokens.len(),
-            1,
-            "We expected exactly one token config"
-        );
-
-        // B) Check the token config
-        let (token_pos, token_config) = contract_v1.tokens.iter().next().unwrap();
-        assert_eq!({ *token_pos }, 0, "Should be at position 0 by default");
-
-        let TokenConfiguration::V0(token_v0) = token_config else {
-            panic!("the existing token builder must retain V0 configuration");
-        };
-        let TokenConfigurationConvention::V0(conv_v0) = &token_v0.conventions;
-
-        assert_eq!(conv_v0.decimals, 8, "Decimals from UI not matched");
-        assert_eq!(
-            conv_v0.localizations["en"].singular_form(),
-            "AcmeCoin",
-            "Token name did not match"
-        );
-        assert_eq!(
-            conv_v0.localizations["en"].plural_form(),
-            "AcmeCoins",
-            "Plural form not automatically set in test"
-        );
-        let keeps_history_rules = &token_v0.keeps_history;
-        let TokenKeepsHistoryRules::V0(keeps_history_v0) = keeps_history_rules;
-        assert!(keeps_history_v0.keeps_transfer_history);
-        assert!(keeps_history_v0.keeps_freezing_history);
-        assert_eq!(token_v0.base_supply, 5_000_000);
-        assert_eq!(token_v0.max_supply, Some(10_000_000));
-        assert!(token_v0.start_as_paused);
-        assert_eq!(
-            token_v0.main_control_group,
-            Some(2),
-            "Parsed main control group mismatch"
-        );
-
-        // C) Check each ChangeControlRules field
-        assert_eq!(
-            *token_v0
-                .manual_minting_rules
-                .authorized_to_make_change_action_takers(),
-            token_creator_ui
-                .manual_minting_rules
-                .rules
-                .authorized_to_make_change
-        );
-        // ... etc.
-
-        // D) Check main_control_group_can_be_modified
-        match token_v0.main_control_group_can_be_modified {
-            AuthorizedActionTakers::Group(group_id) => {
-                assert_eq!(group_id, 99, "Expected group 99 from UI");
-            }
-            _ => panic!("Expected group(99) from the UI but got something else"),
-        }
-
-        // E) Check distribution rules
-        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
-            panic!("rules without a once-per-identity distribution stay V0");
-        };
-        // -- Perpetual
-        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
-        else {
-            panic!("Expected Some(TokenPerpetualDistribution::V0)");
-        };
-        match &perp_v0.distribution_type {
-            RewardDistributionType::BlockBasedDistribution { interval, function } => {
-                assert_eq!(*interval, 42, "Interval mismatch");
-                match function {
-                    DistributionFunction::FixedAmount { amount } => {
-                        assert_eq!(*amount, 12345, "Fixed amount mismatch");
-                    }
-                    _ => panic!("Expected DistributionFunction::FixedAmount"),
-                }
-            }
-            _ => panic!("Expected a BlockBasedDistribution"),
-        }
-        match &perp_v0.distribution_recipient {
-            TokenDistributionRecipient::Identity(rec_id) => {
-                assert_eq!(
-                    rec_id.to_string(Encoding::Base58),
-                    "DCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
-                );
-            }
-            _ => panic!("Expected distribution recipient Identity(...)"),
-        }
-
-        // -- New tokens destination
-        let Some(new_dest_id) = &dist_rules_v0.new_tokens_destination_identity else {
-            panic!("Expected new_tokens_destination_identity to be Some(...)");
-        };
-        assert_eq!(
-            new_dest_id.to_string(Encoding::Base58),
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
-        );
-        assert!(dist_rules_v0.minting_allow_choosing_destination);
-
-        // F) Check the Groups
-        //    (Positions 0 and 1, from above)
-        assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
-
-        let group0 = contract_v1.groups.get(&0).expect("Expected group pos=0");
-        assert_eq!(
-            group0.required_power(),
-            2,
-            "Group #0 required_power mismatch"
-        );
-        let members = &group0.members();
-        assert_eq!(members.len(), 2);
-
-        let group1 = contract_v1.groups.get(&1).expect("Expected group pos=1");
-        assert_eq!(group1.required_power(), 1);
-        assert_eq!(group1.members().len(), 0);
-    }
-
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixture setup/teardown outside any production deletion path"
-    )]
-    fn test_distribution_function_random() {
-        let db_file_path = "test_db_distribution_random";
-        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        // Force legacy wallet-family schema for tests — `initialize`
-        // gates these out for truly-fresh installs post-T-DEV-01.
-        db.create_tables(true).unwrap();
-        db.set_default_version().unwrap();
-
-        ensure_test_env();
-        // The upstream SQLite persister that backs `app_kv` is not safe
-        // to re-open concurrently from multiple tests on the same file,
-        // so each test gets its own scratch directory. Production opens
-        // a single persister per process via `AppContext::open_app_kv`.
-        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
-        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
-        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
-        // Identity selection
-        let test_identity_id = Identifier::from_string(
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        let mock =
-            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
-                .expect("Expected to create Identity");
-        let mock_identity = QualifiedIdentity {
-            identity: mock,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Mainnet,
-        };
-
-        token_creator_ui.selected_identity = Some(mock_identity);
-
-        // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
-        token_creator_ui.selected_key = Some(mock_key);
-
-        token_creator_ui.token_names_input = vec![(
-            "TestToken".to_owned(),
-            "TestToken".to_owned(),
-            TokenNameLanguage::English,
-            true,
-        )];
-
-        // Set base supply
-        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
-
-        // Enable perpetual distribution, select Random
-        token_creator_ui.enable_perpetual_distribution = true;
-        token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
-        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
-        token_creator_ui.perpetual_dist_interval_input = "60".to_string();
-        token_creator_ui.perpetual_dist_interval_unit = IntervalTimeUnit::Second;
-        token_creator_ui.fixed_amount_input = "100".to_string();
-
-        // Parse + build
-        let build_args = token_creator_ui
-            .parse_token_build_args()
-            .expect("Should parse");
-        let owner_id = build_args.identity_id;
-        let data_contract = app_context
-            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
-            .expect("Should build successfully");
-        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
-
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
-            panic!("the existing token builder must retain V0 configuration");
-        };
-        let TokenDistributionRules::V0(dist_rules_v0) = &token_v0.distribution_rules else {
-            panic!("rules without a once-per-identity distribution stay V0");
-        };
-        let Some(TokenPerpetualDistribution::V0(perp_v0)) = &dist_rules_v0.perpetual_distribution
-        else {
-            panic!("Expected a perpetual distribution");
-        };
-
-        match &perp_v0.distribution_type {
-            RewardDistributionType::TimeBasedDistribution { interval, function } => {
-                assert_eq!(*interval, 60000, "Expected 60s (in ms)");
-                match function {
-                    DistributionFunction::FixedAmount { amount } => {
-                        assert_eq!(*amount, 100);
-                    }
-                    _ => panic!("Expected DistributionFunction::FixedAmount"),
-                }
-            }
-            _ => panic!("Expected TimeBasedDistribution"),
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixture setup/teardown outside any production deletion path"
-    )]
-    fn once_per_identity_distribution_builds_version_1_rules_only_on_protocol_14() {
-        let db_file_path = "test_db_once_per_identity_distribution";
-        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        // Force legacy wallet-family schema for tests — `initialize`
-        // gates these out for truly-fresh installs post-T-DEV-01.
-        db.create_tables(true).unwrap();
-        db.set_default_version().unwrap();
-
-        ensure_test_env();
-        // The upstream SQLite persister that backs `app_kv` is not safe
-        // to re-open concurrently from multiple tests on the same file,
-        // so each test gets its own scratch directory. Production opens
-        // a single persister per process via `AppContext::open_app_kv`.
-        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
-        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
-        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
-        // Identity selection
-        let test_identity_id = Identifier::from_string(
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        let mock =
-            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
-                .expect("Expected to create Identity");
-        let mock_identity = QualifiedIdentity {
-            identity: mock,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Mainnet,
-        };
-
-        token_creator_ui.selected_identity = Some(mock_identity);
-
-        // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
-        token_creator_ui.selected_key = Some(mock_key);
-
-        token_creator_ui.token_names_input = vec![(
-            "TestToken".to_owned(),
-            "TestToken".to_owned(),
-            TokenNameLanguage::English,
-            true,
-        )];
-
-        // Set base supply
-        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
-
-        token_creator_ui.enable_once_per_identity_distribution = true;
-        token_creator_ui.once_per_identity_amount_input = "250".to_string();
-
-        // The connected network's version is not known yet: refused locally.
-        let err = token_creator_ui
-            .parse_token_build_args()
-            .expect_err("a network below protocol 14 refuses the distribution");
-        assert_eq!(
-            err,
-            crate::backend_task::error::TaskError::TokenOncePerIdentityNotSupported.to_string(),
-            "the local refusal reads like the backend's"
-        );
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
-        let build_args = token_creator_ui
-            .parse_token_build_args()
-            .expect("Should parse");
-        let owner_id = build_args.identity_id;
-        let data_contract = app_context
-            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
-            .expect("Should build successfully");
-        let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
-        let TokenConfiguration::V0(ref token_v0) = contract_v1.tokens[&0u16] else {
-            panic!("the existing token builder must retain V0 configuration");
-        };
-        assert!(matches!(
-            token_v0.distribution_rules,
-            TokenDistributionRules::V1(_)
-        ));
-        assert_eq!(
-            crate::model::token::once_per_identity_amount(&contract_v1.tokens[&0u16]),
-            Some(250)
-        );
-
-        // A bad amount is reported, not sent.
-        token_creator_ui.once_per_identity_amount_input = "0".to_string();
-        assert!(token_creator_ui.parse_token_build_args().is_err());
-    }
-
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixture setup/teardown outside any production deletion path"
-    )]
-    fn non_transferable_token_builds_a_version_1_configuration_only_on_protocol_14() {
-        use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v1::TokenConfigurationV1Getters;
-        let db_file_path = "test_db_non_transferable_token";
-        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        // Force legacy wallet-family schema for tests — `initialize`
-        // gates these out for truly-fresh installs post-T-DEV-01.
-        db.create_tables(true).unwrap();
-        db.set_default_version().unwrap();
-
-        ensure_test_env();
-        // The upstream SQLite persister that backs `app_kv` is not safe
-        // to re-open concurrently from multiple tests on the same file,
-        // so each test gets its own scratch directory. Production opens
-        // a single persister per process via `AppContext::open_app_kv`.
-        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
-        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
-        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
-        // Identity selection
-        let test_identity_id = Identifier::from_string(
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        let mock =
-            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
-                .expect("Expected to create Identity");
-        let mock_identity = QualifiedIdentity {
-            identity: mock,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Mainnet,
-        };
-
-        token_creator_ui.selected_identity = Some(mock_identity);
-
-        // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
-        token_creator_ui.selected_key = Some(mock_key);
-
-        token_creator_ui.token_names_input = vec![(
-            "TestToken".to_owned(),
-            "TestToken".to_owned(),
-            TokenNameLanguage::English,
-            true,
-        )];
-
-        // Set base supply
-        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
-
-        // A transferable token keeps the version 0 configuration older
-        // networks accept.
-        let build_args = token_creator_ui
-            .parse_token_build_args()
-            .expect("a transferable token parses on any network");
-        let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.into_contract_params(),
-            )
-            .expect("Should build successfully");
-        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
-        assert!(matches!(token, TokenConfiguration::V0(_)));
-        assert!(token.is_transferable());
-
-        token_creator_ui.transferable_input = false;
-
-        // The connected network's version is not known yet: refused locally.
-        let err = token_creator_ui
-            .parse_token_build_args()
-            .expect_err("a network below protocol 14 refuses a non-transferable token");
-        assert!(err.contains("does not accept"), "got: {err}");
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
-        let build_args = token_creator_ui
-            .parse_token_build_args()
-            .expect("Should parse");
-        let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.into_contract_params(),
-            )
-            .expect("Should build successfully");
-        let token = &data_contract.as_v1().expect("DataContract::V1").tokens[&0u16];
-        assert!(matches!(token, TokenConfiguration::V1(_)));
-        assert!(!token.is_transferable());
-    }
-
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "test fixture setup/teardown outside any production deletion path"
-    )]
-    fn test_parse_token_build_args_fails_with_empty_token_name() {
-        let db_file_path = "test_db_empty_token_name";
-        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
-        let db = Arc::new(Database::new(db_file_path).unwrap());
-        // Force legacy wallet-family schema for tests — `initialize`
-        // gates these out for truly-fresh installs post-T-DEV-01.
-        db.create_tables(true).unwrap();
-        db.set_default_version().unwrap();
-
-        ensure_test_env();
-        // The upstream SQLite persister that backs `app_kv` is not safe
-        // to re-open concurrently from multiple tests on the same file,
-        // so each test gets its own scratch directory. Production opens
-        // a single persister per process via `AppContext::open_app_kv`.
-        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
-        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
-        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
-        let app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("Expected to create AppContext");
-        let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-
-        // Identity selection
-        let test_identity_id = Identifier::from_string(
-            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
-            Encoding::Base58,
-        )
-        .unwrap();
-        let mock =
-            Identity::create_basic_identity(test_identity_id, app_context.platform_version())
-                .expect("Expected to create Identity");
-        let mock_identity = QualifiedIdentity {
-            identity: mock,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Mainnet,
-        };
-
-        token_creator_ui.selected_identity = Some(mock_identity);
-
-        // Key selection
-        let mock_key = IdentityPublicKey::random_key(0, None, app_context.platform_version());
-        token_creator_ui.selected_key = Some(mock_key);
-
-        // Intentionally leave token_name_input empty
-        token_creator_ui.token_names_input = vec![];
-
-        let err = token_creator_ui
-            .parse_token_build_args()
-            .expect_err("Should fail if token name is empty");
-        assert_eq!(err, "Please enter a token name");
-    }
-
-    /// Fills the minimum inputs `parse_token_build_args` needs, the way a user
-    /// would in Simple mode: an identity, a token name and an initial supply.
-    fn fill_minimal_creator_inputs(screen: &mut TokensScreen, app_context: &Arc<AppContext>) {
-        let identity_id = Identifier::from([7; 32]);
-        let identity = Identity::create_basic_identity(identity_id, app_context.platform_version())
-            .expect("basic identity");
-        screen.selected_identity = Some(QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: crate::model::qualified_identity::IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        });
-        screen.token_names_input = vec![(
-            "PresetCoin".to_string(),
-            "PresetCoins".to_string(),
-            TokenNameLanguage::English,
-            true,
-        )];
-        screen.base_supply_amount = Some(Amount::new(1_000, 8));
-    }
-
-    /// Asserts that every rule in `args` equals what `features` defines, computed
-    /// straight from the Platform preset rather than through the creator.
-    fn assert_build_args_match_preset(
-        args: &TokenBuildArgs,
-        features: TokenConfigurationPresetFeatures,
-    ) {
-        use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset;
-        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
-
-        let preset = TokenConfigurationPreset {
-            features,
-            action_taker: AuthorizedActionTakers::ContractOwner,
-        };
-        let basic = ChangeControlRules::V0(preset.default_basic_change_control_rules_v0());
-        let advanced = ChangeControlRules::V0(preset.default_advanced_change_control_rules_v0());
-        let emergency =
-            ChangeControlRules::V0(preset.default_emergency_action_change_control_rules_v0());
-
-        let cases = [
-            ("manual minting", &args.manual_minting_rules, &basic),
-            ("manual burning", &args.manual_burning_rules, &basic),
-            ("freeze", &args.freeze_rules, &advanced),
-            ("unfreeze", &args.unfreeze_rules, &advanced),
-            (
-                "destroy frozen funds",
-                &args.destroy_frozen_funds_rules,
-                &advanced,
-            ),
-            ("emergency action", &args.emergency_action_rules, &emergency),
-            (
-                "max supply change",
-                &args.max_supply_change_rules,
-                &advanced,
-            ),
-            ("conventions change", &args.conventions_change_rules, &basic),
-            ("marketplace", &args.marketplace_rules, &basic),
-            (
-                "direct purchase pricing",
-                &args.change_direct_purchase_pricing_rules,
-                &basic,
-            ),
-            (
-                "perpetual distribution",
-                args.distribution_rules.perpetual_distribution_rules(),
-                &advanced,
-            ),
-            (
-                "new tokens destination identity",
-                args.distribution_rules
-                    .new_tokens_destination_identity_rules(),
-                &basic,
-            ),
-            (
-                "minting allow choosing destination",
-                args.distribution_rules
-                    .minting_allow_choosing_destination_rules(),
-                &basic,
-            ),
-            (
-                "distribution direct purchase pricing",
-                args.distribution_rules
-                    .change_direct_purchase_pricing_rules(),
-                &basic,
-            ),
-        ];
-        for (name, actual, expected) in cases {
-            assert_eq!(
-                actual, expected,
-                "{name} rules differ from the {features:?} preset shown on screen"
-            );
-        }
-        assert_eq!(
-            args.main_control_group_change_authorized,
-            preset.default_main_control_group_can_be_modified(),
-            "main control group change rule differs from the {features:?} preset shown on screen"
-        );
-    }
-
-    const ALL_PRESETS: [TokenConfigurationPresetFeatures; 5] = [
-        TokenConfigurationPresetFeatures::MostRestrictive,
-        TokenConfigurationPresetFeatures::WithOnlyEmergencyAction,
-        TokenConfigurationPresetFeatures::WithMintingAndBurningActions,
-        TokenConfigurationPresetFeatures::WithAllAdvancedActions,
-        TokenConfigurationPresetFeatures::WithExtremeActions,
-    ];
-
-    fn owner_preset(
-        features: TokenConfigurationPresetFeatures,
-    ) -> dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset
-{
-        dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPreset {
-            features,
-            action_taker: AuthorizedActionTakers::ContractOwner,
-        }
-    }
-
-    /// Regression: choosing "All Allowed", leaving the Token Creator (subscreen tab,
-    /// left panel) and coming back used to reset every rule to "no one" while the
-    /// selector kept showing "All Allowed", so the token was created with no actions
-    /// allowed. Now the whole form survives and the shown preset is what gets built.
-    #[test]
-    fn token_creator_form_and_preset_survive_navigation() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.token_description_input = "Kept across navigation".to_string();
-        screen.start_as_paused_input = true;
-
-        // What `SetMainScreenThenGoToMainScreen` (tabs, left panel) does on the way out.
-        screen.keep_token_creator_across_navigation();
-        screen.reconcile_selected_preset();
-
-        assert_eq!(
-            screen.selected_token_preset,
-            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
-        );
-        assert!(screen.can_create_in_simple_mode());
-        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
-        assert_eq!(screen.token_description_input, "Kept across navigation");
-        assert!(screen.start_as_paused_input);
-        assert!(screen.selected_identity.is_some());
-        let args = screen.parse_token_build_args().expect("token build args");
-        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
-    }
-
-    /// After a successful creation, leaving the success screen gives a fresh
-    /// creator: no preset, "Create Token" blocked, no stale confirmation.
-    #[test]
-    fn token_creator_starts_fresh_after_a_successful_creation() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.allow_transfers_to_frozen_identities = false;
-        screen.token_creator_confirmation_dialog = Some(
-            crate::ui::components::confirmation_dialog::ConfirmationDialog::new(
-                "Confirm Token Contract Registration",
-                "stale summary",
-            ),
-        );
-        screen.token_creator_status = TokenCreatorStatus::WaitingForResult;
-        screen.display_backend_task_result(
-            &BackendTaskContext::Other,
-            BackendTaskSuccessResult::RegisteredTokenContract,
-        );
-
-        screen.keep_token_creator_across_navigation();
-        screen.reconcile_selected_preset();
-
-        assert_eq!(screen.token_creator_status, TokenCreatorStatus::NotStarted);
-        assert_eq!(
-            screen.selected_token_preset,
-            TokenPresetSelection::Unselected
-        );
-        assert!(screen.token_creator_confirmation_dialog.is_none());
-        assert!(screen.allow_transfers_to_frozen_identities);
-
-        // Even with the other required fields filled in again, a preset is needed.
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        assert!(!screen.can_create_in_simple_mode());
-        assert_eq!(
-            screen.simple_mode_blocked_reason().as_deref(),
-            Some("Choose a preset to create the token.")
-        );
-    }
-
-    /// A network switch drops the form: its identity belongs to the old network.
-    #[test]
-    fn token_creator_starts_fresh_after_a_network_switch() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-
-        screen.reset_for_network_switch();
-
-        assert!(screen.selected_identity.is_none());
-        assert_eq!(
-            screen.selected_token_preset,
-            TokenPresetSelection::Unselected
-        );
-        assert!(!screen.can_create_in_simple_mode());
-    }
-
-    /// A user identity holding private keys for `keys`.
     fn creator_identity(
         context: &AppContext,
         keys: &[(KeyID, Purpose, SecurityLevel)],
     ) -> QualifiedIdentity {
         identity_holding(context, 0x41, IdentityType::User, keys)
     }
-
-    /// An identity of `identity_type` holding private keys for `keys`.
     fn identity_holding(
         context: &AppContext,
         id: u8,
@@ -4649,7 +1776,6 @@ mod tests {
             network: context.network,
         }
     }
-
     fn selected_key_ids(screen: &TokensScreen) -> Vec<KeyID> {
         let mut ids: Vec<KeyID> = screen
             .selected_identity
@@ -4664,10 +1790,6 @@ mod tests {
         ids
     }
 
-    /// Regression: the creator kept its own copy of the selected identity, so a
-    /// key added on the identity's key screen never reached it — Simple mode kept
-    /// saying no eligible key exists. Coming back (or a change to identities)
-    /// shows the stored identity, and the form the user filled in is kept.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_shows_the_current_keys_of_the_selected_identity() {
         use crate::backend_task::{CacheDomain, CacheUpdate};
@@ -4684,7 +1806,7 @@ mod tests {
                 .expect("store identity");
             let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
             assert_eq!(selected_key_ids(&screen), vec![1]);
-            screen.token_description_input = "Kept across navigation".to_string();
+            screen.creator_workspace.draft.description = "Kept across navigation".to_string();
 
             let with_new_key = creator_identity(
                 &context,
@@ -4698,7 +1820,6 @@ mod tests {
                 .expect("add key");
 
             if arrival == "navigation" {
-                screen.keep_token_creator_across_navigation();
                 screen.refresh_on_arrival();
             } else {
                 screen.cached_data_changed(CacheUpdate {
@@ -4709,15 +1830,13 @@ mod tests {
 
             assert_eq!(selected_key_ids(&screen), vec![1, 2], "after {arrival}");
             assert_eq!(
-                screen.token_description_input, "Kept across navigation",
+                screen.creator_workspace.draft.description, "Kept across navigation",
                 "after {arrival}"
             );
             context.wallet_backend().unwrap().shutdown().await;
         }
     }
 
-    /// A selected key that the stored identity no longer holds is dropped, so the
-    /// creator never signs with it; a key it still holds stays selected.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_drops_a_selected_key_the_identity_no_longer_holds() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
@@ -4760,27 +1879,23 @@ mod tests {
         context.wallet_backend().unwrap().shutdown().await;
     }
 
-    /// An identity removed from the store is no longer offered by the creator,
-    /// so it stops being the selected one; the rest of the form is kept.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_deselects_an_identity_that_is_no_longer_stored() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
         let app_context = crate::context::test_support::wired_test_app_context(tmp.path()).await;
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
 
-        screen.keep_token_creator_across_navigation();
         screen.refresh_on_arrival();
 
         assert!(screen.selected_identity.is_none());
-        assert!(screen.identity_id_string.is_empty());
-        assert_eq!(screen.token_names_input[0].0, "PresetCoin");
+        assert_eq!(
+            screen.creator_workspace.draft.names[0].singular,
+            "PresetCoin"
+        );
         app_context.wallet_backend().unwrap().shutdown().await;
     }
 
-    /// When stored identities cannot be read, the creator keeps the identity the
-    /// user selected instead of treating it as removed.
     #[test]
     fn token_creator_keeps_its_identity_when_identities_cannot_be_read() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
@@ -4788,7 +1903,6 @@ mod tests {
         let app_context = crate::context::test_support::test_app_context(tmp.path());
         let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
         fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.identity_id_string = Identifier::from([7; 32]).to_string(Encoding::Base58);
 
         screen.refresh_on_arrival();
 
@@ -4796,13 +1910,8 @@ mod tests {
             screen.selected_identity.map(|qi| qi.identity.id()),
             Some(Identifier::from([7; 32]))
         );
-        assert!(!screen.identity_id_string.is_empty());
     }
 
-    /// The creator offers only user identities with private keys. An identity it
-    /// does not offer (a masternode one, or one without keys) is never its
-    /// selection: the selector would show "No identities found" next to a list
-    /// of identities, and Simple mode would report a missing key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_creator_never_keeps_an_identity_it_does_not_offer() {
         let key = [(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)];
@@ -4827,7 +1936,6 @@ mod tests {
             // Opened before any identity it offers exists: nothing is selected.
             let mut screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
             assert!(screen.selected_identity.is_none(), "{case}: seed");
-            assert!(screen.identity_id_string.is_empty(), "{case}: seed");
 
             // A selection made from an older roster is dropped on return, so the
             // selector picks an identity it offers.
@@ -4836,10 +1944,8 @@ mod tests {
                 .insert_local_qualified_identity(&eligible, &None)
                 .expect("store eligible identity");
             screen.selected_identity = Some(ineligible.clone());
-            screen.identity_id_string = ineligible_id.to_string(Encoding::Base58);
             screen.refresh_on_arrival();
             assert!(screen.selected_identity.is_none(), "{case}: arrival");
-            assert!(screen.identity_id_string.is_empty(), "{case}: arrival");
 
             // A creator opened now starts from an identity it offers.
             let screen = TokensScreen::new(&context, TokensSubscreen::TokenCreator);
@@ -4852,447 +1958,6 @@ mod tests {
         }
     }
 
-    /// Every preset picked in a freshly opened creator is built exactly as defined.
-    #[test]
-    fn token_creator_builds_exactly_the_selected_preset() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-
-        for features in ALL_PRESETS {
-            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-            fill_minimal_creator_inputs(&mut screen, &app_context);
-            assert!(
-                !screen.can_create_in_simple_mode(),
-                "a creator with no preset chosen must not allow creating"
-            );
-            assert!(
-                !screen.preset_chosen(),
-                "Advanced mode must not register a token with no preset chosen"
-            );
-            screen.change_to_preset(owner_preset(features));
-            screen.reconcile_selected_preset();
-
-            assert_eq!(
-                screen.selected_token_preset,
-                TokenPresetSelection::Preset(features),
-                "an untouched {features:?} preset must stay selected"
-            );
-            assert!(screen.can_create_in_simple_mode());
-            let args = screen.parse_token_build_args().expect("token build args");
-            assert_build_args_match_preset(&args, features);
-        }
-    }
-
-    /// Editing one rule after picking a preset shows "Custom", still allows
-    /// creating, and builds the edited rules; picking a preset again re-applies it.
-    #[test]
-    fn token_creator_shows_custom_when_rules_leave_the_preset() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-
-        screen.manual_minting_rules.rules.authorized_to_make_change = AuthorizedActionTakers::NoOne;
-        screen.reconcile_selected_preset();
-
-        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
-        assert_eq!(screen.preset_selection_label(), "Custom");
-        assert!(screen.can_create_in_simple_mode());
-        let args = screen.parse_token_build_args().expect("token build args");
-        let ChangeControlRules::V0(minting) = &args.manual_minting_rules;
-        assert_eq!(
-            minting.authorized_to_make_change,
-            AuthorizedActionTakers::NoOne,
-            "the edited rule must be built"
-        );
-        let ChangeControlRules::V0(burning) = &args.manual_burning_rules;
-        assert_eq!(
-            burning.authorized_to_make_change,
-            AuthorizedActionTakers::ContractOwner,
-            "untouched rules keep the preset's value"
-        );
-
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.reconcile_selected_preset();
-        assert_eq!(
-            screen.selected_token_preset,
-            TokenPresetSelection::Preset(TokenConfigurationPresetFeatures::WithExtremeActions)
-        );
-        let args = screen.parse_token_build_args().expect("token build args");
-        assert_build_args_match_preset(&args, TokenConfigurationPresetFeatures::WithExtremeActions);
-
-        // The main control group rule counts too.
-        screen.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
-        screen.reconcile_selected_preset();
-        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
-
-        // So does letting a mint choose where the new tokens go, which "All Allowed" turns on.
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        assert!(screen.minting_allow_choosing_destination);
-        screen.minting_allow_choosing_destination = false;
-        screen.reconcile_selected_preset();
-        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
-    }
-
-    /// Editing a rule before choosing any preset is a "Custom" choice, not "Select a preset...".
-    #[test]
-    fn token_creator_rule_edit_without_preset_is_custom() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-
-        screen.reconcile_selected_preset();
-        assert_eq!(
-            screen.selected_token_preset,
-            TokenPresetSelection::Unselected
-        );
-        assert_eq!(screen.preset_selection_label(), "Select a preset...");
-
-        screen.freeze_rules.rules.authorized_to_make_change = AuthorizedActionTakers::ContractOwner;
-        screen.reconcile_selected_preset();
-        assert_eq!(screen.selected_token_preset, TokenPresetSelection::Custom);
-        assert!(screen.can_create_in_simple_mode());
-        assert!(
-            screen.preset_chosen(),
-            "Custom rules may be registered in Advanced mode"
-        );
-    }
-
-    /// Every preset builds exactly Platform's own token configuration for it
-    /// (`TokenConfigurationPreset::token_configuration_v0` with direct pricing), apart
-    /// from the inputs the user types and one deliberate difference: new tokens go
-    /// to the contract owner by default instead of requiring a destination per mint.
-    #[test]
-    fn token_creator_presets_build_platforms_full_preset_configuration() {
-        use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Setters;
-
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-
-        for features in ALL_PRESETS {
-            let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-            fill_minimal_creator_inputs(&mut screen, &app_context);
-            screen.change_to_preset(owner_preset(features));
-
-            let args = screen.parse_token_build_args().expect("token build args");
-            let owner_id = args.identity_id;
-            let contract = app_context
-                .build_data_contract_v1_with_one_token(owner_id, args.into_contract_params())
-                .expect("contract build");
-            let TokenConfiguration::V0(built) =
-                contract.as_v1().expect("DataContract::V1").tokens[&0u16].clone()
-            else {
-                panic!("a transferable token keeps the version 0 configuration");
-            };
-
-            let mut expected = owner_preset(features).token_configuration_v0(
-                built.conventions.clone(),
-                built.base_supply,
-                built.max_supply,
-                true,
-                true,
-            );
-            expected
-                .distribution_rules
-                .set_new_tokens_destination_identity(Some(owner_id));
-
-            assert_eq!(
-                built, expected,
-                "the {features:?} preset must build Platform's full preset configuration"
-            );
-        }
-    }
-
-    /// Renders the "holders can send this token" row once, as a frame would.
-    fn render_transferable_row(screen: &mut TokensScreen) {
-        let ctx = egui::Context::default();
-        ctx.run_ui(egui::RawInput::default(), |ui| screen.transferable_row(ui))
-            .drop_without_applying_deltas();
-    }
-
-    /// A non-transferable choice is kept, not silently flipped back to
-    /// transferable, while the network's support is not confirmed; creating is
-    /// blocked with the reason instead.
-    #[test]
-    fn non_transferable_choice_survives_until_the_network_supports_it() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        screen.transferable_input = false;
-
-        render_transferable_row(&mut screen);
-
-        assert!(
-            !screen.transferable_input,
-            "the user's non-transferable choice must not be overwritten"
-        );
-        assert_eq!(
-            screen.creation_blocked_reason().as_deref(),
-            Some(TRANSFERS_OFF_HINT),
-            "the reason must say where the hidden option is"
-        );
-
-        crate::context::test_support::prove_protocol_version(&app_context, 14);
-        render_transferable_row(&mut screen);
-        assert!(!screen.transferable_input);
-        assert_eq!(screen.creation_blocked_reason(), None);
-    }
-
-    /// Why creating is blocked while transfers are off on a network that does
-    /// not accept it, naming where the option is: it is offered only under
-    /// Advanced, so the form may not show it.
-    const TRANSFERS_OFF_HINT: &str = "The connected network does not accept tokens that cannot be transferred yet. Under Advanced, turn on \"Holders can send this token to other identities\", or try again after the network upgrades.";
-
-    /// The confirmation always states the irreversible "holders cannot send"
-    /// choice; the transferable default is stated only with Advanced Options,
-    /// the only place it can be changed.
-    #[test]
-    fn confirmation_states_whether_holders_can_send_the_token() {
-        const CANNOT: &str =
-            "Holders cannot send this token to other identities. This cannot be changed later.";
-        assert_eq!(TokensScreen::transferability_summary(true, false), None);
-        assert_eq!(
-            TokensScreen::transferability_summary(true, true),
-            Some("Holders can send this token to other identities.")
-        );
-        assert_eq!(
-            TokensScreen::transferability_summary(false, false),
-            Some(CANNOT)
-        );
-        assert_eq!(
-            TokensScreen::transferability_summary(false, true),
-            Some(CANNOT)
-        );
-    }
-
-    fn confirmation(
-        transferable: bool,
-        once_per_identity_amount: Option<TokenAmount>,
-        marketplace_locked: bool,
-    ) -> String {
-        TokensScreen::registration_confirmation_message(
-            "QAWk1027",
-            "0",
-            "None",
-            TokensScreen::transferability_summary(transferable, true),
-            once_per_identity_amount,
-            0.402,
-            marketplace_locked,
-        )
-    }
-
-    /// Without Advanced Options the confirmation leaves out the transferable
-    /// default, but always states that holders cannot send the token.
-    #[test]
-    fn simple_mode_confirmation_states_only_the_sending_restriction() {
-        let message = |transferable| {
-            TokensScreen::registration_confirmation_message(
-                "QAWk1027",
-                "0",
-                "None",
-                TokensScreen::transferability_summary(transferable, false),
-                None,
-                0.402,
-                false,
-            )
-        };
-        assert!(
-            message(true).contains("Max Supply: None\n\nEstimated cost"),
-            "the transferable default must leave no empty line behind"
-        );
-        assert!(!message(true).contains("Holders can"));
-        assert!(message(false).contains(
-            "Max Supply: None\nHolders cannot send this token to other identities. This cannot be changed later.\n\nEstimated cost"
-        ));
-    }
-
-    /// Regression: the confirmation did not mention the once-per-identity
-    /// distribution the user is about to sign.
-    #[test]
-    fn confirmation_names_the_once_per_identity_distribution() {
-        assert!(
-            confirmation(false, Some(5), true)
-                .contains("Each identity can claim 5 base tokens of this token, once.")
-        );
-        assert!(!confirmation(false, None, true).contains("Each identity can claim"));
-    }
-
-    /// Regression: a transferable token's confirmation carried a "NotTradeable"
-    /// warning that read as if holders could not send it. The warning is about
-    /// the marketplace only and says so in plain words.
-    #[test]
-    fn marketplace_warning_does_not_read_as_a_sending_restriction() {
-        let locked = confirmation(true, None, true);
-        assert!(locked.contains("Holders can send this token to other identities."));
-        assert!(locked.contains(
-            "WARNING: This token can never be offered for sale on the token marketplace. This cannot be changed later."
-        ));
-        assert!(!locked.contains("NotTradeable"));
-        assert!(!locked.contains("tradeable"));
-
-        let unlocked = confirmation(true, None, false);
-        assert!(!unlocked.contains("WARNING"));
-        assert!(!unlocked.contains("marketplace"));
-    }
-
-    /// Both modes name the preset first and then a setting the network does not
-    /// accept, so the user fixes one thing at a time.
-    #[test]
-    fn blocked_reasons_name_the_preset_before_transferability() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.transferable_input = false;
-        let unsupported = TRANSFERS_OFF_HINT.to_owned();
-
-        assert_eq!(
-            screen.simple_mode_blocked_reason().as_deref(),
-            Some("Choose a preset to create the token.")
-        );
-        assert_eq!(
-            screen.advanced_mode_blocked_reason().as_deref(),
-            Some("Choose a preset, or Custom to use the rules below.")
-        );
-
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        assert_eq!(
-            screen.simple_mode_blocked_reason(),
-            Some(unsupported.clone())
-        );
-        assert_eq!(screen.advanced_mode_blocked_reason(), Some(unsupported));
-
-        screen.transferable_input = true;
-        assert_eq!(screen.simple_mode_blocked_reason(), None);
-        assert_eq!(screen.advanced_mode_blocked_reason(), None);
-    }
-
-    /// A failed registration ends the creator's wait in its error state and
-    /// retires the progress banner; another task's failure leaves it waiting.
-    #[test]
-    fn a_failed_registration_ends_the_wait_in_the_error_state() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        let registration = screen.begin_token_registration_for_test();
-        let other = BackendTaskContext::for_dispatch_on(
-            &BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            app_context.network,
-        );
-
-        screen.display_backend_task_error(&other, &TaskError::TaskManagerShuttingDown);
-        assert_eq!(
-            screen.token_creator_status,
-            TokenCreatorStatus::WaitingForResult
-        );
-        assert!(screen.registration_banner_live_for_test());
-
-        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
-        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Error);
-        assert!(!screen.registration_banner_live_for_test());
-    }
-
-    /// Confirming sends the registration and the balance refresh each under a
-    /// context of its own, and the creator waits for the registration's.
-    #[test]
-    fn confirming_registration_waits_for_the_registration_dispatch() {
-        use egui_kittest::{Harness, kittest::Queryable};
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        screen.selected_key = Some(IdentityPublicKey::random_key(
-            0,
-            None,
-            app_context.platform_version(),
-        ));
-        screen.cached_build_args = Some(screen.parse_token_build_args().expect("build args"));
-        let mut harness = Harness::builder().build_ui_state(
-            |ui, (screen, action): &mut (TokensScreen, AppAction)| {
-                let next = screen.render_token_creator_confirmation_popup(ui);
-                if !matches!(next, AppAction::None) {
-                    *action = next;
-                }
-            },
-            (screen, AppAction::None),
-        );
-        harness.run();
-        harness.get_by_label("Confirm").click();
-        harness.run();
-
-        let (screen, action) = harness.state();
-        let AppAction::BackendTasksWithContexts(tasks, BackendTasksExecutionMode::Sequential) =
-            action
-        else {
-            panic!("expected the tasks with their contexts, got {action:?}");
-        };
-        let [(register, register_context), (refresh, refresh_context)] = tasks.as_slice() else {
-            panic!("expected the registration and the balance refresh");
-        };
-        assert!(matches!(
-            register,
-            BackendTask::TokenTask(task)
-                if matches!(task.as_ref(), TokenTask::RegisterTokenContract { .. })
-        ));
-        assert!(matches!(
-            refresh,
-            BackendTask::TokenTask(task)
-                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
-        ));
-        assert_ne!(register_context, refresh_context);
-        assert_eq!(
-            screen.token_creator_status,
-            TokenCreatorStatus::WaitingForResult
-        );
-        assert_eq!(
-            screen.token_registration_context.as_ref(),
-            Some(register_context)
-        );
-    }
-
-    /// Creating is blocked while a registration is in flight, so a second
-    /// confirmation cannot pay a second fee; the outcome unblocks it.
-    #[test]
-    fn create_token_is_blocked_while_a_registration_is_in_flight() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        fill_minimal_creator_inputs(&mut screen, &app_context);
-        screen.change_to_preset(owner_preset(
-            TokenConfigurationPresetFeatures::WithExtremeActions,
-        ));
-        assert_eq!(screen.simple_mode_blocked_reason(), None);
-        assert_eq!(screen.advanced_mode_blocked_reason(), None);
-
-        let registration = screen.begin_token_registration_for_test();
-        let in_flight = Some(
-            "Your token is being created. Wait for the result before creating another token."
-                .to_owned(),
-        );
-        assert_eq!(screen.simple_mode_blocked_reason(), in_flight);
-        assert_eq!(screen.advanced_mode_blocked_reason(), in_flight);
-
-        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
-        assert_eq!(screen.simple_mode_blocked_reason(), None);
-        assert_eq!(screen.advanced_mode_blocked_reason(), None);
-    }
-
-    /// A network switch closes the wallet unlock popup: its wallet belongs to the
-    /// previous network, and leaving it open would show it again for the next
-    /// wallet the user selects.
     #[test]
     fn network_switch_closes_the_wallet_unlock_popup() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
@@ -5305,36 +1970,6 @@ mod tests {
         assert!(!screen.wallet_unlock_popup.is_open());
     }
 
-    /// A registration sent before a network switch must not complete the
-    /// creator on the new network: neither its success nor its failure.
-    #[test]
-    fn registration_result_from_before_a_network_switch_is_ignored() {
-        let tmp = tempfile::tempdir().expect("test tmpdir");
-        let app_context = crate::context::test_support::test_app_context(tmp.path());
-        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
-        let registration = screen.begin_token_registration_for_test();
-
-        screen.reset_for_network_switch();
-        screen.display_backend_task_result(
-            &BackendTaskContext::Other,
-            BackendTaskSuccessResult::RegisteredTokenContract,
-        );
-        assert_eq!(
-            screen.token_creator_status,
-            TokenCreatorStatus::NotStarted,
-            "a late success must not show the success screen on the new network"
-        );
-
-        screen.display_backend_task_error(&registration, &TaskError::TaskManagerShuttingDown);
-        assert_eq!(
-            screen.token_creator_status,
-            TokenCreatorStatus::NotStarted,
-            "a late failure must not mark the new network's creator as failed"
-        );
-    }
-
-    /// A network switch closes the "View JSON" popup: the contract it shows was
-    /// built for the previous network's form.
     #[test]
     fn network_switch_closes_the_contract_json_popup() {
         let tmp = tempfile::tempdir().expect("test tmpdir");
@@ -5347,6 +1982,7 @@ mod tests {
         assert!(!screen.show_json_popup);
         assert!(screen.json_popup_text.is_empty());
     }
+
     #[test]
     fn creator_rejects_duplicate_group_members_without_overwriting_power() {
         use crate::model::token_creator::groups::{GroupDraft, MemberDraft};
@@ -5431,5 +2067,15 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+    fn fill_minimal_creator_inputs(screen: &mut TokensScreen, context: &Arc<AppContext>) {
+        screen.creator_workspace.draft = crate::model::token_creator::TokenDraft::example(false);
+        screen.creator_workspace.draft.names[0].singular = "PresetCoin".into();
+        screen.selected_identity = Some(identity_holding(
+            context,
+            7,
+            IdentityType::User,
+            &[(1, Purpose::AUTHENTICATION, SecurityLevel::HIGH)],
+        ));
     }
 }

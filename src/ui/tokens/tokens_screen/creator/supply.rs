@@ -159,7 +159,7 @@ pub(super) fn actor(
     main: Option<u16>,
     topic: &mut Option<String>,
 ) {
-    label(ui, caption, key, topic);
+    let caption_response = label(ui, caption, key, topic);
     egui::ComboBox::from_id_salt(caption)
         .selected_text(value.label())
         .show_ui(ui, |ui| {
@@ -183,7 +183,9 @@ pub(super) fn actor(
                     format!("{} (draft group {})", group.label, group.position),
                 );
             }
-        });
+        })
+        .response
+        .labelled_by(caption_response.id);
     if let ActorDraft::Identity(identity) = value {
         text(ui, "Identity ID", "identity", identity, topic);
         if !identity.is_empty() {
@@ -214,7 +216,7 @@ pub(super) fn recipient(
     none: bool,
     topic: &mut Option<String>,
 ) {
-    egui::ComboBox::from_id_salt("recipient")
+    egui::ComboBox::from_label("Recipient")
         .selected_text(recipient_label(value))
         .show_ui(ui, |ui| {
             ui.selectable_value(value, Recipient::Owner, "Contract owner");

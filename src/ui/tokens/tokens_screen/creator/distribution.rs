@@ -32,14 +32,14 @@ pub(super) fn show(
                 text(ui,"Every","interval",&mut recurring.interval,&mut state.help);
                 if recurring.interval_kind == IntervalKind::Time {
                     label(ui,"Duration unit","timeUnit",&mut state.help);
-                    egui::ComboBox::from_id_salt("time_unit").selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } });
+                    egui::ComboBox::from_label("Duration unit").selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } });
                     ui.small("Time intervals must align to full minutes. The minimum depends on the selected network.");
                 }
                 label(ui,"Recurring recipient","recipient",&mut state.help);
                 supply::recipient(ui,&mut recurring.recipient,true,false,&mut state.help);
                 if recurring.recipient == Recipient::EvoNodes && recurring.interval_kind != IntervalKind::Epochs { ui.colored_label(ui.visuals().error_fg_color,"Choose Epochs for EvoNode participation allocations."); }
                 label(ui,"Allocation function","recurring",&mut state.help);
-                egui::ComboBox::from_id_salt("function").selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } });
+                egui::ComboBox::from_label("Allocation function").selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } });
                 help(ui,&mut state.help,recurring.function.help_key());
                 let function = &mut recurring.functions[recurring.function as usize];
                 if ui.button("Load this function's worked example").clicked() { *function = FunctionDraft::example(recurring.function); }
@@ -115,7 +115,8 @@ pub(super) fn show(
                         &mut state.help,
                     );
                     let input = state.schedule_inputs.entry(row.id).or_insert_with(|| {
-                        let input = LocalScheduleInput::new();
+                        let input = LocalScheduleInput::new()
+                            .with_label("Allocation date and time (local time):");
                         row.timestamp
                             .and_then(|ms| i64::try_from(ms).ok())
                             .and_then(chrono::DateTime::from_timestamp_millis)

@@ -386,17 +386,21 @@ impl TokenDraft {
                     .map(|name| name.singular.as_str()),
             )
         {
-            crate::model::token::validate_contract_keyword(text).map_err(|_| {
-                DraftError::new(Section::Documents, "Search keywords", DraftIssue::Keyword)
-            })?;
-            if !(3..=50).contains(&text.len()) {
+            // DPP lowercases during contract reconstruction. Validate and deduplicate
+            // that exact representation, including Unicode expansions such as İ → i̇.
+            let canonical = text.to_lowercase();
+            if !(3..=50).contains(&canonical.len())
+                || canonical
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control())
+            {
                 return Err(DraftError::new(
                     Section::Documents,
                     "Search keywords",
                     DraftIssue::Keyword,
                 ));
             }
-            keywords.insert(text.to_owned());
+            keywords.insert(canonical);
         }
         if keywords.len() > 50 {
             return Err(DraftError::new(

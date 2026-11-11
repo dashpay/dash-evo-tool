@@ -60,8 +60,11 @@ impl TokenRegistrationJournal {
     }
     /// Persists before broadcast, refusing any unresolved or repeated attempt.
     pub fn claim(&self, record: &RegistrationRecord) -> Result<(), TaskError> {
+        if self.key != record_key(record.network) {
+            return Err(TaskError::TokenCreatorChanged);
+        }
         if self.read()?.is_some_and(|current| {
-            current.blocks_registration() || current.attempt_id == record.attempt_id
+            current.blocks_registration() || (current.attempt_id == record.attempt_id && current.status != crate::model::token_creator::registration::RegistrationStatus::NotSubmitted)
         }) {
             return Err(TaskError::TokenCreatorBusy);
         }
@@ -72,10 +75,9 @@ impl TokenRegistrationJournal {
     /// Settles only the attempt whose immutable public payload is still current.
     pub fn update(&self, record: &RegistrationRecord) -> Result<(), TaskError> {
         let current = self.read()?.ok_or(TaskError::TokenCreatorChanged)?;
-        if current.attempt_id != record.attempt_id
-            || current.contract_bytes != record.contract_bytes
-            || current.network != record.network
-        {
+        let mut expected = current;
+        expected.status = record.status;
+        if expected != *record {
             return Err(TaskError::TokenCreatorChanged);
         }
         self.kv
@@ -127,5 +129,75 @@ mod tests {
         assert!(context.token_registration_journal().is_err());
         drop(first);
         assert!(context.token_registration_journal().is_ok());
+    }
+
+    #[test]
+    fn token_registration_restart_fixture_writer() {
+        let Some(path) = std::env::var_os("TOKEN_CREATOR_RESTART_FIXTURE") else {
+            return;
+        };
+        let context = crate::context::test_support::test_app_context(std::path::Path::new(&path));
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn token_registration_restart_preserves_network_bound_pending_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        // AppContext owns runtime services. A separate process proves the durable bytes
+        // survive their complete shutdown, rather than reusing a still-open in-process store.
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "context::token_registration::tests::token_registration_restart_fixture_writer",
+                "--test-threads=1",
+            ])
+            .env("TOKEN_CREATOR_RESTART_FIXTURE", dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "isolated writer failed: {}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        let reopened = crate::context::test_support::test_app_context(dir.path());
+        assert_eq!(
+            reopened.token_registration_record().unwrap(),
+            Some(record(1))
+        );
+        assert!(
+            reopened
+                .token_registration_journal()
+                .unwrap()
+                .claim(&record(2))
+                .is_err()
+        );
+        assert_eq!(
+            reopened
+                .app_kv()
+                .get::<RegistrationRecord>(
+                    DetScope::Global,
+                    &record_key(dash_sdk::dpp::dashcore::Network::Mainnet)
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn token_registration_settlement_cannot_change_public_binding_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let journal = context.token_registration_journal().unwrap();
+        let first = record(1);
+        journal.claim(&first).unwrap();
+        let mut changed = first.clone();
+        changed.owner = Identifier::from([99; 32]);
+        changed.status = RegistrationStatus::Confirmed;
+        assert!(journal.update(&changed).is_err());
+        assert_eq!(journal.read().unwrap(), Some(first));
     }
 }

@@ -28,6 +28,7 @@ pub struct CreatorWorkspace {
     pub help: Option<String>,
     pub proposal: Option<Proposal>,
     pub undo: Option<TokenDraft>,
+    pub(crate) undo_schedule_inputs: BTreeMap<u64, LocalScheduleInput>,
     pub rule_editor: Option<RuleKind>,
     pub rule_filter: RuleFilter,
     pub error: Option<DraftError>,
@@ -65,9 +66,10 @@ impl CreatorWorkspace {
     /// Applies a reviewed proposal and retains an exact undo copy.
     pub fn apply_proposal(&mut self) {
         if let Some(proposal) = self.proposal.take() {
+            self.ensure_schedule_inputs();
+            self.undo_schedule_inputs = self.schedule_inputs.clone();
             self.undo = Some(std::mem::replace(&mut self.draft, proposal.draft));
             self.error = None;
-            self.restore_schedule_inputs();
         }
     }
 
@@ -76,25 +78,20 @@ impl CreatorWorkspace {
         if let Some(previous) = self.undo.take() {
             self.draft = previous;
             self.error = None;
-            self.restore_schedule_inputs();
+            self.schedule_inputs = std::mem::take(&mut self.undo_schedule_inputs);
         }
     }
-    fn restore_schedule_inputs(&mut self) {
-        self.schedule_inputs = self
-            .draft
-            .scheduled
-            .iter()
-            .map(|row| {
-                let input = row
-                    .timestamp
+    fn ensure_schedule_inputs(&mut self) {
+        for row in &self.draft.scheduled {
+            self.schedule_inputs.entry(row.id).or_insert_with(|| {
+                row.timestamp
                     .and_then(|ms| i64::try_from(ms).ok())
                     .and_then(chrono::DateTime::from_timestamp_millis)
                     .map_or_else(LocalScheduleInput::new, |time| {
                         LocalScheduleInput::new().with_time(time)
-                    });
-                (row.id, input)
-            })
-            .collect();
+                    })
+            });
+        }
     }
 }
 

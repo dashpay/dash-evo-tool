@@ -12,6 +12,12 @@ struct HelpTopic {
 static TOPICS: LazyLock<BTreeMap<String, HelpTopic>> =
     LazyLock::new(|| serde_json::from_str(include_str!("help.json")).unwrap_or_default());
 
+pub(super) fn topic_title(key: &str) -> &str {
+    TOPICS
+        .get(key)
+        .map_or("Token setting", |topic| topic.title.as_str())
+}
+
 pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
     if let Some(key) = state.help.clone() {
         let mut close = false;
@@ -41,6 +47,10 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
         });
         if close || response.should_close() {
             state.help = None;
+            context.data_mut(|data| {
+                data.insert_temp(egui::Id::new("creator_restore_help_focus"), true)
+            });
+            context.request_repaint();
         }
         return;
     }

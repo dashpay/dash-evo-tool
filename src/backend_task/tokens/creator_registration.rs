@@ -19,7 +19,7 @@ use dash_sdk::dpp::{
         Identity, PartialIdentity, Purpose, SecurityLevel,
         identity_public_key::accessors::v0::IdentityPublicKeyGettersV0, signer::Signer,
     },
-    serialization::PlatformSerializableWithPlatformVersion,
+    serialization::{PlatformSerializable, PlatformSerializableWithPlatformVersion},
     state_transition::{
         StateTransition,
         data_contract_create_transition::{
@@ -273,9 +273,24 @@ impl AppContext {
         if sdk.version().protocol_version != prepared.protocol_version {
             return Err(TaskError::TokenCreatorChanged);
         }
+        // The SDK serializes before dispatch. Do this deterministic check before the durable claim.
+        let encoded =
+            transition
+                .serialize_to_bytes()
+                .map_err(|source| TaskError::InvalidTokenDraft {
+                    source: Box::new(crate::model::token_creator::DraftError::protocol(
+                        crate::model::token_creator::Section::Review,
+                        "Contract size",
+                        source,
+                    )),
+                })?;
+        crate::model::token_creator::contract::validate_creation_size(encoded.len(), version)
+            .map_err(|source| TaskError::InvalidTokenDraft {
+                source: Box::new(source),
+            })?;
         journal.claim(&record)?;
         if let Err(error) = transition.broadcast(sdk, settings()).await {
-            return self.creator_unknown(&journal, record, error);
+            return self.creator_broadcast_error(&journal, record, error);
         }
         match transition
             .wait_for_response::<DataContract>(sdk, settings())
@@ -284,6 +299,29 @@ impl AppContext {
             Ok(contract) => self.creator_accept(&journal, record, contract),
             Err(error) => self.creator_unknown(&journal, record, error),
         }
+    }
+
+    fn creator_broadcast_error(
+        &self,
+        journal: &TokenRegistrationJournal,
+        mut record: RegistrationRecord,
+        source: dash_sdk::Error,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // With retries=0 the bare variant occurs before transport initialization. The
+        // NoAvailableAddressesToRetry wrapper can follow a send and is deliberately excluded.
+        if matches!(
+            source,
+            dash_sdk::Error::DapiClientError(
+                dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses
+            )
+        ) {
+            record.status = RegistrationStatus::NotSubmitted;
+            journal.update(&record)?;
+            return Err(TaskError::TokenCreatorNotSent {
+                source: Box::new(source),
+            });
+        }
+        self.creator_unknown(journal, record, source)
     }
 
     fn creator_unknown(
@@ -356,6 +394,15 @@ impl AppContext {
         if record.network != self.network {
             return Err(TaskError::TokenCreatorChanged);
         }
+        if record.status == RegistrationStatus::Confirmed {
+            // Re-saving a proven historical receipt must not depend on the contract's
+            // later state (it may have been updated) or downgrade an accepted payment.
+            let accepted = record.contract().map_err(protocol)?;
+            return self.creator_accept(&journal, record, accepted);
+        }
+        if record.status == RegistrationStatus::NotSubmitted {
+            return Err(TaskError::TokenCreatorChanged);
+        }
         match await_network_request_with_timeout(
             NETWORK_REQUEST_TIMEOUT,
             DataContract::fetch(sdk, record.contract_id),
@@ -408,6 +455,85 @@ mod tests {
         (record, contract)
     }
     use dash_sdk::dpp::version::PlatformVersion;
+
+    #[test]
+    fn token_registration_transport_or_retry_exhaustion_remains_unknown() {
+        for source in [
+            dash_sdk::Error::Generic("fixture transport timeout".into()),
+            dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(
+                dash_sdk::Error::DapiClientError(
+                    dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses,
+                ),
+            )),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let context = crate::context::test_support::test_app_context(dir.path());
+            let (record, _) = fixture(&context);
+            let journal = context.token_registration_journal().unwrap();
+            journal.claim(&record).unwrap();
+            assert!(
+                context
+                    .creator_broadcast_error(&journal, record, source)
+                    .is_err()
+            );
+            assert_eq!(
+                journal.read().unwrap().unwrap().status,
+                RegistrationStatus::Unknown
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn token_registration_confirmed_receipt_is_not_downgraded_by_a_later_absent_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (mut record, _) = fixture(&context);
+        record.status = RegistrationStatus::Confirmed;
+        context
+            .token_registration_journal()
+            .unwrap()
+            .claim(&record)
+            .unwrap();
+        let mut sdk = dash_sdk::SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .unwrap();
+        sdk.mock()
+            .expect_fetch::<DataContract, _>(record.contract_id, None)
+            .await
+            .unwrap();
+        let result = context.check_token_creation(&sdk).await.unwrap();
+        let BackendTaskSuccessResult::TokenCreationOutcome(outcome) = result else {
+            panic!("receipt")
+        };
+        assert_eq!(outcome.record.status, RegistrationStatus::Confirmed);
+        assert!(
+            !context
+                .token_registration_record()
+                .unwrap()
+                .unwrap()
+                .blocks_registration()
+        );
+    }
+
+    #[test]
+    fn checkpoint_p4_definitely_unsent_failure_allows_corrected_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (mut record, _) = fixture(&context);
+        record.status = RegistrationStatus::Submitted;
+        let journal = context.token_registration_journal().unwrap();
+        journal.claim(&record).unwrap();
+        let error = dash_sdk::Error::DapiClientError(
+            dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses,
+        );
+        assert!(
+            context
+                .creator_broadcast_error(&journal, record, error)
+                .is_err()
+        );
+        assert!(!journal.read().unwrap().unwrap().blocks_registration());
+    }
 
     #[tokio::test]
     async fn token_registration_status_query_never_releases_an_absent_unknown_attempt() {

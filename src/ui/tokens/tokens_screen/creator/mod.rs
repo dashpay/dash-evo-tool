@@ -7,6 +7,7 @@ mod documents;
 mod groups;
 mod review;
 mod supply;
+mod wallet;
 
 use super::TokensScreen;
 use crate::app::AppAction;
@@ -51,23 +52,31 @@ impl TokensScreen {
             help(ui, &mut self.creator_workspace.help, "readiness");
         });
         ui.add_space(12.0);
+        let navigation = (
+            self.creator_workspace.section,
+            ui.available_width().to_bits(),
+        );
+        let reveal_selected = self.creator_workspace.last_navigation != Some(navigation);
+        self.creator_workspace.last_navigation = Some(navigation);
         egui::ScrollArea::horizontal()
             .id_salt("creator_sections")
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (index, section) in Section::ALL.into_iter().enumerate() {
-                        if ui
-                            .add(
-                                egui::Button::selectable(
-                                    self.creator_workspace.section == section,
-                                    format!("{}  {}", index + 1, section.label()),
-                                )
-                                .wrap_mode(egui::TextWrapMode::Extend),
+                        let selected = self.creator_workspace.section == section;
+                        let response = ui.add(
+                            egui::Button::selectable(
+                                selected,
+                                format!("{}  {}", index + 1, section.label()),
                             )
-                            .clicked()
-                        {
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                        );
+                        if response.clicked() {
                             self.creator_workspace.section = section;
+                        }
+                        if selected && reveal_selected {
+                            response.scroll_to_me(Some(egui::Align::Center));
                         }
                     }
                 });
@@ -97,76 +106,86 @@ impl TokensScreen {
                 }
             });
         }
-        let wide = ui.available_width() >= 950.0;
-        let width = if wide {
-            ui.available_width() - 280.0
-        } else {
-            ui.available_width()
-        };
+        let wide = ui.available_width() >= 760.0;
+        if !wide {
+            egui::CollapsingHeader::new("Your token · draft summary").show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("compact_summary")
+                    .max_height(160.0)
+                    .show(ui, |ui| summary(ui, &mut self.creator_workspace));
+            });
+        }
+        let width = ui.available_width() - if wide { 248.0 } else { 0.0 };
+        let body_height = (ui.available_height() - 48.0).max(100.0);
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(width, 0.0),
+                egui::vec2(width, body_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.set_width(width);
-                    match self.creator_workspace.section {
-                        Section::Basics => basics::show(ui, &mut self.creator_workspace),
-                        Section::Supply => supply::show(
-                            ui,
-                            &mut self.creator_workspace,
-                            self.app_context.platform_version(),
-                        ),
-                        Section::Distribution => distribution::show(
-                            ui,
-                            &mut self.creator_workspace,
-                            self.app_context.network,
-                            self.app_context.platform_version(),
-                        ),
-                        Section::Groups => groups::show(
-                            ui,
-                            &mut self.creator_workspace,
-                            self.app_context.platform_version(),
-                        ),
-                        Section::History => documents::history(ui, &mut self.creator_workspace),
-                        Section::Documents => documents::show(ui, &mut self.creator_workspace),
-                        Section::Review => {
-                            action |= self.render_workspace_review(ui);
-                        }
-                    }
-                    ui.add_space(16.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                self.creator_workspace.section != Section::Basics,
-                                egui::Button::new("← Back"),
-                            )
-                            .clicked()
-                        {
-                            self.creator_workspace.navigate(false);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self.creator_workspace.section != Section::Review
-                                && ComponentStyles::add_primary_button(ui, "Continue →").clicked()
-                            {
-                                self.creator_workspace.navigate(true);
-                            }
+                    egui::ScrollArea::vertical()
+                        .id_salt(("creator_editor", self.creator_workspace.section.label()))
+                        .auto_shrink([false, false])
+                        .max_height(body_height)
+                        .show(ui, |ui| match self.creator_workspace.section {
+                            Section::Basics => basics::show(ui, &mut self.creator_workspace),
+                            Section::Supply => supply::show(
+                                ui,
+                                &mut self.creator_workspace,
+                                self.app_context.platform_version(),
+                            ),
+                            Section::Distribution => distribution::show(
+                                ui,
+                                &mut self.creator_workspace,
+                                self.app_context.network,
+                                self.app_context.platform_version(),
+                            ),
+                            Section::Groups => groups::show(
+                                ui,
+                                &mut self.creator_workspace,
+                                self.app_context.platform_version(),
+                            ),
+                            Section::History => documents::history(ui, &mut self.creator_workspace),
+                            Section::Documents => documents::show(ui, &mut self.creator_workspace),
+                            Section::Review => action |= self.render_workspace_review(ui),
                         });
-                    });
                 },
             );
             if wide {
-                ui.add_space(16.0);
-                ui.vertical(|ui| {
-                    ui.set_width(260.0);
-                    summary(ui, &mut self.creator_workspace);
-                });
+                ui.add_space(8.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(232.0, body_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(232.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("creator_summary")
+                            .auto_shrink([false, false])
+                            .max_height(body_height)
+                            .show(ui, |ui| summary(ui, &mut self.creator_workspace));
+                    },
+                );
             }
         });
-        if !wide {
-            ui.add_space(16.0);
-            egui::CollapsingHeader::new("Your token · draft summary")
-                .show(ui, |ui| summary(ui, &mut self.creator_workspace));
-        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.creator_workspace.section != Section::Basics,
+                    egui::Button::new("← Back").min_size(egui::vec2(80.0, 32.0)),
+                )
+                .clicked()
+            {
+                self.creator_workspace.navigate(false);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.creator_workspace.section != Section::Review
+                    && ComponentStyles::add_primary_button(ui, "Continue →").clicked()
+                {
+                    self.creator_workspace.navigate(true);
+                }
+            });
+        });
         dialogs::show(context, &mut self.creator_workspace);
         action
     }
@@ -184,12 +203,35 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
     ui.add_space(12.0);
 }
 
+const HELP_OPENER: &str = "creator_help_opener";
+
 fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
-    if ui
-        .small_button("?")
-        .on_hover_text("Explain this setting")
-        .clicked()
-    {
+    let name = format!("Help: {}", dialogs::topic_title(key));
+    let response = ui
+        .add(egui::Button::new("?").min_size(egui::vec2(32.0, 32.0)))
+        .on_hover_text(&name);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
+    });
+    let restore = ui.ctx().data(|data| {
+        data.get_temp::<bool>(egui::Id::new("creator_restore_help_focus")) == Some(true)
+            && data.get_temp::<egui::Id>(egui::Id::new(HELP_OPENER)) == Some(response.id)
+    });
+    if restore {
+        if ui.memory(|memory| memory.allows_interaction(response.layer_id)) {
+            response.request_focus();
+            ui.ctx().data_mut(|data| {
+                data.remove::<bool>(egui::Id::new("creator_restore_help_focus"));
+                data.remove::<egui::Id>(egui::Id::new(HELP_OPENER));
+            });
+        } else {
+            // Modal focus restrictions clear at frame end; wait until the opener's layer is active.
+            ui.ctx().request_repaint();
+        }
+    }
+    if response.clicked() {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(egui::Id::new(HELP_OPENER), response.id));
         *topic = Some(key.into());
     }
 }
@@ -202,16 +244,19 @@ fn heading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
     ui.add_space(6.0);
 }
 
-fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
+fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) -> egui::Response {
     ui.horizontal_wrapped(|ui| {
-        ui.strong(text);
+        let response = ui.strong(text);
         help(ui, topic, key);
-    });
+        response
+    })
+    .inner
 }
 
 fn text(ui: &mut Ui, caption: &str, key: &str, value: &mut String, topic: &mut Option<String>) {
-    label(ui, caption, key, topic);
-    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY));
+    let caption = label(ui, caption, key, topic);
+    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
+        .labelled_by(caption.id);
     ui.add_space(8.0);
 }
 
@@ -230,15 +275,24 @@ fn amount(
     decimals: u8,
     topic: &mut Option<String>,
 ) {
-    label(ui, caption, key, topic);
+    let caption_response = label(ui, caption, key, topic);
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut value.text).desired_width(180.0));
+        ui.add(egui::TextEdit::singleline(&mut value.text).desired_width(180.0))
+            .labelled_by(caption_response.id);
         let mut raw = value.base_units;
         egui::ComboBox::from_id_salt((caption, "units"))
             .selected_text(if raw { "base units" } else { "tokens" })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut raw, false, "tokens");
                 ui.selectable_value(&mut raw, true, "base units");
+            })
+            .response
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::ComboBox,
+                    ui.is_enabled(),
+                    format!("{caption} units"),
+                )
             });
         if let Err(error) = value.change_units(raw, decimals) {
             ui.colored_label(ui.visuals().error_fg_color, error.to_string());

@@ -170,13 +170,14 @@ impl Component for LocalScheduleInput {
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
         let InnerResponse { inner, response } = ui.horizontal(|ui| {
-            ui.label(self.label());
+            let caption = ui.label(self.label());
             let mut changed = ui
                 .add(
                     egui::TextEdit::singleline(&mut self.date)
                         .desired_width(DATE_FIELD_WIDTH)
                         .hint_text(DATE_HINT_TEXT),
                 )
+                .labelled_by(caption.id)
                 .changed();
             changed |= ui
                 .add(
@@ -215,6 +216,33 @@ impl Component for LocalScheduleInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checkpoint_p4_proposal_preserves_partial_schedule_text_and_undo() {
+        use crate::model::token_creator::{Recipient, ScheduleDraft, amount::TokenAmountInput};
+        use crate::ui::state::token_creator::{CreatorWorkspace, Proposal};
+        let mut state = CreatorWorkspace::default();
+        state.draft.scheduled.push(ScheduleDraft {
+            id: 0,
+            timestamp: None,
+            recipient: Recipient::Owner,
+            amount: TokenAmountInput::tokens("1"),
+        });
+        let mut partial = LocalScheduleInput::new();
+        partial.date = "2026-12-".into();
+        partial.hour = 13;
+        partial.minute = 47;
+        state.schedule_inputs.insert(0, partial);
+        state.proposal = Some(Proposal { title: "Template", draft: state.draft.preset_proposal(dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::MostRestrictive) });
+        state.apply_proposal();
+        assert_eq!(state.schedule_inputs[&0].date, "2026-12-");
+        state.schedule_inputs.get_mut(&0).unwrap().date = "2030-01-01".into();
+        state.undo_proposal();
+        let restored = &state.schedule_inputs[&0];
+        assert_eq!(restored.date, "2026-12-");
+        assert_eq!((restored.hour, restored.minute), (13, 47));
+        assert_eq!(restored.instant(), None);
+    }
+
     use super::*;
     use crate::model::datetime::test_zone::CentralEurope2031;
     use chrono::NaiveDate;

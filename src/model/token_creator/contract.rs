@@ -195,8 +195,44 @@ pub fn canonical_contract(
     }
     let value = DataContractInSerializationFormat::try_from_platform_versioned(&contract, version)
         .map_err(|source| DraftError::protocol(Section::Review, "Contract", source))?;
-    DataContract::try_from_platform_versioned(value, true, &mut vec![], version)
-        .map_err(|source| DraftError::protocol(Section::Documents, "Document types", source))
+    // Drive create/basic_structure/v2 rejects a moderators fee when no moderation
+    // team is configured. This creator uses the protocol default (no team).
+    if dash_sdk::dpp::data_contract::document_type::action_fees::DocumentActionFees::first_document_type_charging_moderators(value.document_schemas()).is_some() {
+        return Err(DraftError::new(Section::Documents, "Document action fees", super::DraftIssue::DocumentModeratorFees));
+    }
+    let canonical = DataContract::try_from_platform_versioned(value, true, &mut vec![], version)
+        .map_err(|source| DraftError::protocol(Section::Documents, "Document types", source))?;
+    // Guard the final normalized representation, not just the original editor text.
+    let mut keywords = std::collections::BTreeSet::new();
+    if canonical.keywords().len() > 50
+        || canonical.keywords().iter().any(|keyword| {
+            !(3..=50).contains(&keyword.len())
+                || keyword.chars().any(|c| c.is_control() || c.is_whitespace())
+                || !keywords.insert(keyword)
+        })
+    {
+        return Err(DraftError::new(
+            Section::Documents,
+            "Search keywords",
+            super::DraftIssue::Keyword,
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Checks the network's complete encoded transition limit before any send.
+pub fn validate_creation_size(
+    encoded_bytes: usize,
+    version: &PlatformVersion,
+) -> Result<(), DraftError> {
+    if encoded_bytes as u64 > version.system_limits.max_state_transition_size {
+        return Err(DraftError::new(
+            Section::Review,
+            "Contract size",
+            super::DraftIssue::CreationSize,
+        ));
+    }
+    Ok(())
 }
 
 /// A prepared absolute allocation must still be in the future before signing.
@@ -220,4 +256,57 @@ pub fn validate_submission_time(contract: &DataContract, now_ms: u64) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::token_creator::TokenDraft;
+    use dash_sdk::dpp::dashcore::Network;
+
+    #[test]
+    fn token_registration_checks_the_network_encoded_size_limit() {
+        let version = PlatformVersion::latest();
+        let limit = version.system_limits.max_state_transition_size as usize;
+        assert!(validate_creation_size(limit, version).is_ok());
+        assert!(validate_creation_size(limit + 1, version).is_err());
+    }
+
+    #[test]
+    fn checkpoint_p4_keywords_are_valid_after_canonical_lowercase() {
+        let mut draft = TokenDraft::example(false);
+        draft.names[0].singular = "CloudCredit".into();
+        draft.names[0].searchable = true;
+        draft.keywords = "cloudcredit".into();
+        let owner = Identifier::from([8; 32]);
+        let version = PlatformVersion::latest();
+        let params = draft.parse(owner, Network::Testnet, version, 0).unwrap();
+        let contract = canonical_contract(owner, 1, params, version).unwrap();
+        assert_eq!(contract.keywords(), &["cloudcredit".to_string()]);
+        for invalid in [
+            "hello world".into(),
+            "hello\u{0007}world".into(),
+            "İ".repeat(17),
+        ] {
+            draft.keywords = invalid;
+            assert!(
+                draft.parse_keywords().is_err(),
+                "Reject whitespace, controls and lowercase byte expansion"
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_p4_document_fees_require_a_moderation_team() {
+        let mut draft = TokenDraft::example(false);
+        draft.documents = serde_json::json!({"note": {
+            "type": "object", "properties": {"message": {"type":"string", "position":0,"maxLength":60}},
+            "required":["message"], "additionalProperties":false,
+            "actionFees":{"create":{"moderators":10}}
+        }}).to_string();
+        let version = PlatformVersion::latest();
+        let owner = Identifier::from([8; 32]);
+        let params = draft.parse(owner, Network::Testnet, version, 0).unwrap();
+        assert!(canonical_contract(owner, 1, params, version).is_err());
+    }
 }

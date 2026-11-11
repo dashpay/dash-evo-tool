@@ -251,6 +251,8 @@ pub enum TaskError {
     TokenCreatorJournal { #[source] source: crate::wallet_backend::KvAdapterError },
     #[error("The token creation could not be locked safely. Close other app instances and try again.")]
     TokenCreatorLock { #[source] source: std::io::Error },
+    #[error("The creation request was not sent. Wait for a connection, then prepare and confirm the token again.")]
+    TokenCreatorNotSent { #[source] source: Box<dash_sdk::Error> },
     #[error("Token creation is not yet confirmed for contract {contract_id}. Check its status before making another creation attempt.")]
     TokenCreatorUnconfirmed { contract_id: dash_sdk::platform::Identifier, #[source] source: Box<dash_sdk::Error> },
     #[error("Contract {contract_id} contains different settings from this review. Inspect the existing contract before preparing any new token.")]

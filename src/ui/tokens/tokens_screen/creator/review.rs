@@ -135,7 +135,7 @@ impl TokensScreen {
                 "review",
                 &mut self.creator_workspace.help,
             );
-            ui.label("Preparation checks the current owner, key and contract without spending credits. Creation requires a separate confirmation.");
+            ui.label("Check the settings and owner without spending credits. You will confirm creation separately. Editing the draft requires another check.");
             ui.add_enabled_ui(!pending, |ui| {
                 action |= crate::ui::helpers::add_identity_key_chooser(
                     ui,
@@ -186,7 +186,7 @@ impl TokensScreen {
             if ui
                 .add_enabled(
                     !pending && unlocked && binding.is_some(),
-                    egui::Button::new("Prepare immutable review"),
+                    egui::Button::new("Check settings"),
                 )
                 .clicked()
             {
@@ -205,7 +205,7 @@ impl TokensScreen {
         if self.creator_workspace.prepared.is_none() {
             card(ui, |ui| {
                 ui.heading("Draft overview");
-                ui.label("Inspect these settings while drafting. Preparation binds the final review to an owner, a signing key and the current network.");
+                ui.label("Inspect these settings while drafting. Choose an owner and check the settings when you are ready for the final review.");
                 human_review(ui, &self.creator_workspace.draft);
             });
         }
@@ -214,11 +214,11 @@ impl TokensScreen {
             self.creator_workspace.reviewed_draft.clone(),
         ) {
             card(ui, |ui| {
-                ui.heading("Immutable review");
-                ui.label(format!(
-                    "Network: {} · protocol version {}",
-                    prepared.network, prepared.protocol_version
-                ));
+                ui.heading("Final review");
+                ui.label(format!("Network: {}", prepared.network));
+                egui::CollapsingHeader::new("Technical details").show(ui, |ui| {
+                    ui.label(format!("Protocol version: {}", prepared.protocol_version));
+                });
                 copy_id(ui, "Owner", prepared.contract.owner_id());
                 copy_id(ui, "Contract ID to be signed", prepared.contract.id());
                 if let Some(id) = prepared.contract.token_id(0) {
@@ -232,12 +232,18 @@ impl TokensScreen {
                     &mut self.creator_workspace.help,
                 );
                 ui.label(format!(
-                    "Registration charge: {} credits",
-                    prepared.registration_cost
+                    "Registration charge: {dash} ({credits} credits)",
+                    dash = crate::model::fee_estimation::format_credits_as_dash(
+                        prepared.registration_cost
+                    ),
+                    credits = prepared.registration_cost,
                 ));
                 ui.label(format!(
-                    "Owner balance checked during preparation: {} credits",
-                    prepared.owner_balance
+                    "Owner balance when checked: {dash} ({credits} credits)",
+                    dash = crate::model::fee_estimation::format_credits_as_dash(
+                        prepared.owner_balance
+                    ),
+                    credits = prepared.owner_balance,
                 ));
                 ui.label("Processing and storage charges are additional. This is not a settled total fee; the app does not yet receive an exact final fee for this operation.");
                 if prepared.owner_balance < prepared.registration_cost {
@@ -271,7 +277,7 @@ impl TokensScreen {
                             && self.creator_workspace.acknowledged
                             && unlocked
                             && prepared.owner_balance >= prepared.registration_cost,
-                        egui::Button::new("Create token · pay registration charge"),
+                        egui::Button::new("Create token and pay fees"),
                     )
                     .clicked()
                 {

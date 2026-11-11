@@ -140,7 +140,7 @@ def rebalance_cues(cues):
 def init_manifest(scenario_path, target):
     scenario_path, target = Path(scenario_path).resolve(), Path(target)
     scenario = read_json(scenario_path)
-    root = scenario_path.parent.parent
+    root = Path(__file__).resolve().parents[2]
     slides = root / "assets/slides"
     manifest = {
         "schema_version": 1,
@@ -151,7 +151,7 @@ def init_manifest(scenario_path, target):
         "turn_gap_seconds": 0.2,
         "title_lead_seconds": 3,
         "synthetic_test": False,
-        "credits": str(slides / "ATTRIBUTION.txt"),
+        "credits": str(root / "assets/ATTRIBUTION.txt"),
         "font_license": str(slides / "montserrat-ofl.txt"),
         "segments": {},
     }
@@ -570,6 +570,14 @@ def package_transcript(plan, ids):
     )
 
 
+def concat_file(path):
+    """Quote one ffconcat token using FFmpeg's own single-quote grammar."""
+    value = str(path)
+    if "\n" in value or "\r" in value:
+        raise ValueError("ffconcat paths cannot contain line breaks")
+    return "file '" + value.replace("'", "'\\''") + "'\n"
+
+
 def package_video(name, ids, plan, rendered, scratch, dest, log):
     (dest / f"{name}.transcript.txt").write_text(
         package_transcript(plan, ids), encoding="utf-8"
@@ -584,8 +592,7 @@ def package_video(name, ids, plan, rendered, scratch, dest, log):
     )
     listing, joined = scratch / f"{name}.ffconcat", scratch / f"{name}.wav"
     listing.write_text(
-        "ffconcat version 1.0\n"
-        + "".join(f"file '{rendered[sid][0]}'\n" for sid in ids)
+        "ffconcat version 1.0\n" + "".join(concat_file(rendered[sid][0]) for sid in ids)
     )
     with wave.open(str(joined), "wb") as out:
         out.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
@@ -759,7 +766,7 @@ def build(manifest_path, output, preset="veryfast", part=None):
                 pending,
                 log,
             )
-        shutil.copyfile(manifest_path, pending / "input-manifest.json")
+        shutil.copyfile(manifest_path, output / "input-manifest.json")
         shutil.copyfile(plan["credits"], pending / "credits.txt")
         shutil.copyfile(plan["font_license"], pending / "font-license.txt")
         slide_ids = (

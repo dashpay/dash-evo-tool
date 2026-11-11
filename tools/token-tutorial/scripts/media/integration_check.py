@@ -122,10 +122,25 @@ def run(part=None):
     ready = media.build(
         manifest_path, fixture / "delivery", preset="ultrafast", part=part
     )
+    if (ready / "input-manifest.json").exists():
+        raise AssertionError("Private input manifest leaked into the public export")
+    assert (
+        ready.parent / "input-manifest.json"
+    ).read_bytes() == manifest_path.read_bytes()
+    for public_file in ready.iterdir():
+        if public_file.suffix in (".json", ".html", ".txt", ".srt", ".vtt", ".sha256"):
+            contents = public_file.read_text()
+            assert str(fixture) not in contents
+            assert str(root) not in contents
     delivery = media.read_json(ready / "delivery.json")
     reports = []
     for key, package in delivery["packages"].items():
         actual = media.probe(ready / package["file"])
+        public_tags = json.dumps(
+            [actual.get("format", {}).get("tags", {})]
+            + [stream.get("tags", {}) for stream in actual["streams"]]
+        )
+        assert str(fixture) not in public_tags and str(root) not in public_tags
         video_stream = next(s for s in actual["streams"] if s["codec_type"] == "video")
         assert (video_stream["width"], video_stream["height"]) == (1920, 1080)
         assert {s["codec_type"] for s in actual["streams"]} >= {

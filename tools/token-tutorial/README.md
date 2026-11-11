@@ -40,7 +40,7 @@ Ubuntu the operator can install the required packages with apt:
 
 ```sh
 sudo apt install python3 python3-pytest python3-pil python3-matplotlib \
-  ffmpeg xvfb openbox xdotool x11-utils dbus-x11 at-spi2-core python3-pyatspi
+  ffmpeg xvfb openbox xdotool scrot x11-utils dbus-x11 at-spi2-core python3-pyatspi
 ```
 
 Slide/chart rasterization also requires a local Chromium-compatible browser
@@ -261,6 +261,8 @@ once per final package. Caption chunks preserve speaker labels and all words;
 within-turn timing is proportional to word counts, not forced word alignment.
 SRT, VTT, per-package transcripts/timelines, chapters, credits, checksums and a
 small local HTML player are exported under `local/delivery/ready/`.
+The input manifest and ffmpeg log remain private in the parent
+`local/delivery/` directory; publish or serve only its reviewed `ready/` child.
 
 Missing inputs or stale hashes stop validation before rendering. Repair the
 specific manifest path or restore its source/metadata; do not suppress validation.

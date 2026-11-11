@@ -241,3 +241,113 @@ def test_import_rebases_both_manifests_relative_to_the_output(media, tmp_path):
     assert (
         destination / result["segments"]["00"]["audio"][0]
     ).resolve() == source / "take/ready/audio.wav"
+
+
+def test_public_export_excludes_private_input_paths(media, tmp_path, monkeypatch):
+    import json
+    import wave
+
+    private_marker = "/private/operator-profile/DO_NOT_PUBLISH"
+    manifest = tmp_path / "input.json"
+    manifest.write_text(json.dumps({"source_path": private_marker}))
+    slide = tmp_path / "slide.png"
+    slide.write_bytes(b"public slide fixture")
+    credits = tmp_path / "credits.txt"
+    credits.write_text("Public credits")
+    license_path = tmp_path / "license.txt"
+    license_path.write_text("Public font license")
+    wav_path = tmp_path / "audio.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\0\0" * 4800)
+    segment = {
+        "title": "Public lesson",
+        "duration": 0.1,
+        "editorial_hold_seconds": 0,
+        "visual": {"path": slide},
+        "turns": [{"speaker": "Teacher", "text": "Hello.", "path": private_marker}],
+        "cues": [
+            {"start": 0, "end": 0.1, "speaker": "Teacher", "text": "Hello.", "turn": 0}
+        ],
+    }
+    plan = {
+        "manifest": {"scenario_sha256": "approved", "source_path": private_marker},
+        "scenario": {
+            "title": "Public tutorial",
+            "parts": [{"id": 1}],
+            "scenes": [{"id": "00", "part": 1}],
+        },
+        "segments": {sid: dict(segment) for sid in ("p1-intro", "00", "p1-outro")},
+        "credits": credits,
+        "font_license": license_path,
+        "gap": 0,
+    }
+    monkeypatch.setattr(media, "load_plan", lambda *_: plan)
+    monkeypatch.setattr(media, "render_segment", lambda *_: (slide, wav_path))
+    monkeypatch.setattr(
+        media,
+        "ffmpeg",
+        lambda args, _: Path(args[-1]).write_bytes(b"public video fixture"),
+    )
+    monkeypatch.setattr(
+        media, "probe", lambda _: {"format": {"duration": "0.3"}, "chapters": [{}] * 3}
+    )
+    output = tmp_path / "delivery"
+    ready = media.build(manifest, output, part=1)
+    assert not (ready / "input-manifest.json").exists()
+    assert (output / "input-manifest.json").read_bytes() == manifest.read_bytes()
+    assert {"delivery.json", "part-01.timeline.json", "index.html"} <= {
+        p.name for p in ready.iterdir()
+    }
+    assert all(
+        private_marker.encode() not in p.read_bytes()
+        for p in ready.rglob("*")
+        if p.is_file()
+    )
+
+
+def test_init_default_credits_and_license_exist_for_external_scenario(media, tmp_path):
+    import shutil
+
+    source = tmp_path / "external-scenario.json"
+    shutil.copyfile(
+        Path(__file__).resolve().parents[2] / "scenario/dialogue.json", source
+    )
+    target = tmp_path / "template.json"
+    media.init_manifest(source, target)
+    data = media.read_json(target)
+    assert Path(data["credits"]).is_file()
+    assert Path(data["font_license"]).is_file()
+
+
+def test_concat_listing_handles_apostrophes_and_spaces(media, tmp_path):
+    import subprocess
+    import wave
+
+    scratch = tmp_path / "editor's scratch"
+    scratch.mkdir()
+    audio = scratch / "a narrator's take.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\0\0" * 4800)
+    listing = scratch / "input.ffconcat"
+    listing.write_text("ffconcat version 1.0\n" + media.concat_file(audio))
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-safe",
+            "0",
+            "-f",
+            "concat",
+            "-i",
+            str(listing),
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )

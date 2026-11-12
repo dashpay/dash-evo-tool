@@ -2,8 +2,9 @@ use super::*;
 
 pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
-        heading(ui, "Token history", "history", &mut state.help);
-        ui.label("Choose which token actions keep their detailed Platform history. This does not hide the contract or make transactions private.");
+        heading(ui, "History", "history", &mut state.help);
+        ui.label("Choose which token events are retained. These choices are independent from the powers that perform the actions. They configure the contract's event histories, not local privacy settings.");
+        ui.small("This does not hide the contract or make transactions private.");
         let count = state
             .draft
             .history
@@ -21,17 +22,23 @@ pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
             state.draft.history.fill(all);
         }
         for (index, caption) in [
-            "Transfers",
-            "Freezing and unfreezing",
-            "Minting",
-            "Burning",
-            "Direct-price changes",
-            "Direct purchases",
+            "Keep transfers history",
+            "Keep freezes and unfreezes history",
+            "Keep mints history",
+            "Keep burns history",
+            "Keep direct-pricing changes history",
+            "Keep direct purchases history",
         ]
         .into_iter()
         .enumerate()
         {
-            ui.checkbox(&mut state.draft.history[index], caption);
+            checkbox(
+                ui,
+                caption,
+                "history",
+                &mut state.draft.history[index],
+                &mut state.help,
+            );
         }
         ui.small(format!("{count} of 6 histories are selected. History settings are part of the reviewed contract."));
     });
@@ -39,16 +46,20 @@ pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
 
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
-        heading(
+        heading(ui, "Search & documents", "documents", &mut state.help);
+        ui.label("Help people recognize the token, and optionally define related document types.");
+        text(
             ui,
-            "Make your token discoverable",
-            "keywords",
+            "Description (optional)",
+            "description",
+            &mut state.draft.description,
             &mut state.help,
         );
+        ui.small("Explain the token's purpose in plain language. Use 3 to 100 UTF-8 bytes when provided.");
         ui.label("Names marked searchable in Basics are included automatically. Add other keywords separated by commas.");
         text(
             ui,
-            "Additional keywords",
+            "Search keywords",
             "keywords",
             &mut state.draft.keywords,
             &mut state.help,
@@ -71,7 +82,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
             &mut state.help,
         );
         ui.label("Paste a JSON object mapping document type names to schemas. This is not a full-contract import. Clearing the field removes every document type from this draft.");
-        let caption = ui.label("Document schema JSON");
+        let caption = ui.label("Document types · JSON");
         ui.add(
             egui::TextEdit::multiline(&mut state.draft.documents)
                 .code_editor()

@@ -49,13 +49,15 @@ fn creator_workspace_comparison_prioritizes_changed_authority() {
         let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(5);
+        h.get_by_label("Compare owner example").scroll_to_me();
+        h.run_steps(5);
         h.get_by_label("Compare owner example").click();
         h.run_steps(5);
         h.get_by_label("Changes to your draft");
         let apply = h.get_by_label("Apply these changes").rect();
         for caption in [
-            "Mint more tokens · performer",
-            "Burn the actor's own tokens · performer",
+            "Mint additional tokens · performer",
+            "Burn own tokens · performer",
             "Pause or resume transfers · performer",
         ] {
             let changed = h.get_by_label(caption).rect();
@@ -69,7 +71,7 @@ fn creator_workspace_comparison_prioritizes_changed_authority() {
 }
 
 #[test]
-fn creator_workspace_shows_policy_choices_before_continuing_with_a_banner() {
+fn creator_workspace_policy_choices_remain_reachable_with_a_banner() {
     use dash_evo_tool::ui::{MessageType, components::MessageBanner};
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -83,18 +85,35 @@ fn creator_workspace_shows_policy_choices_before_continuing_with_a_banner() {
         )
         .disable_auto_dismiss();
         h.run_steps(5);
-        let footer = h.get_by_label("Continue →").rect();
-        for caption in [
-            "Compare fixed example",
-            "Compare owner example",
-            "Choose custom rules →",
+        // The approved layout scrolls the policy card; every choice must become clickable.
+        for (caption, decision) in [
+            ("Compare fixed example", "Keep my draft"),
+            ("Compare owner example", "Apply these changes"),
         ] {
+            h.get_by_label(caption).scroll_to_me();
+            h.run_steps(5);
+            let footer = h.get_by_label_contains("Continue:").rect();
             let choice = h.get_by_label(caption).rect();
             assert!(
-                choice.bottom() < footer.top() - 12.0,
-                "The policy choice {caption} must be visible before Continue, without scrolling: {choice:?} / {footer:?}"
+                choice.bottom() <= footer.top() && choice.top() >= 0.0,
+                "The scrolled choice {caption} must be visible above the footer: {choice:?} / {footer:?}"
             );
+            h.get_by_label(caption).click();
+            h.run_steps(5);
+            h.get_by_label("Changes to your draft");
+            h.get_by_label(decision).click();
+            h.run_steps(5);
+            assert!(h.query_by_label("Changes to your draft").is_none());
+            assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
         }
+        h.get_by_label("Choose custom rules →").scroll_to_me();
+        h.run_steps(5);
+        let custom = h.get_by_label("Choose custom rules →").rect();
+        assert!(custom.bottom() <= h.get_by_label_contains("Continue:").rect().top());
+        h.get_by_label("Choose custom rules →").click();
+        h.run_steps(5);
+        h.get_by_label("Supply & permissions");
+        assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
     });
 }
 
@@ -107,11 +126,13 @@ fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
         let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(5);
-        h.get_by_role_and_label(Role::TextInput, "Singular token name")
+        h.get_by_label("Create a token");
+        h.get_by_label("Start with its purpose. Decide what can change later.");
+        h.get_by_role_and_label(Role::TextInput, "Token name")
             .focus();
         h.event(egui::Event::Text("NamedCoin".into()));
         h.run_steps(2);
-        let next = h.get_by_label("Continue →").rect();
+        let next = h.get_by_label_contains("Continue:").rect();
         let summary = h.get_by_label("Your token").rect();
         assert!(
             next.bottom() < 780.0,
@@ -121,14 +142,14 @@ fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
             summary.top() < 400.0,
             "Summary must remain beside the editor: {summary:?}"
         );
-        h.get_by_label("Continue →").click();
+        h.get_by_label_contains("Continue:").click();
         h.run_steps(5);
-        assert!(h.get_by_label("Continue →").rect().bottom() < 780.0);
+        assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
         assert!(h.get_by_label("Your token").rect().top() < 400.0);
         h.get_by_label("← Back").click();
         h.run_steps(3);
         assert_eq!(
-            h.get_by_role_and_label(Role::TextInput, "Singular token name")
+            h.get_by_role_and_label(Role::TextInput, "Token name")
                 .accesskit_node()
                 .value()
                 .as_deref(),
@@ -421,15 +442,16 @@ fn creator_workspace_transfer_policy_is_available_without_identity() {
         let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(3);
-        h.get_by_label("Continue →").click();
+        h.get_by_label_contains("Continue:").click();
         h.run_steps(3);
-        let option = "Allow ordinary transfers between holders";
+        let option = "Allow transfers between holders";
         h.get_by_label(option).scroll_to_me();
         h.run_steps(3);
         h.get_by_label(option).click();
         h.run_steps(3);
         h.get_by_label("Ordinary transfers cannot be enabled later. Other token actions retain their own rules.");
-        h.get_by_label("Continue →").click();
+        h.get_by_label("Transfers: not allowed · permanent choice");
+        h.get_by_label_contains("Continue:").click();
         h.run_steps(3);
         h.get_by_label("Enable recurring distribution");
     });
@@ -1162,10 +1184,7 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
         let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(3);
-        for (label, value) in [
-            ("Singular token name", "KeptCoin"),
-            ("Plural token name", "KeptCoins"),
-        ] {
+        for (label, value) in [("Token name", "KeptCoin"), ("Plural name", "KeptCoins")] {
             h.get_by_role_and_label(Role::TextInput, label).focus();
             h.event(egui::Event::Text(value.into()));
             h.run_steps(2);
@@ -1178,7 +1197,7 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
             .click();
         h.run_steps(3);
         assert_eq!(
-            h.get_by_role_and_label(Role::TextInput, "Singular token name")
+            h.get_by_role_and_label(Role::TextInput, "Token name")
                 .accesskit_node()
                 .value()
                 .as_deref(),
@@ -1190,14 +1209,14 @@ fn token_creator_form_survives_left_panel_and_tab_navigation() {
             .click();
         h.run_steps(3);
         assert_eq!(
-            h.get_by_role_and_label(Role::TextInput, "Singular token name")
+            h.get_by_role_and_label(Role::TextInput, "Token name")
                 .accesskit_node()
                 .value()
                 .as_deref(),
             Some("KeptCoin")
         );
         assert_eq!(
-            h.get_by_role_and_label(Role::TextInput, "Plural token name")
+            h.get_by_role_and_label(Role::TextInput, "Plural name")
                 .accesskit_node()
                 .value()
                 .as_deref(),
@@ -1215,11 +1234,14 @@ fn creator_workspace_review_keeps_drafting_separate_from_readiness() {
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(3);
         for _ in 0..6 {
-            h.get_by_label("Continue →").click();
+            h.get_by_label_contains("Continue:").click();
             h.run_steps(3);
         }
         h.get_by_label("Load identity");
-        assert!(h.query_by_label("Continue →").is_none(), "Review is last");
+        assert!(
+            h.query_by_label_contains("Continue:").is_none(),
+            "Review is last"
+        );
         let selected = h.get_by_label("7  Review").rect();
         h.set_size(egui::vec2(1000.0, 780.0));
         h.run_steps(5);
@@ -1230,6 +1252,6 @@ fn creator_workspace_review_keeps_drafting_separate_from_readiness() {
         );
         h.get_by_label("← Back").click();
         h.run_steps(3);
-        h.get_by_label("Document schema JSON");
+        h.get_by_label("Document types · JSON");
     });
 }

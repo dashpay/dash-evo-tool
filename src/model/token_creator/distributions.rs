@@ -32,12 +32,12 @@ impl FunctionKind {
         Self::Logarithmic,
         Self::InvertedLogarithmic,
     ];
-    /// Readable name, followed by the protocol spelling where different.
+    /// Readable name of the emission function.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Fixed => "Fixed amount (FixedAmount)",
-            Self::StepDecreasing => "Step decrease (StepDecreasing)",
-            Self::Stepwise => "Phased amounts (Stepwise)",
+            Self::Fixed => "Fixed amount",
+            Self::StepDecreasing => "Step decreasing",
+            Self::Stepwise => "Stepwise",
             Self::Linear => "Linear",
             Self::Polynomial => "Polynomial",
             Self::Exponential => "Exponential",

@@ -162,7 +162,9 @@ pub enum DraftIssue {
     Name,
     #[error("Use each language only once and include English (en).")]
     Language,
-    #[error("Use names with 3 to 25 characters, without spaces or control characters.")]
+    #[error(
+        "Use at least 3 characters without spaces or control characters, within 25 UTF-8 bytes."
+    )]
     NameFormat,
     #[error("Leave the description empty or enter 3 to 100 UTF-8 bytes.")]
     Description,
@@ -489,8 +491,8 @@ impl TokenDraft {
     pub fn change_precision(&mut self, decimals: u8) -> Result<(), DraftError> {
         if decimals > 16 {
             return Err(DraftError::new(
-                Section::Basics,
-                "Decimal precision",
+                Section::Supply,
+                "Decimal places",
                 AmountError::Decimals.into(),
             ));
         }

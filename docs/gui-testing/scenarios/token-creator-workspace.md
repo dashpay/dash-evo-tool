@@ -20,15 +20,48 @@ those tests do not prove that a live registration succeeded.
 - Do not rebuild or replace the executable during the run. Record screenshots,
   window dimensions, theme and observations outside the repository.
 
+## Comparing with the approved prototype
+
+Use the approved HTML unchanged. Record its SHA-256 and the native process PID,
+running executable path, commit SHA and executable SHA-256. A build log alone
+does not prove which binary the window is running. On Linux, identify the window
+PID and hash `/proc/<pid>/exe`; a deleted or replaced executable requires a fresh
+launch before comparison.
+
+Match both sides before capturing: light or dark theme, window dimensions,
+client viewport, display scaling, browser zoom and device pixel ratio. Record
+the values explicitly; native and browser window chrome can give different
+client areas at the same outer size. Use the same draft and readiness state:
+`StudioCredit` / `StudioCredits`, two decimal places, the same selected policy,
+amounts, permissions, recipients, distribution settings, groups and history.
+For the no-funds run, use the prototype's no-identity state. Do not compare its
+funded demo identity with an empty native profile or invent matching balances.
+
+Capture all seven sections, including scrolled content, expanded controls and
+the relevant help, comparison and rule dialogs. Keep a per-section text
+inventory alongside screenshots. Compare headings, labels, explanations,
+examples, actions and consequences; then independently compare typography,
+colors, spacing, hierarchy and clipping. Account for protocol differences
+explicitly, including required plural names, names without spaces, real curve
+calculations, validation, fees and registration recovery.
+
+Report **content**, **visual fidelity** and **functional behavior** separately,
+with PASS, FAIL or NOT TESTED and evidence for each. Navigation, a screenshot
+gallery or passing kittests do not establish visual fidelity. A theme, viewport,
+zoom, draft or readiness mismatch prevents a comparable visual verdict. List
+remaining differences and their justification; never normalize the approved
+prototype to make the native application pass.
+
 ## Procedure without funds
 
 1. Open **Tokens → Token Creator**. Check the single horizontal sequence:
    **Basics**, **Supply & permissions**, **Distribution**, **Groups**, **History**,
    **Search & documents**, **Review**. Verify that **Back** and **Continue** follow
    that sequence and remain reachable while the editor scrolls.
-2. Enter recognizable singular and plural names. Change precision to zero with
-   distributions disabled, then restore two decimals. Expand additional names,
-   add a localization and edit the description. Confirm that switching sections,
+2. Enter recognizable singular and plural names without spaces. Expand **Names
+   in other languages** and add a localization. In **Supply & permissions**,
+   change precision to zero with distributions disabled, then restore two
+   decimals. Edit the description in **Search & documents**. Confirm that switching sections,
    **My Tokens → Create Token**, and the side navigation preserve this draft.
 3. Compare the fixed and owner-managed examples. Inspect the proposed amount and
    permission changes before applying. Cancel one proposal; apply another; edit
@@ -58,7 +91,7 @@ those tests do not prove that a live registration succeeded.
 8. Open contextual help from the start, a permission and a distribution
    parameter. Verify examples and consequences. Press Tab twice, then Escape;
    focus returns to the opener. Check accessible names for text fields, selectors
-   and help buttons. **Open tutorial** points to the approved tutorial folder.
+   and help buttons. **Video tutorial** points to the approved tutorial folder.
 9. Open **Review** without an identity. The draft overview remains readable;
    creation is unavailable and the screen explains how to choose an owner.
    Nothing in this procedure spends credits or produces a success receipt.

@@ -121,8 +121,8 @@ impl TokenDraft {
         }
         if self.decimals > 16 {
             return Err(DraftError::new(
-                Section::Basics,
-                "Decimal precision",
+                Section::Supply,
+                "Decimal places",
                 DraftIssue::Amount(AmountError::Decimals),
             ));
         }
@@ -130,7 +130,7 @@ impl TokenDraft {
         let description = self.description.trim();
         if !description.is_empty() && !(3..=100).contains(&description.len()) {
             return Err(DraftError::new(
-                Section::Basics,
+                Section::Documents,
                 "Description",
                 DraftIssue::Description,
             ));

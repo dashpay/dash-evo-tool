@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 from matplotlib import font_manager, pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
-DET_SHA = "32f8ede362bd0b4e02b641f022ad6d88b0087a48"
+DET_SHA = "975993070d0061f506c0b6a2ec650df4ec18f555"
 PLATFORM_SHA = "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb"
 EVALUATOR = (
     f"https://github.com/dashpay/platform/blob/{PLATFORM_SHA}/packages/rs-dpp/"
@@ -47,7 +47,10 @@ def recipes():
             scene="35",
             parameters={"amount": 100},
             formula="f(k) = 100",
-            card=["Amount per interval = 100", "No min / max fields"],
+            card=[
+                "Amount per interval = 1.00 tokens (100 base units)",
+                "No min / max fields",
+            ],
             note="The same amount at every index.",
             eval_line=34,
             valid_line=23,
@@ -68,12 +71,12 @@ def recipes():
             ),
             formula="100 → 50 → 25 → 12 → 10",
             card=[
-                "Step Count = 2",
-                "Decrease fraction = 1 / 2 (removed)",
-                "Initial = 100; minimum = 10",
-                "Maximum Interval Count = 3",
-                "Trailing amount = 10",
-                "Start Period Offset = blank",
+                "Intervals per decrease = 2",
+                "Removed fraction = 1 / 2",
+                "Initial = 1.00 tokens; minimum = 0.10",
+                "Maximum reduction era count = 3",
+                "Trailing amount = 0.10 tokens",
+                "s start index = blank",
             ],
             note="Integer division at each decrease; trailing after era 3.",
             eval_line=63,
@@ -86,9 +89,9 @@ def recipes():
             parameters={"steps": [[0, 10], [3, 5], [5, 0]]},
             formula="0 ≤ k < 3: 10;   3 ≤ k < 5: 5;   k ≥ 5: 0",
             card=[
-                "Start Step → Amount",
-                "0 → 10",
-                "3 → 5",
+                "Starting period index → tokens",
+                "0 → 0.10",
+                "3 → 0.05",
                 "5 → 0",
                 "No min / max fields",
             ],
@@ -103,10 +106,10 @@ def recipes():
             parameters=dict(a=2, d=1, s=None, b=10, minimum=0, maximum=20),
             formula="f(k) = clamp(2k + 10, 0, 20)",
             card=[
-                "a = 2; d = 1; b = 10",
-                "Start Step s = blank",
-                "Min Emission = 0",
-                "Max Emission = 20",
+                "a = 2; d = 1; b = 0.10 tokens",
+                "s start index = blank",
+                "Minimum per interval = 0 tokens",
+                "Maximum per interval = 0.20 tokens",
             ],
             note="The maximum limits each interval, not total supply.",
             eval_line=125,
@@ -123,9 +126,9 @@ def recipes():
             card=[
                 "a = 1; m = 2; n = 1; d = 1",
                 "o = 1; b = 0",
-                "Start Step s = blank",
-                "Min Emission = 0",
-                "Max Emission = 100",
+                "s start index = blank",
+                "Minimum per interval = 0 tokens",
+                "Maximum per interval = 1.00 token",
             ],
             note="The offset is inside the power; this example uses squares.",
             eval_line=195,
@@ -142,9 +145,9 @@ def recipes():
             card=[
                 "a = 10; m = 1; n = 1; d = 1",
                 "o = 0; b = 0",
-                "Start Step s = blank",
-                "Min Emission = 0",
-                "Max Emission = 100",
+                "s start index = blank",
+                "Minimum per interval = 0 tokens",
+                "Maximum per interval = 1.00 token",
             ],
             note="exp uses base e. The maximum is reached at k = 3.",
             eval_line=302,
@@ -160,10 +163,10 @@ def recipes():
             formula="f(k) = clamp(floor(10 × ln(k + 1)) + 10, 0, 100)",
             card=[
                 "a = 10; d = 1; m = 1; n = 1",
-                "o = 1; b = 10",
-                "Start Step s = blank",
-                "Min Emission = 0",
-                "Max Emission = 100",
+                "o = 1; b = 0.10 tokens",
+                "s start index = blank",
+                "Minimum per interval = 0 tokens",
+                "Maximum per interval = 1.00 token",
             ],
             note="Natural log; round down before adding b.",
             eval_line=370,
@@ -179,10 +182,10 @@ def recipes():
             formula="f(k) = clamp(floor(10 × ln(1 / (k + 1))) + 40, 0, 100)",
             card=[
                 "a = 10; d = 1; m = 1; n = 1",
-                "o = 1; b = 40",
-                "Start Step s = blank",
-                "Min Emission = 0",
-                "Max Emission = 100",
+                "o = 1; b = 0.40 tokens",
+                "s start index = blank",
+                "Minimum per interval = 0 tokens",
+                "Maximum per interval = 1.00 token",
             ],
             note="Negative floor matters: floor(−6.93) + 40 = 33.",
             eval_line=489,

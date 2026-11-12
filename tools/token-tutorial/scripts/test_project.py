@@ -102,41 +102,48 @@ def test_transcript_is_derived_from_canonical_speaker_names(tmp_path):
     assert "[Scene 53]" in text
 
 
-def test_preserved_source_inventory_and_readable_rendering():
+def test_current_source_inventory_provenance_and_readable_rendering():
     source = project.ROOT / "scenario/dialogue.json"
     data = json.loads(source.read_text())
-    assert (
-        project.batch.digest(source.read_bytes())
-        == "88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc"
+    plan = source.parent / data["source"]["scenario"]
+    assert project.batch.digest(plan.read_bytes()) == data["source"]["scenario_sha256"]
+    assert data["source"]["det_revision"] == "975993070d0061f506c0b6a2ec650df4ec18f555"
+    assert data["source"]["platform_revision"] == (
+        "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb"
     )
     assert [s["id"] for s in data["scenes"]] == [f"{i:02}" for i in range(54)]
-    assert sum(len(s["turns"]) for s in data["scenes"]) == 266
+    assert [(p["start"], p["end"]) for p in data["parts"]] == [
+        ("00", "09"),
+        ("10", "18"),
+        ("19", "29"),
+        ("30", "44"),
+        ("45", "49"),
+        ("50", "53"),
+    ]
     assert sum(len(p[k]) for p in data["parts"] for k in ("intro", "outro")) == 12
-    assert (
-        project.transcript(source)
-        == (project.ROOT / "scenario/dialogue.txt").read_text()
+    assert data["packaging"]["opening_silence_seconds"] == 3
+    assert project.transcript(source) == (source.parent / "dialogue.txt").read_text()
+    assert data["word_count"]["scenes"] == sum(
+        len(turn["text"].split())
+        for scene in data["scenes"]
+        for turn in scene["turns"]
     )
 
 
-def test_accepted_subtitles_preserve_all_main_words():
-    import re
-
-    data = json.loads((project.ROOT / "scenario/dialogue.json").read_text())
-    srt = (project.ROOT / "scenario/accepted-combined.en.srt").read_text()
-    actual = []
-    for block in srt.strip().split("\n\n"):
-        lines = block.splitlines()
-        text = " ".join(lines[2:])
-        assert any(
-            text.startswith(person["name"] + ": ")
-            for person in data["speakers"].values()
-        )
-        actual.extend(text.split(": ", 1)[1].split())
-    expected = [
-        word
-        for scene in data["scenes"]
-        for turn in scene["turns"]
-        for word in turn["text"].split()
-    ]
-    assert actual == expected
-    assert re.search(r"00:00:03,000 -->", srt)
+def test_historical_media_remains_archival_and_rejects_current_source(tmp_path):
+    source = project.ROOT / "scenario/dialogue.json"
+    archive = source.parent / "accepted-media.json"
+    subtitles = source.parent / "accepted-combined.en.srt"
+    assert project.batch.digest(archive.read_bytes()) == (
+        "89934453dba4f878565902665e7043e3f0b8ae12f0cf5ef87582712ab539a343"
+    )
+    assert project.batch.digest(subtitles.read_bytes()) == (
+        "06cfdb028adce0b52fc2668346412e8e1d3e07737e2cf1330aba9fbc87fba252"
+    )
+    assert json.loads(archive.read_text())["scenario_sha256"] != project.batch.digest(
+        source.read_bytes()
+    )
+    with pytest.raises(ValueError, match="stale scenario hash"):
+        project.reuse(source, tmp_path / "must-not-reuse", archive)
+    assert not (tmp_path / "must-not-reuse").exists()
+    assert "00:00:03,000 -->" in subtitles.read_text()

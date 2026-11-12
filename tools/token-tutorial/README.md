@@ -15,23 +15,29 @@ Do not execute narration merely to check this toolkit.
 
 | File | Role |
 |---|---|
-| `scenario/dialogue.json` | Canonical 54 ordered scenes, screen/control plans, 266 main turns and 12 standalone bridges. Edit this source for future tutorials. |
+| `scenario/dialogue.json` | Canonical 54 ordered scenes, current screen/control plans, speaker turns and 12 standalone bridges. Edit this source for future tutorials. |
 | `scenario/dialogue.txt` | Readable English rendering, deterministically generated from the JSON. |
-| `scenario/scenario.txt` | Historical input draft, retained to resolve the canonical JSON's provenance hash; its old narrator/text are superseded by `dialogue.json`. Do not narrate it. |
-| `scenario/accepted-media.json` | Explicit mapping of all 278 accepted takes and the approved historical visual edit. Paths are relative to this manifest. |
+| `scenario/scenario.txt` | Current non-spoken scene plan; its actual SHA-256 is recorded by the canonical JSON. |
+| `scenario/current-walkthrough.md` | Reusable scene/control/help checklist, pinned source anchors, worked formulas and pending live gates. |
+| `scenario/accepted-media.json` | Archival mapping of 278 old takes and the historical visual edit. Incompatible with the refreshed source; do not reuse or update its hashes. |
 | `scenario/accepted-combined.en.srt` | Accepted measured captions including the three-second silent opening; reference only, never timing for new audio. |
 | `scripts/` | Offline-first narration, semantic GUI capture, media assembly and regression tests. |
 | `assets/` | Small official logo, editable slide sources, font license and eight emission-example recipes. No font binaries. |
 | `examples/project.json` | Executable configuration for a new private edit under ignored `local/`. |
 
-The approved dialogue bytes have SHA-256
-`88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc`.
-Their historical `status` and `source.audit` fields predate the completed production
-audits; they are retained to preserve identity with the paid takes. That approval
-covers DET `32f8ede362bd0b4e02b641f022ad6d88b0087a48` and Platform
-`575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`, not a later application's behavior.
-See [author notes](scenario/dialogue-author-notes.md). No historical audit path is
-a runtime dependency. Every changed scenario needs a new independent review.
+The current source targets DET `975993070d0061f506c0b6a2ec650df4ec18f555`
+and Platform `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`. It is awaiting
+independent review and completion of live gates; it is not approved for recording.
+This refresh authorizes documentation and offline checks only: no recording,
+audio generation or provider API calls. See [author notes](scenario/dialogue-author-notes.md)
+and the [current walkthrough](scenario/current-walkthrough.md).
+
+Historical dialogue SHA-256
+`88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc`
+covered DET `32f8ede362bd0b4e02b641f022ad6d88b0087a48`. Its accepted media and
+subtitles remain unchanged for archival provenance. Their source hashes must
+reject use with the current dialogue; old approval and old footage do not verify
+the refreshed application. No take reuse is authorized for this refresh.
 
 ## Dependencies and private workspace
 
@@ -72,9 +78,10 @@ scratch directory before rendering; the system temporary directory is the defaul
 
 1. Record the DET commit, actual binary SHA-256, Platform dependency revision,
    network and test date in a private production record. Inspect the live source,
-   especially `src/ui/tokens/tokens_screen/{token_creator,permissions,groups,
-   distributions,documents}.rs`, `src/ui/tokens/tokens_screen/mod.rs`, and the
-   backend's token registration path. Locate renamed modules with `rg --files`.
+   especially `src/ui/tokens/tokens_screen/creator/`,
+   `src/model/token_creator/`, `src/ui/state/token_creator.rs`, and
+   `src/backend_task/tokens/creator_registration.rs`. Locate renamed modules
+   with `rg --files`. The seven-section workspace has no Simple/Advanced toggle.
 2. Compare controls against every scene's `controls` and `screen` fields. Include
    hidden/advanced options, defaults, units, selectors, locks, validation and the
    exact final configuration. Check protocol behavior against the pinned Platform
@@ -94,23 +101,27 @@ scratch directory before rendering; the system temporary directory is the defaul
    outcomes before presenting them as results. Approval of an old script is not
    approval of a changed hash.
 5. Prepare a fresh edit using a private config pointing to the updated source.
-   Recover matching old takes offline before considering any paid generation.
+   This refreshed source must not reuse the accepted historical takes. Any future
+   narration or reuse decision requires its own explicit authorization.
 
 ## Reuse and narration planning
 
-All **278 historical turns already have audio**. In particular, 46 manually made
+All **278 historical turns already have audio** for the old source only. None is
+approved for this rewritten scenario. In particular, 46 manually made
 first-episode takes remain `planned` in the historical batch journal. Replaying
-that journal would pay for duplicates. Use the explicit accepted media mapping.
+that journal would pay for duplicates. Preserve the explicit accepted mapping
+for archival inspection only.
 
 If the operator has the original production files, restore their `audio/`,
 `assets/slides/`, `video/` and metadata directories under `local/archive/`, retaining
-their relative layout. `scenario/accepted-media.json` then resolves those inputs.
-No external host is required. For an in-place scenario update, first preserve the
-old JSON snapshot privately and point a private copy of the old media manifest's
-`scenario` at that snapshot, retaining its original `scenario_sha256`.
+their relative layout. The archive mapping describes those historical inputs;
+its source hash intentionally does not match the current dialogue.
+No external host is required. To inspect historical provenance, preserve an old
+JSON snapshot privately and point a private archive manifest at that snapshot,
+retaining the original `scenario_sha256`. Do not repoint the accepted archive to
+the refreshed dialogue or bypass a hash mismatch.
 
 ```sh
-python3 scripts/project.py reuse local/scenario.json local/narration scenario/accepted-media.json
 python3 scripts/batch_narration.py local/scenario.json --output local/narration
 ```
 
@@ -125,9 +136,11 @@ approve replacement of that particular turn; a filename alone is insufficient.
 
 The batch journal is atomically saved and locked with `flock`; at most five
 requests run concurrently. Re-running planning validates saved takes and skips
-ready jobs. A source/helper hash change requires a fresh journal. The source
-snapshot and per-turn reuse let unchanged audio survive a changed draft without
-additional spend. Never edit a journal to turn a failed attempt back into planned.
+ready jobs. A source/helper hash change requires a fresh journal. The general
+reuse tool can preserve unchanged turns when separately
+authorized for a future project; it is not approved for this rewrite. The source
+snapshot and per-turn checks must remain intact. Never edit a journal to turn a
+failed attempt back into planned.
 
 Inspect `selection.pending_requests`, job IDs and hashes before paid work.
 The manifest summarizes known token usage and an **informative historical pricing
@@ -225,12 +238,15 @@ Full HD X11 frames. Missing/ambiguous accessibility state stops the action;
 absence cannot succeed after losing the app. The helper intentionally does not
 automate secret entry. Prepare fields manually with recording stopped as needed.
 
-Record scenes 03–49 and 51–52 using the JSON's screen/control plan. Use real
+For a future separately authorized recording, use scenes 03–49 and 51–52 from
+the current JSON's screen/control plan. Use real
 completed-state evidence for scenes 08/09 and 51/52. **Never repeat token
 registration or any irreversible action merely to re-record it.** Preserve the
 original raw capture and registration journal; after an uncertain result verify
-the public contract before another attempt. Record a read-only result view or
-use an explicitly labeled historical capture instead. Read-only/private test
+the public contract before another attempt. Record a current read-only result
+view when available. Historical captures are
+archival context only and must not stand in for an unobserved current result.
+Read-only/private test
 preparation is separate from any approved capped Testnet fund operation.
 
 `local/media.json` is the capture/edit manifest: supply the real `path`, optional

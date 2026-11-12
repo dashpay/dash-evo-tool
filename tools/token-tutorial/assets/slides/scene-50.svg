@@ -3,7 +3,7 @@
 <rect width="1920" height="172" fill="#072b50"/>
 <g font-family="Montserrat,DejaVu Sans,sans-serif">
 <text x="88" y="75" fill="#52c1ff" font-size="24" font-weight="bold">DASH EVOLUTION · TOKEN CREATION · PART 6</text>
-<text x="88" y="132" fill="white" font-size="44" font-weight="bold">CloudPoint: final authority review</text>
+<text x="88" y="132" fill="white" font-size="44" font-weight="bold">CloudPoint: final policy target</text>
 <text x="90" y="222" fill="#173a5e" font-size="26">1,000 initial · 10,000 maximum · 2 decimals · transferable · starts unpaused</text>
 <text x="90" y="280" fill="#51718e" font-size="23" font-weight="bold">Action / policy</text>
 <text x="1000" y="280" fill="#51718e" font-size="23" font-weight="bold">Who may act</text>
@@ -64,5 +64,5 @@
 <text x="100" y="923" fill="white" font-size="24" font-weight="bold">Every later-rule-change switch is off. Main control group changes: No One.</text>
 <text x="100" y="961" fill="#c8e8ff" font-size="23">No groups or distributions. Default mint recipient: owner. Per-mint recipient choice: allowed.</text>
 <text x="100" y="994" fill="#c8e8ff" font-size="20">Six histories enabled. No document schemas. Check every choice before registration.</text>
-<text x="90" y="1051" fill="#51718e" font-size="18">Verified against the actual contract preview · Testnet demonstration · Owner powers are explicit policy choices.</text>
+<text x="90" y="1051" fill="#51718e" font-size="18">Verify against the actual prepared contract · Testnet demonstration · Owner powers are explicit policy choices.</text>
 </g></svg>

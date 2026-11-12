@@ -41,10 +41,144 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Shown next to Simple mode's "Create Token" until a preset is chosen.
-const SIMPLE_PRESET_HINT: &str = "Choose a preset to create the token.";
-/// Shown next to Advanced mode's "Register Token Contract" until a preset or Custom is chosen.
-const ADVANCED_PRESET_HINT: &str = "Choose a preset, or Custom to use the rules below.";
+#[test]
+fn creator_workspace_comparison_prioritizes_changed_authority() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(5);
+        h.get_by_label("Compare owner example").scroll_to_me();
+        h.run_steps(5);
+        h.get_by_label("Compare owner example").click();
+        h.run_steps(5);
+        h.get_by_label("Changes to your draft");
+        let apply = h.get_by_label("Apply these changes").rect();
+        for caption in [
+            "Mint additional tokens · performer",
+            "Burn own tokens · performer",
+            "Pause or resume transfers · performer",
+        ] {
+            let changed = h.get_by_label(caption).rect();
+            assert!(
+                changed.bottom() < apply.top(),
+                "Changed authority must precede the visible Apply action: {changed:?} / {apply:?}"
+            );
+        }
+        h.get_by_label("Full comparison including unchanged settings");
+    });
+}
+
+#[test]
+fn creator_workspace_policy_choices_remain_reachable_with_a_banner() {
+    use dash_evo_tool::ui::{MessageType, components::MessageBanner};
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        MessageBanner::set_global(
+            &h.ctx,
+            "Disconnected. Reconnect from the Network screen.",
+            MessageType::Warning,
+        )
+        .disable_auto_dismiss();
+        h.run_steps(5);
+        // The approved layout scrolls the policy card; every choice must become clickable.
+        for (caption, decision) in [
+            ("Compare fixed example", "Keep my draft"),
+            ("Compare owner example", "Apply these changes"),
+        ] {
+            h.get_by_label(caption).scroll_to_me();
+            h.run_steps(5);
+            let footer = h.get_by_label_contains("Continue:").rect();
+            let choice = h.get_by_label(caption).rect();
+            assert!(
+                choice.bottom() <= footer.top() && choice.top() >= 0.0,
+                "The scrolled choice {caption} must be visible above the footer: {choice:?} / {footer:?}"
+            );
+            h.get_by_label(caption).click();
+            h.run_steps(5);
+            h.get_by_label("Changes to your draft");
+            h.get_by_label(decision).click();
+            h.run_steps(5);
+            assert!(h.query_by_label("Changes to your draft").is_none());
+            assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
+        }
+        h.get_by_label("Choose custom rules →").scroll_to_me();
+        h.run_steps(5);
+        let custom = h.get_by_label("Choose custom rules →").rect();
+        assert!(custom.bottom() <= h.get_by_label_contains("Continue:").rect().top());
+        h.get_by_label("Choose custom rules →").click();
+        h.run_steps(5);
+        h.get_by_label("Supply & permissions");
+        assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
+    });
+}
+
+#[test]
+fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
+    use egui::accesskit::Role;
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(5);
+        h.get_by_label("Create a token");
+        h.get_by_label("Start with its purpose. Decide what can change later.");
+        h.get_by_role_and_label(Role::TextInput, "Token name")
+            .focus();
+        h.event(egui::Event::Text("NamedCoin".into()));
+        h.run_steps(2);
+        let next = h.get_by_label_contains("Continue:").rect();
+        let summary = h.get_by_label("Your token").rect();
+        assert!(
+            next.bottom() < 780.0,
+            "Continue must remain in the viewport: {next:?}"
+        );
+        assert!(
+            summary.top() < 400.0,
+            "Summary must remain beside the editor: {summary:?}"
+        );
+        h.get_by_label_contains("Continue:").click();
+        h.run_steps(5);
+        assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
+        assert!(h.get_by_label("Your token").rect().top() < 400.0);
+        h.get_by_label("← Back").click();
+        h.run_steps(3);
+        assert_eq!(
+            h.get_by_role_and_label(Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("NamedCoin")
+        );
+    });
+}
+
+#[test]
+fn creator_workspace_help_has_context_and_restores_keyboard_focus() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = rt.enter();
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(5);
+        let help = h.get_by_label("Help: Issuer readiness");
+        assert!(help.rect().height() >= 32.0);
+        help.focus();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        h.get_by_label("Back to the form");
+        h.key_press(egui::Key::Tab);
+        h.key_press(egui::Key::Tab);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.get_by_label("Help: Issuer readiness").is_focused());
+    });
+}
 
 fn build_ctx() -> (
     Harness<'static, dash_evo_tool::app::AppState>,
@@ -59,11 +193,22 @@ fn build_ctx() -> (
     (h, ctx)
 }
 
+/// Stores a user identity holding one private key, as the Token Creator offers
+/// only identities with keys.
 fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
     let pv = PlatformVersion::latest();
     let identity =
         Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("basic identity");
     let id = identity.id();
+    let key = dash_sdk::platform::IdentityPublicKey::default_versioned(pv)
+        .expect("identity key structure");
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(rand::random()),
+        ),
+    )]));
     let qi = QualifiedIdentity {
         identity,
         associated_voter_identity: None,
@@ -71,7 +216,7 @@ fn seed_token_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> 
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage::default(),
+        private_keys,
         dpns_names: vec![dash_evo_tool::model::qualified_identity::DPNSNameInfo {
             name: alias.to_string(),
             acquired_at: 0,
@@ -288,92 +433,27 @@ fn my_tokens_create_token_button_opens_token_creator() {
     });
 }
 
-/// The "holders can send this token" choice is offered only in the Advanced
-/// section: Simple mode hides it, Advanced Options show it once Advanced is
-/// expanded. Simple mode's confirmation does not mention the default.
+/// Ordinary transfer policy remains editable while drafting without an identity.
 #[test]
-fn holders_can_send_option_is_offered_only_under_advanced() {
-    use crate::identity_home::{key, seed_identity};
-    use dash_evo_tool::ui::RootScreenType;
-    use dash_sdk::dpp::identity::Purpose;
-    use egui::accesskit::Role;
-    use egui_kittest::kittest::Queryable;
-
-    const OPTION: &str = "Holders can send this token to other identities";
-
+fn creator_workspace_transfer_policy_is_available_without_identity() {
     with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = rt.enter();
-
-        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
-        harness.set_size(egui::vec2(1280.0, 2400.0));
-        let app_context = harness.state().current_app_context().clone();
-        let auth_key = key(1, Purpose::AUTHENTICATION);
-        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
-        harness.run_steps(5);
-
-        assert!(
-            harness.query_by_label(OPTION).is_none(),
-            "Simple mode must not offer the holders-can-send option"
-        );
-
-        // Simple mode inputs, top to bottom: name, description, initial supply, max supply.
-        for (index, text) in [(0, "SendCoin"), (2, "1000")] {
-            harness
-                .query_all_by_role(Role::TextInput)
-                .nth(index)
-                .expect("token creator text input")
-                .focus();
-            harness.event(egui::Event::Text(text.to_owned()));
-            harness.run_steps(2);
-        }
-        harness.get_by_value("Select a preset...").click();
-        harness.run_steps(2);
-        harness
-            .get_by_label("All Allowed - All actions enabled")
-            .click();
-        harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Create Token")
-            .click();
-        harness.run_steps(3);
-
-        assert!(
-            harness
-                .query_all_by_label_contains("Are you sure you want to register")
-                .next()
-                .is_some(),
-            "the confirmation must open"
-        );
-        assert!(
-            harness
-                .query_all_by_label_contains("Holders can send this token to other identities.")
-                .next()
-                .is_none(),
-            "Simple mode's confirmation must not mention the transferable default"
-        );
-        harness
-            .get_by_role_and_label(Role::Button, "Cancel")
-            .click();
-        harness.run_steps(3);
-
-        harness.get_by_label("Show Advanced Options").click();
-        harness.run_steps(3);
-        assert!(
-            harness.query_by_label(OPTION).is_none(),
-            "the option must stay hidden while Advanced is collapsed"
-        );
-
-        harness
-            .query_all_by_role_and_label(Role::Button, "+")
-            .next()
-            .expect("Advanced section toggle")
-            .click();
-        harness.run_steps(3);
-        assert!(
-            harness.query_by_label(OPTION).is_some(),
-            "the expanded Advanced section must offer the holders-can-send option"
-        );
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(3);
+        h.get_by_label_contains("Continue:").click();
+        h.run_steps(3);
+        let option = "Allow transfers between holders";
+        h.get_by_label(option).scroll_to_me();
+        h.run_steps(3);
+        h.get_by_label(option).click();
+        h.run_steps(3);
+        h.get_by_label("Ordinary transfers cannot be enabled later. Other token actions retain their own rules.");
+        h.get_by_label("Transfers: not allowed · permanent choice");
+        h.get_by_label_contains("Continue:").click();
+        h.run_steps(3);
+        h.get_by_label("Enable recurring distribution");
     });
 }
 
@@ -605,6 +685,18 @@ fn assert_intact_layout(
     let height = harness.ctx.content_rect().height();
     let mut nodes: Vec<(egui::Rect, Role)> = harness
         .query_all_by_label_contains("")
+        .filter(|node| {
+            // The creator's seven-step row deliberately scrolls horizontally. Its selected
+            // step is checked separately after resize; editor controls must still fit.
+            screen != "Token Creator"
+                || !dash_evo_tool::model::token_creator::Section::ALL
+                    .into_iter()
+                    .enumerate()
+                    .any(|(index, section)| {
+                        node.accesskit_node().label().as_deref()
+                            == Some(format!("{}  {}", index + 1, section.label()).as_str())
+                    })
+        })
         .map(|node| (node.rect(), node.accesskit_node().role()))
         .filter(|(rect, _)| {
             rect.left() >= content_left && rect.top() >= 100.0 && rect.bottom() <= height
@@ -1082,194 +1174,84 @@ fn token_forms_show_one_heading_and_number_steps_from_one() {
     });
 }
 
-/// Leaving the Token Creator through the left panel (e.g. to top up the identity)
-/// and coming back through the Tokens subscreen tab keeps the whole form,
-/// including the chosen preset.
+/// Draft inputs survive both navigation routes without needing signing readiness.
 #[test]
 fn token_creator_form_survives_left_panel_and_tab_navigation() {
-    use crate::identity_home::{key, seed_identity};
-    use dash_evo_tool::ui::RootScreenType;
-    use dash_sdk::dpp::identity::Purpose;
     use egui::accesskit::Role;
-    use egui_kittest::kittest::Queryable;
-
     with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = rt.enter();
-
-        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
-        let app_context = harness.state().current_app_context().clone();
-        let auth_key = key(1, Purpose::AUTHENTICATION);
-        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
-        harness.run_steps(5);
-
-        let type_into = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>,
-                         index: usize,
-                         text: &str| {
-            harness
-                .query_all_by_role(Role::TextInput)
-                .nth(index)
-                .expect("token creator text input")
-                .focus();
-            harness.event(egui::Event::Text(text.to_owned()));
-            harness.run_steps(2);
-        };
-        // Simple mode inputs, top to bottom: name, description, initial supply, max supply.
-        type_into(&mut harness, 0, "PresetCoin");
-        type_into(&mut harness, 1, "Kept across navigation");
-        type_into(&mut harness, 2, "1000");
-
-        harness.get_by_value("Select a preset...").click();
-        harness.run_steps(2);
-        harness
-            .get_by_label("All Allowed - All actions enabled")
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(3);
+        for (label, value) in [("Token name", "KeptCoin"), ("Plural name", "KeptCoins")] {
+            h.get_by_role_and_label(Role::TextInput, label).focus();
+            h.event(egui::Event::Text(value.into()));
+            h.run_steps(2);
+        }
+        h.get_by_role_and_label(Role::Button, "Identities").click();
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "Tokens").click();
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "Token Creator")
             .click();
-        harness.run_steps(3);
-
-        let assert_form_kept = |harness: &Harness<'static, dash_evo_tool::app::AppState>,
-                                route: &str| {
-            assert!(
-                harness.query_all_by_value("PresetCoin").count() >= 1,
-                "the token name must survive {route}"
-            );
-            assert!(
-                harness.query_all_by_value("Kept across navigation").count() >= 1,
-                "the description must survive {route}"
-            );
-            assert!(
-                harness.query_by_value("All Allowed").is_some(),
-                "the chosen preset must survive {route}"
-            );
-            // The hint next to "Create Token" names whatever still blocks it.
-            for hint in [
-                SIMPLE_PRESET_HINT,
-                "Enter a token name to continue.",
-                "Enter an initial supply to continue.",
-            ] {
-                assert!(
-                    harness.query_by_label(hint).is_none(),
-                    "\"Create Token\" must stay enabled after {route}"
-                );
-            }
-        };
-        assert_form_kept(&harness, "filling the form");
-
-        // Leave through the left panel (as when topping up the identity) and come back.
-        harness
-            .get_by_role_and_label(Role::Button, "Identities")
+        h.run_steps(3);
+        assert_eq!(
+            h.get_by_role_and_label(Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("KeptCoin")
+        );
+        h.get_by_role_and_label(Role::Button, "My Tokens").click();
+        h.run_steps(3);
+        h.get_by_role_and_label(Role::Button, "Token Creator")
             .click();
-        harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Tokens")
-            .click();
-        harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Token Creator")
-            .click();
-        harness.run_steps(3);
-        assert_form_kept(&harness, "a left-panel round trip");
-
-        // Leave through the Tokens subscreen tabs and come back.
-        harness
-            .get_by_role_and_label(Role::Button, "My Tokens")
-            .click();
-        harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Token Creator")
-            .click();
-        harness.run_steps(3);
-        assert_form_kept(&harness, "a subscreen-tab round trip");
+        h.run_steps(3);
+        assert_eq!(
+            h.get_by_role_and_label(Role::TextInput, "Token name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("KeptCoin")
+        );
+        assert_eq!(
+            h.get_by_role_and_label(Role::TextInput, "Plural name")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("KeptCoins")
+        );
     });
 }
 
-/// Advanced mode's "Register Token Contract" is blocked, like Simple mode's
-/// "Create Token", until a preset (or individually chosen "Custom" rules) is picked.
 #[test]
-fn advanced_register_requires_a_preset_choice() {
-    use crate::identity_home::{key, seed_identity};
-    use dash_evo_tool::ui::RootScreenType;
-    use dash_sdk::dpp::identity::Purpose;
-    use egui::accesskit::Role;
-    use egui_kittest::kittest::{NodeT, Queryable};
-
+fn creator_workspace_review_keeps_drafting_separate_from_readiness() {
     with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
         let _guard = rt.enter();
-
-        let mut harness = crate::support::mount_app(RootScreenType::RootScreenTokenCreator);
-        let app_context = harness.state().current_app_context().clone();
-        let auth_key = key(1, Purpose::AUTHENTICATION);
-        seed_identity(&app_context, vec![auth_key.clone()], vec![auth_key]);
-        harness.run_steps(5);
-
-        // Fill the required fields in Simple mode: name and initial supply.
-        for (index, text) in [(0, "GateCoin"), (2, "1000")] {
-            harness
-                .query_all_by_role(Role::TextInput)
-                .nth(index)
-                .expect("token creator text input")
-                .focus();
-            harness.event(egui::Event::Text(text.to_owned()));
-            harness.run_steps(2);
+        let mut h = mount_app(RootScreenType::RootScreenTokenCreator);
+        h.set_size(egui::vec2(1260.0, 780.0));
+        h.run_steps(3);
+        for _ in 0..6 {
+            h.get_by_label_contains("Continue:").click();
+            h.run_steps(3);
         }
-        let toggle_advanced = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>| {
-            harness.get_by_label("Show Advanced Options").click();
-            harness.run_steps(3);
-        };
-        let click_register = |harness: &mut Harness<'static, dash_evo_tool::app::AppState>| {
-            harness
-                .get_by_role_and_label(Role::Button, "Register Token Contract")
-                .click();
-            harness.run_steps(3);
-        };
-        const CONFIRMATION: &str = "Confirm Token Contract Registration";
+        h.get_by_label("Load identity");
         assert!(
-            harness.query_by_label(SIMPLE_PRESET_HINT).is_some(),
-            "Simple mode must say a preset is needed"
+            h.query_by_label_contains("Continue:").is_none(),
+            "Review is last"
         );
-        // Room for the whole Advanced form, so its bottom buttons are on screen.
-        harness.set_size(egui::vec2(1280.0, 2400.0));
-        harness.run_steps(2);
-
-        toggle_advanced(&mut harness);
+        let selected = h.get_by_label("7  Review").rect();
+        h.set_size(egui::vec2(1000.0, 780.0));
+        h.run_steps(5);
+        let narrow = h.get_by_label("7  Review").rect();
         assert!(
-            harness.query_by_label(ADVANCED_PRESET_HINT).is_some(),
-            "the blocked button must say why"
+            narrow.left() >= 0.0 && narrow.right() <= 1000.0,
+            "Selected Review must be revealed after resize: {selected:?} → {narrow:?}"
         );
-        assert!(harness.query_by_label(SIMPLE_PRESET_HINT).is_none());
-        click_register(&mut harness);
-        assert!(
-            harness.query_by_label(CONFIRMATION).is_none(),
-            "\"Register Token Contract\" must do nothing until a preset is chosen"
-        );
-
-        // Pick a preset in Simple mode, then return to Advanced mode.
-        toggle_advanced(&mut harness);
-        harness.get_by_value("Select a preset...").click();
-        harness.run_steps(2);
-        harness
-            .get_by_label("All Allowed - All actions enabled")
-            .click();
-        harness.run_steps(3);
-        toggle_advanced(&mut harness);
-        assert!(harness.query_by_label(ADVANCED_PRESET_HINT).is_none());
-        // Advanced mode also asks for the plural name, right after the singular one.
-        let plural_index = harness
-            .query_all_by_role(Role::TextInput)
-            .position(|node| node.accesskit_node().value().as_deref() == Some("GateCoin"))
-            .expect("singular name input")
-            + 1;
-        harness
-            .query_all_by_role(Role::TextInput)
-            .nth(plural_index)
-            .expect("plural name input")
-            .focus();
-        harness.event(egui::Event::Text("GateCoins".to_owned()));
-        harness.run_steps(2);
-        click_register(&mut harness);
-        assert!(
-            harness.query_by_label(CONFIRMATION).is_some(),
-            "\"Register Token Contract\" must open the confirmation once a preset is chosen"
-        );
+        h.get_by_label("← Back").click();
+        h.run_steps(3);
+        h.get_by_label("Document types · JSON");
     });
 }

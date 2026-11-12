@@ -233,6 +233,31 @@ pub(crate) const USERNAME_AVAILABILITY_CHECK_FAILED: &str =
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
+    #[error("The token creation check took too long. Check the connection and try checking again.")]
+    TokenCreatorReadTimeout { #[source] source: tokio::time::error::Elapsed },
+    #[error("The token draft needs a correction. Return to the indicated section and prepare it again.")]
+    InvalidTokenDraft { #[source] source: Box<crate::model::token_creator::DraftError> },
+    #[error("The creation details have changed. Prepare and review the token again before creating it.")]
+    TokenCreatorChanged,
+    #[error("The owner identity was not found on this network. Choose a different identity or refresh it and try again.")]
+    TokenCreatorOwnerNotFound,
+    #[error("This signing key is unavailable or no longer allowed. Unlock its wallet or choose a current authentication key.")]
+    TokenCreatorKeyUnavailable,
+    #[error("The owner has {available} credits and the registration charge alone is {required} credits. Add credits before creating the token.")]
+    TokenCreatorInsufficientCredits { available:u64,required:u64 },
+    #[error("A token creation is already running or awaiting confirmation. Check its status before starting another.")]
+    TokenCreatorBusy,
+    #[error("The token creation record could not be saved. Free space in the app's data folder and check the status before trying again.")]
+    TokenCreatorJournal { #[source] source: crate::wallet_backend::KvAdapterError },
+    #[error("The token creation could not be locked safely. Close other app instances and try again.")]
+    TokenCreatorLock { #[source] source: std::io::Error },
+    #[error("The creation request was not sent. Wait for a connection, then prepare and confirm the token again.")]
+    TokenCreatorNotSent { #[source] source: Box<dash_sdk::Error> },
+    #[error("Token creation is not yet confirmed for contract {contract_id}. Check its status before making another creation attempt.")]
+    TokenCreatorUnconfirmed { contract_id: dash_sdk::platform::Identifier, #[source] source: Box<dash_sdk::Error> },
+    #[error("Contract {contract_id} contains different settings from this review. Inspect the existing contract before preparing any new token.")]
+    TokenCreatorConflict { contract_id: dash_sdk::platform::Identifier },
+
     /// The wallet backend has not finished starting up yet. The lazy-init gate
     /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
     /// returns this while the backend is still being built; every wallet and

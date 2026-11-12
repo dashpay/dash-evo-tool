@@ -4,7 +4,6 @@ use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_ti
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
@@ -25,17 +24,12 @@ use dash_sdk::{
                 },
                 token_distribution_key::TokenDistributionType,
                 token_distribution_rules::TokenDistributionRules,
-                token_keeps_history_rules::TokenKeepsHistoryRules,
                 token_marketplace_rules::{
                     TokenMarketplaceRules,
                     v0::{TokenMarketplaceRulesV0, TokenTradeMode},
                 },
             },
-            change_control_rules::{
-                ChangeControlRules, authorized_action_takers::AuthorizedActionTakers,
-            },
             config::DataContractConfig,
-            group::Group,
             v1::DataContractV1,
         },
         identity::accessors::IdentityGettersV0,
@@ -50,6 +44,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod burn_tokens;
 mod claim_tokens;
+mod creator_registration;
 mod destroy_frozen_funds;
 mod freeze_tokens;
 mod mint_tokens;
@@ -65,46 +60,21 @@ mod transfer_tokens;
 mod unfreeze_tokens;
 mod update_token_config;
 
-/// All token-configuration inputs for
-/// [`AppContext::build_data_contract_v1_with_one_token`], grouped to keep the
-/// builder and its task variant from carrying two dozen positional fields.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TokenContractParams {
-    pub token_names: Vec<(String, String, String)>,
-    pub contract_keywords: Vec<String>,
-    pub token_description: Option<String>,
-    pub should_capitalize: bool,
-    pub decimals: u8,
-    pub base_supply: TokenAmount,
-    pub max_supply: Option<TokenAmount>,
-    pub start_paused: bool,
-    pub allow_transfers_to_frozen_identities: bool,
-    pub keeps_history: TokenKeepsHistoryRules,
-    pub main_control_group: Option<GroupContractPosition>,
-
-    pub manual_minting_rules: ChangeControlRules,
-    pub manual_burning_rules: ChangeControlRules,
-    pub freeze_rules: ChangeControlRules,
-    pub unfreeze_rules: ChangeControlRules,
-    pub destroy_frozen_funds_rules: ChangeControlRules,
-    pub emergency_action_rules: ChangeControlRules,
-    pub max_supply_change_rules: ChangeControlRules,
-    pub conventions_change_rules: ChangeControlRules,
-
-    pub main_control_group_change_authorized: AuthorizedActionTakers,
-
-    pub distribution_rules: TokenDistributionRules,
-    pub groups: BTreeMap<GroupContractPosition, Group>,
-    pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_rules: ChangeControlRules,
-    /// Whether holders may move the token to another identity. `false` needs
-    /// a version 1 token configuration (protocol version 14).
-    pub transferable: bool,
-}
+pub use crate::model::token_creator::TokenContractParams;
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum TokenTask {
+    PrepareTokenCreation {
+        draft: Box<crate::model::token_creator::TokenDraft>,
+        owner: Identifier,
+        signing_key: Box<IdentityPublicKey>,
+    },
+    SubmitTokenCreation {
+        prepared: Box<crate::model::token_creator::registration::PreparedRegistration>,
+    },
+    CheckTokenCreation,
+
     RegisterTokenContract {
         identity: QualifiedIdentity,
         signing_key: Box<IdentityPublicKey>,
@@ -292,6 +262,18 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
+            TokenTask::PrepareTokenCreation {
+                draft,
+                owner,
+                signing_key,
+            } => {
+                self.prepare_token_creation(sdk, *draft, owner, *signing_key)
+                    .await
+            }
+            TokenTask::SubmitTokenCreation { prepared } => {
+                self.submit_token_creation(sdk, *prepared).await
+            }
+            TokenTask::CheckTokenCreation => self.check_token_creation(sdk).await,
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,
@@ -937,5 +919,98 @@ mod tests {
             .await
             .expect("the managed request must keep running")
             .expect("the managed request must report completion");
+    }
+    #[tokio::test]
+    async fn prepared_token_contract_is_the_exact_payload_signed_by_sdk() {
+        use dash_sdk::dpp::address_funds::AddressWitness;
+        use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
+        use dash_sdk::dpp::identity::{
+            PartialIdentity, Purpose, SecurityLevel, identity_public_key::v0::IdentityPublicKeyV0,
+            signer::Signer,
+        };
+        use dash_sdk::dpp::platform_value::BinaryData;
+        use dash_sdk::dpp::state_transition::{
+            StateTransition,
+            data_contract_create_transition::{
+                DataContractCreateTransition, accessors::DataContractCreateTransitionAccessorsV0,
+                methods::DataContractCreateTransitionMethodsV0,
+            },
+        };
+        use dash_sdk::dpp::version::{PlatformVersion, TryFromPlatformVersioned};
+        #[derive(Debug)]
+        struct RecordingSigner;
+        #[async_trait::async_trait]
+        impl Signer<IdentityPublicKey> for RecordingSigner {
+            async fn sign(
+                &self,
+                _key: &IdentityPublicKey,
+                _data: &[u8],
+            ) -> Result<BinaryData, ProtocolError> {
+                Ok(vec![7; 65].into())
+            }
+            async fn sign_create_witness(
+                &self,
+                _key: &IdentityPublicKey,
+                _data: &[u8],
+            ) -> Result<AddressWitness, ProtocolError> {
+                Err(ProtocolError::CorruptedCodeExecution(
+                    "not an address signing test".into(),
+                ))
+            }
+            fn can_sign_with(&self, _key: &IdentityPublicKey) -> bool {
+                true
+            }
+        }
+        let owner = Identifier::from([7; 32]);
+        let nonce = 17;
+        let version = PlatformVersion::latest();
+        let params = crate::model::token_creator::TokenDraft::example(false)
+            .parse(
+                owner,
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                version,
+                1000,
+            )
+            .unwrap();
+        let reviewed = crate::model::token_creator::contract::canonical_contract(
+            owner, nonce, params, version,
+        )
+        .unwrap();
+        let expected =
+            DataContractInSerializationFormat::try_from_platform_versioned(&reviewed, version)
+                .unwrap();
+        let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            data: vec![2; 33].into(),
+            ..Default::default()
+        });
+        let partial = PartialIdentity {
+            id: owner,
+            loaded_public_keys: BTreeMap::from([(1, key)]),
+            balance: None,
+            revision: None,
+            not_found_public_keys: Default::default(),
+        };
+        let transition = DataContractCreateTransition::new_from_data_contract(
+            reviewed,
+            nonce,
+            &partial,
+            1,
+            &RecordingSigner,
+            version,
+            None,
+        )
+        .await
+        .unwrap();
+        let StateTransition::DataContractCreate(creation) = transition else {
+            panic!("wrong transition family")
+        };
+        assert_eq!(
+            creation.data_contract(),
+            &expected,
+            "SDK signing must not replace the reviewed ID or any reviewed field"
+        );
     }
 }

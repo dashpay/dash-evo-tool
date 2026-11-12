@@ -8,6 +8,7 @@ mod dpns_vote_operations;
 mod dpns_vote_preferences;
 mod dpns_vote_state;
 mod legacy_scheduled_votes;
+pub(crate) mod token_registration;
 pub(crate) use dpns_vote_operations::DpnsVoterLifecycles;
 pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;

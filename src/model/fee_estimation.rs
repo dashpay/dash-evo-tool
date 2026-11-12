@@ -2779,3 +2779,12 @@ mod tests {
         assert!(two_outputs > one_output);
     }
 }
+
+/// The protocol's registration charge for the exact reviewed contract.
+/// Processing and storage charges are additional; this is not a settled total fee.
+pub fn token_creator_registration_charge(
+    contract: &dash_sdk::platform::DataContract,
+    version: &dash_sdk::dpp::version::PlatformVersion,
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
+    contract.registration_cost(version).map_err(Box::new)
+}

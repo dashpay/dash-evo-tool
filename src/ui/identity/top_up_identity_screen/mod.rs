@@ -12,12 +12,8 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::asset_lock::{
-    AssetLockAmountError, asset_lock_user_amount_range, validate_asset_lock_amount,
-};
-use crate::model::fee_estimation::{
-    format_credits_as_dash, format_duffs_as_dash, identity_topup_min_funding_duffs,
-};
+use crate::model::asset_lock::asset_lock_user_amount_range;
+use crate::model::fee_estimation::{format_credits_as_dash, identity_topup_min_funding_duffs};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::balance_summary::{CoreFigure, WalletChoice};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -36,8 +32,8 @@ use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 use crate::ui::identity::funding_common::{
-    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, default_funding_state,
-    deposit_event_outcome, max_amount_after_fee_reserve, network_fee_refusal,
+    FUNDING_FEE_NOT_COVERED, FundingMethod, WalletFundedScreenStep, asset_lock_amount_refusal,
+    default_funding_state, deposit_event_outcome, max_amount_after_fee_reserve,
     receive_deposit_ceiling_duffs, required_deposit_credits, required_wallet_credits,
     show_network_fee_minimum, step_after_task_failure,
 };
@@ -875,19 +871,21 @@ impl TopUpIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
-                let Some(max_amount) = self.current_validation_ceiling_duffs(funding_method) else {
-                    let Ok(wallet) = selected_wallet.read() else {
-                        return AppAction::None;
-                    };
+                let Ok(seed_hash) = selected_wallet.read().map(|wallet| wallet.seed_hash()) else {
+                    return AppAction::None;
+                };
+                // Busy withholds only Max; the backend decides the amount.
+                let max_amount = self.current_validation_ceiling_duffs(funding_method);
+                if max_amount.is_none() && !self.asset_lock_balance.is_busy(&seed_hash) {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         self.asset_lock_balance
-                            .validation_unavailable_message(&wallet.seed_hash()),
+                            .validation_unavailable_message(&seed_hash),
                         MessageType::Warning,
                     );
                     return AppAction::None;
-                };
-                if let Some(message) = network_fee_refusal(
+                }
+                if let Some(message) = asset_lock_amount_refusal(
                     amount,
                     max_amount,
                     self.top_up_reserve_duffs(),
@@ -896,26 +894,6 @@ impl TopUpIdentityScreen {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         message,
-                        MessageType::Warning,
-                    );
-                    return AppAction::None;
-                }
-                let identity_fee_duffs = self.top_up_reserve_duffs();
-                if let Err(error) =
-                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
-                {
-                    let maximum_amount_duffs = match error {
-                        AssetLockAmountError::Overflow => max_amount,
-                        AssetLockAmountError::ExceedsMaximum {
-                            maximum_amount_duffs,
-                        } => maximum_amount_duffs,
-                    };
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!(
-                            "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                            format_duffs_as_dash(maximum_amount_duffs)
-                        ),
                         MessageType::Warning,
                     );
                     return AppAction::None;
@@ -1068,7 +1046,7 @@ impl ScreenLike for TopUpIdentityScreen {
         self.reload_identity();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         // Only the top-up's own failure releases the screen; an unrelated
         // error must leave a running top-up blocked.
         if self.top_up_context.owns(context) {
@@ -1078,10 +1056,11 @@ impl ScreenLike for TopUpIdentityScreen {
         if let Some((seed_hash, snapshot_generation, request_id)) =
             context.asset_lock_max_amount_request()
         {
-            self.asset_lock_balance.mark_loading_failed(
+            self.asset_lock_balance.mark_request_error(
                 &seed_hash,
                 snapshot_generation,
                 request_id,
+                error,
             );
         }
         let selected_seed_hash = self
@@ -1523,7 +1502,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([seed_byte; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(
+                crate::test_support::keys::labelled_seed(
+                    "ui::identity::top_up_identity_screen::wallet",
+                    seed_byte.into(),
+                ),
+                Network::Testnet,
+                None,
+                None,
+            )
+            .expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1612,6 +1600,7 @@ mod tests {
 
     #[test]
     fn receive_deposit_dispatch_rejects_amount_above_deposit_address_balance() {
+        let seed_32 = crate::test_support::keys::seed();
         const DEPOSIT_ADDRESS_DUFFS: u64 = 10_000_000;
         const REQUESTED_DUFFS: u64 = 20_000_000;
         const WALLET_CEILING_DUFFS: u64 = 100_000_000;
@@ -1619,7 +1608,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = test_app_context(temp_dir.path());
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x32; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_32, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
@@ -1874,7 +1863,7 @@ mod tests {
         let mut wallets = Vec::new();
         for (seed_byte, alias) in [(0x61, "Alpha"), (0x62, "Beta")] {
             let wallet = Wallet::new_from_seed(
-                [seed_byte; 64],
+                crate::test_support::keys::labelled_seed("top_up_identity", seed_byte),
                 Network::Testnet,
                 Some(alias.to_string()),
                 None,
@@ -2063,6 +2052,7 @@ mod tests {
     async fn funding_transactions_are_read_only_from_wallets_ready_to_answer() {
         use crate::context::test_support::wired_test_app_context;
         use crate::model::secret::Secret;
+        let seed_73 = crate::test_support::keys::seed();
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_context = wired_test_app_context(temp_dir.path()).await;
@@ -2072,19 +2062,19 @@ mod tests {
                 .expect("wallet")
         };
 
-        let ready_seed = [0x71; 64];
+        let ready_seed = crate::test_support::keys::seed();
         let ready = add_wallet_to_registry(&app_context, open_wallet(ready_seed, "Everyday"));
         backend
             .register_wallet_from_seed(&ready, &ready_seed, None)
             .await
             .expect("register the ready wallet");
 
-        let registering_seed = [0x72; 64];
+        let registering_seed = crate::test_support::keys::seed();
         let registering =
             add_wallet_to_registry(&app_context, open_wallet(registering_seed, "Savings"));
 
         let mut locked_wallet = Wallet::new_from_seed(
-            [0x73; 64],
+            seed_73,
             Network::Testnet,
             Some("Vault".to_string()),
             Some(&Secret::new("a long enough password")),
@@ -2874,12 +2864,13 @@ mod tests {
 
     #[test]
     fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let seed_34 = crate::test_support::keys::seed();
         let old_dir = tempfile::tempdir().expect("old context dir");
         let new_dir = tempfile::tempdir().expect("new context dir");
         let old_context = test_app_context(old_dir.path());
         let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x34; 64], Network::Testnet, None, None).expect("wallet"),
+            Wallet::new_from_seed(seed_34, Network::Testnet, None, None).expect("wallet"),
         ));
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &old_context);

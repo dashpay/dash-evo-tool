@@ -4,8 +4,14 @@ use dash_sdk::dpp::version::PlatformVersion;
 
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &PlatformVersion) {
     card(ui, |ui| {
-        heading(ui, "Approval groups", "groups", &mut state.help);
-        ui.label("Combine member approval power to authorize actions. Labels are local; Review shows the positions stored in the contract.");
+        heading(ui, "Groups", "groups", &mut state.help);
+        ui.label("Share authority using weighted approvals. A group acts when its approving members meet the required power.");
+        ui.small("Labels are local. Review shows the positions stored in the contract.");
+        if state.draft.groups.is_empty() {
+            ui.label(
+                "No groups yet. Use owner or identity rules, or add a group to share authority.",
+            );
+        }
         let mut remove = None;
         for index in 0..state.draft.groups.len() {
             let id = state.draft.groups[index].position;
@@ -14,14 +20,15 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             ui.push_id(id, |ui| {
                 ui.separator();
                 ui.strong(format!("Draft group {id} · contract position {index}"));
-                text(ui,"Group label (local only)","groupName",&mut group.label,&mut state.help);
-                text(ui,"Required approval power","threshold",&mut group.threshold,&mut state.help);
+                text(ui,"Group name (local only)","groupName",&mut group.label,&mut state.help);
+                text(ui,"Required power","threshold",&mut group.threshold,&mut state.help);
+                ui.small("Required power must be positive and no greater than total member power.");
                 ui.small("At least two members are required. Each power and the requirement must be from 1 to 65,535.");
                 let mut member_remove = None;
                 for (member_index,member) in group.members.iter_mut().enumerate() {
                     ui.push_id(member_index, |ui| {
                         text(ui,"Member identity ID","identity",&mut member.identity,&mut state.help);
-                        text(ui,"Approval power","weight",&mut member.weight,&mut state.help);
+                        text(ui,"Power","weight",&mut member.weight,&mut state.help);
                         if ui.button("Remove member").clicked() { member_remove = Some(member_index); }
                     });
                 }
@@ -46,15 +53,16 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
     });
     card(ui, |ui| {
         heading(ui, "Main control group", "mainGroup", &mut state.help);
-        egui::ComboBox::from_label("Main control group")
+        ui.label("Rules that use Main group follow this selection.");
+        egui::ComboBox::from_label("Main group")
             .selected_text(
                 state
                     .draft
                     .main_group
-                    .map_or_else(|| "None".into(), |id| format!("Draft group {id}")),
+                    .map_or_else(|| "No main group".into(), |id| format!("Draft group {id}")),
             )
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.draft.main_group, None, "None");
+                ui.selectable_value(&mut state.draft.main_group, None, "No main group");
                 for group in &state.draft.groups {
                     ui.selectable_value(
                         &mut state.draft.main_group,
@@ -65,7 +73,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             });
         supply::actor(
             ui,
-            "Who may replace the main group",
+            "Who can change the main group",
             "mainChange",
             &mut state.draft.permissions.main_group_change,
             &state.draft.groups,

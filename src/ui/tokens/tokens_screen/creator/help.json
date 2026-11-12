@@ -2,7 +2,7 @@
   "basics": {
     "title": "Start with your token's purpose",
     "body": "Choose a recognizable name and decide who should control the supply. Names describe the token; its saved rules determine what the owner and holders can do.",
-    "example": "A studio could issue Studio Credits for its rewards programme.",
+    "example": "A studio could issue StudioCredits for its rewards programme.",
     "scene": "04"
   },
   "policy": {
@@ -26,19 +26,19 @@
   },
   "name": {
     "title": "Token name",
-    "body": "The display name helps people recognize your token. It does not prove ownership or make the token unique; the confirmed token identifier distinguishes it from other tokens.",
-    "example": "Studio Credit is a name; two different tokens could use it.",
+    "body": "The display name helps people recognize your token. It does not prove ownership or make the token unique; the confirmed token identifier distinguishes it from other tokens. Both names are required. Use at least 3 characters without spaces, within 25 UTF-8 bytes; multibyte characters leave room for fewer characters.",
+    "example": "StudioCredit is a name; two different tokens could use it.",
     "scene": "04"
   },
   "plural": {
     "title": "Plural name",
-    "body": "Choose the name clients should use when displaying more than one token. This changes the wording, not the number of tokens or their value.",
-    "example": "One Studio Credit; ten Studio Credits.",
+    "body": "Choose the name clients should use when displaying more than one token. This changes the wording, not the number of tokens or their value. A plural name is required, even when it is the same as the singular name.",
+    "example": "One StudioCredit; ten StudioCredits.",
     "scene": "11"
   },
   "decimals": {
     "title": "Decimal places",
-    "body": "Choose how finely a token can be divided. Enter amounts in tokens in this prototype; precision determines the smallest unit those amounts can represent.",
+    "body": "Choose how finely a token can be divided. Amount fields let you choose tokens or base units. Precision determines the smallest unit those amounts can represent.",
     "example": "With 2 decimal places, 1 token contains 100 smallest units and 1.25 tokens is valid.",
     "scene": "13"
   },
@@ -51,7 +51,7 @@
   "capitalization": {
     "title": "Name capitalization",
     "body": "This is a display convention that clients can use when showing token names. It does not change the token identifier, create a translation, or affect balances.",
-    "example": "A client can use a capitalized name such as Studio Credit.",
+    "example": "A client can use a capitalized name such as StudioCredit.",
     "scene": "15"
   },
   "localizations": {
@@ -196,7 +196,7 @@
   },
   "keywords": {
     "title": "Search keywords",
-    "body": "Keywords help people find the contract. The token name is included automatically in this build; additional keywords can add to the registration estimate.",
+    "body": "Keywords help people find the contract. Names marked searchable in Basics are included automatically; additional keywords can add to the registration estimate.",
     "example": "Add education for a learning reward token.",
     "scene": "12"
   },
@@ -215,7 +215,7 @@
   },
   "readiness": {
     "title": "Issuer readiness",
-    "body": "The real app needs the intended network, a funded Platform identity and an available eligible signing key. Draft checks alone do not confirm network acceptance or successful registration.",
+    "body": "Creation needs the intended network, a funded Platform identity and an available eligible signing key. Draft checks alone do not confirm network acceptance or successful registration.",
     "example": "An identity with only public information cannot sign the creation request.",
     "scene": "02"
   },
@@ -363,49 +363,65 @@
     "title": "Fixed amount",
     "body": "Use the same allocation for every eligible period. Fixed describes the recurring amount, not the token's total supply; supply limits and claims still apply.",
     "example": "At 1 token per period, five eligible periods contribute 5 tokens before other restrictions.",
-    "scene": "35"
+    "scene": "35",
+    "formula": "f(k) = 100",
+    "formula_note": "The same amount at every index."
   },
   "function.StepDecreasing": {
     "title": "Step decreasing",
     "body": "Keep an amount for several periods, then reduce it by a chosen fraction. A minimum and a separate trailing amount can shape the later allocations.",
     "example": "The audited example starts 1.00, 1.00, 0.50, 0.50, then 0.25 tokens per index.",
-    "scene": "36"
+    "scene": "36",
+    "formula": "100 → 50 → 25 → 12 → 10",
+    "formula_note": "Integer division at each decrease; trailing after era 3."
   },
   "function.Stepwise": {
     "title": "Stepwise",
     "body": "Define exact amounts starting at chosen period indices. Each index uses the amount from the latest start reached; setting a later amount to zero stops future emissions.",
     "example": "Use 0.10 tokens from index 0, 0.05 from index 3, then zero from index 5.",
-    "scene": "37"
+    "scene": "37",
+    "formula": "0 ≤ k < 3: 10;   3 ≤ k < 5: 5;   k ≥ 5: 0",
+    "formula_note": "Use the amount at the latest threshold reached."
   },
   "function.Linear": {
     "title": "Linear",
     "body": "Increase or decrease the allocation by a steady amount each period, within the chosen bounds. The function's maximum limits each period, not total token supply.",
     "example": "The audited example gives 0.10, 0.12, 0.14 tokens, rising to a 0.20-token limit.",
-    "scene": "38"
+    "scene": "38",
+    "formula": "f(k) = clamp(2k + 10, 0, 20)",
+    "formula_note": "The maximum limits each interval, not total supply."
   },
   "function.Polynomial": {
     "title": "Polynomial",
     "body": "Shape how fast allocations grow or shrink using a curved pattern. The m/n ratio sets the power, while the offset changes its input. Bounds limit the amount in each period.",
     "example": "The audited square curve starts 0.01, 0.04, 0.09, then 0.16 tokens.",
-    "scene": "39"
+    "scene": "39",
+    "formula": "f(k) = clamp((k + 1)², 0, 100)",
+    "formula_note": "The offset is inside the power; this example uses squares."
   },
   "function.Exponential": {
     "title": "Exponential",
     "body": "Allocations can grow very quickly with this curve, so check the example and bounds carefully. It uses a natural exponential curve; m/n controls its rate and bounds limit each period’s amount.",
     "example": "The audited example starts 0.10, 0.27, 0.73 tokens, then reaches its 1.00-token maximum.",
-    "scene": "40"
+    "scene": "40",
+    "formula": "f(k) = floor(clamp(10 × exp(k), 0, 100))",
+    "formula_note": "exp uses base e. The maximum is reached at k = 3."
   },
   "function.Logarithmic": {
     "title": "Logarithmic",
     "body": "Use a natural logarithm to produce a curve that can rise more slowly over time. The m/n ratio scales the input, and rounding happens before the added amount b.",
     "example": "The audited example starts 0.10, 0.16, 0.20, then 0.23 tokens.",
-    "scene": "41"
+    "scene": "41",
+    "formula": "f(k) = clamp(floor(10 × ln(k + 1)) + 10, 0, 100)",
+    "formula_note": "Natural log; round down before adding b."
   },
   "function.InvertedLogarithmic": {
     "title": "Inverted logarithmic",
     "body": "The example allocations fall quickly at first, then more slowly. This curve uses the natural logarithm of a reciprocal input, not one divided by a logarithm.",
     "example": "The audited example starts 0.40, 0.33, 0.29, then 0.26 tokens.",
-    "scene": "42"
+    "scene": "42",
+    "formula": "f(k) = clamp(floor(10 × ln(1 / (k + 1))) + 40, 0, 100)",
+    "formula_note": "Negative floor matters: floor(−6.93) + 40 = 33."
   },
   "param.a": {
     "title": "a: scaling coefficient",
@@ -499,7 +515,7 @@
   },
   "param.amount": {
     "title": "Amount per interval",
-    "body": "This is the fixed allocation for each eligible recurring period. Enter tokens in this prototype; the real contract stores the equivalent number of smallest units.",
+    "body": "This is the fixed allocation for each eligible recurring period. Choose tokens or base units in the amount field; the contract stores the equivalent number of smallest units.",
     "example": "With 2 decimals, 1.00 token corresponds to 100 smallest units.",
     "scene": "35"
   },
@@ -516,7 +532,7 @@
     "scene": "34"
   },
   "static-preview": {
-    "title": "Worked example preview",
+    "title": "Current-parameter preview",
     "body": "The preview recalculates the current parameters with the selected network protocol. It shows raw units, displayed tokens, and cumulative allocations. The assumed registration reference is explicit; this is an illustration, not a promise of a future claim.",
     "example": "Changing the linear slope recalculates the table. Index zero is illustrative and is not added to the cumulative allocations.",
     "scene": "43"
@@ -541,8 +557,8 @@
   },
   "unknownOutcome": {
     "title": "Registration result is unclear",
-    "body": "A slow or missing response does not prove registration failed. Check the token list and confirmed contract state before submitting again, so you avoid creating another paid contract unintentionally.",
-    "example": "Refresh My Tokens and inspect the token and contract identifiers before considering a retry.",
+    "body": "A slow or missing response does not prove registration failed. Use Check status to look for the reviewed contract without another payment. Another creation stays blocked while the result is unclear, including after restarting the app.",
+    "example": "If the response is missing, use Check status · no payment to check the same contract.",
     "scene": "52"
   }
 }

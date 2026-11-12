@@ -55,14 +55,14 @@ impl RuleKind {
     /// Human-readable action scope.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Mint => "Mint more tokens",
-            Self::Burn => "Burn the actor's own tokens",
-            Self::Freeze => "Freeze one holder",
-            Self::Unfreeze => "Unfreeze one holder",
-            Self::Destroy => "Destroy an entire frozen balance",
+            Self::Mint => "Mint additional tokens",
+            Self::Burn => "Burn own tokens",
+            Self::Freeze => "Freeze an account",
+            Self::Unfreeze => "Unfreeze an account",
+            Self::Destroy => "Destroy frozen funds",
             Self::Pause => "Pause or resume transfers",
             Self::Cap => "Change maximum supply",
-            Self::Conventions => "Change display conventions",
+            Self::Conventions => "Change names and display conventions",
             Self::Recurring => "Change recurring distribution",
             Self::Destination => "Change the default mint recipient",
             Self::Override => "Change per-mint recipient choice",

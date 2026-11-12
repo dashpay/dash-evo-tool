@@ -38,16 +38,14 @@ impl TokensScreen {
             self.creator_workspace.acknowledged = false;
         }
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Token Creator").font(Typography::page_title()));
+            ui.label(RichText::new("Create a token").font(Typography::page_title()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.hyperlink_to("Open tutorial ↗", TUTORIAL_URL);
+                ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
             });
         });
         ui.label(
-            RichText::new(
-                "Design your token, understand its rules, then review before creating it.",
-            )
-            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+            RichText::new("Start with its purpose. Decide what can change later.")
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
         );
         ui.add_space(Spacing::MD);
         let dark_mode = ui.visuals().dark_mode;
@@ -204,6 +202,10 @@ impl TokensScreen {
         });
         ui.separator();
         ui.horizontal(|ui| {
+            let position = Section::ALL
+                .iter()
+                .position(|section| *section == self.creator_workspace.section)
+                .unwrap_or(0);
             if ui
                 .add_enabled(
                     self.creator_workspace.section != Section::Basics,
@@ -213,9 +215,17 @@ impl TokensScreen {
             {
                 self.creator_workspace.navigate(false);
             }
+            ui.small(format!(
+                "Step {step} of 7. Your draft is kept as you continue.",
+                step = position + 1
+            ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.creator_workspace.section != Section::Review
-                    && ComponentStyles::add_primary_button(ui, "Continue →").clicked()
+                if let Some(next) = Section::ALL.get(position + 1)
+                    && ComponentStyles::add_primary_button(
+                        ui,
+                        format!("Continue: {} →", next.label()),
+                    )
+                    .clicked()
                 {
                     self.creator_workspace.navigate(true);
                 }
@@ -360,7 +370,7 @@ fn amount(
 
 fn policy_label(policy: Policy) -> &'static str {
     match policy {
-        Policy::Unselected => "Choose a policy",
+        Policy::Unselected => "Supply policy not chosen",
         Policy::Fixed => "Fixed supply",
         Policy::LimitedOwner => "Owner-managed, with a hard cap",
         Policy::Custom => "Custom rules",
@@ -393,11 +403,11 @@ fn recipient_label(recipient: &Recipient) -> String {
 fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
     state.draft.reconcile_policy();
     card(ui, |ui| {
-        ui.heading("Your token");
+        heading(ui, "Your token", "review", &mut state.help);
         ui.label(
-            RichText::new(state.draft.names.first().map_or("Unnamed token", |name| {
+            RichText::new(state.draft.names.first().map_or("Untitled token", |name| {
                 if name.singular.is_empty() {
-                    "Unnamed token"
+                    "Untitled token"
                 } else {
                     &name.singular
                 }
@@ -422,13 +432,49 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 ));
             }
         }
+        ui.small(supply::cap_consequence(&state.draft));
         ui.small(format!("{} decimal places", state.draft.decimals));
         ui.label(format!(
             "Initial recipient: {}",
             recipient_label(&state.draft.mint_recipient)
         ));
         ui.separator();
-        ui.strong("Powers and administrators");
+        ui.label(if state.draft.transferable {
+            "Transfers: allowed · permanent choice"
+        } else {
+            "Transfers: not allowed · permanent choice"
+        });
+        if state.draft.start_paused {
+            ui.small("Transfers start paused.");
+        }
+        ui.separator();
+        ui.strong("Distribution");
+        ui.label(format!(
+            "Recurring: {}",
+            on_off(state.draft.recurring.enabled)
+        ));
+        ui.small(distribution::recurring_authority(&state.draft));
+        ui.label(format!(
+            "Scheduled: {status} · {count} saved allocations",
+            status = on_off(state.draft.scheduled_enabled),
+            count = state.draft.scheduled.len()
+        ));
+        ui.label(format!(
+            "Once per identity: {}",
+            on_off(state.draft.once_enabled)
+        ));
+        ui.label(format!("Groups: {}", state.draft.groups.len()));
+        ui.label(format!(
+            "History: {count} of 6",
+            count = state
+                .draft
+                .history
+                .iter()
+                .filter(|enabled| **enabled)
+                .count()
+        ));
+        ui.separator();
+        ui.strong("Powers and consequences");
         for kind in RuleKind::ALL {
             let rule = state.draft.permissions.get(kind);
             if rule.performer != ActorDraft::NoOne
@@ -456,6 +502,11 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ui.label("All 13 action rules are permanently disabled.");
         }
         ui.separator();
+        ui.small("Creation fees come from the issuer's Platform balance. Review all permanent choices before signing.");
         ui.small("Draft only. Nothing is created or charged before the final confirmation.");
     });
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled { "On" } else { "Off" }
 }

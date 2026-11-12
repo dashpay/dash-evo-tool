@@ -8,6 +8,8 @@ struct HelpTopic {
     body: String,
     example: String,
     consequence: Option<String>,
+    formula: Option<String>,
+    formula_note: Option<String>,
 }
 static TOPICS: LazyLock<BTreeMap<String, HelpTopic>> =
     LazyLock::new(|| serde_json::from_str(include_str!("help.json")).unwrap_or_default());
@@ -30,6 +32,15 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 ui.add_space(10.0);
                 ui.strong("Example");
                 ui.label(&topic.example);
+                if let Some(formula) = &topic.formula {
+                    ui.add_space(10.0);
+                    ui.strong("Worked example formula");
+                    ui.label("This formula uses base units at 2 decimal places. It describes the worked example, not your current settings.");
+                    ui.monospace(formula);
+                    if let Some(note) = &topic.formula_note {
+                        ui.label(note);
+                    }
+                }
                 if let Some(consequence) = &topic.consequence {
                     ui.add_space(10.0);
                     ui.strong("Consequence");
@@ -40,7 +51,7 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
                 ui.label("Return to the form and open the tutorial for this setting.");
             }
             ui.add_space(12.0);
-            ui.hyperlink_to("Open token tutorial ↗", TUTORIAL_URL);
+            ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
             if ui.button("Back to the form").clicked() {
                 close = true;
             }
@@ -103,16 +114,24 @@ pub(super) fn show(context: &Context, state: &mut CreatorWorkspace) {
         let response = egui::Modal::new(egui::Id::new("creator_rule")).show(context, |ui| {
             ui.set_width(600.0_f32.min(context.content_rect().width() - 60.0));
             heading(ui,kind.label(),kind.help_key(),&mut state.help);
+            if let Some(topic) = TOPICS.get(kind.help_key()) {
+                ui.label(&topic.body);
+            }
             egui::ScrollArea::vertical().max_height(context.content_rect().height() * 0.65).show(ui, |ui| {
                 let rule = state.draft.permissions.get_mut(kind);
                 supply::actor(ui,"Who can perform this action","performer",&mut rule.performer,&state.draft.groups,state.draft.main_group,&mut state.help);
                 ui.add_space(12.0);
                 supply::actor(ui,"Who can change this rule","administrator",&mut rule.administrator,&state.draft.groups,state.draft.main_group,&mut state.help);
                 ui.add_space(12.0);
-                checkbox(ui,"Allow the action performer to be changed to No one","flags.0",&mut rule.allow_disable_action,&mut state.help);
-                checkbox(ui,"Allow the administrator to be changed to No one","flags.1",&mut rule.allow_remove_administrator,&mut state.help);
+                ui.strong("Later changes");
+                ui.label("The administrator uses these allowances. Choosing an administrator is different from choosing who can act now.");
+                checkbox(ui,"Allow the administrator to remove all action performers","flags.0",&mut rule.allow_disable_action,&mut state.help);
+                checkbox(ui,"Allow the administrator to remove all rule administrators","flags.1",&mut rule.allow_remove_administrator,&mut state.help);
                 checkbox(ui,"Allow the administrator to replace itself","flags.2",&mut rule.allow_replace_administrator,&mut state.help);
                 ui.small("These allowances are separate. An action with no current performer may still be enabled later when a rule administrator remains.");
+                if rule.administrator == ActorDraft::NoOne {
+                    ui.small("There is currently no administrator to use these allowances.");
+                }
                 if ui.link("Open Groups").clicked() { groups = true; }
             });
             if ui.button("Done").clicked() { close = true; }

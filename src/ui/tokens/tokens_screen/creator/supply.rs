@@ -6,7 +6,8 @@ use dash_sdk::dpp::version::PlatformVersion;
 
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &PlatformVersion) {
     card(ui, |ui| {
-        heading(ui, "Supply and recipients", "initial", &mut state.help);
+        heading(ui, "Supply & permissions", "policy", &mut state.help);
+        ui.label("Enter amounts in tokens or base units. Changing precision preserves the displayed token amount.");
         amount(
             ui,
             "Initial supply",
@@ -25,16 +26,33 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         ui.add_enabled_ui(!state.draft.no_maximum, |ui| {
             amount(
                 ui,
-                "Maximum supply",
+                "Maximum outstanding supply",
                 "maximum",
                 &mut state.draft.maximum,
                 state.draft.decimals,
                 &mut state.help,
             )
         });
+        ui.small("Burning tokens can free capacity for future mints; this is not a lifetime minting limit.");
+        ui.horizontal(|ui| {
+            let caption = label(ui, "Decimal places", "decimals", &mut state.help);
+            let mut precision = state.draft.decimals;
+            if ui
+                .add(egui::DragValue::new(&mut precision).range(0..=16))
+                .labelled_by(caption.id)
+                .changed()
+                && let Err(error) = state.draft.change_precision(precision)
+            {
+                state.error = Some(error);
+            }
+        });
+        ui.small("Choose 0 to 16 decimal places. For example, 2 allows 1.25 tokens. Amounts that cannot be represented remain visible for correction.");
+        ui.label(cap_consequence(&state.draft));
+        heading(ui, "Mint recipients", "mintRecipient", &mut state.help);
+        ui.label("The default new-token recipient also receives the initial supply. Choosing a different recipient on a future mint is a separate permission.");
         label(
             ui,
-            "Default recipient of newly minted tokens",
+            "Default recipient for newly created tokens",
             "mintRecipient",
             &mut state.help,
         );
@@ -51,18 +69,19 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         ));
         checkbox(
             ui,
-            "Allow a different recipient for each mint",
+            "Allow choosing a recipient on each mint",
             "mintOverride",
             &mut state.draft.permissions.allow_mint_recipient_choice,
             &mut state.help,
         );
         checkbox(
             ui,
-            "Allow ordinary transfers between holders",
+            "Allow transfers between holders",
             "transferable",
             &mut state.draft.transferable,
             &mut state.help,
         );
+        ui.small("Transferability is permanent after creation. Other configured token actions remain separate.");
         if !state.draft.transferable {
             ui.label("Ordinary transfers cannot be enabled later. Other token actions retain their own rules.");
             if version.protocol_version < 14 {
@@ -79,6 +98,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             &mut state.draft.start_paused,
             &mut state.help,
         );
+        ui.small(
+            "Distributions and other configured actions can continue while transfers are paused.",
+        );
         if state.draft.start_paused
             && state
                 .draft
@@ -90,14 +112,21 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         }
         checkbox(
             ui,
-            "Allow frozen identities to receive tokens",
+            "Allow transfers to frozen identities",
             "allowFrozen",
             &mut state.draft.allow_receive_frozen,
             &mut state.help,
         );
+        ui.small("A frozen identity still cannot spend. This setting only controls receiving.");
     });
     card(ui, |ui| {
-        heading(ui, "Who can do what?", "permissions", &mut state.help);
+        heading(
+            ui,
+            "Who can act, and who can change the rules?",
+            "permissions",
+            &mut state.help,
+        );
+        ui.label("All 13 action rules are in this draft. Open a rule to inspect its administrator and three change allowances.");
         ui.label("The performer may use the action. The administrator may change its rule within the three allowed changes.");
         ui.horizontal(|ui| {
             for (filter, label) in [
@@ -144,6 +173,27 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             }
         }
     });
+    card(ui, |ui| {
+        heading(
+            ui,
+            "Marketplace at creation",
+            "rule.marketplace",
+            &mut state.help,
+        );
+        ui.label("No marketplace sale or direct-purchase price is configured. The two sale-related rules above still determine who could change these settings later.");
+    });
+}
+
+pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -> &'static str {
+    if draft.no_maximum {
+        "No numerical supply cap is configured."
+    } else if draft.maximum.parse(draft.decimals).is_err() {
+        "Enter a valid maximum and inspect who can change it."
+    } else if draft.permissions.get(RuleKind::Cap).permanently_disabled() {
+        "The maximum is a permanent hard cap: no one can change it or change that rule."
+    } else {
+        "A permanent hard cap has not been established. Inspect the maximum-supply authorities and allowances."
+    }
 }
 
 pub(super) fn yes(value: bool) -> &'static str {

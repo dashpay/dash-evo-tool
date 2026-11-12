@@ -12,8 +12,10 @@ pub(super) fn show(
     version: &PlatformVersion,
 ) {
     heading(ui, "Distribution", "distribution", &mut state.help);
+    ui.label("Three independent ways to distribute tokens. Turning one off keeps its settings in your draft.");
     ui.label("Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.");
     card(ui, |ui| {
+        heading(ui, "Recurring distribution", "recurring", &mut state.help);
         checkbox(
             ui,
             "Enable recurring distribution",
@@ -21,28 +23,29 @@ pub(super) fn show(
             &mut state.draft.recurring.enabled,
             &mut state.help,
         );
-        ui.label("Issue a calculated amount each time an interval completes.");
+        ui.label("Allocate tokens at repeated time, epoch or block intervals. Recipients must claim eligible allocations.");
+        ui.label(recurring_authority(&state.draft));
         if state.draft.recurring.enabled {
             ui.push_id("recurring", |ui| {
                 let recurring = &mut state.draft.recurring;
-                label(ui,"Interval type","intervalKind",&mut state.help);
+                label(ui,"Interval based on","intervalKind",&mut state.help);
                 ui.horizontal(|ui| {
-                    for (kind,caption) in [(IntervalKind::Time,"Time"),(IntervalKind::Blocks,"Blocks"),(IntervalKind::Epochs,"Epochs")] { ui.selectable_value(&mut recurring.interval_kind,kind,caption); }
+                    for (kind,caption) in [(IntervalKind::Time,"Elapsed time"),(IntervalKind::Blocks,"Blocks"),(IntervalKind::Epochs,"Platform epochs")] { ui.selectable_value(&mut recurring.interval_kind,kind,caption); }
                 });
-                text(ui,"Every","interval",&mut recurring.interval,&mut state.help);
+                text(ui,"Repeat every","interval",&mut recurring.interval,&mut state.help);
                 if recurring.interval_kind == IntervalKind::Time {
-                    label(ui,"Duration unit","timeUnit",&mut state.help);
-                    egui::ComboBox::from_label("Duration unit").selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } });
+                    label(ui,"Time unit","timeUnit",&mut state.help);
+                    egui::ComboBox::from_label("Time unit").selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } });
                     ui.small("Time intervals must align to full minutes. The minimum depends on the selected network.");
                 }
                 label(ui,"Recurring recipient","recipient",&mut state.help);
                 supply::recipient(ui,&mut recurring.recipient,true,false,&mut state.help);
                 if recurring.recipient == Recipient::EvoNodes && recurring.interval_kind != IntervalKind::Epochs { ui.colored_label(ui.visuals().error_fg_color,"Choose Epochs for EvoNode participation allocations."); }
-                label(ui,"Allocation function","recurring",&mut state.help);
-                egui::ComboBox::from_label("Allocation function").selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } });
+                label(ui,"Emission function","recurring",&mut state.help);
+                egui::ComboBox::from_label("Emission function").selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } });
                 help(ui,&mut state.help,recurring.function.help_key());
                 let function = &mut recurring.functions[recurring.function as usize];
-                if ui.button("Load this function's worked example").clicked() { *function = FunctionDraft::example(recurring.function); }
+                if ui.button("Restore worked example parameters").clicked() { *function = FunctionDraft::example(recurring.function); }
                 ui.small("Worked examples use 2 decimal places. At other precision, the displayed amounts stay the same and the raw coefficients have different effects.");
                 for parameter in recurring.function.parameters() {
                     if parameter.is_amount() {
@@ -86,6 +89,18 @@ pub(super) fn show(
                 } else { ui.colored_label(ui.visuals().error_fg_color,"Enter a whole registration reference within the supported range."); }
                 if let Err(error) = recurring.parse(state.draft.decimals,network,version) { ui.colored_label(ui.visuals().error_fg_color,error.to_string()); }
             });
+        } else {
+            ui.small(format!(
+                "Saved settings: {function}, every {interval} {unit}, to {recipient}.",
+                function = state.draft.recurring.function.label(),
+                interval = state.draft.recurring.interval,
+                unit = match state.draft.recurring.interval_kind {
+                    IntervalKind::Time => state.draft.recurring.time_unit.label(),
+                    IntervalKind::Blocks => "blocks",
+                    IntervalKind::Epochs => "epochs",
+                },
+                recipient = recipient_label(&state.draft.recurring.recipient),
+            ));
         }
         if ui
             .link("Edit permission to change recurring distribution")
@@ -95,14 +110,15 @@ pub(super) fn show(
         }
     });
     card(ui, |ui| {
+        heading(ui, "Scheduled distributions", "scheduled", &mut state.help);
         checkbox(
             ui,
-            "Enable scheduled allocations",
+            "Enable scheduled distributions",
             "scheduled",
             &mut state.draft.scheduled_enabled,
             &mut state.help,
         );
-        ui.label("Choose an absolute date and time for each recipient. Editing or reopening this screen does not move that date.");
+        ui.label("Set specific dates, recipients and amounts. Recipients must claim eligible allocations. Editing or reopening this screen does not move the date.");
         if state.draft.scheduled_enabled {
             let mut remove = None;
             for row in &mut state.draft.scheduled {
@@ -139,7 +155,7 @@ pub(super) fn show(
                         state.draft.decimals,
                         &mut state.help,
                     );
-                    if ui.button("Remove allocation").clicked() {
+                    if ui.button("Remove scheduled distribution").clicked() {
                         remove = Some(row.id);
                     }
                 });
@@ -148,7 +164,7 @@ pub(super) fn show(
                 state.draft.scheduled.retain(|row| row.id != id);
                 state.schedule_inputs.remove(&id);
             }
-            if ui.button("Add allocation").clicked() {
+            if ui.button("Add scheduled distribution").clicked() {
                 let id = state.next_schedule_id;
                 state.next_schedule_id = state.next_schedule_id.saturating_add(1);
                 state.draft.scheduled.push(ScheduleDraft {
@@ -158,17 +174,23 @@ pub(super) fn show(
                     amount: TokenAmountInput::default(),
                 });
             }
+        } else {
+            ui.small(format!(
+                "Off. {count} scheduled allocations are retained in this draft.",
+                count = state.draft.scheduled.len()
+            ));
         }
     });
     card(ui, |ui| {
+        heading(ui, "Once per identity", "once", &mut state.help);
         checkbox(
             ui,
-            "Enable once-per-identity allocation",
+            "Enable once-per-identity distribution",
             "once",
             &mut state.draft.once_enabled,
             &mut state.help,
         );
-        ui.label("Each eligible Platform identity may claim once. An identity is not a person; one person can control multiple identities.");
+        ui.label("Each eligible identity can claim once. One person can control multiple identities. Available supply can limit claims; tokens do not transfer automatically.");
         if state.draft.once_enabled {
             if version.protocol_version < 14 {
                 ui.colored_label(
@@ -184,6 +206,35 @@ pub(super) fn show(
                 state.draft.decimals,
                 &mut state.help,
             );
+        } else if !state.draft.once_amount.text.is_empty() {
+            ui.small(format!(
+                "Off. Saved amount: {amount} {unit}.",
+                amount = state.draft.once_amount.text,
+                unit = if state.draft.once_amount.base_units {
+                    "base units"
+                } else {
+                    "tokens"
+                },
+            ));
         }
     });
+}
+
+pub(super) fn recurring_authority(draft: &crate::model::token_creator::TokenDraft) -> String {
+    let rule = draft.permissions.get(RuleKind::Recurring);
+    if rule.performer != ActorDraft::NoOne {
+        let actor = rule.performer.label();
+        if draft.recurring.enabled {
+            format!("{actor} can change recurring distribution.")
+        } else {
+            format!("{actor} can enable recurring distribution later.")
+        }
+    } else if rule.administrator != ActorDraft::NoOne {
+        format!(
+            "{} can change who controls recurring distribution.",
+            rule.administrator.label()
+        )
+    } else {
+        "No one can enable or change recurring distribution later.".into()
+    }
 }

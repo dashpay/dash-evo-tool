@@ -464,7 +464,10 @@ impl ProfileScreen {
         if self.loading || self.saving {
             ui.horizontal(|ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 let status_text = if self.saving {
                     "Saving profile..."
                 } else {

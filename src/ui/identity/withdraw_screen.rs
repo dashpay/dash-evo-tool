@@ -223,7 +223,7 @@ impl WithdrawalScreen {
 
             // Show error next to input
             if let Some(error) = &self.withdrawal_address_error {
-                ui.colored_label(DashColors::ERROR, error);
+                ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), error);
             }
         });
     }

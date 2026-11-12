@@ -37,36 +37,11 @@ impl TokensScreen {
             self.creator_workspace.prepared = None;
             self.creator_workspace.acknowledged = false;
         }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Create a token").font(Typography::page_title()));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
-            });
-        });
-        ui.label(
-            RichText::new("Start with its purpose. Decide what can change later.")
-                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
-        );
-        ui.add_space(Spacing::MD);
         let dark_mode = ui.visuals().dark_mode;
-        egui::Frame::new()
-            .fill(DashColors::surface(dark_mode))
-            .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
-            .corner_radius(Shape::RADIUS_LG)
-            .inner_margin(egui::Margin::symmetric(18, 15))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("Network: {}", self.app_context.network));
-            if let Some(identity) = &self.selected_identity {
-                ui.label(format!("Owner: {}", identity.display_string()));
-            } else {
-                ui.label("Drafting is available. Choose an identity in Review when you are ready.");
-            }
-            help(ui, &mut self.creator_workspace.help, "readiness");
-            });
-            });
-        ui.add_space(Spacing::LG);
+        let scroll_header = context.content_rect().height() < 700.0;
+        if !scroll_header {
+            self.render_workspace_header(ui);
+        }
         let navigation = (
             self.creator_workspace.section,
             ui.available_width().to_bits(),
@@ -142,6 +117,45 @@ impl TokensScreen {
                     .show(ui, |ui| summary(ui, &mut self.creator_workspace));
             });
         }
+        let position = Section::ALL
+            .iter()
+            .position(|section| *section == self.creator_workspace.section)
+            .unwrap_or(0);
+        let footer_caption = format!(
+            "Step {step} of 7. Your draft is kept as you continue.",
+            step = position + 1
+        );
+        let next_caption = Section::ALL
+            .get(position + 1)
+            .map(|next| format!("Continue: {} →", next.label()));
+        let button_font = egui::TextStyle::Button.resolve(ui.style());
+        let button_padding = 2.0 * ui.spacing().button_padding.x;
+        let back_width = (Typography::measure_text_width(ui, "← Back", button_font.clone())
+            + button_padding)
+            .max(80.0);
+        let next_width = next_caption.as_ref().map_or(0.0, |caption| {
+            (Typography::measure_text_width(ui, caption, button_font.clone()) + button_padding)
+                .max(ComponentStyles::DIALOG_BUTTON_MIN_SIZE.x)
+        });
+        let caption_galley = ui.painter().layout(
+            footer_caption.clone(),
+            Typography::caption(),
+            DashColors::text_secondary(dark_mode),
+            ui.available_width(),
+        );
+        let stacked_footer =
+            back_width + next_width + caption_galley.size().x + 2.0 * ui.spacing().item_spacing.x
+                > ui.available_width();
+        let button_height = Spacing::CONTROL_HEIGHT.max(
+            ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y,
+        );
+        let footer_height = button_height
+            + Spacing::LG
+            + if stacked_footer {
+                caption_galley.size().y + ui.spacing().item_spacing.y
+            } else {
+                0.0
+            };
         let summary_width = 280.0;
         let width = ui.available_width()
             - if wide {
@@ -149,7 +163,7 @@ impl TokensScreen {
             } else {
                 0.0
             };
-        let body_height = (ui.available_height() - Spacing::CONTROL_HEIGHT - Spacing::LG).max(60.0);
+        let body_height = (ui.available_height() - footer_height).max(0.0);
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(width, body_height),
@@ -160,27 +174,36 @@ impl TokensScreen {
                         .id_salt(("creator_editor", self.creator_workspace.section.label()))
                         .auto_shrink([false, false])
                         .max_height(body_height)
-                        .show(ui, |ui| match self.creator_workspace.section {
-                            Section::Basics => basics::show(ui, &mut self.creator_workspace),
-                            Section::Supply => supply::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::Distribution => distribution::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.network,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::Groups => groups::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::History => documents::history(ui, &mut self.creator_workspace),
-                            Section::Documents => documents::show(ui, &mut self.creator_workspace),
-                            Section::Review => action |= self.render_workspace_review(ui),
+                        .show(ui, |ui| {
+                            if scroll_header {
+                                self.render_workspace_header(ui);
+                            }
+                            match self.creator_workspace.section {
+                                Section::Basics => basics::show(ui, &mut self.creator_workspace),
+                                Section::Supply => supply::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::Distribution => distribution::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.network,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::Groups => groups::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::History => {
+                                    documents::history(ui, &mut self.creator_workspace)
+                                }
+                                Section::Documents => {
+                                    documents::show(ui, &mut self.creator_workspace)
+                                }
+                                Section::Review => action |= self.render_workspace_review(ui),
+                            }
                         });
                 },
             );
@@ -201,31 +224,25 @@ impl TokensScreen {
             }
         });
         ui.separator();
+        if stacked_footer {
+            ui.small(&footer_caption);
+        }
         ui.horizontal(|ui| {
-            let position = Section::ALL
-                .iter()
-                .position(|section| *section == self.creator_workspace.section)
-                .unwrap_or(0);
             if ui
                 .add_enabled(
                     self.creator_workspace.section != Section::Basics,
-                    egui::Button::new("← Back").min_size(egui::vec2(80.0, 32.0)),
+                    egui::Button::new("← Back").min_size(egui::vec2(80.0, Spacing::CONTROL_HEIGHT)),
                 )
                 .clicked()
             {
                 self.creator_workspace.navigate(false);
             }
-            ui.small(format!(
-                "Step {step} of 7. Your draft is kept as you continue.",
-                step = position + 1
-            ));
+            if !stacked_footer {
+                ui.small(&footer_caption);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(next) = Section::ALL.get(position + 1)
-                    && ComponentStyles::add_primary_button(
-                        ui,
-                        format!("Continue: {} →", next.label()),
-                    )
-                    .clicked()
+                if let Some(caption) = next_caption
+                    && ComponentStyles::add_primary_button(ui, caption).clicked()
                 {
                     self.creator_workspace.navigate(true);
                 }
@@ -233,6 +250,41 @@ impl TokensScreen {
         });
         dialogs::show(context, &mut self.creator_workspace);
         action
+    }
+
+    fn render_workspace_header(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Create a token").font(Typography::page_title()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
+            });
+        });
+        ui.label(
+            RichText::new("Start with its purpose. Decide what can change later.")
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        ui.add_space(Spacing::MD);
+        let dark_mode = ui.visuals().dark_mode;
+        egui::Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
+            .corner_radius(Shape::RADIUS_LG)
+            .inner_margin(egui::Margin::symmetric(18, 15))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!("Network: {}", self.app_context.network));
+                    if let Some(identity) = &self.selected_identity {
+                        ui.label(format!("Owner: {}", identity.display_string()));
+                    } else {
+                        ui.label(
+                            "Drafting is available. Choose an identity in Review when you are ready.",
+                        );
+                    }
+                    help(ui, &mut self.creator_workspace.help, "readiness");
+                });
+            });
+        ui.add_space(Spacing::LG);
     }
 }
 
@@ -330,11 +382,18 @@ fn amount(
     topic: &mut Option<String>,
 ) {
     let caption_response = label(ui, caption, key, topic);
-    ui.horizontal(|ui| {
-        ui.add(styled_text_edit_singleline(&mut value.text).desired_width(180.0))
+    let inline_units = ui.available_width() >= 320.0;
+    let input_width = if inline_units {
+        ui.available_width() - 120.0 - ui.spacing().item_spacing.x
+    } else {
+        ui.available_width()
+    };
+    let render = |ui: &mut Ui| {
+        ui.add(styled_text_edit_singleline(&mut value.text).desired_width(input_width))
             .labelled_by(caption_response.id);
         let mut raw = value.base_units;
         egui::ComboBox::from_id_salt((caption, "units"))
+            .width(120.0)
             .selected_text(if raw { "base units" } else { "tokens" })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut raw, false, "tokens");
@@ -351,7 +410,12 @@ fn amount(
         if let Err(error) = value.change_units(raw, decimals) {
             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
         }
-    });
+    };
+    if inline_units {
+        ui.horizontal(render);
+    } else {
+        ui.vertical(render);
+    }
     if !value.text.trim().is_empty() {
         match value.parse(decimals) {
             Ok(raw) => {

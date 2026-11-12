@@ -250,7 +250,7 @@ impl PasswordInput {
         self.revealing = next_revealing;
 
         let icon_color = if eye_response.hovered() || self.revealing {
-            DashColors::DASH_BLUE
+            DashColors::info_color(dark_mode)
         } else {
             DashColors::text_secondary(dark_mode)
         };

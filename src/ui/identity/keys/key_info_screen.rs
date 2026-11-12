@@ -1646,7 +1646,7 @@ impl KeyInfoScreen {
 
         if let Some(err) = &self.protection_form_error {
             ui.add_space(6.0);
-            ui.colored_label(DashColors::ERROR, err);
+            ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), err);
         }
 
         ui.add_space(10.0);
@@ -1675,7 +1675,7 @@ impl KeyInfoScreen {
 
         if let Some(err) = &self.protection_form_error {
             ui.add_space(6.0);
-            ui.colored_label(DashColors::ERROR, err);
+            ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), err);
         }
 
         ui.add_space(10.0);

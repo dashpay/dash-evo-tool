@@ -398,7 +398,11 @@ impl ShieldedTabView {
             .show(ui, |ui| {
                 if let Some(s) = sync {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(14.0).color(DashColors::DASH_BLUE));
+                        ui.add(
+                            egui::Spinner::new()
+                                .size(14.0)
+                                .color(DashColors::info_color(ui.visuals().dark_mode)),
+                        );
                         ui.label(
                             RichText::new(format!(
                                 "Scanning shielded notes: {} scanned (block {}).",
@@ -423,7 +427,11 @@ impl ShieldedTabView {
                         );
                     } else {
                         ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(14.0).color(DashColors::DASH_BLUE));
+                            ui.add(
+                                egui::Spinner::new()
+                                    .size(14.0)
+                                    .color(DashColors::info_color(ui.visuals().dark_mode)),
+                            );
                             ui.label(
                                 RichText::new(format!(
                                     "Checking shielded notes: {} committed.",
@@ -536,7 +544,9 @@ impl ShieldedTabView {
         if !self.is_initialized {
             if self.initializing {
                 ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                    ui.add(
+                        egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)),
+                    );
                     ui.label("Initializing shielded wallet (deriving ZIP32 keys)...");
                 });
             } else {
@@ -553,7 +563,10 @@ impl ShieldedTabView {
                     );
                 } else {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.add(
+                            egui::Spinner::new()
+                                .color(DashColors::info_color(ui.visuals().dark_mode)),
+                        );
                         ui.label("Preparing shielded wallet...");
                     });
                 }
@@ -592,11 +605,14 @@ impl ShieldedTabView {
                     ShieldedIndicator::Verifying => {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                            ui.add(
+                                egui::Spinner::new()
+                                    .color(DashColors::info_color(ui.visuals().dark_mode)),
+                            );
                             ui.label(
                                 RichText::new(SHIELDED_VERIFYING_LABEL)
                                     .size(12.0)
-                                    .color(DashColors::DASH_BLUE),
+                                    .color(DashColors::info_color(ui.visuals().dark_mode)),
                             );
                         });
                     }

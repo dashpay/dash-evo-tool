@@ -484,13 +484,13 @@ impl AddKeyScreen {
                 }
                 ChooserStatus::RefreshingIdentity => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
                         ui.label("Updating this identity from the network…");
                     });
                 }
                 ChooserStatus::Loading => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
                         ui.label("Loading wallet key slots…");
                     });
                 }

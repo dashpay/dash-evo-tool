@@ -312,7 +312,7 @@ pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
 pub struct DashColors;
 
 impl DashColors {
-    /// Primary action blue with readable white text (#086bb8).
+    /// Solid primary action fill (#086bb8). Use `info_color` for text on app surfaces.
     pub const DASH_BLUE: Color32 = Color32::from_rgb(8, 107, 184);
 
     /// Deep Blue (#012060)
@@ -837,19 +837,19 @@ impl Typography {
     }
 
     pub fn heading_xlarge() -> FontId {
-        FontId::new(Self::SCALE_DISPLAY, FontFamily::Proportional)
+        FontId::new(Self::SCALE_DISPLAY, Self::strong_family())
     }
 
     pub fn heading_large() -> FontId {
-        FontId::new(Self::SCALE_XXXL, FontFamily::Proportional)
+        FontId::new(Self::SCALE_XXXL, Self::strong_family())
     }
 
     pub fn heading_medium() -> FontId {
-        FontId::new(Self::SCALE_XXL, FontFamily::Proportional)
+        FontId::new(Self::SCALE_XXL, Self::strong_family())
     }
 
     pub fn heading_small() -> FontId {
-        FontId::new(Self::SCALE_XL, FontFamily::Proportional)
+        FontId::new(Self::SCALE_XL, Self::strong_family())
     }
 
     pub fn body_large() -> FontId {
@@ -868,14 +868,7 @@ impl Typography {
         FontId::new(Self::SCALE_XS, FontFamily::Proportional)
     }
 
-    /// Font for instructional hint text: the short "what to do / why" line shown
-    /// directly beneath a primary label (e.g. an onboarding step or an error).
-    ///
-    /// Use this — not egui's built-in `RichText::small()` — for that category.
-    /// `.small()` renders at egui's ~9px default, which is too small to read as
-    /// guidance; this token pins the size to the centralized scale instead. Do
-    /// not repurpose it for timestamps, tags, or other incidental small text —
-    /// `caption()` / `body_small()` cover those.
+    /// Instructional hints share the readable caption size used by egui Small.
     pub fn hint() -> FontId {
         FontId::new(Self::SCALE_XS, FontFamily::Proportional)
     }

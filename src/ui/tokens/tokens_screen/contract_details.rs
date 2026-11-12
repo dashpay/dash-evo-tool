@@ -36,7 +36,10 @@ impl TokensScreen {
         if self.contract_details_loading {
             ui.horizontal(|ui| {
                 ui.label("Loading contract details...");
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
             });
             return action;
         }

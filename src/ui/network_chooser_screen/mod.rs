@@ -57,7 +57,7 @@ fn add_dapi_status_label(
         let color = if dapi_available {
             DashColors::SUCCESS
         } else {
-            DashColors::ERROR
+            DashColors::error_color(ui.visuals().dark_mode)
         };
         ui.colored_label(color, dapi_label);
     }
@@ -397,7 +397,7 @@ impl NetworkChooserScreen {
                         let color = if spv_connected {
                             DashColors::SUCCESS
                         } else {
-                            DashColors::ERROR
+                            DashColors::error_color(ui.visuals().dark_mode)
                         };
                         if spv_status == SpvStatus::Error {
                             // Fixed, jargon-free label. The raw upstream sync
@@ -579,12 +579,12 @@ impl NetworkChooserScreen {
                 let icon_text = painter.layout_no_wrap(
                     icon.to_string(),
                     egui::FontId::proportional(16.0),
-                    DashColors::DASH_BLUE,
+                    DashColors::info_color(dark_mode),
                 );
                 painter.galley(
                     icon_rect.center() - icon_text.size() / 2.0,
                     icon_text,
-                    DashColors::DASH_BLUE,
+                    DashColors::info_color(dark_mode),
                 );
 
                 cursor.x += icon_size.x + 8.0;
@@ -733,7 +733,7 @@ impl NetworkChooserScreen {
                                 "Disabled"
                             })
                             .color(if self.auto_start_spv {
-                                DashColors::DASH_BLUE
+                                DashColors::info_color(dark_mode)
                             } else {
                                 DashColors::text_secondary(dark_mode)
                             }),
@@ -1132,7 +1132,10 @@ impl NetworkChooserScreen {
 
             let (message, color) = match &feedback {
                 SpvClearMessage::Success(msg) => (msg.as_str(), DashColors::SUCCESS),
-                SpvClearMessage::Error(msg) => (msg.as_str(), DashColors::ERROR),
+                SpvClearMessage::Error(msg) => (
+                    msg.as_str(),
+                    DashColors::error_color(ui.visuals().dark_mode),
+                ),
             };
 
             egui::Frame::new()
@@ -1669,7 +1672,7 @@ impl BackupRetentionForm {
                     editing = response.dragged() || response.has_focus();
                 });
                 if let Err(error) = validate_retention_days(self.days) {
-                    ui.colored_label(DashColors::ERROR, error.to_string());
+                    ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), error.to_string());
                 }
             } else {
                 ui.label(

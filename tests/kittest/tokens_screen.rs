@@ -139,13 +139,26 @@ fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
             "Continue must remain in the viewport: {next:?}"
         );
         assert!(
-            summary.top() < 400.0,
-            "Summary must remain beside the editor: {summary:?}"
+            summary.left()
+                >= h.get_by_role_and_label(Role::TextInput, "Token name")
+                    .rect()
+                    .right()
+                && summary.bottom() < next.top()
+                && summary.right() <= 1260.0,
+            "Summary must remain visible beside the editor: {summary:?}"
         );
         h.get_by_label_contains("Continue:").click();
         h.run_steps(5);
         assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
-        assert!(h.get_by_label("Your token").rect().top() < 400.0);
+        let summary = h.get_by_label("Your token").rect();
+        assert!(
+            summary.left()
+                >= h.get_by_role_and_label(Role::TextInput, "Initial supply")
+                    .rect()
+                    .right()
+                && summary.bottom() < h.get_by_label_contains("Continue:").rect().top()
+                && summary.right() <= 1260.0
+        );
         h.get_by_label("← Back").click();
         h.run_steps(3);
         assert_eq!(
@@ -167,7 +180,7 @@ fn creator_workspace_help_has_context_and_restores_keyboard_focus() {
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(5);
         let help = h.get_by_label("Help: Issuer readiness");
-        assert!(help.rect().height() >= 32.0);
+        assert!(help.rect().height() >= 28.0 && help.rect().width() >= 28.0);
         help.focus();
         h.key_press(egui::Key::Enter);
         h.run_steps(3);

@@ -284,7 +284,10 @@ impl SingleKeyWalletSendScreen {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(RichText::new("+ Add Recipient").color(DashColors::DASH_BLUE))
+                    .button(
+                        RichText::new("+ Add Recipient")
+                            .color(DashColors::info_color(ui.visuals().dark_mode)),
+                    )
                     .clicked()
                 {
                     self.add_recipient();
@@ -348,7 +351,9 @@ impl SingleKeyWalletSendScreen {
                                 |ui| {
                                     if ui
                                         .small_button(
-                                            RichText::new("Remove").color(DashColors::ERROR),
+                                            RichText::new("Remove").color(DashColors::error_color(
+                                                ui.visuals().dark_mode,
+                                            )),
                                         )
                                         .clicked()
                                     {
@@ -361,7 +366,11 @@ impl SingleKeyWalletSendScreen {
 
                     if let Some(error) = &self.recipients[i].error {
                         ui.add_space(5.0);
-                        ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
+                        ui.label(
+                            RichText::new(error)
+                                .color(DashColors::error_color(ui.visuals().dark_mode))
+                                .size(12.0),
+                        );
                     }
                 }
             });

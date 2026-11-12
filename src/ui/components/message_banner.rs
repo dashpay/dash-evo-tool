@@ -853,7 +853,7 @@ fn render_banner(
                         egui::Label::new(
                             egui::RichText::new(toggle_text)
                                 .font(Typography::body_small())
-                                .color(DashColors::DASH_BLUE)
+                                .color(DashColors::info_color(ui.visuals().dark_mode))
                                 .underline(),
                         )
                         .sense(egui::Sense::click()),

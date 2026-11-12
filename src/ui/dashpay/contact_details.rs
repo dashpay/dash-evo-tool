@@ -454,7 +454,10 @@ impl ContactDetailsScreen {
                                 if payment.is_incoming {
                                     ui.label(RichText::new("⬇").color(DashColors::SUCCESS));
                                 } else {
-                                    ui.label(RichText::new("⬆").color(DashColors::ERROR));
+                                    ui.label(
+                                        RichText::new("⬆")
+                                            .color(DashColors::error_color(ui.visuals().dark_mode)),
+                                    );
                                 }
 
                                 ui.vertical(|ui| {
@@ -468,8 +471,9 @@ impl ContactDetailsScreen {
                                             );
                                         } else {
                                             ui.label(
-                                                RichText::new(format!("-{}", amount_str))
-                                                    .color(DashColors::ERROR),
+                                                RichText::new(format!("-{}", amount_str)).color(
+                                                    DashColors::error_color(ui.visuals().dark_mode),
+                                                ),
                                             );
                                         }
 

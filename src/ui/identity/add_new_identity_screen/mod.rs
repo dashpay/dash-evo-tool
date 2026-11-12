@@ -818,7 +818,7 @@ impl AddNewIdentityScreen {
         let has_other_keys = !self.identity_keys.others.is_empty();
 
         if has_master_key || has_other_keys {
-            let row_height = 30.0;
+            let row_height = crate::ui::theme::Spacing::TABLE_ROW_HEIGHT;
 
             // Use a lighter stripe color that doesn't clash with comboboxes
             let original_stripe_color = ui.visuals().faint_bg_color;

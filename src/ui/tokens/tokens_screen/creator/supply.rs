@@ -8,31 +8,15 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
     card(ui, |ui| {
         heading(ui, "Supply & permissions", "policy", &mut state.help);
         ui.label("Enter amounts in tokens or base units. Changing precision preserves the displayed token amount.");
-        amount(
-            ui,
-            "Initial supply",
-            "initial",
-            &mut state.draft.initial,
-            state.draft.decimals,
-            &mut state.help,
-        );
-        checkbox(
-            ui,
-            "No maximum supply",
-            "noMaximum",
-            &mut state.draft.no_maximum,
-            &mut state.help,
-        );
-        ui.add_enabled_ui(!state.draft.no_maximum, |ui| {
-            amount(
-                ui,
-                "Maximum outstanding supply",
-                "maximum",
-                &mut state.draft.maximum,
-                state.draft.decimals,
-                &mut state.help,
-            )
-        });
+        if ui.available_width() >= 440.0 {
+            ui.columns(2, |columns| {
+                initial_supply(&mut columns[0], state);
+                maximum_supply(&mut columns[1], state);
+            });
+        } else {
+            initial_supply(ui, state);
+            maximum_supply(ui, state);
+        }
         ui.small("Burning tokens can free capacity for future mints; this is not a lifetime minting limit.");
         ui.horizontal(|ui| {
             let caption = label(ui, "Decimal places", "decimals", &mut state.help);
@@ -128,7 +112,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         );
         ui.label("All 13 action rules are in this draft. Open a rule to inspect its administrator and three change allowances.");
         ui.label("The performer may use the action. The administrator may change its rule within the three allowed changes.");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (filter, label) in [
                 (RuleFilter::All, "All 13 rules"),
                 (RuleFilter::Enabled, "Enabled powers"),
@@ -196,6 +180,37 @@ pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -
     }
 }
 
+fn initial_supply(ui: &mut Ui, state: &mut CreatorWorkspace) {
+    amount(
+        ui,
+        "Initial supply",
+        "initial",
+        &mut state.draft.initial,
+        state.draft.decimals,
+        &mut state.help,
+    );
+}
+
+fn maximum_supply(ui: &mut Ui, state: &mut CreatorWorkspace) {
+    ui.add_enabled_ui(!state.draft.no_maximum, |ui| {
+        amount(
+            ui,
+            "Maximum outstanding supply",
+            "maximum",
+            &mut state.draft.maximum,
+            state.draft.decimals,
+            &mut state.help,
+        );
+    });
+    checkbox(
+        ui,
+        "No maximum supply",
+        "noMaximum",
+        &mut state.draft.no_maximum,
+        &mut state.help,
+    );
+}
+
 pub(super) fn yes(value: bool) -> &'static str {
     if value { "allowed" } else { "not allowed" }
 }
@@ -211,6 +226,7 @@ pub(super) fn actor(
 ) {
     let caption_response = label(ui, caption, key, topic);
     egui::ComboBox::from_id_salt(caption)
+        .width(ui.available_width())
         .selected_text(value.label())
         .show_ui(ui, |ui| {
             ui.selectable_value(value, ActorDraft::NoOne, "No one");
@@ -266,7 +282,9 @@ pub(super) fn recipient(
     none: bool,
     topic: &mut Option<String>,
 ) {
-    egui::ComboBox::from_label("Recipient")
+    let caption = ui.label(RichText::new("Recipient").family(Typography::strong_family()));
+    egui::ComboBox::from_id_salt("Recipient")
+        .width(ui.available_width())
         .selected_text(recipient_label(value))
         .show_ui(ui, |ui| {
             ui.selectable_value(value, Recipient::Owner, "Contract owner");
@@ -283,7 +301,9 @@ pub(super) fn recipient(
             if none {
                 ui.selectable_value(value, Recipient::None, "No fixed destination");
             }
-        });
+        })
+        .response
+        .labelled_by(caption.id);
     if let Recipient::Identity(identity) = value {
         text(ui, "Recipient identity ID", "mintIdentity", identity, topic);
         if !identity.is_empty() {

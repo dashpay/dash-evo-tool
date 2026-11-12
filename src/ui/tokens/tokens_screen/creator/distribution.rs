@@ -11,9 +11,11 @@ pub(super) fn show(
     network: Network,
     version: &PlatformVersion,
 ) {
-    heading(ui, "Distribution", "distribution", &mut state.help);
-    ui.label("Three independent ways to distribute tokens. Turning one off keeps its settings in your draft.");
-    ui.label("Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.");
+    card(ui, |ui| {
+        heading(ui, "Distribution", "distribution", &mut state.help);
+        ui.label("Three independent ways to distribute tokens. Turning one off keeps its settings in your draft.");
+        ui.label("Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.");
+    });
     card(ui, |ui| {
         heading(ui, "Recurring distribution", "recurring", &mut state.help);
         checkbox(
@@ -34,15 +36,15 @@ pub(super) fn show(
                 });
                 text(ui,"Repeat every","interval",&mut recurring.interval,&mut state.help);
                 if recurring.interval_kind == IntervalKind::Time {
-                    label(ui,"Time unit","timeUnit",&mut state.help);
-                    egui::ComboBox::from_label("Time unit").selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } });
+                    let caption = label(ui,"Time unit","timeUnit",&mut state.help);
+                    egui::ComboBox::from_id_salt("Time unit").width(ui.available_width()).selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } }).response.labelled_by(caption.id);
                     ui.small("Time intervals must align to full minutes. The minimum depends on the selected network.");
                 }
                 label(ui,"Recurring recipient","recipient",&mut state.help);
                 supply::recipient(ui,&mut recurring.recipient,true,false,&mut state.help);
                 if recurring.recipient == Recipient::EvoNodes && recurring.interval_kind != IntervalKind::Epochs { ui.colored_label(ui.visuals().error_fg_color,"Choose Epochs for EvoNode participation allocations."); }
-                label(ui,"Emission function","recurring",&mut state.help);
-                egui::ComboBox::from_label("Emission function").selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } });
+                let caption = label(ui,"Emission function","recurring",&mut state.help);
+                egui::ComboBox::from_id_salt("Emission function").width(ui.available_width()).selected_text(recurring.function.label()).show_ui(ui, |ui| { for kind in FunctionKind::ALL { ui.selectable_value(&mut recurring.function,kind,kind.label()); } }).response.labelled_by(caption.id);
                 help(ui,&mut state.help,recurring.function.help_key());
                 let function = &mut recurring.functions[recurring.function as usize];
                 if ui.button("Restore worked example parameters").clicked() { *function = FunctionDraft::example(recurring.function); }

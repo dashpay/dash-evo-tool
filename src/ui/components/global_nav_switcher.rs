@@ -276,8 +276,11 @@ pub fn render(
         // --- Segment 1: page-aware link --------------------------------------
         let link = ui
             .add(
-                egui::Label::new(RichText::new(spec.segment1_label()).color(DashColors::DASH_BLUE))
-                    .sense(Sense::click()),
+                egui::Label::new(
+                    RichText::new(spec.segment1_label())
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                )
+                .sense(Sense::click()),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if link.clicked() {

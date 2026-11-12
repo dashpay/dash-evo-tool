@@ -501,7 +501,10 @@ impl ContactsList {
         // Loading indicator
         if self.loading {
             ui.horizontal(|ui| {
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 ui.label("Loading contacts...");
             });
             return action;

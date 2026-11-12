@@ -189,7 +189,11 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
     fonts
         .font_data
         .insert(strong.name.clone(), strong.data.into());
-    let mut fallbacks = fonts.families[&FontFamily::Proportional].clone();
+    let mut fallbacks = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
     fallbacks.insert(0, strong.name);
     fonts
         .families

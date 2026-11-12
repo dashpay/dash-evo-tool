@@ -54,7 +54,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
     card(ui, |ui| {
         heading(ui, "Main control group", "mainGroup", &mut state.help);
         ui.label("Rules that use Main group follow this selection.");
-        egui::ComboBox::from_label("Main group")
+        let caption = ui.label(RichText::new("Main group").family(Typography::strong_family()));
+        egui::ComboBox::from_id_salt("Main group")
+            .width(ui.available_width())
             .selected_text(
                 state
                     .draft
@@ -70,7 +72,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
                         &group.label,
                     );
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
         supply::actor(
             ui,
             "Who can change the main group",

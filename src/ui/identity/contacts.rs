@@ -31,7 +31,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
-use crate::ui::components::styled::styled_text_edit_multiline;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::state::AvatarCache;
@@ -776,7 +776,9 @@ fn note_editor(
         .as_deref()
         .and_then(|note| validate_contact_note(note).err());
     if let Some(error) = invalid {
-        ui.label(RichText::new(error.to_string()).color(DashColors::ERROR));
+        ui.label(
+            RichText::new(error.to_string()).color(DashColors::error_color(ui.visuals().dark_mode)),
+        );
     }
 
     ui.add_space(8.0);
@@ -880,7 +882,7 @@ fn active_section(
         // The search box only earns its place once there is something to search.
         if has_contacts {
             ui.add(
-                eframe::styled_text_edit_singleline(state.search_mut())
+                styled_text_edit_singleline(state.search_mut())
                     .hint_text(SEARCH_PLACEHOLDER)
                     .desired_width(f32::INFINITY),
             );

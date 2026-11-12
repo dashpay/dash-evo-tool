@@ -475,7 +475,7 @@ impl ImportMnemonicScreen {
         // Show error if any
         if let Some(ref err) = self.private_key_error {
             ui.add_space(5.0);
-            ui.colored_label(DashColors::ERROR, err);
+            ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), err);
         }
     }
 
@@ -598,7 +598,7 @@ impl ScreenLike for ImportMnemonicScreen {
                             };
                             if phrase_complete && self.seed_phrase.is_none() {
                                 ui.add_space(10.0);
-                                ui.colored_label(DashColors::ERROR, INVALID_SEED_PHRASE_MESSAGE);
+                                ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), INVALID_SEED_PHRASE_MESSAGE);
                             }
 
                             if self.seed_phrase.is_none() {

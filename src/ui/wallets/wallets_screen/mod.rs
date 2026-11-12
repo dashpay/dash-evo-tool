@@ -1012,7 +1012,7 @@ impl WalletsBalancesScreen {
         if tx.is_incoming() {
             (format!("+{amount}"), DashColors::SUCCESS)
         } else if tx.is_outgoing() {
-            (format!("-{amount}"), DashColors::ERROR)
+            (format!("-{amount}"), DashColors::error_color(dark_mode))
         } else {
             (amount, DashColors::text_primary(dark_mode))
         }
@@ -1155,7 +1155,7 @@ impl WalletsBalancesScreen {
             }
 
             if self.refreshing {
-                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
             }
 
             // Expert-only buttons: right-aligned, filling all remaining space
@@ -1818,7 +1818,7 @@ impl WalletsBalancesScreen {
     fn render_sync_status(&self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         let secondary = DashColors::text_secondary(dark_mode);
-        let syncing_color = DashColors::DASH_BLUE;
+        let syncing_color = DashColors::info_color(dark_mode);
         let sz = 12.0;
 
         ui.collapsing(
@@ -1881,7 +1881,7 @@ impl WalletsBalancesScreen {
                             }
                             SpvStatus::Error => {
                                 ui.colored_label(
-                                    DashColors::ERROR,
+                                    DashColors::error_color(ui.visuals().dark_mode),
                                     RichText::new("Error").size(sz),
                                 );
                             }

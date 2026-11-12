@@ -348,7 +348,7 @@ pub fn add_left_panel(
                                                     "Local Network",
                                                     DashColors::REGTEST_BROWN,
                                                 ),
-                                                _ => ("Unknown", DashColors::DASH_BLUE),
+                                                _ => ("Unknown", DashColors::info_color(dark_mode)),
                                             };
 
                                             ui.add_space(2.0);

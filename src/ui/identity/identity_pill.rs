@@ -159,7 +159,12 @@ impl IdentityPill {
         if let Some((kind, initial)) = self.avatar {
             let inner = ui
                 .horizontal(|ui| {
-                    paint_identity_monogram(ui, 18.0, kind, initial, kind.badge_accent());
+                    let accent = if initial.is_some() {
+                        kind.badge_accent()
+                    } else {
+                        kind.badge_text_color(ui.visuals().dark_mode)
+                    };
+                    paint_identity_monogram(ui, 18.0, kind, initial, accent);
                     ui.add_space(4.0);
                     self.build_inner().show(ui)
                 })

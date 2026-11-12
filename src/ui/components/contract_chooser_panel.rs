@@ -54,7 +54,7 @@ fn render_collapsing_header(
         _ => 12.0,
     };
     let label_color = if is_selected {
-        DashColors::DASH_BLUE
+        DashColors::info_color(dark_mode)
     } else {
         DashColors::text_primary(dark_mode)
     };
@@ -67,7 +67,7 @@ fn render_collapsing_header(
             egui::Button::new(
                 RichText::new(button_text)
                     .size(20.0)
-                    .color(DashColors::DASH_BLUE),
+                    .color(DashColors::info_color(ui.visuals().dark_mode)),
             )
             .fill(Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE),

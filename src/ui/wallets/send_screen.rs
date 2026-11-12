@@ -4494,7 +4494,9 @@ impl WalletSendScreen {
                             // Show detected type
                             if let Some(kind) = addr_kind {
                                 let (type_text, type_color) = match kind {
-                                    AddressKind::Core => ("Core", DashColors::DASH_BLUE),
+                                    AddressKind::Core => {
+                                        ("Core", DashColors::info_color(ui.visuals().dark_mode))
+                                    }
                                     AddressKind::Platform => {
                                         ("Platform", DashColors::PLATFORM_PURPLE)
                                     }

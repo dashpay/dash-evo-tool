@@ -812,7 +812,10 @@ impl GroveSTARKScreen {
         ui.horizontal(|ui| {
             if self.is_generating {
                 // Use Dash blue spinner instead of default
-                ui.add(egui::widgets::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::new()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 ui.vertical(|ui| {
                     ui.label("Generating ZK proof...");
                 });
@@ -901,7 +904,10 @@ impl GroveSTARKScreen {
         ui.horizontal(|ui| {
             if self.is_verifying {
                 // Use Dash blue spinner instead of default
-                ui.add(egui::widgets::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::new()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 ui.label("Verifying ZK proof...");
             } else if ui
                 .add_enabled(!debug_build && can_verify, Button::new("✅ Verify Proof"))

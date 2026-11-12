@@ -83,7 +83,7 @@ fn paint_segments(ui: &mut Ui, counts: ProgressCounts) {
         (counts.confirmed, DashColors::success_color(dark_mode)),
         (counts.failed, DashColors::error_color(dark_mode)),
         (counts.checking, DashColors::warning_color(dark_mode)),
-        (counts.sending, DashColors::DASH_BLUE),
+        (counts.sending, DashColors::info_color(dark_mode)),
     ] {
         if count == 0 {
             continue;

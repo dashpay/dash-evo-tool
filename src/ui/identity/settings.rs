@@ -437,7 +437,8 @@ impl SettingsTab {
                 .add_enabled(
                     false,
                     egui::Button::new(
-                        RichText::new("Delete social profile").color(DashColors::ERROR),
+                        RichText::new("Delete social profile")
+                            .color(DashColors::error_color(ui.visuals().dark_mode)),
                     )
                     .fill(egui::Color32::TRANSPARENT)
                     .stroke(egui::Stroke::NONE),
@@ -503,7 +504,7 @@ impl SettingsTab {
         pill::accent_pill(
             ui,
             kind.badge_label(),
-            kind.badge_accent(),
+            kind.badge_text_color(dark_mode),
             Some(kind.badge_tooltip()),
         );
         let id_base58 = identity.identity.id().to_string(Encoding::Base58);
@@ -598,7 +599,7 @@ impl SettingsTab {
         ui.add_space(16.0);
 
         // 4. Danger zone — red-bordered card.
-        let danger_color = DashColors::ERROR;
+        let danger_color = DashColors::error_color(dark_mode);
         egui::Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
             .stroke(egui::Stroke::new(1.0, danger_color))
@@ -965,7 +966,7 @@ fn sub_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
 
 pub(super) fn counter(ui: &mut Ui, count: usize, max: usize, dark_mode: bool) {
     let color = if count > max {
-        DashColors::ERROR
+        DashColors::error_color(dark_mode)
     } else {
         DashColors::text_secondary(dark_mode)
     };

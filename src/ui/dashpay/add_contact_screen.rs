@@ -363,7 +363,10 @@ impl ScreenLike for AddContactScreen {
             if matches!(self.status, ContactRequestStatus::Sending) {
                 ui.horizontal(|ui| {
                     let dark_mode = ui.style().visuals.dark_mode;
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                    ui.add(
+                        egui::widgets::Spinner::default()
+                            .color(DashColors::info_color(ui.visuals().dark_mode)),
+                    );
                     ui.label(
                         RichText::new("Sending contact request...")
                             .color(DashColors::text_primary(dark_mode)),
@@ -376,7 +379,7 @@ impl ScreenLike for AddContactScreen {
             if let ContactRequestStatus::Error(ref err) = self.status {
                 let dark_mode = ui.style().visuals.dark_mode;
                 let error_color = if dark_mode {
-                    DashColors::ERROR
+                    DashColors::error_color(ui.visuals().dark_mode)
                 } else {
                     egui::Color32::DARK_RED
                 };

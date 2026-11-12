@@ -122,6 +122,9 @@ fn mount_withdrawal_screen(screen: WithdrawalScreen) -> Harness<'static, Withdra
         .with_size(egui::vec2(1100.0, 850.0))
         .build_ui_state(
             |ui, screen: &mut WithdrawalScreen| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 screen.ui(ui);
             },
             screen,

@@ -137,7 +137,7 @@ impl TokensScreen {
             );
             ui.label("Check the choices your holders will live with.");
             ui.label("Check the settings and owner without spending credits. You will confirm creation separately. Editing the draft requires another check.");
-            heading(
+            subheading(
                 ui,
                 "Issuer, fees & readiness",
                 "readiness",
@@ -396,7 +396,7 @@ fn human_review(ui: &mut Ui, draft: &TokenDraft) {
         .into_iter()
         .filter(|section| *section != Section::Review)
     {
-        egui::CollapsingHeader::new(format!("Reviewed {}",section.label())).default_open(section==Section::Supply).show(ui,|ui| {
+        egui::CollapsingHeader::new(RichText::new(format!("Reviewed {}",section.label())).font(Typography::subheading())).default_open(section==Section::Supply).show(ui,|ui| {
             match section {
                 Section::Basics=>{for name in &draft.names {ui.label(format!("{}: {} / {} · searchable: {}",name.language,name.singular,name.plural,supply::yes(name.searchable)));}ui.label(format!("Capitalized names: {}",supply::yes(draft.capitalize)));},
                 Section::Supply=>{
@@ -410,7 +410,7 @@ fn human_review(ui: &mut Ui, draft: &TokenDraft) {
                     ui.label(format!("Choose a recipient per mint: {} · ordinary transfers: {} · starts paused: {} · receive while frozen: {}",supply::yes(draft.permissions.allow_mint_recipient_choice),supply::yes(draft.transferable),supply::yes(draft.start_paused),supply::yes(draft.allow_receive_frozen)));
                     ui.small("Transferability is permanent after creation. A pause and other token actions have separate rules.");
                     ui.label("No marketplace sale or direct-purchase price is configured at creation. Review who could change these settings later.");
-                    ui.strong("Powers and consequences");
+                    ui.label(RichText::new("Powers and consequences").font(Typography::subheading()));
                     for kind in RuleKind::ALL {let rule=draft.permissions.get(kind);ui.separator();ui.strong(kind.label());ui.label(format!("Performer: {} · administrator: {}",rule.performer.label(),rule.administrator.label()));ui.label(format!("Allow disabling action: {} · allow removing administrator: {} · allow replacing administrator: {}",supply::yes(rule.allow_disable_action),supply::yes(rule.allow_remove_administrator),supply::yes(rule.allow_replace_administrator)));}
                 },
                 Section::Distribution=>{

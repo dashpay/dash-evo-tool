@@ -55,7 +55,7 @@ fn add_dapi_status_label(
         ui.colored_label(DashColors::text_secondary(dark_mode), dapi_label);
     } else {
         let color = if dapi_available {
-            DashColors::SUCCESS
+            DashColors::success_color(ui.visuals().dark_mode)
         } else {
             DashColors::error_color(ui.visuals().dark_mode)
         };
@@ -338,7 +338,7 @@ impl NetworkChooserScreen {
                     if let Some(snap) = &snapshot {
                         match snap.status {
                             SpvStatus::Running => {
-                                ui.colored_label(DashColors::SUCCESS, "Synced - The SPV client can now be used for transacting and querying.");
+                                ui.colored_label(DashColors::success_color(ui.visuals().dark_mode), "Synced - The SPV client can now be used for transacting and querying.");
                             }
                             SpvStatus::Syncing | SpvStatus::Starting => {
                                 let warning_color = DashColors::warning_color(dark_mode);
@@ -352,12 +352,13 @@ impl NetworkChooserScreen {
                                 ui.label(egui::RichText::new("Syncing..."));
                             }
                             SpvStatus::Stopping => {
+                                let info_color = DashColors::info_color(dark_mode);
                                 ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
-                                    DashColors::DASH_BLUE;
+                                    info_color;
                                 ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
-                                    DashColors::DASH_BLUE;
+                                    info_color;
                                 ui.style_mut().visuals.widgets.active.fg_stroke.color =
-                                    DashColors::DASH_BLUE;
+                                    info_color;
                                 ui.spinner();
                                 ui.label(egui::RichText::new("Disconnecting..."));
                             }
@@ -395,7 +396,7 @@ impl NetworkChooserScreen {
                     ui.horizontal(|ui| {
                         ui.label("SPV:");
                         let color = if spv_connected {
-                            DashColors::SUCCESS
+                            DashColors::success_color(ui.visuals().dark_mode)
                         } else {
                             DashColors::error_color(ui.visuals().dark_mode)
                         };
@@ -1131,7 +1132,10 @@ impl NetworkChooserScreen {
             ui.add_space(8.0);
 
             let (message, color) = match &feedback {
-                SpvClearMessage::Success(msg) => (msg.as_str(), DashColors::SUCCESS),
+                SpvClearMessage::Success(msg) => (
+                    msg.as_str(),
+                    DashColors::success_color(ui.visuals().dark_mode),
+                ),
                 SpvClearMessage::Error(msg) => (
                     msg.as_str(),
                     DashColors::error_color(ui.visuals().dark_mode),

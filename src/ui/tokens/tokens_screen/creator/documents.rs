@@ -76,7 +76,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         ui.small("Keywords affect registration cost. The actual contract estimate is calculated during preparation.");
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Document types (optional)",
             "documents",

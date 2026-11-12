@@ -852,6 +852,11 @@ impl Typography {
         FontId::new(Self::SCALE_XL, Self::strong_family())
     }
 
+    /// Subordinate section title, below the main 21-point heading.
+    pub fn subheading() -> FontId {
+        FontId::new(Self::SCALE_LG, Self::strong_family())
+    }
+
     pub fn body_large() -> FontId {
         FontId::new(Self::SCALE_LG, FontFamily::Proportional)
     }
@@ -1156,8 +1161,22 @@ impl ComponentStyles {
         Self::styled_label(label, Self::danger_button_text(), true)
     }
 
-    fn toolbar_text(label: impl Into<WidgetText>) -> WidgetText {
-        Self::styled_label(label, DashColors::WHITE, false)
+    fn toolbar_text(label: impl Into<WidgetText>, fill: Color32) -> WidgetText {
+        Self::styled_label(label, Self::toolbar_text_color(fill), false)
+    }
+
+    fn toolbar_text_color(fill: Color32) -> Color32 {
+        let luminance = |color: Color32| {
+            let linear = egui::Rgba::from(color);
+            0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b()
+        };
+        let background = luminance(fill);
+        let dark = luminance(DashColors::TEXT_PRIMARY);
+        if (background + 0.05) / (dark + 0.05) > 1.05 / (background + 0.05) {
+            DashColors::TEXT_PRIMARY
+        } else {
+            DashColors::WHITE
+        }
     }
 
     /// Applies `color` (and optionally `strong`) to `label`, preserving any existing
@@ -1251,12 +1270,12 @@ impl ComponentStyles {
     /// Default minimum size for toolbar buttons.
     const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
 
-    /// Returns a styled toolbar button with white text on the given accent fill.
+    /// Returns a toolbar button with contrasting text on the given opaque accent fill.
     ///
     /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
     /// whose fill color depends on the active network.
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
-        let text = Self::toolbar_text(label);
+        let text = Self::toolbar_text(label, fill);
         Button::new(text)
             .fill(fill)
             .frame(true)
@@ -1276,14 +1295,14 @@ impl ComponentStyles {
         job.append(
             label,
             0.0,
-            egui::TextFormat::simple(font.clone(), DashColors::WHITE),
+            egui::TextFormat::simple(font.clone(), Self::toolbar_text_color(fill)),
         );
         job.append(
             " ▾",
             0.0,
             egui::TextFormat {
                 font_id: egui::FontId::new(font.size * 1.5, font.family),
-                color: DashColors::WHITE,
+                color: Self::toolbar_text_color(fill),
                 line_height: Some(font.size),
                 valign: egui::Align::Center,
                 ..Default::default()
@@ -1300,7 +1319,7 @@ impl ComponentStyles {
         label: impl Into<WidgetText>,
         fill: egui::Color32,
     ) -> egui::Response {
-        let text = Self::toolbar_text(label);
+        let text = Self::toolbar_text(label, fill);
         let button = Self::toolbar_button(text.clone(), fill);
         Self::add_centered_button(ui, &text, button, Self::TOOLBAR_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::PointingHand)

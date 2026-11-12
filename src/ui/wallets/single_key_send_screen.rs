@@ -688,7 +688,7 @@ impl SingleKeyWalletSendScreen {
                         );
                         ui.label(
                             RichText::new(format_duffs_as_dash(balance))
-                                .color(DashColors::SUCCESS)
+                                .color(DashColors::success_color(ui.visuals().dark_mode))
                                 .strong()
                                 .size(14.0),
                         );

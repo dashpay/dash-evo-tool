@@ -171,6 +171,9 @@ fn harness_for(mut screen: KeysScreen) -> (Harness<'static>, Rc<RefCell<AppActio
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 800.0))
         .build_ui(move |ui| {
+            if !crate::support::prepare_app_theme(ui) {
+                return;
+            }
             let act = screen.ui(ui);
             if act != AppAction::None {
                 *capture.borrow_mut() = act;
@@ -201,6 +204,9 @@ fn harness_keeping_screen(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 800.0))
         .build_ui(move |ui| {
+            if !crate::support::prepare_app_theme(ui) {
+                return;
+            }
             let act = rendered.borrow_mut().ui(ui);
             if act != AppAction::None {
                 *capture.borrow_mut() = act;
@@ -221,6 +227,9 @@ fn harness_showing_banner(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 800.0))
         .build_ui(move |ui| {
+            if !crate::support::prepare_app_theme(ui) {
+                return;
+            }
             if !set {
                 MessageBanner::set_global(ui.ctx(), banner, kind);
                 set = true;
@@ -1195,6 +1204,9 @@ fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1100.0, 900.0))
             .build_ui(move |ui| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 key_info.ui(ui);
             });
         harness.run_steps(3);

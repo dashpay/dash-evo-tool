@@ -59,6 +59,9 @@ fn the_no_transfer_key_branch_routes_to_the_keys_list() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 900.0))
             .build_ui(move |ui| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 let act = screen.ui(ui);
                 if act != AppAction::None {
                     *capture.borrow_mut() = act;

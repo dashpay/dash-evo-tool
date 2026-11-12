@@ -452,7 +452,11 @@ impl ContactDetailsScreen {
                             ui.horizontal(|ui| {
                                 // Direction indicator
                                 if payment.is_incoming {
-                                    ui.label(RichText::new("⬇").color(DashColors::SUCCESS));
+                                    ui.label(
+                                        RichText::new("⬇").color(DashColors::success_color(
+                                            ui.visuals().dark_mode,
+                                        )),
+                                    );
                                 } else {
                                     ui.label(
                                         RichText::new("⬆")
@@ -466,8 +470,11 @@ impl ContactDetailsScreen {
                                         let amount_str = format_duffs_as_dash(payment.amount);
                                         if payment.is_incoming {
                                             ui.label(
-                                                RichText::new(format!("+{}", amount_str))
-                                                    .color(DashColors::SUCCESS),
+                                                RichText::new(format!("+{}", amount_str)).color(
+                                                    DashColors::success_color(
+                                                        ui.visuals().dark_mode,
+                                                    ),
+                                                ),
                                             );
                                         } else {
                                             ui.label(

@@ -1240,7 +1240,10 @@ impl AddressInput {
                     && validated_address.is_some()
                     && let Some(kind) = detected.to_address_kind()
                 {
-                    ui.colored_label(DashColors::SUCCESS, kind.display_name());
+                    ui.colored_label(
+                        DashColors::success_color(ui.visuals().dark_mode),
+                        kind.display_name(),
+                    );
                 }
             }
 

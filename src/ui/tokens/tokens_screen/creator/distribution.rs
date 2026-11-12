@@ -17,7 +17,7 @@ pub(super) fn show(
         ui.label("Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.");
     });
     card(ui, |ui| {
-        heading(ui, "Recurring distribution", "recurring", &mut state.help);
+        subheading(ui, "Recurring distribution", "recurring", &mut state.help);
         checkbox(
             ui,
             "Enable recurring distribution",
@@ -72,7 +72,7 @@ pub(super) fn show(
                 }
                 text(ui,"Assumed registration reference for preview","period-index",&mut state.preview_reference,&mut state.help);
                 ui.small("Blank uses zero. The first row is illustrative; cumulative allocation starts at period 1 and excludes initial supply.");
-                heading(ui,"Current-parameter preview","static-preview",&mut state.help);
+                subheading(ui,"Current-parameter preview","static-preview",&mut state.help);
                 let reference = if state.preview_reference.trim().is_empty() { Some(0) } else { state.preview_reference.parse::<u64>().ok() };
                 if let Some(reference) = reference {
                     match function.parse(state.draft.decimals,reference,version).and_then(|function| evaluate_preview(&function,reference,version)) {
@@ -112,7 +112,7 @@ pub(super) fn show(
         }
     });
     card(ui, |ui| {
-        heading(ui, "Scheduled distributions", "scheduled", &mut state.help);
+        subheading(ui, "Scheduled distributions", "scheduled", &mut state.help);
         checkbox(
             ui,
             "Enable scheduled distributions",
@@ -184,7 +184,7 @@ pub(super) fn show(
         }
     });
     card(ui, |ui| {
-        heading(ui, "Once per identity", "once", &mut state.help);
+        subheading(ui, "Once per identity", "once", &mut state.help);
         checkbox(
             ui,
             "Enable once-per-identity distribution",

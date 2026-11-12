@@ -343,18 +343,46 @@ fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
 }
 
 fn heading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
-    ui.horizontal_wrapped(|ui| {
-        ui.heading(text);
-        help(ui, topic, key);
-    });
-    ui.add_space(6.0);
+    label_with_help(
+        ui,
+        RichText::new(text).font(Typography::heading_medium()),
+        key,
+        topic,
+    );
+}
+
+fn subheading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
+    label_with_help(
+        ui,
+        RichText::new(text).font(Typography::subheading()),
+        key,
+        topic,
+    );
 }
 
 fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) -> egui::Response {
-    ui.horizontal_wrapped(|ui| {
-        let response = ui.label(RichText::new(text).family(Typography::strong_family()));
-        help(ui, topic, key);
-        response
+    label_with_help(
+        ui,
+        RichText::new(text).family(Typography::strong_family()),
+        key,
+        topic,
+    )
+}
+
+fn label_with_help(
+    ui: &mut Ui,
+    text: RichText,
+    key: &str,
+    topic: &mut Option<String>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 28.0;
+        ui.horizontal_wrapped(|ui| {
+            let response = ui.label(text);
+            help(ui, topic, key);
+            response
+        })
+        .inner
     })
     .inner
 }
@@ -464,10 +492,23 @@ fn recipient_label(recipient: &Recipient) -> String {
     }
 }
 
+fn summary_field(ui: &mut Ui, caption: &str, value: String) {
+    ui.add_space(Spacing::SM);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = Spacing::XXS;
+        ui.label(
+            RichText::new(caption)
+                .font(Typography::caption())
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        ui.label(RichText::new(value).font(Typography::body_small()));
+    });
+}
+
 fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
     state.draft.reconcile_policy();
     card(ui, |ui| {
-        heading(ui, "Your token", "review", &mut state.help);
+        subheading(ui, "Your token", "review", &mut state.help);
         ui.label(
             RichText::new(state.draft.names.first().map_or("Untitled token", |name| {
                 if name.singular.is_empty() {
@@ -476,32 +517,38 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                     &name.singular
                 }
             }))
-            .strong(),
+            .font(Typography::heading_small()),
         );
-        ui.label(policy_label(state.draft.policy));
-        ui.separator();
-        for (label, amount) in [
+        ui.label(
+            RichText::new(policy_label(state.draft.policy))
+                .font(Typography::caption())
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        for (caption, amount) in [
             ("Initial supply", &state.draft.initial),
             ("Maximum supply", &state.draft.maximum),
         ] {
-            if label == "Maximum supply" && state.draft.no_maximum {
-                ui.label("Maximum supply: no configured limit");
+            let value = if caption == "Maximum supply" && state.draft.no_maximum {
+                "no configured limit".into()
             } else {
-                ui.label(format!(
-                    "{label}: {}",
-                    amount
-                        .parse(state.draft.decimals)
-                        .map(|raw| format!("{} tokens", format_amount(raw, state.draft.decimals)))
-                        .unwrap_or_else(|_| "not valid yet".into())
-                ));
-            }
+                amount
+                    .parse(state.draft.decimals)
+                    .map(|raw| format!("{} tokens", format_amount(raw, state.draft.decimals)))
+                    .unwrap_or_else(|_| "not valid yet".into())
+            };
+            summary_field(ui, caption, value);
         }
         ui.small(supply::cap_consequence(&state.draft));
-        ui.small(format!("{} decimal places", state.draft.decimals));
-        ui.label(format!(
-            "Initial recipient: {}",
-            recipient_label(&state.draft.mint_recipient)
-        ));
+        summary_field(
+            ui,
+            "Precision",
+            format!("{} decimal places", state.draft.decimals),
+        );
+        summary_field(
+            ui,
+            "Initial recipient",
+            recipient_label(&state.draft.mint_recipient),
+        );
         ui.separator();
         ui.label(if state.draft.transferable {
             "Transfers: allowed · permanent choice"
@@ -512,7 +559,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ui.small("Transfers start paused.");
         }
         ui.separator();
-        ui.strong("Distribution");
+        ui.label(RichText::new("Distribution").font(Typography::subheading()));
         ui.label(format!(
             "Recurring: {}",
             on_off(state.draft.recurring.enabled)
@@ -538,7 +585,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 .count()
         ));
         ui.separator();
-        ui.strong("Powers and consequences");
+        ui.label(RichText::new("Powers and consequences").font(Typography::subheading()));
         for kind in RuleKind::ALL {
             let rule = state.draft.permissions.get(kind);
             if rule.performer != ActorDraft::NoOne

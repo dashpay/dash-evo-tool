@@ -52,7 +52,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         }
     });
     card(ui, |ui| {
-        heading(ui, "Main control group", "mainGroup", &mut state.help);
+        subheading(ui, "Main control group", "mainGroup", &mut state.help);
         ui.label("Rules that use Main group follow this selection.");
         let caption = ui.label(RichText::new("Main group").family(Typography::strong_family()));
         egui::ComboBox::from_id_salt("Main group")

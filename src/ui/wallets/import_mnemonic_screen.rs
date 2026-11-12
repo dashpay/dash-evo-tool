@@ -467,7 +467,7 @@ impl ImportMnemonicScreen {
                 ui.label(
                     RichText::new(wallet.address.to_string())
                         .monospace()
-                        .color(DashColors::SUCCESS),
+                        .color(DashColors::success_color(ui.visuals().dark_mode)),
                 );
             });
         }

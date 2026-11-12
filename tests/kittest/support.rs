@@ -12,6 +12,25 @@ use std::time::{Duration, Instant};
 
 pub use data_dir::with_isolated_data_dir;
 
+/// Prepare isolated screen harnesses with the same font assets and theme as AppState.
+/// Font changes take effect on the next pass, before a screen uses named faces.
+pub fn prepare_app_theme(ui: &mut egui::Ui) -> bool {
+    let id = egui::Id::new("kittest_app_theme_ready");
+    if ui.ctx().data(|data| data.get_temp::<bool>(id)) == Some(true) {
+        return true;
+    }
+    ui.ctx()
+        .set_fonts(dash_evo_tool::bundled::fonts().expect("bundled application fonts"));
+    dash_evo_tool::ui::theme::apply_theme(
+        ui.ctx(),
+        dash_evo_tool::model::settings::ThemeMode::Dark,
+    );
+    ui.ctx().data_mut(|data| data.insert_temp(id, true));
+    ui.ctx()
+        .request_discard("Install application fonts before rendering the screen");
+    false
+}
+
 /// How long storage preparation may go **without visible progress** before a
 /// mount helper gives up.
 ///

@@ -133,7 +133,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 "owner-policy",
             ),
         ] {
-            label(ui, title, key, &mut state.help);
+            subheading(ui, title, key, &mut state.help);
             ui.label(body);
             ui.add_space(12.0);
         }

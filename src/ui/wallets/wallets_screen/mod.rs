@@ -1010,7 +1010,7 @@ impl WalletsBalancesScreen {
     fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
         let amount = format_duffs_as_dash(tx.amount_abs());
         if tx.is_incoming() {
-            (format!("+{amount}"), DashColors::SUCCESS)
+            (format!("+{amount}"), DashColors::success_color(dark_mode))
         } else if tx.is_outgoing() {
             (format!("-{amount}"), DashColors::error_color(dark_mode))
         } else {

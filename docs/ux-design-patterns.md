@@ -30,7 +30,7 @@ Exact sizes in `src/ui/theme.rs`.
 | XS      | `caption()`         |
 | SM      | `body_small()`      |
 | BASE    | `body()`, `button()`|
-| LG      | `body_large()`      |
+| LG      | `body_large()`, `subheading()` |
 | XL      | `heading_small()`   |
 | XXL     | `heading_medium()`  |
 | XXXL    | `heading_large()`   |
@@ -50,10 +50,10 @@ Exact values in `src/ui/theme.rs`.
 | Token       | Usage                     |
 |-------------|---------------------------|
 | RADIUS_NONE | No rounding               |
-| RADIUS_SM   | Banners, dialog buttons   |
-| RADIUS_MD   | Buttons, cards, inputs    |
-| RADIUS_LG   | Island panels             |
-| RADIUS_XL   | Glass cards, hero sections|
+| RADIUS_SM   | Inputs, compact surfaces |
+| RADIUS_MD   | Buttons and navigation |
+| RADIUS_LG   | Cards and island panels |
+| RADIUS_XL   | Dialog surfaces |
 | RADIUS_FULL | Pill / circular           |
 
 Width tokens: `BORDER_WIDTH` (standard), `BORDER_WIDTH_THICK` (emphasis/focus).
@@ -65,6 +65,8 @@ All color constants and hex values are defined in `src/ui/theme.rs` (`DashColors
 - All colors via `DashColors` -- never hardcode `Color32` values
 - Theme-aware getters: `text_primary(dark_mode)`, `background(dark_mode)`, `surface(dark_mode)`, `border(dark_mode)`, etc.
 - Dark mode: lighter surfaces for elevation, not shadows
+
+Use theme-aware `info_color()`, `error_color()`, `warning_color()` and `success_color()` for foreground text. Solid action fills such as `DASH_BLUE` and `ERROR` are paired with white button text.
 
 **Semantic color constants**: `DASH_BLUE`, `ERROR`, `WARNING`, `SUCCESS`, `INFO`, `DANGER_RED`, `VALIDATION_WARNING`, `DISABLED`
 
@@ -127,7 +129,7 @@ Reference: `AmountInput` in `src/ui/components/amount_input.rs`.
 
 Reference: `src/ui/components/wallet_unlock.rs`.
 
-- Mask input: `TextEdit::singleline(&mut text).password(!show_password)`
+- Mask input: `styled_text_edit_singleline(&mut text).password(!show_password)`
 - Hold-to-reveal: use `egui::Button` with eye icon; toggle via `ui.input(|i| i.pointer.any_pressed())` -- show cleartext only while pressed
 - Password strength: display colored bar using `STRENGTH_WEAK`/`FAIR`/`GOOD`/`STRONG` colors
 - Show validation errors only after user interaction, never on initial focus for untouched fields

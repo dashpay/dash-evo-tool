@@ -42,7 +42,7 @@ impl AddNewIdentityScreen {
                     ui.group(|ui| {
                         ui.vertical(|ui| {
                             if is_selected {
-                                ui.colored_label(DashColors::SUCCESS, "Selected");
+                                ui.colored_label(DashColors::success_color(ui.visuals().dark_mode), "Selected");
                             }
 
                             if self.show_advanced_options {

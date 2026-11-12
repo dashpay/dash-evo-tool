@@ -415,7 +415,7 @@ impl ScreenLike for TransferTokensScreen {
         // Subscreen chooser
         action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        let central_panel_action = island_central_panel(ui, |ui| {
+        let render_transfer = |ui: &mut egui::Ui| {
             let dark_mode = ui.style().visuals.dark_mode;
 
             // Show the success screen if the transfer was successful
@@ -672,8 +672,10 @@ impl ScreenLike for TransferTokensScreen {
             }
 
             AppAction::None
+        };
+        action |= island_central_panel(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, render_transfer).inner
         });
-        action |= central_panel_action;
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()

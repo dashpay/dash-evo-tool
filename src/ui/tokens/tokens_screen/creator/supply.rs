@@ -32,7 +32,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         });
         ui.small("Choose 0 to 16 decimal places. For example, 2 allows 1.25 tokens. Amounts that cannot be represented remain visible for correction.");
         ui.label(cap_consequence(&state.draft));
-        heading(ui, "Mint recipients", "mintRecipient", &mut state.help);
+        subheading(ui, "Mint recipients", "mintRecipient", &mut state.help);
         ui.label("The default new-token recipient also receives the initial supply. Choosing a different recipient on a future mint is a separate permission.");
         label(
             ui,
@@ -104,7 +104,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         ui.small("A frozen identity still cannot spend. This setting only controls receiving.");
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Who can act, and who can change the rules?",
             "permissions",
@@ -158,7 +158,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         }
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Marketplace at creation",
             "rule.marketplace",

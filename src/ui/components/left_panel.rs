@@ -5,7 +5,7 @@ use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
 use crate::ui::components::icons::{load_icon, load_svg_icon};
 use crate::ui::components::styled::GradientButton;
-use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
+use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing, Typography};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
 use egui::{Frame, Image, Panel, RichText, TextureHandle, Ui};
@@ -152,11 +152,9 @@ pub fn add_left_panel(
         .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::same(Spacing::MD_I8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     // Reserve a fixed area at the bottom for the logo and labels,
                     // and make the button list above it vertically scrollable.
@@ -250,12 +248,12 @@ pub fn add_left_panel(
 
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
-                                                        DashColors::DASH_BLUE
+                                                        DashColors::info_color(dark_mode)
                                                     } else {
                                                         DashColors::text_primary(dark_mode)
                                                     };
                                                     let label_text =
-                                                        RichText::new(*label).color(color).size(13.0);
+                                                        RichText::new(*label).color(color).size(Typography::SCALE_SM);
                                                     let label_response = ui
                                                         .add(
                                                             egui::Label::new(label_text)

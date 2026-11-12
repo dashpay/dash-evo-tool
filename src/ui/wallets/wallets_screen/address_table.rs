@@ -478,7 +478,7 @@ impl WalletsBalancesScreen {
             .body(|mut body| {
                 let network = self.app_context.network;
                 for data in &address_data {
-                    body.row(25.0, |mut row| {
+                    body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                         let is_platform_payment =
                             data.account_category == AccountCategory::PlatformPayment;
 

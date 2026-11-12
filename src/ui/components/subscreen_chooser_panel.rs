@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
+use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::{Frame, Margin, Panel, RichText, ScrollArea, Ui};
 
 /// A single navigation entry in a left-hand subscreen chooser panel.
@@ -23,12 +23,16 @@ impl SubscreenNavItem {
 /// Builds the standard left-panel navigation button used across every subscreen chooser.
 pub fn nav_button(label: &str, is_active: bool, dark_mode: bool) -> egui::Button<'static> {
     let (text_color, fill, stroke) = if is_active {
-        (DashColors::WHITE, DashColors::DASH_BLUE, egui::Stroke::NONE)
+        (
+            DashColors::info_color(dark_mode),
+            DashColors::selected(dark_mode),
+            egui::Stroke::NONE,
+        )
     } else {
         (
             DashColors::text_primary(dark_mode),
-            DashColors::glass_white(dark_mode),
-            egui::Stroke::new(1.0, DashColors::border(dark_mode)),
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::NONE,
         )
     };
     egui::Button::new(
@@ -57,7 +61,7 @@ pub fn add_subscreen_chooser_panel(
 
     Panel::left(egui::Id::new(panel_id))
         .resizable(resizable)
-        .default_size(270.0)
+        .default_size(200.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
@@ -66,13 +70,11 @@ pub fn add_subscreen_chooser_panel(
         .show(ui, |ui| {
             let available_height = ui.available_height();
             Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::XL as i8))
+                .fill(DashColors::background(dark_mode))
+                .inner_margin(Margin::same(Spacing::MD as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
                 .show(ui, |ui| {
-                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
+                    ui.set_min_height(available_height - 2.0 - (Spacing::MD * 2.0));
                     let render = |ui: &mut Ui| {
                         ui.add_space(Spacing::SM);
                         for item in items {

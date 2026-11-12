@@ -10,6 +10,7 @@ use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscree
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::{DashPaySubscreen, persist_contact_private_info};
 use crate::ui::state::AvatarCache;
@@ -412,7 +413,7 @@ impl ContactProfileViewerScreen {
                             RichText::new("Nickname:").color(DashColors::text_secondary(dark_mode)),
                         );
                         if self.editing_private_info {
-                            ui.text_edit_singleline(&mut self.nickname);
+                            ui.add(styled_text_edit_singleline(&mut self.nickname));
                         } else {
                             let display_text = if self.nickname.is_empty() {
                                 RichText::new("Not set")
@@ -432,7 +433,7 @@ impl ContactProfileViewerScreen {
                             RichText::new("Notes:").color(DashColors::text_secondary(dark_mode)),
                         );
                         if self.editing_private_info {
-                            ui.text_edit_multiline(&mut self.notes);
+                            ui.add(styled_text_edit_multiline(&mut self.notes));
                         } else {
                             let display_text = if self.notes.is_empty() {
                                 RichText::new("No notes")

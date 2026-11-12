@@ -5,10 +5,11 @@ use crate::context::AppContext;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
-use eframe::egui::{self, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, Ui};
 use std::sync::Arc;
 
 pub struct AddressBalanceScreen {
@@ -68,7 +69,7 @@ impl AddressBalanceScreen {
         ui.label("Enter a Platform address (dash1... or tdash1...):");
         ui.add_space(5.0);
 
-        let text_edit = TextEdit::singleline(&mut self.address_input)
+        let text_edit = styled_text_edit_singleline(&mut self.address_input)
             .hint_text("dash1... or tdash1...")
             .desired_width(500.0);
 

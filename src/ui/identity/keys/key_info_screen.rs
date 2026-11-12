@@ -21,6 +21,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -1223,7 +1224,7 @@ impl KeyInfoScreen {
         ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
-            egui::TextEdit::multiline(&mut self.message_input)
+            styled_text_edit_multiline(&mut self.message_input)
                 .desired_width(f32::INFINITY)
                 .desired_rows(3),
         );
@@ -1244,7 +1245,7 @@ impl KeyInfoScreen {
             ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
-                egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
+                styled_text_edit_multiline(&mut signed_message.as_str().to_owned())
                     .desired_width(f32::INFINITY)
                     .desired_rows(3),
             );
@@ -1641,7 +1642,7 @@ impl KeyInfoScreen {
         ui.label(
             "Password hint (optional — visible in plain text. Do not use the password itself as a hint.):",
         );
-        ui.add(egui::TextEdit::singleline(&mut self.protection_hint).hint_text("Password hint"));
+        ui.add(styled_text_edit_singleline(&mut self.protection_hint).hint_text("Password hint"));
 
         if let Some(err) = &self.protection_form_error {
             ui.add_space(6.0);

@@ -8,22 +8,20 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         heading(ui, "What are you creating?", "basics", &mut state.help);
         ui.label("Give people a recognizable name, then choose how the supply should work.");
         if let Some(name) = state.draft.names.first_mut() {
-            ui.columns(2, |columns| {
-                text(
-                    &mut columns[0],
-                    "Singular token name",
-                    "name",
-                    &mut name.singular,
-                    &mut state.help,
-                );
-                text(
-                    &mut columns[1],
-                    "Plural token name",
-                    "plural",
-                    &mut name.plural,
-                    &mut state.help,
-                );
-            });
+            text(
+                ui,
+                "Singular token name",
+                "name",
+                &mut name.singular,
+                &mut state.help,
+            );
+            text(
+                ui,
+                "Plural token name",
+                "plural",
+                &mut name.plural,
+                &mut state.help,
+            );
         }
         label(ui, "Choose a supply policy", "policy", &mut state.help);
         ui.horizontal_wrapped(|ui| {

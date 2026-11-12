@@ -8,6 +8,7 @@ use crate::ui::ScreenLike;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
@@ -18,7 +19,7 @@ use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyType, Purpose, accessors::IdentityGettersV0,
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use egui::{Button, ComboBox, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Button, ComboBox, Frame, Grid, Margin, RichText, ScrollArea, Ui};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -777,7 +778,10 @@ impl GroveSTARKScreen {
                     ui.label("Document ID:");
                     let mut document_id =
                         self.selected_document.as_deref().unwrap_or("").to_string();
-                    if ui.text_edit_singleline(&mut document_id).changed() {
+                    if ui
+                        .add(styled_text_edit_singleline(&mut document_id))
+                        .changed()
+                    {
                         self.selected_document = if document_id.is_empty() {
                             None
                         } else {
@@ -880,7 +884,7 @@ impl GroveSTARKScreen {
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add(
-                    TextEdit::multiline(&mut self.proof_text)
+                    styled_text_edit_multiline(&mut self.proof_text)
                         .desired_width(f32::INFINITY)
                         .desired_rows(6),
                 );

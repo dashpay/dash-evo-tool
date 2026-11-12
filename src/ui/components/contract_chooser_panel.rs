@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE_FIELDS;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -150,7 +151,7 @@ pub fn add_contract_chooser_panel(
                         // Search box
                         ui.horizontal(|ui| {
                             ui.label("Filter contracts:");
-                            ui.text_edit_singleline(current_search_term);
+                            ui.add(styled_text_edit_singleline(current_search_term));
                         });
 
                         // List out each matching contract

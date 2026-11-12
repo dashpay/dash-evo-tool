@@ -14,6 +14,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -26,7 +27,7 @@ use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 use super::format_relative_time;
@@ -341,7 +342,7 @@ impl SendPaymentScreen {
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add(
-                    TextEdit::multiline(&mut self.memo)
+                    styled_text_edit_multiline(&mut self.memo)
                         .hint_text("Add a note to this payment")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY),

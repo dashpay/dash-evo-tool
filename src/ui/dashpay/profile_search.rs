@@ -7,13 +7,14 @@ use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscree
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 
 use dash_sdk::platform::{Document, Identifier};
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::Arc;
 
 const PROFILE_SEARCH_INFO_TEXT: &str = "About Profile Search:\n\n\
@@ -128,7 +129,7 @@ impl ProfileSearchScreen {
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     let response = ui.add(
-                        TextEdit::singleline(&mut self.search_query)
+                        styled_text_edit_singleline(&mut self.search_query)
                             .hint_text("Enter DPNS username...")
                             .desired_width(400.0),
                     );

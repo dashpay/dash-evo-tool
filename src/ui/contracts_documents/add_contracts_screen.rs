@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::ComponentStyles;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
@@ -108,7 +109,7 @@ impl AddContractsScreen {
         for (i, contract_id) in self.contract_ids_input.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(format!("Contract {}:", i + 1));
-                ui.text_edit_singleline(contract_id);
+                ui.add(styled_text_edit_singleline(contract_id));
             });
             ui.add_space(5.0);
         }
@@ -168,7 +169,7 @@ impl AddContractsScreen {
                         // ─ column 2: editable alias field ───────────────────────────
                         ui.add_sized(
                             vec2(150.0, 20.0),
-                            egui::TextEdit::singleline(&mut alias_inputs[idx]),
+                            styled_text_edit_singleline(&mut alias_inputs[idx]),
                         );
 
                         ui.add_space(12.0);

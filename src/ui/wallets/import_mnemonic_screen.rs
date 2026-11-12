@@ -5,6 +5,7 @@ use crate::model::key_input::decode_hex_secret;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identity::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
@@ -408,7 +409,7 @@ impl ImportMnemonicScreen {
                             let dark_mode = ui.style().visuals.dark_mode;
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
-                                egui::TextEdit::singleline(&mut word)
+                                styled_text_edit_singleline(&mut word)
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
                             );

@@ -5,14 +5,14 @@ use crate::ui::components::action_menu::show_action_menu;
 use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
 use crate::ui::state::hub_selection::HubSelection;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Typography};
 use crate::ui::{RootScreenType, ScreenType};
 use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
-    let font_id = egui::FontId::proportional(22.0);
+    let font_id = Typography::heading_medium();
 
     // Wrap in a container that can be positioned vertically
     ui.allocate_ui(ui.available_size(), |ui| {
@@ -159,8 +159,7 @@ fn render_top_island(
         .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin {
                     left: 20,
                     right: 20,
@@ -168,7 +167,6 @@ fn render_top_island(
                     bottom: 10,
                 })
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     // Use columns for better control over layout
                     ui.columns(2, |columns| {

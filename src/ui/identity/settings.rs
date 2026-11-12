@@ -31,6 +31,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::identity::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::state::PendingRequest;
@@ -38,7 +39,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typogr
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{Id, Margin, RichText, TextEdit, Ui};
+use eframe::egui::{Id, Margin, RichText, Ui};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -342,7 +343,7 @@ impl SettingsTab {
         // Display name input.
         ui.label(RichText::new("Display name").color(DashColors::text_primary(dark_mode)));
         let display_name = ui.add(
-            TextEdit::singleline(&mut self.edit_display_name)
+            styled_text_edit_singleline(&mut self.edit_display_name)
                 .hint_text("How should people see your name?")
                 .desired_width(f32::INFINITY),
         );
@@ -359,7 +360,7 @@ impl SettingsTab {
         // Bio textarea.
         ui.label(RichText::new("About").color(DashColors::text_primary(dark_mode)));
         ui.add(
-            TextEdit::multiline(&mut self.edit_bio)
+            styled_text_edit_multiline(&mut self.edit_bio)
                 .hint_text(format!("A short description, up to {MAX_BIO} characters."))
                 .desired_width(f32::INFINITY)
                 .desired_rows(4),
@@ -370,7 +371,7 @@ impl SettingsTab {
 
         ui.label(RichText::new("Profile photo URL").color(DashColors::text_primary(dark_mode)));
         ui.add(
-            TextEdit::singleline(&mut self.edit_avatar_url)
+            styled_text_edit_singleline(&mut self.edit_avatar_url)
                 .hint_text("https://example.com/avatar.jpg")
                 .desired_width(f32::INFINITY),
         );

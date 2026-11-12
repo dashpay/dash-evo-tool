@@ -7,6 +7,7 @@ use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
@@ -617,7 +618,7 @@ impl ScreenLike for ClaimTokensScreen {
                     );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut txt).changed() {
+                    if ui.add(styled_text_edit_singleline(&mut txt)).changed() {
                         self.public_note = Some(txt);
                     }
                 });

@@ -12,6 +12,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_selector::WalletSelector;
 use crate::ui::components::wallet_unlock_popup::{
@@ -331,7 +332,7 @@ impl AddExistingIdentityScreen {
                         }
                     }
                 });
-                ui.text_edit_singleline(&mut self.identity_id_input);
+                ui.add(styled_text_edit_singleline(&mut self.identity_id_input));
                 ui.end_row();
 
                 // Advanced: Identity Type selector
@@ -568,7 +569,7 @@ impl AddExistingIdentityScreen {
 
             ui.horizontal(|ui| {
                 ui.label(identity_index_label);
-                ui.text_edit_singleline(&mut self.identity_index_input);
+                ui.add(styled_text_edit_singleline(&mut self.identity_index_input));
             });
 
             match self.wallet_search_mode {
@@ -707,7 +708,7 @@ impl AddExistingIdentityScreen {
             .show(ui, |ui| {
                 ui.label("Username:");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.dpns_name_input);
+                    ui.add(styled_text_edit_singleline(&mut self.dpns_name_input));
                     ui.label(".dash");
                 });
                 ui.end_row();

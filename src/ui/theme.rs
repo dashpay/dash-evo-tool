@@ -312,8 +312,8 @@ pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
 pub struct DashColors;
 
 impl DashColors {
-    /// Primary Dash Blue (#008de4)
-    pub const DASH_BLUE: Color32 = Color32::from_rgb(0, 141, 228);
+    /// Primary action blue with readable white text (#086bb8).
+    pub const DASH_BLUE: Color32 = Color32::from_rgb(8, 107, 184);
 
     /// Deep Blue (#012060)
     pub const DEEP_BLUE: Color32 = Color32::from_rgb(1, 32, 96);
@@ -336,12 +336,12 @@ impl DashColors {
     // Semantic colors
     pub const SUCCESS: Color32 = Color32::from_rgb(39, 174, 96);
     pub const WARNING: Color32 = Color32::from_rgb(241, 196, 15);
-    pub const ERROR: Color32 = Color32::from_rgb(235, 87, 87);
+    pub const ERROR: Color32 = Color32::from_rgb(174, 40, 36);
     pub const INFO: Color32 = Color32::from_rgb(52, 152, 219);
     /// Darker red for danger button hover state
     pub const DANGER_HOVER: Color32 = Color32::from_rgb(200, 0, 0);
     /// Red for danger/destructive action buttons (delete, remove)
-    pub const DANGER_RED: Color32 = Color32::from_rgb(200, 60, 60);
+    pub const DANGER_RED: Color32 = Color32::from_rgb(174, 40, 36);
     /// Gray fill for disabled/inactive buttons — dark mode variant (slightly lighter than background)
     pub const BUTTON_DISABLED_DARK: Color32 = Color32::from_rgb(100, 100, 100);
     /// Gray fill for disabled/inactive buttons — light mode variant (fades toward white background)
@@ -357,7 +357,7 @@ impl DashColors {
     /// Purple for Platform address type indicators
     pub const PLATFORM_PURPLE: Color32 = Color32::from_rgb(130, 80, 220);
     /// Blue for primary action buttons (Generate, Save, Import)
-    pub const ACTION_BUTTON_BLUE: Color32 = Color32::from_rgb(0, 128, 255);
+    pub const ACTION_BUTTON_BLUE: Color32 = Color32::from_rgb(8, 107, 184);
     /// Gold/amber for text highlighting (e.g., matched hashes in proof logs)
     pub const HIGHLIGHT_GOLD: Color32 = Color32::from_rgb(0x9b, 0x87, 0x0c);
     /// Light pink for very weak password strength
@@ -402,25 +402,25 @@ impl DashColors {
     pub const ENTROPY_OFF_DARK: Color32 = Color32::from_rgb(80, 80, 80);
 
     // UI Colors - Light mode
-    pub const BACKGROUND: Color32 = Color32::from_rgb(240, 242, 247);
-    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(230, 235, 245);
+    pub const BACKGROUND: Color32 = Color32::from_rgb(246, 245, 241);
+    pub const BACKGROUND_DARK: Color32 = Color32::from_rgb(236, 234, 228);
     pub const SURFACE: Color32 = Color32::WHITE;
-    pub const INPUT_BACKGROUND: Color32 = Color32::from_rgb(248, 250, 252);
-    pub const BORDER: Color32 = Color32::from_rgb(226, 232, 240);
-    pub const BORDER_LIGHT: Color32 = Color32::from_rgb(240, 245, 251);
-    pub const TEXT_PRIMARY: Color32 = Self::BLACK;
-    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(100, 120, 140);
+    pub const INPUT_BACKGROUND: Color32 = Color32::from_rgb(255, 255, 255);
+    pub const BORDER: Color32 = Color32::from_rgb(214, 211, 203);
+    pub const BORDER_LIGHT: Color32 = Color32::from_rgb(214, 211, 203);
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(29, 31, 34);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(91, 96, 104);
     pub const TEXT_ON_PRIMARY: Color32 = Self::WHITE;
 
     // Dark mode UI colors
-    pub const DARK_BACKGROUND: Color32 = Color32::from_rgb(18, 18, 18);
-    pub const DARK_BACKGROUND_ELEVATED: Color32 = Color32::from_rgb(28, 28, 28);
-    pub const DARK_SURFACE: Color32 = Color32::from_rgb(32, 32, 32);
-    pub const DARK_INPUT_BACKGROUND: Color32 = Color32::from_rgb(40, 40, 40);
-    pub const DARK_BORDER: Color32 = Color32::from_rgb(60, 60, 60);
-    pub const DARK_BORDER_LIGHT: Color32 = Color32::from_rgb(50, 50, 50);
-    pub const DARK_TEXT_PRIMARY: Color32 = Color32::from_rgb(240, 240, 240);
-    pub const DARK_TEXT_SECONDARY: Color32 = Color32::from_rgb(160, 160, 160);
+    pub const DARK_BACKGROUND: Color32 = Color32::from_rgb(27, 30, 34);
+    pub const DARK_BACKGROUND_ELEVATED: Color32 = Color32::from_rgb(21, 23, 26);
+    pub const DARK_SURFACE: Color32 = Color32::from_rgb(35, 39, 44);
+    pub const DARK_INPUT_BACKGROUND: Color32 = Color32::from_rgb(35, 39, 44);
+    pub const DARK_BORDER: Color32 = Color32::from_rgb(66, 71, 78);
+    pub const DARK_BORDER_LIGHT: Color32 = Color32::from_rgb(66, 71, 78);
+    pub const DARK_TEXT_PRIMARY: Color32 = Color32::from_rgb(237, 240, 244);
+    pub const DARK_TEXT_SECONDARY: Color32 = Color32::from_rgb(179, 186, 195);
     pub const DARK_TEXT_ON_PRIMARY: Color32 = Self::WHITE;
 
     // Gradient colors for modern effects
@@ -432,15 +432,15 @@ impl DashColors {
     pub const GRADIENT_TEAL: Color32 = Color32::from_rgb(26, 188, 156); // Teal accent
 
     // Interactive states - Light mode
-    pub const HOVER: Color32 = Color32::from_rgb(200, 220, 250);
-    pub const PRESSED: Color32 = Color32::from_rgb(180, 200, 240);
-    pub const SELECTED: Color32 = Color32::from_rgb(190, 210, 245);
+    pub const HOVER: Color32 = Color32::from_rgb(241, 239, 234);
+    pub const PRESSED: Color32 = Color32::from_rgb(231, 241, 250);
+    pub const SELECTED: Color32 = Color32::from_rgb(231, 241, 250);
     pub const DISABLED: Color32 = Color32::from_rgb(189, 195, 199);
 
     // Interactive states - Dark mode
-    pub const DARK_HOVER: Color32 = Color32::from_rgb(45, 45, 55);
-    pub const DARK_PRESSED: Color32 = Color32::from_rgb(55, 55, 65);
-    pub const DARK_SELECTED: Color32 = Color32::from_rgb(50, 70, 100);
+    pub const DARK_HOVER: Color32 = Color32::from_rgb(48, 54, 61);
+    pub const DARK_PRESSED: Color32 = Color32::from_rgb(32, 59, 84);
+    pub const DARK_SELECTED: Color32 = Color32::from_rgb(32, 59, 84);
     pub const DARK_DISABLED: Color32 = Color32::from_rgb(80, 80, 80);
 
     // Glass morphism colors (non-const functions)
@@ -530,6 +530,15 @@ impl DashColors {
         }
     }
 
+    /// Boundary of an interactive control, distinct from a card divider.
+    pub fn border_strong(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Self::SECONDARY_BUTTON_STROKE_DARK
+        } else {
+            Self::SECONDARY_BUTTON_STROKE_LIGHT
+        }
+    }
+
     pub fn border_light(dark_mode: bool) -> Color32 {
         if dark_mode {
             Self::DARK_BORDER_LIGHT
@@ -599,25 +608,25 @@ impl DashColors {
     // Semantic colors that adapt to theme
     pub fn error_color(dark_mode: bool) -> Color32 {
         if dark_mode {
-            Color32::from_rgb(255, 100, 100) // Lighter red for dark mode
+            Color32::from_rgb(255, 170, 164)
         } else {
-            Color32::DARK_RED
+            Color32::from_rgb(174, 40, 36)
         }
     }
 
     pub fn success_color(dark_mode: bool) -> Color32 {
         if dark_mode {
-            Color32::from_rgb(80, 160, 80) // Darker muted green for dark mode
+            Color32::from_rgb(141, 217, 171)
         } else {
-            Color32::DARK_GREEN
+            Color32::from_rgb(35, 115, 76)
         }
     }
 
     pub fn warning_color(dark_mode: bool) -> Color32 {
         if dark_mode {
-            Color32::from_rgb(255, 200, 100) // Lighter orange for dark mode
+            Color32::from_rgb(240, 210, 122)
         } else {
-            Color32::from_rgb(255, 140, 0) // Dark orange
+            Color32::from_rgb(115, 85, 0)
         }
     }
 
@@ -632,9 +641,9 @@ impl DashColors {
 
     pub fn info_color(dark_mode: bool) -> Color32 {
         if dark_mode {
-            Color32::from_rgb(100, 180, 255) // Lighter blue for dark mode
+            Color32::from_rgb(118, 184, 238)
         } else {
-            Self::DEEP_BLUE
+            Color32::from_rgb(9, 107, 184)
         }
     }
 
@@ -653,49 +662,20 @@ impl DashColors {
         message_type: crate::ui::MessageType,
         dark_mode: bool,
     ) -> Color32 {
-        let alpha = if dark_mode { 30 } else { 20 };
-        match message_type {
-            crate::ui::MessageType::Error => {
-                let c = if dark_mode {
-                    (255, 100, 100)
-                } else {
-                    (235, 87, 87)
-                };
-                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
-            }
-            crate::ui::MessageType::Warning => {
-                let c = if dark_mode {
-                    (255, 200, 100)
-                } else {
-                    (241, 196, 15)
-                };
-                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
-            }
-            crate::ui::MessageType::Success => {
-                let c = if dark_mode {
-                    (80, 200, 120)
-                } else {
-                    (39, 174, 96)
-                };
-                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
-            }
-            crate::ui::MessageType::Info => {
-                let c = if dark_mode {
-                    (100, 180, 255)
-                } else {
-                    (52, 152, 219)
-                };
-                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
-            }
+        use crate::ui::MessageType;
+        match (message_type, dark_mode) {
+            (MessageType::Error, false) => Color32::from_rgb(251, 234, 232),
+            (MessageType::Error, true) => Color32::from_rgb(69, 37, 34),
+            (MessageType::Warning, false) => Color32::from_rgb(255, 244, 214),
+            (MessageType::Warning, true) => Color32::from_rgb(58, 47, 18),
+            (MessageType::Success, false) => Color32::from_rgb(232, 243, 237),
+            (MessageType::Success, true) => Color32::from_rgb(32, 60, 44),
+            (MessageType::Info, _) => Self::selected(dark_mode),
         }
     }
 
     pub fn muted_color(dark_mode: bool) -> Color32 {
-        if dark_mode {
-            Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
-        } else {
-            Color32::GRAY
-        }
+        Self::text_secondary(dark_mode)
     }
 
     // Modal/popup overlay colors
@@ -716,20 +696,18 @@ impl DashColors {
     }
 
     // Secondary button colors (theme-aware)
-    /// Secondary button colors — must contrast against dialog window_fill
-    /// Light: darker than BACKGROUND (240,242,247) so buttons are visible on dialogs
-    /// Dark: lighter than DARK_BACKGROUND (18,18,18) for the same reason
-    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(218, 222, 230);
-    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(50, 52, 58);
-    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Self::BLACK; // (17, 25, 33)
-    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Self::DARK_TEXT_PRIMARY; // (240, 240, 240)
-    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(195, 200, 212);
-    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(72, 75, 82);
+    /// Neutral buttons use a surface fill and a stronger control boundary.
+    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(255, 255, 255);
+    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(35, 39, 44);
+    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Color32::from_rgb(29, 31, 34);
+    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Color32::from_rgb(237, 240, 244);
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(170, 166, 157);
+    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(115, 123, 134);
 
     /// Popup fill color adapting to dark/light mode
     pub fn popup_fill(dark_mode: bool) -> Color32 {
         if dark_mode {
-            Self::DARK_INPUT_BACKGROUND // rgb(40, 40, 40)
+            Self::DARK_INPUT_BACKGROUND
         } else {
             Self::WHITE
         }
@@ -815,7 +793,7 @@ impl DashColors {
     /// Icon tint color based on selection state and dark mode
     pub fn icon_tint(selected: bool, dark_mode: bool) -> Color32 {
         if selected {
-            Self::ICON_SELECTED
+            Self::info_color(dark_mode)
         } else if dark_mode {
             Self::ICON_UNSELECTED_DARK
         } else {
@@ -840,13 +818,23 @@ pub struct Typography;
 
 impl Typography {
     pub const SCALE_XS: f32 = 12.0;
-    pub const SCALE_SM: f32 = 14.0;
-    pub const SCALE_BASE: f32 = 16.0;
-    pub const SCALE_LG: f32 = 18.0;
-    pub const SCALE_XL: f32 = 20.0;
-    pub const SCALE_XXL: f32 = 24.0;
-    pub const SCALE_XXXL: f32 = 30.0;
-    pub const SCALE_DISPLAY: f32 = 36.0;
+    pub const SCALE_SM: f32 = 13.0;
+    pub const SCALE_BASE: f32 = 14.0;
+    pub const SCALE_LG: f32 = 16.0;
+    pub const SCALE_XL: f32 = 19.0;
+    pub const SCALE_XXL: f32 = 21.0;
+    pub const SCALE_XXXL: f32 = 27.0;
+    pub const SCALE_DISPLAY: f32 = 32.0;
+
+    /// Page title, distinct from the 21-point section headings.
+    pub fn page_title() -> FontId {
+        FontId::new(Self::SCALE_XXXL, Self::strong_family())
+    }
+
+    /// The bundled semibold family used for headings and controls.
+    pub fn strong_family() -> FontFamily {
+        FontFamily::Name(crate::bundled::STRONG_FONT_FAMILY.into())
+    }
 
     pub fn heading_xlarge() -> FontId {
         FontId::new(Self::SCALE_DISPLAY, FontFamily::Proportional)
@@ -889,7 +877,7 @@ impl Typography {
     /// not repurpose it for timestamps, tags, or other incidental small text —
     /// `caption()` / `body_small()` cover those.
     pub fn hint() -> FontId {
-        FontId::new(Self::SCALE_SM, FontFamily::Proportional)
+        FontId::new(Self::SCALE_XS, FontFamily::Proportional)
     }
 
     pub fn monospace() -> FontId {
@@ -926,13 +914,18 @@ impl Spacing {
     pub const MD_I8: i8 = 16;
     pub const SM_I8: i8 = 8;
 
-    pub const BUTTON_PADDING: Vec2 = Vec2::new(24.0, 12.0);
-    pub const BUTTON_PADDING_SMALL: Vec2 = Vec2::new(16.0, 8.0);
+    pub const BUTTON_PADDING: Vec2 = Vec2::new(13.0, 9.0);
+    pub const BUTTON_PADDING_SMALL: Vec2 = Vec2::new(10.0, 5.0);
     pub const BUTTON_PADDING_LARGE: Vec2 = Vec2::new(32.0, 16.0);
 
-    pub const CARD_PADDING: f32 = 20.0;
-    pub const SECTION_SPACING: f32 = 32.0;
-    pub const FORM_SPACING: Vec2 = Vec2::new(16.0, 8.0);
+    pub const CARD_PADDING: f32 = 23.0;
+    pub const CARD_PADDING_COMPACT: f32 = 19.0;
+    pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(11, 10);
+    pub const CONTROL_HEIGHT: f32 = 40.0;
+    pub const INPUT_HEIGHT: f32 = 43.0;
+    pub const TABLE_ROW_HEIGHT: f32 = 44.0;
+    pub const SECTION_SPACING: f32 = 18.0;
+    pub const FORM_SPACING: Vec2 = Vec2::new(17.0, 12.0);
 }
 
 /// Border radius and shape constants
@@ -941,9 +934,9 @@ pub struct Shape;
 impl Shape {
     pub const RADIUS_NONE: u8 = 0;
     pub const RADIUS_SM: u8 = 6;
-    pub const RADIUS_MD: u8 = 12;
-    pub const RADIUS_LG: u8 = 16;
-    pub const RADIUS_XL: u8 = 20;
+    pub const RADIUS_MD: u8 = 7;
+    pub const RADIUS_LG: u8 = 10;
+    pub const RADIUS_XL: u8 = 13;
     pub const RADIUS_FULL: u8 = 255;
 
     pub const BORDER_WIDTH: f32 = 1.0;
@@ -1017,7 +1010,7 @@ pub struct ComponentStyles;
 
 impl ComponentStyles {
     /// Standard minimum size for dialog buttons (width × height)
-    pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, 36.0);
+    pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, Spacing::CONTROL_HEIGHT);
 
     pub fn primary_button_fill() -> Color32 {
         DashColors::DASH_BLUE
@@ -1080,7 +1073,7 @@ impl ComponentStyles {
     }
 
     pub fn input_stroke() -> Stroke {
-        Stroke::new(1.0, DashColors::BORDER)
+        Stroke::new(1.0, DashColors::border_strong(false))
     }
 
     pub fn input_stroke_focused() -> Stroke {
@@ -1101,7 +1094,7 @@ impl ComponentStyles {
         Button::new(text)
             .fill(Self::primary_button_fill())
             .stroke(Self::primary_button_stroke())
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
@@ -1113,7 +1106,7 @@ impl ComponentStyles {
         Button::new(text)
             .fill(Self::secondary_button_fill(dark_mode))
             .stroke(Self::secondary_button_stroke(dark_mode))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
@@ -1125,7 +1118,7 @@ impl ComponentStyles {
         Button::new(text)
             .fill(Self::danger_button_fill())
             .stroke(egui::Stroke::NONE)
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
@@ -1222,7 +1215,7 @@ impl ComponentStyles {
         let button = Button::new(text.clone())
             .fill(Self::button_disabled_fill(dark_mode))
             .stroke(egui::Stroke::NONE)
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .sense(egui::Sense::hover());
         Self::add_centered_button(ui, &text, button, Self::DIALOG_BUTTON_MIN_SIZE)
             .on_hover_cursor(CursorIcon::NotAllowed)
@@ -1260,7 +1253,7 @@ impl ComponentStyles {
     }
 
     /// Height for toolbar buttons in the top panel.
-    const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
+    const TOOLBAR_BUTTON_HEIGHT: f32 = Spacing::CONTROL_HEIGHT;
 
     /// Default minimum size for toolbar buttons.
     const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
@@ -1412,123 +1405,80 @@ impl ResponseExt for egui::Response {
 
 /// Apply the modern Dash theme to the egui context
 pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
-    // Resolve the actual theme to use
-    let resolved_theme = resolve_theme_mode(theme_mode);
-    let dark_mode = resolved_theme == ThemeMode::Dark;
-
-    // Start with appropriate base mode
-    let mut visuals = if dark_mode {
+    let dark_mode = resolve_theme_mode(theme_mode) == ThemeMode::Dark;
+    crate::bundled::install_ui_fonts(ctx);
+    let mut style = (*ctx.global_style()).clone();
+    style.visuals = if dark_mode {
         egui::Visuals::dark()
     } else {
         egui::Visuals::light()
     };
+    style.text_styles.extend([
+        (egui::TextStyle::Body, Typography::body()),
+        (egui::TextStyle::Small, Typography::caption()),
+        (
+            egui::TextStyle::Button,
+            FontId::new(Typography::SCALE_BASE, Typography::strong_family()),
+        ),
+        (
+            egui::TextStyle::Heading,
+            FontId::new(Typography::SCALE_XXL, Typography::strong_family()),
+        ),
+        (egui::TextStyle::Monospace, Typography::monospace()),
+    ]);
 
-    // Override ALL background-related properties with our custom colors
-    visuals.window_fill = DashColors::background(dark_mode);
+    let visuals = &mut style.visuals;
     visuals.panel_fill = DashColors::background(dark_mode);
+    visuals.window_fill = DashColors::surface(dark_mode);
     visuals.extreme_bg_color = DashColors::input_background(dark_mode);
     visuals.faint_bg_color = DashColors::background(dark_mode);
-    visuals.code_bg_color = if dark_mode {
-        Color32::from_rgb(30, 30, 30)
-    } else {
-        Color32::from_rgb(245, 245, 245)
-    };
+    visuals.code_bg_color = DashColors::background(dark_mode);
+    visuals.window_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
+    visuals.window_corner_radius = egui::CornerRadius::same(Shape::RADIUS_XL);
+    visuals.window_shadow = Shadow::elevated();
+    visuals.popup_shadow = Shadow::medium();
+    visuals.override_text_color = Some(DashColors::text_primary(dark_mode));
+    visuals.weak_text_color = Some(DashColors::text_secondary(dark_mode));
+    visuals.hyperlink_color = DashColors::info_color(dark_mode);
+    visuals.warn_fg_color = DashColors::warning_color(dark_mode);
+    visuals.error_fg_color = DashColors::error_color(dark_mode);
+    visuals.text_cursor.stroke = Stroke::new(1.0, DashColors::text_primary(dark_mode));
+    visuals.selection.bg_fill = DashColors::selected(dark_mode);
+    visuals.selection.stroke = Stroke::new(2.0, DashColors::info_color(dark_mode));
 
-    // Set dark mode flag correctly
-    visuals.dark_mode = dark_mode;
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.bg_fill = DashColors::surface(dark_mode);
+        widget.weak_bg_fill = DashColors::surface(dark_mode);
+        widget.bg_stroke = Stroke::new(1.0, DashColors::border_strong(dark_mode));
+        widget.fg_stroke.color = DashColors::text_primary(dark_mode);
+        widget.corner_radius = egui::CornerRadius::same(Shape::RADIUS_SM);
+        widget.expansion = 0.0;
+    }
+    visuals.widgets.noninteractive.bg_stroke.color = DashColors::border(dark_mode);
+    visuals.widgets.hovered.bg_fill = DashColors::hover(dark_mode);
+    visuals.widgets.hovered.weak_bg_fill = DashColors::hover(dark_mode);
+    visuals.widgets.hovered.bg_stroke.color = DashColors::info_color(dark_mode);
+    visuals.widgets.active.bg_fill = DashColors::selected(dark_mode);
+    visuals.widgets.active.weak_bg_fill = DashColors::selected(dark_mode);
+    visuals.widgets.active.bg_stroke = visuals.selection.stroke;
+    visuals.widgets.active.fg_stroke.color = DashColors::text_strong(dark_mode);
+    visuals.widgets.open.bg_stroke = visuals.selection.stroke;
 
-    // Apply the custom visuals first
-    ctx.set_visuals(visuals);
-
-    let mut style = (*ctx.global_style()).clone();
-
-    // Configure modern visuals with gradients and glass effects
-    // Override all background colors again to ensure they stick
-    style.visuals.window_fill = DashColors::background(dark_mode);
-    style.visuals.panel_fill = DashColors::background(dark_mode);
-    style.visuals.extreme_bg_color = DashColors::input_background(dark_mode);
-    style.visuals.faint_bg_color = DashColors::background(dark_mode);
-    style.visuals.dark_mode = dark_mode;
-    style.visuals.window_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
-    // Note: window_rounding is not available in this egui version
-    style.visuals.window_shadow = Shadow::elevated();
-
-    // Modern widget styling with solid backgrounds for buttons
-    style.visuals.widgets.inactive.bg_fill = DashColors::background(dark_mode);
-    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, DashColors::border(dark_mode));
-    style.visuals.widgets.inactive.fg_stroke.color = DashColors::text_primary(dark_mode);
-    style.visuals.widgets.inactive.weak_bg_fill = DashColors::background(dark_mode);
-    style.visuals.widgets.inactive.expansion = 0.0;
-
-    // Hover state with highlighted background
-    style.visuals.widgets.hovered.bg_fill = DashColors::hover(dark_mode);
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
-    style.visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
-    style.visuals.widgets.hovered.weak_bg_fill = DashColors::hover(dark_mode);
-    style.visuals.widgets.hovered.expansion = 2.0;
-
-    // Active state with enhanced feedback
-    style.visuals.widgets.active.bg_fill = DashColors::GRADIENT_START;
-    style.visuals.widgets.active.bg_stroke = Stroke::new(2.0, DashColors::GRADIENT_END);
-    // egui colors `RichText::strong()` with this and skips `override_text_color`.
-    style.visuals.widgets.active.fg_stroke.color = DashColors::text_strong(dark_mode);
-    style.visuals.widgets.active.weak_bg_fill = DashColors::GRADIENT_START;
-    style.visuals.widgets.active.expansion = 1.0;
-
-    // Text input fields - ensure appropriate background with contrasting text
-    // Note: TextEdit uses extreme_bg_color by default, but we also set noninteractive for consistency
-    style.visuals.widgets.noninteractive.bg_fill = DashColors::input_background(dark_mode);
-    style.visuals.widgets.noninteractive.bg_stroke =
-        Stroke::new(1.0, DashColors::border(dark_mode));
-    style.visuals.widgets.noninteractive.weak_bg_fill = DashColors::input_background(dark_mode);
-    style.visuals.widgets.noninteractive.fg_stroke.color = DashColors::text_primary(dark_mode);
-
-    // Open state is also used for focused text inputs
-    style.visuals.widgets.open.bg_fill = DashColors::input_background(dark_mode);
-    style.visuals.widgets.open.weak_bg_fill = DashColors::input_background(dark_mode);
-    style.visuals.widgets.open.bg_stroke = Stroke::new(2.0, DashColors::DASH_BLUE);
-    style.visuals.widgets.open.fg_stroke.color = DashColors::text_primary(dark_mode);
-
-    // Specific text input colors
-    style.visuals.text_cursor.stroke = Stroke::new(1.0, DashColors::text_primary(dark_mode));
-
-    // Text colors - ensure contrasting text on all elements
-    style.visuals.override_text_color = Some(DashColors::text_primary(dark_mode));
-
-    // Text selection
-    style.visuals.selection.bg_fill = DashColors::selected(dark_mode);
-    style.visuals.selection.stroke = Stroke::new(1.0, DashColors::DASH_BLUE);
-
-    // Hyperlinks
-    style.visuals.hyperlink_color = DashColors::DASH_BLUE;
-
-    // Code styling - use appropriate background for better contrast
-    style.visuals.code_bg_color = if dark_mode {
-        Color32::from_rgb(30, 30, 30)
-    } else {
-        Color32::from_rgb(245, 245, 245)
-    };
-
-    // Note: extreme_bg_color is already set to INPUT_BACKGROUND above for TextEdit widgets
-
-    // Enhance dropdowns and menus
-    style.visuals.popup_shadow = Shadow::medium();
-
-    // Apply improved spacing
-    style.spacing.item_spacing = Vec2::new(Spacing::SM, Spacing::SM);
-    style.spacing.button_padding = Vec2::new(16.0, 8.0);
-    style.spacing.menu_margin = egui::Margin::same(4);
+    style.spacing.item_spacing = Vec2::splat(Spacing::SM);
+    style.spacing.button_padding = Spacing::BUTTON_PADDING;
+    style.spacing.interact_size = Vec2::splat(Spacing::CONTROL_HEIGHT);
+    style.spacing.menu_margin = egui::Margin::same(Spacing::SM_I8);
+    style.spacing.window_margin = egui::Margin::same(Spacing::LG as i8);
     style.spacing.indent = Spacing::MD;
-    style.spacing.icon_width = 14.0; // Reduced from 18.0
-    style.spacing.icon_width_inner = 12.0; // Reduced from 16.0
-    style.spacing.icon_spacing = 4.0; // Reduced from 6.0
-
-    // Final override of all background colors to ensure they are definitely set
-    style.visuals.window_fill = DashColors::background(dark_mode);
-    style.visuals.panel_fill = DashColors::background(dark_mode);
-    // Don't override extreme_bg_color here - it should remain as input_background for TextEdit widgets
-    style.visuals.faint_bg_color = DashColors::background(dark_mode);
-
+    style.spacing.icon_width = 18.0;
+    style.spacing.icon_width_inner = 12.0;
+    style.spacing.icon_spacing = Spacing::SM;
     ctx.set_global_style(style);
 }
 
@@ -1551,8 +1501,8 @@ mod tests {
         );
         assert_eq!(
             hint,
-            Typography::SCALE_SM,
-            "hint() must use the SCALE_SM token"
+            Typography::SCALE_XS,
+            "hint() must use the caption token"
         );
     }
 
@@ -1577,6 +1527,83 @@ mod tests {
         let ctx = egui::Context::default();
         apply_theme(&ctx, mode);
         ctx.global_style()
+    }
+
+    #[test]
+    fn design_system_text_has_readable_body_hint_and_section_hierarchy() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let style = themed_style(mode);
+            assert_eq!(egui::TextStyle::Body.resolve(&style).size, 14.0);
+            assert_eq!(egui::TextStyle::Small.resolve(&style).size, 12.0);
+            assert_eq!(egui::TextStyle::Button.resolve(&style).size, 14.0);
+            assert_eq!(egui::TextStyle::Heading.resolve(&style).size, 21.0);
+        }
+    }
+
+    #[test]
+    fn design_system_standard_controls_have_readable_hit_areas() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx, mode);
+            let mut text = String::from("A token name");
+            let mut button_height = 0.0;
+            let mut input_height = 0.0;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    button_height = ui.button("Continue").rect.height();
+                    input_height = ui
+                        .add(crate::ui::components::styled::styled_text_edit_singleline(
+                            &mut text,
+                        ))
+                        .rect
+                        .height();
+                });
+            });
+            output.textures_delta.clear();
+            assert!(button_height >= 40.0, "{mode:?}: button {button_height}");
+            assert!(input_height >= 43.0, "{mode:?}: input {input_height}");
+        }
+    }
+
+    #[test]
+    fn design_system_theme_switch_preserves_user_zoom() {
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.25);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        for mode in [ThemeMode::Light, ThemeMode::Dark, ThemeMode::Light] {
+            apply_theme(&ctx, mode);
+            assert_eq!(ctx.zoom_factor(), 1.25);
+        }
+    }
+
+    #[test]
+    fn design_system_text_and_actions_contrast_in_both_themes() {
+        for (mode, dark_mode) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
+            let style = themed_style(mode);
+            for text in [
+                DashColors::text_primary(dark_mode),
+                DashColors::text_secondary(dark_mode),
+                style.visuals.hyperlink_color,
+                DashColors::success_color(dark_mode),
+                DashColors::warning_color(dark_mode),
+                DashColors::error_color(dark_mode),
+            ] {
+                for background in [style.visuals.panel_fill, DashColors::surface(dark_mode)] {
+                    assert!(
+                        contrast_ratio(text, background) >= 4.5,
+                        "{mode:?}: {text:?} on {background:?}"
+                    );
+                }
+            }
+            assert!(
+                contrast_ratio(
+                    ComponentStyles::primary_button_text(),
+                    ComponentStyles::primary_button_fill()
+                ) >= 4.5
+            );
+        }
     }
 
     /// `RichText::strong()` without a color ignores the theme's text override,

@@ -1,3 +1,4 @@
+use crate::ui::components::styled::styled_text_edit_singleline;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use dash_sdk::dpp::{
     identity::accessors::IdentityGettersV0, platform_value::string_encoding::Encoding,
 };
 use dash_sdk::platform::Identifier;
-use egui::{ComboBox, Response, TextEdit, Ui, Widget, WidgetText};
+use egui::{ComboBox, Response, Ui, Widget, WidgetText};
 
 /// A reusable identity selector widget that combines a ComboBox dropdown of available identities
 /// with a text edit field for manual entry. Implements the egui `Widget` trait for idiomatic usage.
@@ -326,7 +327,7 @@ impl<'a> Widget for IdentitySelector<'a> {
             let text_response = if self.other_option {
                 ui.vertical(|ui| {
                     ui.add_space(13.0);
-                    TextEdit::singleline(self.identity_str).ui(ui)
+                    styled_text_edit_singleline(self.identity_str).ui(ui)
                 })
                 .inner
             } else {

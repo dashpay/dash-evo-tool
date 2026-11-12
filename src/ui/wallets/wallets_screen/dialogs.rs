@@ -10,6 +10,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::qr_code_image::QrCodeImage;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -1160,7 +1161,7 @@ impl WalletsBalancesScreen {
                     // Block count input
                     ui.label("Number of blocks:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.mine_dialog.block_count_str)
+                        styled_text_edit_singleline(&mut self.mine_dialog.block_count_str)
                             .hint_text("1")
                             .desired_width(100.0),
                     );

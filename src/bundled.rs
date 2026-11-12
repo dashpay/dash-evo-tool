@@ -55,7 +55,7 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
     fonts.font_data.insert(
         "noto_sans".to_owned(),
         FontData::from_static(include_bytes!(
-            "../assets/Fonts/Noto_Sans/static/NotoSans-Light.ttf"
+            "../assets/Fonts/Noto_Sans/static/NotoSans-Regular.ttf"
         ))
         .into(),
     );
@@ -143,15 +143,15 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
         .splice(
             ..,
             vec![
+                "noto_sans".to_owned(),
                 "Ubuntu-Light".into(),
                 "emoji-icon-font".into(),
                 "NotoEmoji-Regular".into(),
                 "noto_sans_symbols2".to_owned(), // Unicode symbol-block icon glyphs
-                "noto_sans".to_owned(),
-                "noto_sans_sc".to_owned(), // Simplified Chinese
-                "noto_sans_tc".to_owned(), // Traditional Chinese
-                "noto_sans_jp".to_owned(), // Japanese
-                "noto_sans_kr".to_owned(), // Korean
+                "noto_sans_sc".to_owned(),       // Simplified Chinese
+                "noto_sans_tc".to_owned(),       // Traditional Chinese
+                "noto_sans_jp".to_owned(),       // Japanese
+                "noto_sans_kr".to_owned(),       // Korean
                 "noto_sans_thai".to_owned(),
                 "noto_sans_khmer".to_owned(),
                 "noto_sans_arabic".to_owned(),
@@ -185,5 +185,45 @@ pub fn fonts() -> Result<egui::FontDefinitions, Box<dyn std::error::Error>> {
             ],
         );
 
+    let strong = strong_font();
+    fonts
+        .font_data
+        .insert(strong.name.clone(), strong.data.into());
+    let mut fallbacks = fonts.families[&FontFamily::Proportional].clone();
+    fallbacks.insert(0, strong.name);
+    fonts
+        .families
+        .insert(FontFamily::Name(STRONG_FONT_FAMILY.into()), fallbacks);
     Ok(fonts)
+}
+
+/// Semibold text family; includes the proportional fallback chain in the app.
+pub const STRONG_FONT_FAMILY: &str = "noto_sans_semibold";
+
+fn strong_font() -> egui::epaint::text::FontInsert {
+    egui::epaint::text::FontInsert {
+        name: STRONG_FONT_FAMILY.into(),
+        data: FontData::from_static(include_bytes!(
+            "../assets/Fonts/Noto_Sans/static/NotoSans-SemiBold.ttf"
+        )),
+        families: vec![egui::epaint::text::InsertFontFamily {
+            family: FontFamily::Name(STRONG_FONT_FAMILY.into()),
+            priority: egui::epaint::text::FontPriority::Highest,
+        }],
+    }
+}
+
+/// Installs the design-system faces in contexts that do not load the app assets.
+pub fn install_ui_fonts(ctx: &egui::Context) {
+    ctx.add_font(egui::epaint::text::FontInsert {
+        name: "noto_sans".into(),
+        data: FontData::from_static(include_bytes!(
+            "../assets/Fonts/Noto_Sans/static/NotoSans-Regular.ttf"
+        )),
+        families: vec![egui::epaint::text::InsertFontFamily {
+            family: FontFamily::Proportional,
+            priority: egui::epaint::text::FontPriority::Highest,
+        }],
+    });
+    ctx.add_font(strong_font());
 }

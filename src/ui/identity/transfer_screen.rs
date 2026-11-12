@@ -13,6 +13,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -235,7 +236,7 @@ impl TransferScreen {
             ui.label("Platform Address:");
             ui.add_space(5.0);
             ui.add(
-                egui::TextEdit::singleline(&mut self.platform_address_input)
+                styled_text_edit_singleline(&mut self.platform_address_input)
                     .hint_text(
                         if self.app_context.network
                             == dash_sdk::dashcore_rpc::dashcore::Network::Mainnet

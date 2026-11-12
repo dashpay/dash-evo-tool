@@ -20,6 +20,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet_association::{NOT_IN_WALLET_LABEL, WalletAssociation};
 use crate::ui::RootScreenType;
 use crate::ui::components::breadcrumb_pill::{BreadcrumbPill, BreadcrumbPillMode};
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::identity::identity_pill::IdentityPill;
 use crate::ui::state::global_nav::{
@@ -558,7 +559,7 @@ fn render_app_global_identity_pill(
                         // Inline search once the scoped list is long (§A.3).
                         let filter = if data.scoped.len() >= SEARCH_THRESHOLD {
                             ui.add(
-                                egui::TextEdit::singleline(selection.identity_search_mut())
+                                styled_text_edit_singleline(selection.identity_search_mut())
                                     .hint_text("Search identities"),
                             );
                             selection.identity_search().trim().to_lowercase()

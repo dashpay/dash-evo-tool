@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::components::styled::styled_text_edit_multiline;
 
 pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
@@ -73,7 +74,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         ui.label("Paste a JSON object mapping document type names to schemas. This is not a full-contract import. Clearing the field removes every document type from this draft.");
         let caption = ui.label("Document schema JSON");
         ui.add(
-            egui::TextEdit::multiline(&mut state.draft.documents)
+            styled_text_edit_multiline(&mut state.draft.documents)
                 .code_editor()
                 .desired_rows(15)
                 .desired_width(f32::INFINITY),

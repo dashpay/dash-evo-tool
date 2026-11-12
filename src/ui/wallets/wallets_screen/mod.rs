@@ -1687,7 +1687,7 @@ impl WalletsBalancesScreen {
                 .then_with(|| transactions[b].txid.cmp(&transactions[a].txid))
         });
 
-        let row_height = 26.0;
+        let row_height = crate::ui::theme::Spacing::TABLE_ROW_HEIGHT;
         let mut builder = TableBuilder::new(ui)
             .id_salt("transactions_table")
             .striped(true)

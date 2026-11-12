@@ -14,8 +14,10 @@ use crate::app::AppAction;
 use crate::model::token_creator::amount::{TokenAmountInput, format_amount};
 use crate::model::token_creator::rules::{ActorDraft, RuleKind};
 use crate::model::token_creator::{Policy, Recipient, Section};
+use crate::ui::components::styled::StyledCard;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::state::token_creator::CreatorWorkspace;
-use crate::ui::theme::ComponentStyles;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape, Spacing, Typography};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{Context, RichText, Ui};
 
@@ -36,13 +38,27 @@ impl TokensScreen {
             self.creator_workspace.acknowledged = false;
         }
         ui.horizontal(|ui| {
-            ui.heading("Token Creator");
+            ui.label(RichText::new("Token Creator").font(Typography::page_title()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.hyperlink_to("Open tutorial ↗", TUTORIAL_URL);
             });
         });
-        ui.label("Design your token, understand its rules, then review before creating it.");
-        ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(
+                "Design your token, understand its rules, then review before creating it.",
+            )
+            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        ui.add_space(Spacing::MD);
+        let dark_mode = ui.visuals().dark_mode;
+        egui::Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
+            .corner_radius(Shape::RADIUS_LG)
+            .inner_margin(egui::Margin::symmetric(18, 15))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
             ui.strong(format!("Network: {}", self.app_context.network));
             if let Some(identity) = &self.selected_identity {
                 ui.label(format!("Owner: {}", identity.display_string()));
@@ -50,8 +66,9 @@ impl TokensScreen {
                 ui.label("Drafting is available. Choose an identity in Review when you are ready.");
             }
             help(ui, &mut self.creator_workspace.help, "readiness");
-        });
-        ui.add_space(12.0);
+            });
+            });
+        ui.add_space(Spacing::LG);
         let navigation = (
             self.creator_workspace.section,
             ui.available_width().to_bits(),
@@ -68,8 +85,20 @@ impl TokensScreen {
                         let response = ui.add(
                             egui::Button::selectable(
                                 selected,
-                                format!("{}  {}", index + 1, section.label()),
+                                RichText::new(format!("{}  {}", index + 1, section.label()))
+                                    .size(Typography::SCALE_SM)
+                                    .color(if selected {
+                                        DashColors::info_color(dark_mode)
+                                    } else {
+                                        DashColors::text_primary(dark_mode)
+                                    }),
                             )
+                            .fill(if selected {
+                                DashColors::selected(dark_mode)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
                             .wrap_mode(egui::TextWrapMode::Extend),
                         );
                         if response.clicked() {
@@ -115,8 +144,14 @@ impl TokensScreen {
                     .show(ui, |ui| summary(ui, &mut self.creator_workspace));
             });
         }
-        let width = ui.available_width() - if wide { 248.0 } else { 0.0 };
-        let body_height = (ui.available_height() - 48.0).max(100.0);
+        let summary_width = 280.0;
+        let width = ui.available_width()
+            - if wide {
+                summary_width + Spacing::LG
+            } else {
+                0.0
+            };
+        let body_height = (ui.available_height() - Spacing::CONTROL_HEIGHT - Spacing::LG).max(60.0);
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(width, body_height),
@@ -152,12 +187,12 @@ impl TokensScreen {
                 },
             );
             if wide {
-                ui.add_space(8.0);
+                ui.add_space(Spacing::LG - ui.spacing().item_spacing.x * 2.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(232.0, body_height),
+                    egui::vec2(summary_width, body_height),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_width(232.0);
+                        ui.set_width(summary_width);
                         egui::ScrollArea::vertical()
                             .id_salt("creator_summary")
                             .auto_shrink([false, false])
@@ -192,15 +227,11 @@ impl TokensScreen {
 }
 
 fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().panel_fill)
-        .inner_margin(16)
-        .corner_radius(8)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui);
-        });
-    ui.add_space(12.0);
+    StyledCard::new().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        content(ui);
+    });
+    ui.add_space(Spacing::SECTION_SPACING - ui.spacing().item_spacing.y);
 }
 
 const HELP_OPENER: &str = "creator_help_opener";
@@ -208,7 +239,20 @@ const HELP_OPENER: &str = "creator_help_opener";
 fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
     let name = format!("Help: {}", dialogs::topic_title(key));
     let response = ui
-        .add(egui::Button::new("?").min_size(egui::vec2(32.0, 32.0)))
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            ui.spacing_mut().interact_size = egui::vec2(28.0, 28.0);
+            ui.add_sized(
+                egui::vec2(28.0, 28.0),
+                egui::Button::new(
+                    RichText::new("?")
+                        .size(15.0)
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                )
+                .corner_radius(Shape::RADIUS_FULL),
+            )
+        })
+        .inner
         .on_hover_text(&name);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
@@ -246,7 +290,7 @@ fn heading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
 
 fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) -> egui::Response {
     ui.horizontal_wrapped(|ui| {
-        let response = ui.strong(text);
+        let response = ui.label(RichText::new(text).family(Typography::strong_family()));
         help(ui, topic, key);
         response
     })
@@ -255,7 +299,7 @@ fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) -> egui
 
 fn text(ui: &mut Ui, caption: &str, key: &str, value: &mut String, topic: &mut Option<String>) {
     let caption = label(ui, caption, key, topic);
-    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
+    ui.add(styled_text_edit_singleline(value).desired_width(f32::INFINITY))
         .labelled_by(caption.id);
     ui.add_space(8.0);
 }
@@ -277,7 +321,7 @@ fn amount(
 ) {
     let caption_response = label(ui, caption, key, topic);
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut value.text).desired_width(180.0))
+        ui.add(styled_text_edit_singleline(&mut value.text).desired_width(180.0))
             .labelled_by(caption_response.id);
         let mut raw = value.base_units;
         egui::ComboBox::from_id_salt((caption, "units"))

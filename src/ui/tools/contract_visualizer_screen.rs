@@ -3,13 +3,14 @@ use crate::context::AppContext;
 use crate::ui::BackendTaskSuccessResult;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted;
 use dash_sdk::platform::DataContract;
-use eframe::egui::{Color32, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Color32, Frame, Margin, RichText, ScrollArea, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -117,7 +118,7 @@ impl ContractVisualizerScreen {
         ui.label("Enter hex, base64, or comma-separated integers for Contract:");
         let dark_mode = ui.style().visuals.dark_mode;
         let resp = ui.add(
-            TextEdit::multiline(&mut self.input_data_hex)
+            styled_text_edit_multiline(&mut self.input_data_hex)
                 .desired_rows(4)
                 .desired_width(ui.available_width())
                 .text_color(DashColors::text_primary(dark_mode))

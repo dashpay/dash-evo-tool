@@ -460,7 +460,7 @@ impl TokensScreen {
                                     ordering.then_with(|| left.identity_id.cmp(&right.identity_id))
                                 });
                                 for itb in &detail_list {
-                                    body.row(30.0, |mut row| {
+                                    body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                                         row.col(|ui| {
                                             ui.label(itb.identity_name.as_deref().unwrap_or("Unknown identity"));
                                         });
@@ -983,7 +983,7 @@ impl TokensScreen {
                             description,
                             ..
                         } = token_info;
-                        body.row(30.0, |mut row| {
+                        body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                             row.col(|ui| {
                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                                     ui.add_space(-1.0);

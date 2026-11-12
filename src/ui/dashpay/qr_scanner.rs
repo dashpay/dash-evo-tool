@@ -9,6 +9,7 @@ use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscree
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -19,7 +20,7 @@ use crate::ui::identity::get_selected_wallet;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -232,7 +233,7 @@ impl QRScannerScreen {
                 ui.label(RichText::new("Paste the QR code data below:").small());
 
                 ui.add(
-                    TextEdit::multiline(&mut self.qr_data_input)
+                    styled_text_edit_multiline(&mut self.qr_data_input)
                         .hint_text("dash:?di=...")
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)

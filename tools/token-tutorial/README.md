@@ -26,10 +26,11 @@ Do not execute narration merely to check this toolkit.
 | `examples/project.json` | Executable configuration for a new private edit under ignored `local/`. |
 
 The current source targets DET `975993070d0061f506c0b6a2ec650df4ec18f555`
-and Platform `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`. It is awaiting
-independent review and completion of live gates; it is not approved for recording.
-This refresh authorizes documentation and offline checks only: no recording,
-audio generation or provider API calls. See [author notes](scenario/dialogue-author-notes.md)
+and Platform `575d961fe0c54bd7e01a3cf3823494e58c6c4fdb`. The source has an
+independent audit and scoped GUI observations. An authorized funding attempt
+failed before either token registration; paid results and remaining live gates
+are unverified. This source is not approved for recording, audio generation or
+provider API calls. See [author notes](scenario/dialogue-author-notes.md)
 and the [current walkthrough](scenario/current-walkthrough.md).
 
 Historical dialogue SHA-256
@@ -89,7 +90,10 @@ scratch directory before rendering; the system temporary directory is the defaul
    identify its original primary sources; review them for the new revision.
 3. Update `dialogue.json` in place, preserving scene identifiers and the six part
    ranges unless deliberately revising the format. Only `turns`, `intro` and
-   `outro` are spoken. Regenerate the readable source:
+   `outro` are spoken. Synchronize `scenario.txt` and `current-walkthrough.md`
+   with the scene controls, source anchors and evidence states. Recompute
+   `source.scenario_sha256` from the actual `scenario.txt` bytes and update the
+   word counts from the spoken turns. Regenerate the readable source:
 
    ```sh
    python3 scripts/project.py transcript scenario/dialogue.json > scenario/dialogue.txt

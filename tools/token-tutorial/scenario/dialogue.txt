@@ -291,7 +291,7 @@ Chad G. P. Taylor: Yes. We don't need a blanket reset that would erase our caref
 Ewa Dashwood: Our final token will have an initial allocation and the permitted manual actions, without these practice distribution mechanisms.
 
 [Scene 48] Optional document types and safe JSON input
-Chad G. P. Taylor: Document types accepts a JSON object mapping type names to schemas. It is not an import box for a complete token contract.
+Chad G. P. Taylor: Document types accepts a JSON object mapping type names to schemas. It is not an import box for a complete token contract. The text property in this example includes position zero, because Platform requires ordered property positions.
 Ewa Dashwood: We can demonstrate a small note type, then an invalid JSON example and the difference between parsing an object and passing the full schema checks.
 Chad G. P. Taylor: Exactly. Only local fragment references are accepted; external HTTP and file references are never loaded. Preparation performs the document-schema and token-rule checks. A parsed object alone is not approval.
 Ewa Dashwood: Clear document types removes all types from this draft. We'll keep the description and searchable English name, leave additional keywords empty, and include no document types in our final token.
@@ -313,6 +313,8 @@ Ewa Dashwood: What could still stop creation after the draft looks valid?
 Chad G. P. Taylor: An unavailable or changed key, the wrong network, insufficient current credits, expired scheduled dates, or changed creation details can require correction and another check. The backend checks again; a previously displayed balance is not a reservation of funds.
 Ewa Dashwood: If the balance is too low, Add identity credits leads to a separate funding flow. Then we prepare again. We don't assume the displayed registration charge covers every processing and storage charge.
 Chad G. P. Taylor: Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait for its result. In this walkthrough, an unobserved funded step stays pending; we do not announce a creation that has not been confirmed.
+Ewa Dashwood: What if adding credits fails before we can create the token? That happened during our Testnet checks.
+Chad G. P. Taylor: Stop and check the funding transaction and the wallet state before trying again. Our authorized funding attempt timed out, and investigation found that it tried to spend an output already spent earlier. The wallet selection problem still needs reconciliation. Neither token registration was submitted, and we have no successful top-up or token receipt to show.
 
 [Scene 52] Recover without paying twice
 Chad G. P. Taylor: If the outcome is uncertain, Creation not yet confirmed offers Check status, no payment. The recovery record survives closing the screen or restarting the app and blocks another creation attempt while the result is unresolved.

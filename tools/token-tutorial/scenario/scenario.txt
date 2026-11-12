@@ -5,28 +5,28 @@ Platform: 575d961fe0c54bd7e01a3cf3823494e58c6c4fdb
 Canonical spoken source: dialogue.json. Readable speech: dialogue.txt.
 This file is the current non-spoken scene plan, not a historical narration.
 Opening silence: 3.0 seconds. AI disclosure visible. No recording/audio generation is authorized by this plan.
-Status: source refreshed; independent review and full live walkthrough pending.
+Status: source audited; live coverage is partial. Funding failed before token registration; no accepted token result is claimed.
 Archive: accepted-media.json and accepted-combined.en.srt belong to the old source; do not reuse them for this revision.
 
 SCENE 00 | PART 1 | Hello from Chad and Ewa
 SCREEN: Opening slide. Hold for 3.0 seconds in silence before the first turn. Display both names and the AI disclosure.
 CONTROLS: Opening silence: 3 seconds; AI-generated presentation disclosure; Chad G. P. Taylor — Cedar; Ewa Dashwood — Nova
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Production metadata only; no filming or audio generation performed. Network: not required for draft demonstration.
 
 SCENE 01 | PART 1 | One workspace, six chapters
 SCREEN: Chapter overview, then the seven section labels. No paid operation.
 CONTROLS: Basics; Supply & permissions; Distribution; Groups; History; Search & documents; Review
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Seven-section navigation observed across the coordinator checks; no recording performed. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67
 
 SCENE 02 | PART 1 | Draft now, prepare an issuer later
-SCREEN: Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Do not fund or submit.
+SCREEN: Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain the observed synchronization prerequisite and the later failed authorized funding attempt without exposing private amounts or identifiers.
 CONTROLS: Network; Owner; Help: Issuer, fees & readiness; Load identity; Identity; Signing key; Unlock Wallet
-VERIFY: Coordinator observed issuer/key selection, initial quorum-data readiness failure, synchronization, and successful preparation afterward.; network: Read-only network preparation observed; funded registration not exercised..
-CHECK: TODO: observe issuer/key and wallet readiness on the pinned binary without exposing secrets.
-CHECK: TODO: funded creation is outside this source-only rewrite; do not narrate a funded result.
+VERIFY: Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
 CHECK: Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization.
+CHECK: Observed: issuer/key selection, initial synchronization block and later successful free preparation. An authorized funding attempt failed; inspect transaction and reconcile wallet state before any further funding attempt.
+CHECK: Funded Testnet checks were explicitly authorized, but the funding attempt failed before either registration. TODO: reconcile the wallet state and confirm readiness before any separately authorized follow-up; do not narrate a funded result.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
@@ -34,7 +34,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 03 | PART 1 | Find Create a token
 SCREEN: Tokens → Token Creator. Show header, context, summary, scroll area, seven tabs and footer. Open one help dialog and return.
 CONTROLS: Tokens; Token Creator; Create a token; Video tutorial ↗; Step navigation; ← Back; Continue: Supply & permissions →; Your draft is kept as you continue.; Help buttons; Back to the form
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Navigate all seven sections and return; verify fields are retained.
 CHECK: Open help by mouse and keyboard; close it and verify focus returns.
 CHECK: Do not claim ordinary drafts persist through restart; recovery records are a different feature.
@@ -44,7 +44,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 04 | PART 1 | Name the fixed example
 SCREEN: Basics: enter CloudCredit and CloudCredits in the two required fields. Do not add spaces.
 CONTROLS: Token name; Plural name; Required name hints
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Blank plural and a name containing spaces must remain visibly incomplete or fail preparation; restore valid values.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -52,7 +52,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 05 | PART 1 | Read amounts in both units
 SCREEN: Basics: open Compare fixed example, inspect changed rows and Apply these changes. Supply & permissions: inspect both amounts and unit switches, toggle No maximum supply, then restore the finite cap of 1,000 tokens.
 CONTROLS: Compare fixed example; Changes to your draft; Apply these changes; Initial supply; Initial supply units; Maximum outstanding supply; Maximum outstanding supply units; No maximum supply
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: fixed-example (observed), amount-units (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Switch valid amounts between tokens and base units and verify no value changes.
 CHECK: Toggle No maximum supply on and off; restore the finite cap.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
@@ -63,7 +63,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 06 | PART 1 | Compare before applying
 SCREEN: Return to Basics. Compare owner example; scroll changed rows and full comparison; Keep my draft. Demonstrate Apply then Undo and restore fixed example.
 CONTROLS: Compare owner example; Full comparison including unchanged settings; Keep my draft; Apply these changes; Undo last example or template; Choose custom rules →
-VERIFY: Coordinator observed fixed-example compare, cancel, apply, undo and reapply on the pinned binary; other comparisons pending.; network: not required for draft demonstration.
+VERIFY: Evidence: fixed-example (observed), owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Demonstrate cancel, apply and one-step undo; verify original authored names remain.
 CHECK: Inspect all comparison rows, including administrators, three allowances, recipients, histories and distribution switches.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
@@ -73,15 +73,15 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 07 | PART 1 | What fixed supply promises
 SCREEN: Supply & permissions: select All 13 rules; inspect every fixed rule and the cap consequence. Distribution is off, Groups is empty, and all six histories are on.
 CONTROLS: All 13 rules; Edit rule; Performer; Administrator; Later changes; Permanent hard cap notice
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: fixed-online-prepare (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 
 SCENE 08 | PART 1 | Preparation and payment are separate
-SCREEN: Review: inspect Issuer, fees & readiness and the Draft overview. If a usable identity is available, use Check settings; otherwise explain the blocked state. Do not click the paid action during this refresh.
+SCREEN: Review: inspect issuer/key readiness, Draft overview and the observed successful Check settings after synchronization. Show the insufficient-credit gate honestly; token registration was not submitted.
 CONTROLS: Review your token; Issuer, fees & readiness; Draft overview; Check settings; Final review; Creation charge; I reviewed the amounts, recipients, permissions and irreversible settings.; Create token and pay fees
-VERIFY: Coordinator observed successful Check settings after synchronization, Final review, insufficient-credit warning and disabled paid action even after acknowledgement. No submission.; network: Read-only network preparation observed; funded registration not exercised..
+VERIFY: Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
 CHECK: Observed by coordinator: synchronized Check settings succeeded; Final review appeared. Preserve the exact prepared snapshot privately; do not publish actual financial amounts.
 CHECK: TODO: paid confirmation, waiting and confirmed outcome require separate authorized funded observation.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
@@ -90,7 +90,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 09 | PART 1 | Recognize a real receipt
 SCREEN: Explain conditional recovery/receipt branches from source. Show only genuinely observed states; do not use old footage as evidence.
 CONTROLS: Token created; Contract ID; Token ID; Owner; Initial allocation; Initial recipient; Copy Contract ID; Copy Token ID; Open contract; Create another token
-VERIFY: pending coordinator walkthrough; network: not exercised.
+VERIFY: Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result. Network: No token registration, accepted receipt or token-creation recovery operation executed.
 CHECK: TODO: observe confirmed receipt, copy controls and Open contract only after an authorized successful registration.
 CHECK: No historic accepted recording may stand in for a result on this revision.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
@@ -99,14 +99,14 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 10 | PART 2 | Begin the owner-managed practice draft
 SCREEN: Use the current unsubmitted draft, rename it CloudPoint/CloudPoints, compare and apply owner example. If a previous authorized creation is confirmed, use Create another token first.
 CONTROLS: Token name; Plural name; Compare owner example; Apply these changes; Choose custom rules →
-VERIFY: Coordinator observed owner-example Apply retaining CloudPoint and CloudPoints.; network: not required for draft demonstration.
+VERIFY: Evidence: owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67
 
 SCENE 11 | PART 2 | Names in other languages
 SCREEN: Basics: expand localizations. Show English search toggle, add Polish Punkt/Punkty, choose language, toggle searchable, remove practice language. Restore capitalization off.
 CONTROLS: Names in other languages; Language; Token name; Plural name; Include this name in search; Add language; Remove language; Capitalize token names
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: localizations (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Verify duplicate languages are rejected; remove the practice row and restore English search on.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -114,7 +114,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 12 | PART 2 | Supply and discovery belong to different sections
 SCREEN: Supply & permissions: inspect initial supply 1,000 and maximum 10,000 tokens. In Search & documents, enter the final description, try education as an extra keyword, then remove that extra keyword.
 CONTROLS: Initial supply; Maximum outstanding supply; Description (optional); Search keywords; Search keywords preview
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: amount-units (observed), discovery-fields (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -122,7 +122,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 13 | PART 2 | Precision without a hundredfold mistake
 SCREEN: Supply & permissions: show Decimal places = 2 and amount conversions. Change to 3 and back. Demonstrate an unrepresentable fractional amount, then correct it.
 CONTROLS: Decimal places; tokens; base units; Amount validation
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: precision-change (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/amount.rs#L7
@@ -131,7 +131,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 14 | PART 2 | Transfers, pauses and frozen recipients
 SCREEN: Supply & permissions: toggle the three transfer-state checkboxes and inspect their consequences. Restore Allow transfers between holders on, Start with transfers paused off, and Allow transfers to frozen identities off.
 CONTROLS: Allow transfers between holders; Start with transfers paused; Allow transfers to frozen identities; Help: Transferability
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Show warning with pause authority disabled, then restore the owner pause authority and final booleans.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -139,13 +139,13 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 15 | PART 2 | Choose all six histories explicitly
 SCREEN: History: show Keep all six histories and its six child checkboxes. Demonstrate a mixed state, then restore all six.
 CONTROLS: Keep all six histories; Keep transfers history; Keep freezes and unfreezes history; Keep mints history; Keep burns history; Keep direct-pricing changes history; Keep direct purchases history
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: history-controls (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4
 
 SCENE 16 | PART 2 | Protocol templates are separate proposals
 SCREEN: Basics: expand Existing protocol templates. Compare each of the five templates, scroll the full comparison, and Keep my draft each time. Retain the owner-managed example.
 CONTROLS: Existing protocol templates; Compare Most restrictive; Compare Emergency action; Compare Minting and burning; Compare Extreme actions; Compare All advanced actions; Full comparison including unchanged settings; Keep my draft
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: template-Most restrictive (observed), template-Emergency action (observed), template-Minting and burning (observed), template-All advanced actions (observed), template-Extreme actions (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Compare all five templates; inspect full rows including pricing, marketplace, destination and main-group authorities.
 CHECK: Cancel each; do not assume Most restrictive equals the custom fixed-supply example.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/basics.rs#L6
@@ -155,7 +155,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 17 | PART 2 | Who can perform an action
 SCREEN: Supply & permissions: inspect All 13 rules, Enabled powers and Changeable rules. Edit Mint additional tokens; inspect performer choices. Try Specific identity with an invalid ID, then restore Contract owner.
 CONTROLS: All 13 rules; Enabled powers; Changeable rules; Edit rule; Who can perform this action; No one; Contract owner; Specific identity; Identity ID; Main group; Done
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-0 (observed), rule-filters (observed), rule-filter-counts (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -163,14 +163,14 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 18 | PART 2 | Who can change the rule
 SCREEN: In the rule editor, inspect the administrator and all three Later changes flags. Temporarily select Contract owner and toggle each allowance, then restore No one and all flags off. Demonstrate Open Groups.
 CONTROLS: Who can change this rule; Allow the administrator to remove all action performers; Allow the administrator to remove all rule administrators; Allow the administrator to replace itself; Open Groups; Done
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-0 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 
 SCENE 19 | PART 3 | Lock the outstanding-supply ceiling
 SCREEN: Supply & permissions: edit Change maximum supply. Set performer and administrator to No one and all three allowances off. Inspect the permanent hard-cap notice.
 CONTROLS: Change maximum supply; Who can perform this action; Who can change this rule; Later changes; Maximum outstanding supply
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -178,14 +178,14 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 20 | PART 3 | Minting and the initial recipient
 SCREEN: Inspect Mint additional tokens. Show Contract owner, Specific identity and No fixed destination as default recipient choices. Restore owner and enable Allow choosing a recipient on each mint.
 CONTROLS: Mint additional tokens; Default recipient for newly created tokens; Contract owner; Specific identity; Recipient identity ID; No fixed destination; Initial allocation; Allow choosing a recipient on each mint
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-0 (observed), mint-recipients (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
 
 SCENE 21 | PART 3 | Lock the two destination policies
 SCREEN: Edit Change the default mint recipient and Change per-mint recipient choice separately. Set both performers and administrators to No one and all flags off, while keeping Allow choosing a recipient on each mint on.
 CONTROLS: Change the default mint recipient; Change per-mint recipient choice; Who can perform this action; Who can change this rule; Later changes
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-9 (observed), rule-10 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -193,7 +193,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 22 | PART 3 | Burning the performer’s own tokens
 SCREEN: Edit Burn own tokens: performer Contract owner, administrator No one, all three flags off. Do not execute a burn.
 CONTROLS: Burn own tokens; Edit rule; Who can perform this action; Who can change this rule; Later changes
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -201,7 +201,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 23 | PART 3 | Freeze and unfreeze are separate
 SCREEN: Edit Freeze an account, then Unfreeze an account. Inspect their actor choices and restore both rules permanently off. Revisit Allow transfers to frozen identities and leave it off.
 CONTROLS: Freeze an account; Unfreeze an account; Allow transfers to frozen identities; Edit rule
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-2 (observed), rule-3 (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -209,7 +209,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 24 | PART 3 | Destroying frozen funds is destructive authority
 SCREEN: Edit Destroy frozen funds and open its help. Restore performer and administrator No one and all allowances off. Do not execute destruction.
 CONTROLS: Destroy frozen funds; Help for Destroy frozen funds; Who can perform this action; Who can change this rule; Later changes
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -217,7 +217,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 25 | PART 3 | Pause authority and display conventions
 SCREEN: Edit Pause or resume transfers with Contract owner as performer. Lock Change names and display conventions off. Verify Start with transfers paused is off.
 CONTROLS: Pause or resume transfers; Change names and display conventions; Start with transfers paused; Edit rule
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-5 (observed), rule-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -225,7 +225,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 26 | PART 3 | Marketplace and pricing powers without a sale
 SCREEN: Inspect Change marketplace trade mode, Change direct-purchase pricing and Marketplace at creation. Set Contract owner as performer for both rules, administrator No one and all three flags off.
 CONTROLS: Change marketplace trade mode; Change direct-purchase pricing; Marketplace at creation; Edit rule
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-11 (observed), rule-12 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158
@@ -233,7 +233,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 27 | PART 3 | The main group is an alias
 SCREEN: Groups: inspect Main group and Who can change the main group. Demonstrate a missing-main-group validation message, then restore No main group and replacement authority No one.
 CONTROLS: Main control group; Main group; No main group; Who can change the main group; Main group authority warning
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: groups-validation (observed), group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/groups.rs#L34
@@ -242,7 +242,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 28 | PART 3 | Build a weighted practice group
 SCREEN: Add group creates two blank identity rows. Enter two distinct known public Testnet identity IDs, power 1 each, Required power 2. Add a third temporary member row, then remove it.
 CONTROLS: Add group; Group name (local only); Required power; Member identity ID; Power; Add member; Remove member; Power summary
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: groups-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Use public identifiers only, supplied by the operator; never fabricate ownership.
 CHECK: Demonstrate duplicate member, missing identity and excessive threshold errors, then restore valid practice values.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5
@@ -251,7 +251,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 29 | PART 3 | Assign, then remove the practice group safely
 SCREEN: Select the practice group as Main group; temporarily assign Mint to Main group and Burn to the specific draft group. Show Used by and blocked deletion. Clear all references, restore mint/burn performers to owner, select No main group, then Delete group.
 CONTROLS: Main group; Specific draft group actor; Main group actor; Used by; Delete group; Open Groups; Done
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67
@@ -260,16 +260,17 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 30 | PART 4 | Three independent distribution mechanisms
 SCREEN: Distribution: show the recurring, scheduled and once-per-identity switches off, including their retained-settings summaries.
 CONTROLS: Enable recurring distribution; Enable scheduled distributions; Enable once-per-identity distribution; Saved settings
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: recurring-retention (observed), scheduled-retention (observed), once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
 
 SCENE 31 | PART 4 | Choose time, blocks or epochs
 SCREEN: Enable recurring distribution. Select each interval basis and inspect every Time unit. Finish on Elapsed time, Repeat every 1, Time unit days.
 CONTROLS: Interval based on; Elapsed time; Blocks; Platform epochs; Repeat every; Time unit; seconds; minutes; hours; days; weeks; years (365 days)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: recurring-intervals-recipients (observed), year-unit (observed), time-unit-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: Try zero interval and 30 seconds, then restore 1 day.
 CHECK: Inspect every time-unit option; do not retain obsolete year-alignment warning.
+CHECK: Observed: one second failed protocol validation with a generic message, and restoring one day removed the error. All six time units were inspected; years (365 days) was selected and retained. Zero and thirty-second trials remain source-derived exercises unless separately recorded.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/mod.rs#L67
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -277,7 +278,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 32 | PART 4 | Recurring recipients and amount units
 SCREEN: Inspect Contract owner, Specific identity and EvoNodes by participation. Show that EvoNodes requires Platform epochs, then restore Contract owner and elapsed time every 1 day.
 CONTROLS: Recurring recipient; Contract owner; Specific identity; Recipient identity ID; EvoNodes by participation; Emission function; Amount units
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: recurring-intervals-recipients (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -285,7 +286,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 33 | PART 4 | A live preview, not a prediction
 SCREEN: Select an emission function and Restore worked example parameters. Open its help formula and inspect Current-parameter preview. Change one parameter and verify the table updates, then restore the example.
 CONTROLS: Restore worked example parameters; Current-parameter preview; Help for emission function; Worked example formula; Period; Base units; Tokens; Cumulative tokens
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: dynamic-preview (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12
@@ -293,14 +294,14 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 34 | PART 4 | Period zero and the registration reference
 SCREEN: Leave Assumed registration reference for preview blank to use zero. Inspect rows 0 through 10 and cumulative allocation starting at period 1. Demonstrate an optional start with a nonzero assumed reference, then restore zero reference and blank start.
 CONTROLS: Assumed registration reference for preview; s · start index (optional); Period 0; Cumulative tokens
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12
 
 SCENE 35 | PART 4 | Fixed amount: one token per interval
 SCREEN: Select Fixed amount, then Restore worked example parameters. Show 1.00 tokens; switch to 100 base units and back. Inspect the preview table.
 CONTROLS: Fixed amount; Amount per interval; Amount per interval units; Restore worked example parameters
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-0 (observed), function-help (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 500 base units = 5.00 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -313,7 +314,7 @@ CUMULATIVE k=1..5: 5.00 tokens.
 SCENE 36 | PART 4 | Step decreasing: subtract a fraction
 SCREEN: Select Step decreasing and Restore worked example parameters. Inspect all eight parameters and preview rows 0 through 10.
 CONTROLS: Step decreasing; Intervals per decrease; Removed fraction numerator; Removed fraction denominator; s · start index (optional); Initial recurring amount; Minimum per interval (optional); Maximum reduction era count (optional); Trailing amount
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 250 base units = 2.50 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -326,7 +327,7 @@ CUMULATIVE k=1..5: 2.50 tokens.
 SCENE 37 | PART 4 | Stepwise: thresholds and phases
 SCREEN: Select Stepwise and Restore worked example parameters. Show exactly three phases: 0 / 0.10 tokens, 3 / 0.05 tokens, 5 / 0 tokens. Add and remove a temporary phase. Demonstrate duplicate-index rejection, then restore the recipe.
 CONTROLS: Stepwise; Phases; Starting period index; Amount until the next phase; Add phase; Remove phase
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-2 (observed), emission-invalid-inputs (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 30 base units = 0.30 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -339,7 +340,7 @@ CUMULATIVE k=1..5: 0.30 tokens.
 SCENE 38 | PART 4 | Linear: a slope with an interval ceiling
 SCREEN: Select Linear and Restore worked example parameters. Inspect all six parameters, including Maximum per interval = 0.20 tokens.
 CONTROLS: Linear; a · scaling coefficient (base-unit calculation); d · positive scaling divisor; s · start index (optional); b · added token amount; Minimum per interval (optional); Maximum per interval (optional)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-3 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 80 base units = 0.80 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -352,7 +353,7 @@ CUMULATIVE k=1..5: 0.80 tokens.
 SCENE 39 | PART 4 | Polynomial: a squared example
 SCREEN: Select Polynomial and Restore worked example parameters. Inspect all nine parameters and compare every preview row.
 CONTROLS: Polynomial; a · scaling coefficient (base-unit calculation); d · positive scaling divisor; m · ratio numerator; n · positive ratio denominator; s · start index (optional); o · input offset (index); b · added token amount; Minimum per interval (optional); Maximum per interval (optional)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 90 base units = 0.90 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -365,7 +366,7 @@ CUMULATIVE k=1..5: 0.90 tokens.
 SCENE 40 | PART 4 | Exponential: base e, then a cap
 SCREEN: Select Exponential and Restore worked example parameters. Inspect all nine parameters and compare every preview row.
 CONTROLS: Exponential; a · scaling coefficient (base-unit calculation); d · positive scaling divisor; m · ratio numerator; n · positive ratio denominator; s · start index (optional); o · input offset (index); b · added token amount; Minimum per interval (optional); Maximum per interval (optional)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-5 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 400 base units = 4.00 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -378,7 +379,7 @@ CUMULATIVE k=1..5: 4.00 tokens.
 SCENE 41 | PART 4 | Logarithmic: positive input and integer rounding
 SCREEN: Select Logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.
 CONTROLS: Logarithmic; a · scaling coefficient (base-unit calculation); d · positive scaling divisor; m · ratio numerator; n · positive ratio denominator; s · start index (optional); o · input offset (index); b · added token amount; Minimum per interval (optional); Maximum per interval (optional)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 112 base units = 1.12 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -391,7 +392,7 @@ CUMULATIVE k=1..5: 1.12 tokens.
 SCENE 42 | PART 4 | Inverted logarithmic: negative floor matters
 SCREEN: Select Inverted logarithmic and Restore worked example parameters. Inspect all nine parameters and compare every preview row.
 CONTROLS: Inverted logarithmic; a · scaling coefficient (base-unit calculation); d · positive scaling divisor; m · ratio numerator; n · positive ratio denominator; s · start index (optional); o · input offset (index); b · added token amount; Minimum per interval (optional); Maximum per interval (optional)
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: formula-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 CHECK: At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.
 CHECK: First five allocated periods total 133 base units = 1.33 tokens.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -404,7 +405,7 @@ CUMULATIVE k=1..5: 1.33 tokens.
 SCENE 43 | PART 4 | Check boundaries and invalid inputs
 SCREEN: Inspect optional blank versus zero values. Demonstrate an invalid zero divisor, invalid amount, duplicate phase and invalid preview reference. Read the validation messages, then restore valid example parameters.
 CONTROLS: Restore worked example parameters; Blank optional fields; Minimum per interval (optional); Maximum per interval (optional); d · positive scaling divisor; n · positive ratio denominator; Assumed registration reference for preview; Validation messages
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: emission-invalid-inputs (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/distributions.rs#L12
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/amount.rs#L7
@@ -412,7 +413,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 44 | PART 4 | Who can change recurring distribution later
 SCREEN: Use Edit permission to change recurring distribution. Demonstrate performer and administrator effects; restore both to No one and all three flags off. Turn Enable recurring distribution off.
 CONTROLS: Edit permission to change recurring distribution; Change recurring distribution; Who can perform this action; Who can change this rule; Later changes; Enable recurring distribution
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: rule-8 (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/dialogs.rs#L23
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
@@ -420,7 +421,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 45 | PART 5 | Schedule an absolute local date
 SCREEN: Enable scheduled distributions and Add scheduled distribution. Enter a future ISO date, hour and minute; inspect the local offset and UTC milliseconds. Inspect owner and specific identity recipients; set 5 tokens. Remove practice rows and turn the feature off.
 CONTROLS: Enable scheduled distributions; Add scheduled distribution; Allocation date and time (your local time); YYYY-MM-DD; Hour; Minute; Allocation instant; Recipient; Scheduled amount; Remove scheduled distribution
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: scheduled-retention (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Draft controls observed; no allocation or claim submitted.
 CHECK: Use a future date chosen at walkthrough time; record timezone and unchanged instant on revisit.
 CHECK: TODO: live scheduled allocation and later claim require separate authorized network observation.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
@@ -431,7 +432,7 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 46 | PART 5 | Once per identity is not once per person
 SCREEN: Enable once-per-identity distribution; enter 0.50 tokens, inspect the equivalent 50 base units and protocol help, then turn the feature off.
 CONTROLS: Enable once-per-identity distribution; Amount per identity; Amount per identity units
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Draft controls observed; no allocation or claim submitted.
 CHECK: TODO: live once-per-identity claims are not demonstrated by configuration or preview.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/parse.rs#L106
@@ -439,56 +440,64 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 47 | PART 5 | Clear the practice settings deliberately
 SCREEN: Verify all three distribution switches are off, scheduled rows removed, and Groups empty. Inspect the summary and the locked recurring rule; do not reset the whole draft.
 CONTROLS: Enable recurring distribution; Enable scheduled distributions; Enable once-per-identity distribution; Saved settings; Groups count; Draft summary
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Evidence: group-cleanup (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: not required for draft demonstration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/distribution.rs#L8
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/mod.rs#L258
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/groups.rs#L5
 
 SCENE 48 | PART 5 | Optional document types and safe JSON input
-SCREEN: Search & documents: paste the practice note-type mapping. Demonstrate invalid JSON, a top-level array and external-reference rejection. Clear document types. Retain the final description and leave additional keywords blank.
+SCREEN: Search & documents: paste the corrected note-type mapping, including text.position = 0. Run free Check settings and inspect note in the prepared JSON. Demonstrate invalid JSON, a top-level array, duplicate keys and external-reference rejection. Clear document types before the final token.
 CONTROLS: Description (optional); Search keywords; Document types (optional); Document types · JSON; Clear document types
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed. Network: Read-only preparation of the corrected note schema observed; no contract or document was registered.
 CHECK: Demonstrate syntax error, non-object top level and external-reference rejection.
 CHECK: Use the example mapping in current-walkthrough.md, then Clear document types; do not publish practice schema.
+CHECK: Observed: the original object failed full protocol construction despite local parsing. The corrected example passed Check settings and the prepared canonical JSON contained note.properties.text.position = 0. Clear the practice type before the final CloudPoint preparation.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/documents.rs#L4
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/document_json.rs#L1
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/contract.rs#L158
+DOCUMENT EXAMPLE: {"note": {"type": "object", "properties": {"text": {"type": "string", "position": 0, "maxLength": 100}}, "required": ["text"], "additionalProperties": false}}
+SCHEMA SOURCE: https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/common/mod.rs#L858
+SCHEMA SOURCE: https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/native_schema/properties.rs#L321
 
 SCENE 49 | PART 5 | Prepare and inspect the exact contract
 SCREEN: Review: inspect issuer, key and readiness; Check settings when available. In Final review, expand Technical details and the complete contract JSON, then exercise Copy contract JSON. Save contract JSON remains a separate pending check. No paid action.
 CONTROLS: Check settings; Final review; Technical details; Contract ID to be signed; Token ID to be created; Copy contract JSON; Save contract JSON; Inspect complete contract JSON · amounts are base units
-VERIFY: Coordinator observed prepared IDs, valid copied contract JSON and expanded JSON inspection. Editing a name removed Final review. Save to file remains pending.; network: Read-only network preparation observed; funded registration not exercised..
+VERIFY: Prepared IDs, copied canonical JSON and expanded inspection were observed; editing a name invalidated Final review. Save contract JSON was clicked twice without a confirmed dialog or file, so file export remains unverified. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
 CHECK: Observed by coordinator: prepared IDs, valid copied JSON, expanded inspection, and editing a name invalidating the prepared review. No registration was submitted.
 CHECK: Test save only to a writable private artifact path; capture errors honestly, with no sensitive material.
+CHECK: Save contract JSON was clicked twice, but no visible file dialog or saved file was confirmed in the QA desktop. TODO: verify the desktop portal and writable destination; do not mark export-to-file as observed.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31
 
 SCENE 50 | PART 6 | CloudPoint’s complete final policy
-SCREEN: Show the final policy target slide and every Reviewed section. Scroll through every field. This is a source-derived target, not an accepted receipt.
+SCREEN: Compare the complete final CloudPoint policy against the observed prepared canonical JSON. Scroll through each reviewed section. This prepared contract has not been submitted or registered.
 CONTROLS: Reviewed Basics; Reviewed Supply & permissions; Reviewed Distribution; Reviewed Groups; Reviewed History; Reviewed Search & documents; All 13 rules; All 39 change allowances
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: The complete final CloudPoint configuration was entered in the GUI, prepared with Check settings and checked in canonical JSON: five owner/eight No one performers, all 13 administrators No one, all 39 change flags off, per-mint recipient choice on, no groups or distributions, six histories on, no document types and the stated names, amounts and description. This is preparation, not an accepted registration. Network: No token registration was submitted.
 CHECK: Compare every target value to the actual prepared snapshot; do not treat this target table as observed evidence.
 CHECK: If preparation has not succeeded, retain draft-overview/code-only status and do not show an invented Final review.
+CHECK: Observed: the complete final target passed fresh Check settings and canonical JSON assertions. No token registration was submitted.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/supply.rs#L7
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/rules.rs#L22
 
 SCENE 51 | PART 6 | The paid action and its failure gates
-SCREEN: Review: inspect the charge, balance state and acknowledgement. Show only observed blocked states. Do not submit or fund without separate authorization.
+SCREEN: Review the observed charge/balance gate without publishing actual financial amounts. Explain the separate authorized funding failure and stop/check-state response. No token registration or paid retry occurred.
 CONTROLS: Registration charge; Owner balance when checked; Add identity credits; I reviewed the amounts, recipients, permissions and irreversible settings.; Create token and pay fees; Request running
-VERIFY: Coordinator observed insufficient credits, Add identity credits, and payment disabled even after acknowledgement. No payment or funding action.; network: Read-only network preparation observed; funded registration not exercised..
+VERIFY: Evidence: fixed-ack-insufficient (observed), testnet-topup-request (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed), faucet-funds-preserved (observed), funded-tests (blocked-by-funding-failure). See the pinned ledger for exact scope; other scene controls remain source checked only. Network: Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.
 CHECK: TODO: funded registration, live signing and resulting fee/outcome remain unobserved unless coordinator supplies exact evidence.
 CHECK: Never retry a paid action simply to obtain a cleaner demonstration.
+CHECK: Observed operational blocker: the authorized funding transaction failed before token registration. Investigation found a previously spent input. Exact wallet/backend selection cause remains under investigation; no app fix is part of this documentation update. TODO: revalidate funding readiness after reconciliation before either registration.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 
 SCENE 52 | PART 6 | Recover without paying twice
 SCREEN: Explain pending, unknown, conflicting and confirmed outcomes and local receipt restoration. Show only a branch actually available in the observed app; label other branches as source-based explanations.
 CONTROLS: Creation not yet confirmed; Check status · no payment; Creation conflict; Token created; Restore local receipt · no payment; Open contract; Create another token; Go to section error link
-VERIFY: pending coordinator walkthrough; network: not exercised.
+VERIFY: Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result. Network: No token registration, accepted receipt or token-creation recovery operation executed.
 CHECK: TODO: observe each recovery/error branch separately with evidence; code coverage is not a claim that the live branch was exercised.
 CHECK: No forced ambiguous broadcast or repeat payment solely for footage.
+CHECK: Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised.
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/ui/tokens/tokens_screen/creator/review.rs#L18
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/backend_task/tokens/creator_registration.rs#L106
 SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec650df4ec18f555/src/model/token_creator/registration.rs#L31
@@ -496,4 +505,4 @@ SOURCE: https://github.com/dashpay/dash-evo-tool/blob/975993070d0061f506c0b6a2ec
 SCENE 53 | PART 6 | Leave with a review habit
 SCREEN: Closing slide with cast, AI reminder and pinned source revision. Do not show a success montage without verified accepted results.
 CONTROLS: Closing; Source revision; AI-generated presentation disclosure
-VERIFY: pending coordinator walkthrough; network: not required for draft demonstration.
+VERIFY: Production metadata only; no filming or audio generation performed. Network: not required for draft demonstration.

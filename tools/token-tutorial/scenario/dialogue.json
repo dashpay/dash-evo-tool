@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "title": "Creating tokens in Dash Evolution: a conversation",
-  "status": "refreshed-awaiting-independent-audit-and-live-gates",
+  "status": "source-audited-live-coverage-partial-funding-blocked",
   "speakers": {
     "teacher": {
       "name": "Chad G. P. Taylor",
@@ -17,12 +17,17 @@
   },
   "source": {
     "scenario": "scenario.txt",
-    "scenario_sha256": "bbbda96b264383fc6e41d46bf12bc12b57a003c8b99f3aadd95340474b2eed3e",
+    "scenario_sha256": "592b2a9d5b29c4ff4abac88f54d721564657a3c941f92bbc35c5833603254215",
     "det_revision": "975993070d0061f506c0b6a2ec650df4ec18f555",
     "platform_revision": "575d961fe0c54bd7e01a3cf3823494e58c6c4fdb",
-    "review_status": "Independent source/text audit and coordinator GUI gates remain separate; see current-walkthrough.md.",
+    "review_status": "Independent source/text findings and GUI coverage are recorded separately in the linked review and evidence ledgers. The corrected document example passed live preparation. No recording or narration approval.",
     "historical_dialogue_sha256": "88e140a8c3c11a46811c081b94015eca896d51ff927180f19225e5302a712abc",
-    "historical_media": "Archival only; accepted-media.json and accepted-combined.en.srt do not describe this source. No take reuse is approved."
+    "historical_media": "Archival only; accepted-media.json and accepted-combined.en.srt do not describe this source. No take reuse is approved.",
+    "source_audit": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/review/source-report.md",
+    "gui_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/gui-results-source-snapshot.json",
+    "gui_evidence_sha256": "3ba100402e43097bea8e12da043ca380833c72bcea165917eeecbb177b825b97",
+    "help_evidence": "http://agentic/dash-evo-tool/2026-11-12/token-tutorial-pr1177/writer/help-results-source-snapshot.json",
+    "help_evidence_sha256": "0b31e1f4af28979efda9dd30c63aa18aa44b89b781804a0e9eaae5d54ba46680"
   },
   "packaging": {
     "standalone": "Each part intro, its scenes, then its outro.",
@@ -157,7 +162,7 @@
       "source_anchors": [],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
+        "gui": "Production metadata only; no filming or audio generation performed.",
         "network": "not required for draft demonstration"
       },
       "checks": [],
@@ -208,7 +213,7 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
+        "gui": "Seven-section navigation observed across the coordinator checks; no recording performed.",
         "network": "not required for draft demonstration"
       },
       "checks": [],
@@ -235,7 +240,7 @@
       "id": "02",
       "title": "Draft now, prepare an issuer later",
       "part": 1,
-      "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Do not fund or submit.",
+      "screen": "Show Testnet context and readiness help. Keep credentials and wallet unlock outside any capture. Explain the observed synchronization prerequisite and the later failed authorized funding attempt without exposing private amounts or identifiers.",
       "controls": [
         "Network",
         "Owner",
@@ -264,13 +269,31 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed issuer/key selection, initial quorum-data readiness failure, synchronization, and successful preparation afterward.",
-        "network": "Read-only network preparation observed; funded registration not exercised."
+        "gui": "Evidence: readiness-unsynced (observed), fixed-online-prepare (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui_checks": [
+          {
+            "id": "readiness-unsynced",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          },
+          {
+            "id": "topup-conflicting-input",
+            "status": "failed"
+          }
+        ]
       },
       "checks": [
-        "TODO: observe issuer/key and wallet readiness on the pinned binary without exposing secrets.",
-        "TODO: funded creation is outside this source-only rewrite; do not narrate a funded result.",
-        "Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization."
+        "Observed by coordinator: initial free Check settings failed with QuorumKeyUnavailable before network synchronization; this is a preparation/readiness failure, not a failed registration. Recheck after Settings → Connect and synchronization.",
+        "Observed: issuer/key selection, initial synchronization block and later successful free preparation. An authorized funding attempt failed; inspect transaction and reconcile wallet state before any further funding attempt.",
+        "Funded Testnet checks were explicitly authorized, but the funding attempt failed before either registration. TODO: reconcile the wallet state and confirm readiness before any separately authorized follow-up; do not narrate a funded result."
       ],
       "turns": [
         {
@@ -326,8 +349,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Navigate all seven sections and return; verify fields are retained.",
@@ -377,8 +406,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: fixed-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Blank plural and a name containing spaces must remain visibly incomplete or fail preparation; restore valid values."
@@ -441,8 +476,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: fixed-example (observed), amount-units (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          },
+          {
+            "id": "amount-units",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Switch valid amounts between tokens and base units and verify no value changes.",
@@ -499,8 +548,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed fixed-example compare, cancel, apply, undo and reapply on the pinned binary; other comparisons pending.",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: fixed-example (observed), owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-example",
+            "status": "observed"
+          },
+          {
+            "id": "owner-example",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Demonstrate cancel, apply and one-step undo; verify original authored names remain.",
@@ -557,8 +616,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: fixed-online-prepare (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -584,7 +649,7 @@
       "id": "08",
       "title": "Preparation and payment are separate",
       "part": 1,
-      "screen": "Review: inspect Issuer, fees & readiness and the Draft overview. If a usable identity is available, use Check settings; otherwise explain the blocked state. Do not click the paid action during this refresh.",
+      "screen": "Review: inspect issuer/key readiness, Draft overview and the observed successful Check settings after synchronization. Show the insufficient-credit gate honestly; token registration was not submitted.",
       "controls": [
         "Review your token",
         "Issuer, fees & readiness",
@@ -609,8 +674,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed successful Check settings after synchronization, Final review, insufficient-credit warning and disabled paid action even after acknowledgement. No submission.",
-        "network": "Read-only network preparation observed; funded registration not exercised."
+        "gui": "Evidence: fixed-online-prepare (observed), fixed-ack-insufficient (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-ack-insufficient",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Observed by coordinator: synchronized Check settings succeeded; Final review appeared. Preserve the exact prepared snapshot privately; do not publish actual financial amounts.",
@@ -666,8 +741,8 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not exercised"
+        "gui": "Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result.",
+        "network": "No token registration, accepted receipt or token-creation recovery operation executed."
       },
       "checks": [
         "TODO: observe confirmed receipt, copy controls and Open contract only after an authorized successful registration.",
@@ -718,8 +793,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed owner-example Apply retaining CloudPoint and CloudPoints.",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: owner-example (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "owner-example",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -770,8 +851,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: localizations (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "localizations",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Verify duplicate languages are rejected; remove the practice row and restore English search on."
@@ -826,8 +913,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: amount-units (observed), discovery-fields (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "amount-units",
+            "status": "observed"
+          },
+          {
+            "id": "discovery-fields",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -884,8 +981,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: precision-change (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "precision-change",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -932,8 +1039,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Show warning with pause authority disabled, then restore the owner pause authority and final booleans."
@@ -980,8 +1093,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: history-controls (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "history-controls",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1037,8 +1156,30 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: template-Most restrictive (observed), template-Emergency action (observed), template-Minting and burning (observed), template-All advanced actions (observed), template-Extreme actions (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "template-Most restrictive",
+            "status": "observed"
+          },
+          {
+            "id": "template-Emergency action",
+            "status": "observed"
+          },
+          {
+            "id": "template-Minting and burning",
+            "status": "observed"
+          },
+          {
+            "id": "template-All advanced actions",
+            "status": "observed"
+          },
+          {
+            "id": "template-Extreme actions",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Compare all five templates; inspect full rows including pricing, marketplace, destination and main-group authorities.",
@@ -1100,8 +1241,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-0 (observed), rule-filters (observed), rule-filter-counts (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          },
+          {
+            "id": "rule-filters",
+            "status": "observed"
+          },
+          {
+            "id": "rule-filter-counts",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1150,8 +1305,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-0 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1204,8 +1365,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-6",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1256,8 +1423,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-0 (observed), mint-recipients (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-0",
+            "status": "observed"
+          },
+          {
+            "id": "mint-recipients",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1310,8 +1491,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-9 (observed), rule-10 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-9",
+            "status": "observed"
+          },
+          {
+            "id": "rule-10",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1364,8 +1555,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-1",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1417,8 +1614,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-2 (observed), rule-3 (observed), supply-switches (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-2",
+            "status": "observed"
+          },
+          {
+            "id": "rule-3",
+            "status": "observed"
+          },
+          {
+            "id": "supply-switches",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1471,8 +1682,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-4",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1524,8 +1741,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-5 (observed), rule-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-5",
+            "status": "observed"
+          },
+          {
+            "id": "rule-7",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1577,8 +1804,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-11 (observed), rule-12 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-11",
+            "status": "observed"
+          },
+          {
+            "id": "rule-12",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1636,8 +1873,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: groups-validation (observed), group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "groups-validation",
+            "status": "observed"
+          },
+          {
+            "id": "group-references",
+            "status": "observed"
+          },
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1688,8 +1939,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: groups-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "groups-validation",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Use public identifiers only, supplied by the operator; never fabricate ownership.",
@@ -1752,8 +2009,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: group-references (observed), group-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "group-references",
+            "status": "observed"
+          },
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1800,8 +2067,22 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: recurring-retention (observed), scheduled-retention (observed), once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-retention",
+            "status": "observed"
+          },
+          {
+            "id": "once-per-identity",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1861,12 +2142,27 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: recurring-intervals-recipients (observed), year-unit (observed), time-unit-validation (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-intervals-recipients",
+            "status": "observed"
+          },
+          {
+            "id": "year-unit",
+            "status": "observed"
+          },
+          {
+            "id": "time-unit-validation",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Try zero interval and 30 seconds, then restore 1 day.",
-        "Inspect every time-unit option; do not retain obsolete year-alignment warning."
+        "Inspect every time-unit option; do not retain obsolete year-alignment warning.",
+        "Observed: one second failed protocol validation with a generic message, and restoring one day removed the error. All six time units were inspected; years (365 days) was selected and retained. Zero and thirty-second trials remain source-derived exercises unless separately recorded."
       ],
       "turns": [
         {
@@ -1924,8 +2220,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: recurring-intervals-recipients (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-intervals-recipients",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -1981,8 +2283,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: dynamic-preview (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "dynamic-preview",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -2029,8 +2337,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -2077,8 +2391,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-0 (observed), function-help (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-0",
+            "status": "observed"
+          },
+          {
+            "id": "function-help",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2171,8 +2495,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-1 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-1",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2269,8 +2599,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-2 (observed), emission-invalid-inputs (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-2",
+            "status": "observed"
+          },
+          {
+            "id": "emission-invalid-inputs",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2374,8 +2714,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-3 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-3",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2474,8 +2820,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-4 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-4",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2577,8 +2929,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-5 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-5",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2680,8 +3038,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-6 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-6",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2783,8 +3147,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: formula-7 (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "formula-7",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "At decimals=2, blank s and registration reference=0, compare every preview row k=0..10 to worked_example; cumulative starts at k=1.",
@@ -2889,8 +3259,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: emission-invalid-inputs (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "emission-invalid-inputs",
+            "status": "observed"
+          },
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -2944,8 +3324,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: rule-8 (observed), recurring-retention (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "rule-8",
+            "status": "observed"
+          },
+          {
+            "id": "recurring-retention",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -3008,8 +3398,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: scheduled-retention (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Draft controls observed; no allocation or claim submitted.",
+        "gui_checks": [
+          {
+            "id": "scheduled-retention",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-cleanup",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Use a future date chosen at walkthrough time; record timezone and unchanged instant on revisit.",
@@ -3058,8 +3458,14 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: once-per-identity (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Draft controls observed; no allocation or claim submitted.",
+        "gui_checks": [
+          {
+            "id": "once-per-identity",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "TODO: live once-per-identity claims are not demonstrated by configuration or preview."
@@ -3115,8 +3521,18 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "Evidence: group-cleanup (observed), scheduled-cleanup (observed). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "not required for draft demonstration",
+        "gui_checks": [
+          {
+            "id": "group-cleanup",
+            "status": "observed"
+          },
+          {
+            "id": "scheduled-cleanup",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [],
       "turns": [
@@ -3142,7 +3558,7 @@
       "id": "48",
       "title": "Optional document types and safe JSON input",
       "part": 5,
-      "screen": "Search & documents: paste the practice note-type mapping. Demonstrate invalid JSON, a top-level array and external-reference rejection. Clear document types. Retain the final description and leave additional keywords blank.",
+      "screen": "Search & documents: paste the corrected note-type mapping, including text.position = 0. Run free Check settings and inspect note in the prepared JSON. Demonstrate invalid JSON, a top-level array, duplicate keys and external-reference rejection. Clear document types before the final token.",
       "controls": [
         "Description (optional)",
         "Search keywords",
@@ -3169,17 +3585,56 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "The original note object parsed locally but failed full preparation because text.position was missing. With position 0, actual Check settings reached Final review and copied canonical JSON contained note.properties.text.position = 0. Invalid-input rejection and clearing were also observed.",
+        "network": "Read-only preparation of the corrected note schema observed; no contract or document was registered.",
+        "gui_checks": [
+          {
+            "id": "discovery-fields",
+            "status": "observed"
+          },
+          {
+            "id": "documents-syntax",
+            "status": "observed"
+          },
+          {
+            "id": "documents-shape",
+            "status": "observed"
+          },
+          {
+            "id": "documents-external",
+            "status": "observed"
+          },
+          {
+            "id": "documents-duplicates",
+            "status": "observed"
+          },
+          {
+            "id": "documents-object",
+            "status": "observed"
+          },
+          {
+            "id": "documents-clear",
+            "status": "observed"
+          },
+          {
+            "id": "documents-full-prepare-initial",
+            "status": "failed-example-corrected"
+          },
+          {
+            "id": "documents-full-prepare-corrected",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Demonstrate syntax error, non-object top level and external-reference rejection.",
-        "Use the example mapping in current-walkthrough.md, then Clear document types; do not publish practice schema."
+        "Use the example mapping in current-walkthrough.md, then Clear document types; do not publish practice schema.",
+        "Observed: the original object failed full protocol construction despite local parsing. The corrected example passed Check settings and the prepared canonical JSON contained note.properties.text.position = 0. Clear the practice type before the final CloudPoint preparation."
       ],
       "turns": [
         {
           "speaker": "teacher",
-          "text": "Document types accepts a JSON object mapping type names to schemas. It is not an import box for a complete token contract."
+          "text": "Document types accepts a JSON object mapping type names to schemas. It is not an import box for a complete token contract. The text property in this example includes position zero, because Platform requires ordered property positions."
         },
         {
           "speaker": "learner",
@@ -3193,6 +3648,26 @@
           "speaker": "learner",
           "text": "Clear document types removes all types from this draft. We'll keep the description and searchable English name, leave additional keywords empty, and include no document types in our final token."
         }
+      ],
+      "document_example": {
+        "note": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "position": 0,
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "document_example_sources": [
+        "https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/common/mod.rs#L858",
+        "https://github.com/dashpay/platform/blob/575d961fe0c54bd7e01a3cf3823494e58c6c4fdb/packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/native_schema/properties.rs#L321"
       ]
     },
     {
@@ -3229,12 +3704,31 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed prepared IDs, valid copied contract JSON and expanded JSON inspection. Editing a name removed Final review. Save to file remains pending.",
-        "network": "Read-only network preparation observed; funded registration not exercised."
+        "gui": "Prepared IDs, copied canonical JSON and expanded inspection were observed; editing a name invalidated Final review. Save contract JSON was clicked twice without a confirmed dialog or file, so file export remains unverified.",
+        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui_checks": [
+          {
+            "id": "fixed-online-prepare",
+            "status": "observed"
+          },
+          {
+            "id": "fixed-json",
+            "status": "observed"
+          },
+          {
+            "id": "review-invalidated",
+            "status": "observed"
+          },
+          {
+            "id": "save-json",
+            "status": "blocked-by-desktop-file-dialog"
+          }
+        ]
       },
       "checks": [
         "Observed by coordinator: prepared IDs, valid copied JSON, expanded inspection, and editing a name invalidating the prepared review. No registration was submitted.",
-        "Test save only to a writable private artifact path; capture errors honestly, with no sensitive material."
+        "Test save only to a writable private artifact path; capture errors honestly, with no sensitive material.",
+        "Save contract JSON was clicked twice, but no visible file dialog or saved file was confirmed in the QA desktop. TODO: verify the desktop portal and writable destination; do not mark export-to-file as observed."
       ],
       "turns": [
         {
@@ -3259,7 +3753,7 @@
       "id": "50",
       "title": "CloudPoint’s complete final policy",
       "part": 6,
-      "screen": "Show the final policy target slide and every Reviewed section. Scroll through every field. This is a source-derived target, not an accepted receipt.",
+      "screen": "Compare the complete final CloudPoint policy against the observed prepared canonical JSON. Scroll through each reviewed section. This prepared contract has not been submitted or registered.",
       "controls": [
         "Reviewed Basics",
         "Reviewed Supply & permissions",
@@ -3289,12 +3783,19 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not required for draft demonstration"
+        "gui": "The complete final CloudPoint configuration was entered in the GUI, prepared with Check settings and checked in canonical JSON: five owner/eight No one performers, all 13 administrators No one, all 39 change flags off, per-mint recipient choice on, no groups or distributions, six histories on, no document types and the stated names, amounts and description. This is preparation, not an accepted registration.",
+        "network": "No token registration was submitted.",
+        "gui_checks": [
+          {
+            "id": "final-cloudpoint-target",
+            "status": "observed"
+          }
+        ]
       },
       "checks": [
         "Compare every target value to the actual prepared snapshot; do not treat this target table as observed evidence.",
-        "If preparation has not succeeded, retain draft-overview/code-only status and do not show an invented Final review."
+        "If preparation has not succeeded, retain draft-overview/code-only status and do not show an invented Final review.",
+        "Observed: the complete final target passed fresh Check settings and canonical JSON assertions. No token registration was submitted."
       ],
       "turns": [
         {
@@ -3319,7 +3820,7 @@
       "id": "51",
       "title": "The paid action and its failure gates",
       "part": 6,
-      "screen": "Review: inspect the charge, balance state and acknowledgement. Show only observed blocked states. Do not submit or fund without separate authorization.",
+      "screen": "Review the observed charge/balance gate without publishing actual financial amounts. Explain the separate authorized funding failure and stop/check-state response. No token registration or paid retry occurred.",
       "controls": [
         "Registration charge",
         "Owner balance when checked",
@@ -3342,12 +3843,39 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "Coordinator observed insufficient credits, Add identity credits, and payment disabled even after acknowledgement. No payment or funding action.",
-        "network": "Read-only network preparation observed; funded registration not exercised."
+        "gui": "Evidence: fixed-ack-insufficient (observed), testnet-topup-request (observed), testnet-topup-unconfirmed (unconfirmed), topup-conflicting-input (failed), faucet-funds-preserved (observed), funded-tests (blocked-by-funding-failure). See the pinned ledger for exact scope; other scene controls remain source checked only.",
+        "network": "Read-only token preparation observed. An authorized identity-funding attempt failed; no token registration was submitted.",
+        "gui_checks": [
+          {
+            "id": "fixed-ack-insufficient",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-request",
+            "status": "observed"
+          },
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          },
+          {
+            "id": "topup-conflicting-input",
+            "status": "failed"
+          },
+          {
+            "id": "faucet-funds-preserved",
+            "status": "observed"
+          },
+          {
+            "id": "funded-tests",
+            "status": "blocked-by-funding-failure"
+          }
+        ]
       },
       "checks": [
         "TODO: funded registration, live signing and resulting fee/outcome remain unobserved unless coordinator supplies exact evidence.",
-        "Never retry a paid action simply to obtain a cleaner demonstration."
+        "Never retry a paid action simply to obtain a cleaner demonstration.",
+        "Observed operational blocker: the authorized funding transaction failed before token registration. Investigation found a previously spent input. Exact wallet/backend selection cause remains under investigation; no app fix is part of this documentation update. TODO: revalidate funding readiness after reconciliation before either registration."
       ],
       "turns": [
         {
@@ -3365,6 +3893,14 @@
         {
           "speaker": "teacher",
           "text": "Right. With authorization, a reviewed snapshot and the acknowledgement, Create token and pay fees starts the request. Click once and wait for its result. In this walkthrough, an unobserved funded step stays pending; we do not announce a creation that has not been confirmed."
+        },
+        {
+          "speaker": "learner",
+          "text": "What if adding credits fails before we can create the token? That happened during our Testnet checks."
+        },
+        {
+          "speaker": "teacher",
+          "text": "Stop and check the funding transaction and the wallet state before trying again. Our authorized funding attempt timed out, and investigation found that it tried to spend an output already spent earlier. The wallet selection problem still needs reconciliation. Neither token registration was submitted, and we have no successful top-up or token receipt to show."
         }
       ]
     },
@@ -3402,12 +3938,19 @@
       ],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
-        "network": "not exercised"
+        "gui": "Token-creation receipt and recovery branches were not executed. Their controls and behavior are source-checked only; the separate funding failure is not a Token Creator recovery result.",
+        "network": "No token registration, accepted receipt or token-creation recovery operation executed.",
+        "gui_checks": [
+          {
+            "id": "testnet-topup-unconfirmed",
+            "status": "unconfirmed"
+          }
+        ]
       },
       "checks": [
         "TODO: observe each recovery/error branch separately with evidence; code coverage is not a claim that the live branch was exercised.",
-        "No forced ambiguous broadcast or repeat payment solely for footage."
+        "No forced ambiguous broadcast or repeat payment solely for footage.",
+        "Do not treat an identity-funding timeout as evidence that Token Creator submission, receipt recovery, unknown-outcome handling or conflict handling was exercised."
       ],
       "turns": [
         {
@@ -3441,7 +3984,7 @@
       "source_anchors": [],
       "verification": {
         "source": "checked against pinned source",
-        "gui": "pending coordinator walkthrough",
+        "gui": "Production metadata only; no filming or audio generation performed.",
         "network": "not required for draft demonstration"
       },
       "checks": [],
@@ -3466,8 +4009,8 @@
     }
   ],
   "word_count": {
-    "scenes": 5578,
+    "scenes": 5665,
     "standalone_extras": 213,
-    "total": 5791
+    "total": 5878
   }
 }

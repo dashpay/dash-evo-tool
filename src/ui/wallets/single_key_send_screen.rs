@@ -16,6 +16,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::wallets_screen::SINGLE_KEY_SEND_UNAVAILABLE;
@@ -283,7 +284,10 @@ impl SingleKeyWalletSendScreen {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(RichText::new("+ Add Recipient").color(DashColors::DASH_BLUE))
+                    .button(
+                        RichText::new("+ Add Recipient")
+                            .color(DashColors::info_color(ui.visuals().dark_mode)),
+                    )
                     .clicked()
                 {
                     self.add_recipient();
@@ -316,7 +320,7 @@ impl SingleKeyWalletSendScreen {
                         );
                         ui.add_space(5.0);
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.recipients[i].address)
+                            styled_text_edit_singleline(&mut self.recipients[i].address)
                                 .hint_text(
                                     RichText::new("Enter Dash address (e.g., y...)")
                                         .color(Color32::GRAY),
@@ -334,7 +338,7 @@ impl SingleKeyWalletSendScreen {
                         );
                         ui.add_space(5.0);
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.recipients[i].amount)
+                            styled_text_edit_singleline(&mut self.recipients[i].amount)
                                 .hint_text(RichText::new("0.01").color(Color32::GRAY))
                                 .desired_width(150.0),
                         );
@@ -347,7 +351,9 @@ impl SingleKeyWalletSendScreen {
                                 |ui| {
                                     if ui
                                         .small_button(
-                                            RichText::new("Remove").color(DashColors::ERROR),
+                                            RichText::new("Remove").color(DashColors::error_color(
+                                                ui.visuals().dark_mode,
+                                            )),
                                         )
                                         .clicked()
                                     {
@@ -360,7 +366,11 @@ impl SingleKeyWalletSendScreen {
 
                     if let Some(error) = &self.recipients[i].error {
                         ui.add_space(5.0);
-                        ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
+                        ui.label(
+                            RichText::new(error)
+                                .color(DashColors::error_color(ui.visuals().dark_mode))
+                                .size(12.0),
+                        );
                     }
                 }
             });
@@ -459,7 +469,7 @@ impl SingleKeyWalletSendScreen {
                     );
                     ui.add_space(5.0);
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.recipients[0].address)
+                        styled_text_edit_singleline(&mut self.recipients[0].address)
                             .hint_text(RichText::new("Enter Dash address").color(Color32::GRAY))
                             .desired_width(500.0),
                     );
@@ -476,7 +486,7 @@ impl SingleKeyWalletSendScreen {
                     );
                     ui.add_space(5.0);
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.recipients[0].amount)
+                        styled_text_edit_singleline(&mut self.recipients[0].amount)
                             .hint_text(RichText::new("0.00").color(Color32::GRAY))
                             .desired_width(150.0),
                     );
@@ -678,7 +688,7 @@ impl SingleKeyWalletSendScreen {
                         );
                         ui.label(
                             RichText::new(format_duffs_as_dash(balance))
-                                .color(DashColors::SUCCESS)
+                                .color(DashColors::success_color(ui.visuals().dark_mode))
                                 .strong()
                                 .size(14.0),
                         );

@@ -229,7 +229,7 @@ fn draw_plus_circle(ui: &mut Ui, dark_mode: bool) {
         egui::Align2::CENTER_CENTER,
         "+",
         FontId::proportional(36.0),
-        DashColors::DASH_BLUE,
+        DashColors::info_color(dark_mode),
     );
 }
 

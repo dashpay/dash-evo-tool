@@ -19,7 +19,8 @@
 //! let raw_alias = input.text().to_owned();
 //! ```
 
-use egui::{InnerResponse, Response, RichText, TextEdit, Ui};
+use crate::ui::components::styled::styled_text_edit_singleline;
+use egui::{InnerResponse, Response, RichText, Ui};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::model::wallet::alias::{MAX_WALLET_ALIAS_CHARS, alias_char_count};
@@ -137,7 +138,7 @@ impl Component for AliasInput {
         ui.vertical(|ui| {
             let label_id = self.label.as_deref().map(|label| ui.label(label).id);
             let mut text_edit =
-                TextEdit::singleline(&mut self.text).hint_text(self.hint_text.clone());
+                styled_text_edit_singleline(&mut self.text).hint_text(self.hint_text.clone());
             if let Some(width) = self.desired_width {
                 text_edit = text_edit.desired_width(width);
             }

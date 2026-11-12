@@ -32,6 +32,9 @@ fn import_harness(
         .with_size(egui::vec2(1280.0, 2400.0))
         .build_ui_state(
             move |ui, screen: &mut ImportMnemonicScreen| {
+                if !crate::support::prepare_app_theme(ui) {
+                    return;
+                }
                 let _runtime_guard = runtime.enter();
                 screen.ui(ui);
             },

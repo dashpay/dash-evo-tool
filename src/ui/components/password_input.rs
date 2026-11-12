@@ -1,3 +1,4 @@
+use crate::ui::components::styled::styled_text_edit_singleline;
 use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::model::secret::Secret;
@@ -175,12 +176,12 @@ impl PasswordInput {
         // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let intrinsic_width_char_limit = self.intrinsic_width_char_limit();
-        let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
+        let mut text_edit = styled_text_edit_singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
             .margin(egui::Margin {
                 right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
-                ..egui::Margin::same(4)
+                ..crate::ui::theme::Spacing::INPUT_MARGIN
             });
 
         if self.monospace {
@@ -249,7 +250,7 @@ impl PasswordInput {
         self.revealing = next_revealing;
 
         let icon_color = if eye_response.hovered() || self.revealing {
-            DashColors::DASH_BLUE
+            DashColors::info_color(dark_mode)
         } else {
             DashColors::text_secondary(dark_mode)
         };

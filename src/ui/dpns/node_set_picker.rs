@@ -13,9 +13,6 @@ use std::collections::{BTreeMap, BTreeSet};
 const LIST_MAX_HEIGHT: f32 = 400.0;
 /// Shortest it is squeezed to in a low window.
 const LIST_MIN_HEIGHT: f32 = 80.0;
-/// Height of everything in the popover but the node list: the presets above
-/// it, the button below it and the frame.
-const POPOVER_CHROME_HEIGHT: f32 = 220.0;
 
 /// Display name of a node set.
 pub fn node_set_name(set: &NodeSet) -> &'static str {
@@ -66,7 +63,6 @@ pub fn show(
     // size, so the two must not depend on each other.
     let window = ui.ctx().content_rect();
     let room = (chip.rect.top() - window.top()).max(window.bottom() - chip.rect.bottom());
-    let list_height = (room - POPOVER_CHROME_HEIGHT).clamp(LIST_MIN_HEIGHT, LIST_MAX_HEIGHT);
     egui::Popup::from_toggle_button_response(&chip)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
@@ -86,7 +82,17 @@ pub fn show(
                 response.changed =
                     Some(NodeSet::Custom(resolved.included.iter().copied().collect()));
             }
-            ui.separator();
+            let separator_height = ui.separator().rect.height();
+            let button_height = ui.spacing().interact_size.y.max(
+                ui.text_style_height(&egui::TextStyle::Button)
+                    + 2.0 * ui.spacing().button_padding.y,
+            );
+            let chrome_height = ui.min_size().y
+                + button_height
+                + separator_height
+                + 3.0 * ui.spacing().item_spacing.y
+                + egui::Frame::popup(ui.style()).total_margin().sum().y;
+            let list_height = (room - chrome_height).clamp(LIST_MIN_HEIGHT, LIST_MAX_HEIGHT);
             let labels: BTreeMap<_, _> = nodes
                 .iter()
                 .filter_map(|node| node.alias.clone().map(|alias| (node.id, alias)))

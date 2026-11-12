@@ -12,6 +12,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -21,7 +22,7 @@ use crate::ui::identity::get_selected_wallet;
 use crate::ui::state::{AvatarCache, PendingRequest};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
@@ -463,7 +464,10 @@ impl ProfileScreen {
         if self.loading || self.saving {
             ui.horizontal(|ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
                 let status_text = if self.saving {
                     "Saving profile..."
                 } else {
@@ -511,7 +515,7 @@ impl ProfileScreen {
                                 });
 
                                 let display_name_response = ui.add(
-                                    TextEdit::singleline(&mut self.edit_display_name)
+                                    styled_text_edit_singleline(&mut self.edit_display_name)
                                         .hint_text(egui::RichText::new("Enter your display name (required)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );
@@ -547,7 +551,7 @@ impl ProfileScreen {
                                 });
 
                                 let bio_response = ui.add(
-                                    TextEdit::multiline(&mut self.edit_bio)
+                                    styled_text_edit_multiline(&mut self.edit_bio)
                                         .hint_text(egui::RichText::new("Tell others about yourself (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0)
                                         .desired_rows(4),
@@ -592,7 +596,7 @@ impl ProfileScreen {
                                 });
 
                                 let avatar_response = ui.add(
-                                    TextEdit::singleline(&mut self.edit_avatar_url)
+                                    styled_text_edit_singleline(&mut self.edit_avatar_url)
                                         .hint_text(egui::RichText::new("https://example.com/avatar.jpg (optional)").color(DashColors::text_secondary(dark_mode)))
                                         .desired_width(300.0),
                                 );

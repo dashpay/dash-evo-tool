@@ -1093,7 +1093,7 @@ fn render_card(
                 ui.add(
                     egui::Spinner::new()
                         .size(SPINNER_SIZE)
-                        .color(DashColors::DASH_BLUE),
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
                 );
 
                 if let Some((current, total)) = state.step

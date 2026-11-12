@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::MessageType;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::{MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
@@ -44,7 +45,7 @@ impl TokensScreen {
             let query_ref = self
                 .token_search_query
                 .get_or_insert_with(|| "".to_string());
-            let text_edit_response = ui.text_edit_singleline(query_ref);
+            let text_edit_response = ui.add(styled_text_edit_singleline(query_ref));
 
             // Clone the current query for use in the closure below
             let current_query = query_ref.clone();
@@ -198,7 +199,7 @@ impl TokensScreen {
                 })
                 .body(|mut body| {
                     for contract in search_results {
-                        body.row(25.0, |mut row| {
+                        body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                             row.col(|ui| {
                                 ui.label(contract.data_contract_id.to_string(Encoding::Base58));
                             });

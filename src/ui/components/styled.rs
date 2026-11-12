@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use crate::{
     context::AppContext,
-    ui::theme::{DashColors, Shadow, Shape, Spacing, Typography},
+    ui::theme::{ComponentStyles, DashColors, Shape, Spacing, Typography},
 };
-use egui::{Button, CentralPanel, Frame, Margin, Response, RichText, Stroke, TextEdit, Ui, Vec2};
+use egui::{
+    Button, CentralPanel, Frame, Margin, Response, RichText, Stroke, TextBuffer, TextEdit, Ui, Vec2,
+};
 
 // Re-export commonly used components
 pub use super::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -27,30 +29,59 @@ impl StyledButton {
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
-        let mut button = Button::new(
-            RichText::new(self.text)
-                .size(Typography::SCALE_BASE)
-                .color(DashColors::WHITE),
-        )
-        .fill(if self.enabled {
-            DashColors::DASH_BLUE
-        } else {
-            DashColors::DISABLED
+        ui.scope(|ui| {
+            if let Some(width) = self.min_width {
+                ui.set_min_width(width);
+            }
+            ComponentStyles::add_primary_button_enabled(ui, self.enabled, self.text)
         })
-        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD));
-
-        if let Some(min_width) = self.min_width {
-            button = button.min_size(Vec2::new(min_width, 0.0));
-        }
-
-        let response = ui.add_enabled(self.enabled, button);
-
-        if response.hovered() && self.enabled {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-
-        response
+        .inner
     }
+}
+
+/// Secondary explanatory copy, distinct from values and action labels.
+pub(crate) fn muted_label(ui: &mut Ui, text: impl Into<String>) -> Response {
+    ui.label(
+        RichText::new(text)
+            .font(Typography::body())
+            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+    )
+}
+
+/// A compact explanatory hint using the shared secondary foreground.
+pub(crate) fn hint_label(ui: &mut Ui, text: impl Into<String>) -> Response {
+    ui.label(
+        RichText::new(text)
+            .font(Typography::hint())
+            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+    )
+}
+
+/// An inline contextual notice; information uses primary text on the soft surface.
+pub(crate) fn inline_notice<R>(
+    ui: &mut Ui,
+    kind: crate::ui::MessageType,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let dark = ui.visuals().dark_mode;
+    Frame::new()
+        .fill(DashColors::message_background_color(kind, dark))
+        .corner_radius(Shape::RADIUS_MD)
+        .inner_margin(Margin::symmetric(14, 12))
+        .outer_margin(Margin::symmetric(0, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.style_mut()
+                .text_styles
+                .insert(egui::TextStyle::Body, Typography::body_small());
+            ui.visuals_mut().override_text_color = Some(if kind == crate::ui::MessageType::Info {
+                DashColors::text_primary(dark)
+            } else {
+                DashColors::message_color(kind, dark)
+            });
+            content(ui)
+        })
+        .inner
 }
 
 /// Styled card component
@@ -90,9 +121,16 @@ impl StyledCard {
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .stroke(stroke)
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-            .inner_margin(egui::Margin::same(self.padding as i8))
-            .shadow(Shadow::medium())
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+            .inner_margin(egui::Margin::same(
+                if self.padding == Spacing::CARD_PADDING
+                    && ui.ctx().content_rect().width() <= 1100.0
+                {
+                    Spacing::CARD_PADDING_COMPACT as i8
+                } else {
+                    self.padding as i8
+                },
+            ))
             .show(ui, content)
             .inner
     }
@@ -173,11 +211,18 @@ impl GradientButton {
     }
 }
 
-/// Helper function to style a TextEdit with consistent theme
-pub fn styled_text_edit_singleline(text: &mut String, dark_mode: bool) -> TextEdit<'_> {
+/// Single-line field with the shared form padding and minimum target height.
+pub fn styled_text_edit_singleline(text: &mut dyn TextBuffer) -> TextEdit<'_> {
     TextEdit::singleline(text)
-        .text_color(DashColors::text_primary(dark_mode))
-        .background_color(DashColors::input_background(dark_mode))
+        .margin(Spacing::INPUT_MARGIN)
+        .min_size(Vec2::new(0.0, Spacing::INPUT_HEIGHT))
+}
+
+/// Multiline field with the same typography and padding as single-line fields.
+pub fn styled_text_edit_multiline(text: &mut dyn TextBuffer) -> TextEdit<'_> {
+    TextEdit::multiline(text)
+        .margin(Spacing::INPUT_MARGIN)
+        .min_size(Vec2::new(0.0, Spacing::INPUT_HEIGHT))
 }
 
 /// Helper function to create an island-style central panel.
@@ -201,11 +246,9 @@ pub fn island_central_panel<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) 
 
             // Create an island panel with rounded edges
             Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::same(inner_margin as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
                 .show(ui, |ui| {
                     super::MessageBanner::show_global(ui);
                     content(ui)

@@ -146,7 +146,7 @@ impl WalletsBalancesScreen {
                                     for lock in tracked {
                                         let refusal =
                                             existing_funding_refusal(lock.amount, minimum_duffs);
-                                        body.row(25.0, |mut row| {
+                                        body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                                             row.col(|ui| {
                                                 ui.label(lock.out_point.txid.to_string());
                                             });

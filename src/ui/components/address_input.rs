@@ -2,6 +2,7 @@ use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -1040,7 +1041,7 @@ impl AddressInput {
                     }
 
                     // Text input
-                    let mut text_edit = egui::TextEdit::singleline(&mut self.input_text);
+                    let mut text_edit = styled_text_edit_singleline(&mut self.input_text);
                     if !hint_text.is_empty() {
                         text_edit = text_edit
                             .hint_text(egui::RichText::new(&hint_text).color(egui::Color32::GRAY));
@@ -1239,7 +1240,10 @@ impl AddressInput {
                     && validated_address.is_some()
                     && let Some(kind) = detected.to_address_kind()
                 {
-                    ui.colored_label(DashColors::SUCCESS, kind.display_name());
+                    ui.colored_label(
+                        DashColors::success_color(ui.visuals().dark_mode),
+                        kind.display_name(),
+                    );
                 }
             }
 

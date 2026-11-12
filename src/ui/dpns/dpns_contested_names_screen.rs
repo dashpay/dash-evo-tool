@@ -1,4 +1,5 @@
 mod scheduled_vote_editor;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use scheduled_vote_editor::{EditOutcome, ScheduledVoteEditor};
 
 use crate::wallet_backend::poison::MutexRecover;
@@ -1125,7 +1126,7 @@ impl DPNSScreen {
                     });
                 let filter = ui
                     .add(
-                        egui::TextEdit::singleline(&mut self.active_filter_term)
+                        styled_text_edit_singleline(&mut self.active_filter_term)
                             .hint_text("Filter by name")
                             .desired_width(180.0),
                     )
@@ -1612,7 +1613,7 @@ impl DPNSScreen {
         ui.horizontal(|ui| {
             let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.past_filter_term)
+            ui.add(styled_text_edit_singleline(&mut self.past_filter_term))
                 .on_hover_text(NAME_FILTER_LOOKALIKES_HINT);
         });
 
@@ -1662,7 +1663,7 @@ impl DPNSScreen {
                 })
                 .body(|mut body| {
                     for contested_name in &contested_names {
-                        body.row(25.0, |mut row| {
+                        body.row(crate::ui::theme::Spacing::TABLE_ROW_HEIGHT, |mut row| {
                             // Name
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;

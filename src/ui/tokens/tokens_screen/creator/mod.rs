@@ -14,8 +14,13 @@ use crate::app::AppAction;
 use crate::model::token_creator::amount::{TokenAmountInput, format_amount};
 use crate::model::token_creator::rules::{ActorDraft, RuleKind};
 use crate::model::token_creator::{Policy, Recipient, Section};
+use crate::ui::MessageType;
+use crate::ui::components::styled::styled_text_edit_singleline;
+use crate::ui::components::styled::{
+    StyledCard, hint_label as hint, inline_notice, muted_label as muted,
+};
 use crate::ui::state::token_creator::CreatorWorkspace;
-use crate::ui::theme::ComponentStyles;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape, Spacing, Typography};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{Context, RichText, Ui};
 
@@ -35,23 +40,11 @@ impl TokensScreen {
             self.creator_workspace.prepared = None;
             self.creator_workspace.acknowledged = false;
         }
-        ui.horizontal(|ui| {
-            ui.heading("Create a token");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
-            });
-        });
-        ui.label("Start with its purpose. Decide what can change later.");
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("Network: {}", self.app_context.network));
-            if let Some(identity) = &self.selected_identity {
-                ui.label(format!("Owner: {}", identity.display_string()));
-            } else {
-                ui.label("Drafting is available. Choose an identity in Review when you are ready.");
-            }
-            help(ui, &mut self.creator_workspace.help, "readiness");
-        });
-        ui.add_space(12.0);
+        let dark_mode = ui.visuals().dark_mode;
+        let scroll_header = context.content_rect().height() < 700.0;
+        if !scroll_header {
+            self.render_workspace_header(ui);
+        }
         let navigation = (
             self.creator_workspace.section,
             ui.available_width().to_bits(),
@@ -68,8 +61,20 @@ impl TokensScreen {
                         let response = ui.add(
                             egui::Button::selectable(
                                 selected,
-                                format!("{}  {}", index + 1, section.label()),
+                                RichText::new(format!("{}  {}", index + 1, section.label()))
+                                    .size(Typography::SCALE_SM)
+                                    .color(if selected {
+                                        DashColors::info_color(dark_mode)
+                                    } else {
+                                        DashColors::text_primary(dark_mode)
+                                    }),
                             )
+                            .fill(if selected {
+                                DashColors::selected(dark_mode)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .stroke(egui::Stroke::NONE)
                             .wrap_mode(egui::TextWrapMode::Extend),
                         );
                         if response.clicked() {
@@ -115,8 +120,53 @@ impl TokensScreen {
                     .show(ui, |ui| summary(ui, &mut self.creator_workspace));
             });
         }
-        let width = ui.available_width() - if wide { 248.0 } else { 0.0 };
-        let body_height = (ui.available_height() - 48.0).max(100.0);
+        let position = Section::ALL
+            .iter()
+            .position(|section| *section == self.creator_workspace.section)
+            .unwrap_or(0);
+        let footer_caption = format!(
+            "Step {step} of 7. Your draft is kept as you continue.",
+            step = position + 1
+        );
+        let next_caption = Section::ALL
+            .get(position + 1)
+            .map(|next| format!("Continue: {} →", next.label()));
+        let button_font = egui::TextStyle::Button.resolve(ui.style());
+        let button_padding = 2.0 * ui.spacing().button_padding.x;
+        let back_width = (Typography::measure_text_width(ui, "← Back", button_font.clone())
+            + button_padding)
+            .max(80.0);
+        let next_width = next_caption.as_ref().map_or(0.0, |caption| {
+            (Typography::measure_text_width(ui, caption, button_font.clone()) + button_padding)
+                .max(ComponentStyles::DIALOG_BUTTON_MIN_SIZE.x)
+        });
+        let caption_galley = ui.painter().layout(
+            footer_caption.clone(),
+            Typography::caption(),
+            DashColors::text_secondary(dark_mode),
+            ui.available_width(),
+        );
+        let stacked_footer =
+            back_width + next_width + caption_galley.size().x + 2.0 * ui.spacing().item_spacing.x
+                > ui.available_width();
+        let button_height = Spacing::CONTROL_HEIGHT.max(
+            ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y,
+        );
+        let footer_height = button_height
+            + Spacing::LG
+            + if stacked_footer {
+                caption_galley.size().y + ui.spacing().item_spacing.y
+            } else {
+                0.0
+            };
+        let summary_width = 280.0;
+        let width = ui.available_width()
+            - if wide {
+                summary_width + Spacing::LG
+            } else {
+                0.0
+            };
+        let body_height = (ui.available_height() - footer_height).max(0.0);
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(width, body_height),
@@ -127,37 +177,46 @@ impl TokensScreen {
                         .id_salt(("creator_editor", self.creator_workspace.section.label()))
                         .auto_shrink([false, false])
                         .max_height(body_height)
-                        .show(ui, |ui| match self.creator_workspace.section {
-                            Section::Basics => basics::show(ui, &mut self.creator_workspace),
-                            Section::Supply => supply::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::Distribution => distribution::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.network,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::Groups => groups::show(
-                                ui,
-                                &mut self.creator_workspace,
-                                self.app_context.platform_version(),
-                            ),
-                            Section::History => documents::history(ui, &mut self.creator_workspace),
-                            Section::Documents => documents::show(ui, &mut self.creator_workspace),
-                            Section::Review => action |= self.render_workspace_review(ui),
+                        .show(ui, |ui| {
+                            if scroll_header {
+                                self.render_workspace_header(ui);
+                            }
+                            match self.creator_workspace.section {
+                                Section::Basics => basics::show(ui, &mut self.creator_workspace),
+                                Section::Supply => supply::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::Distribution => distribution::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.network,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::Groups => groups::show(
+                                    ui,
+                                    &mut self.creator_workspace,
+                                    self.app_context.platform_version(),
+                                ),
+                                Section::History => {
+                                    documents::history(ui, &mut self.creator_workspace)
+                                }
+                                Section::Documents => {
+                                    documents::show(ui, &mut self.creator_workspace)
+                                }
+                                Section::Review => action |= self.render_workspace_review(ui),
+                            }
                         });
                 },
             );
             if wide {
-                ui.add_space(8.0);
+                ui.add_space(Spacing::LG - ui.spacing().item_spacing.x * 2.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(232.0, body_height),
+                    egui::vec2(summary_width, body_height),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_width(232.0);
+                        ui.set_width(summary_width);
                         egui::ScrollArea::vertical()
                             .id_salt("creator_summary")
                             .auto_shrink([false, false])
@@ -168,31 +227,25 @@ impl TokensScreen {
             }
         });
         ui.separator();
+        if stacked_footer {
+            hint(ui, &footer_caption);
+        }
         ui.horizontal(|ui| {
-            let position = Section::ALL
-                .iter()
-                .position(|section| *section == self.creator_workspace.section)
-                .unwrap_or(0);
             if ui
                 .add_enabled(
                     self.creator_workspace.section != Section::Basics,
-                    egui::Button::new("← Back").min_size(egui::vec2(80.0, 32.0)),
+                    egui::Button::new("← Back").min_size(egui::vec2(80.0, Spacing::CONTROL_HEIGHT)),
                 )
                 .clicked()
             {
                 self.creator_workspace.navigate(false);
             }
-            ui.small(format!(
-                "Step {step} of 7. Your draft is kept as you continue.",
-                step = position + 1
-            ));
+            if !stacked_footer {
+                hint(ui, &footer_caption);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(next) = Section::ALL.get(position + 1)
-                    && ComponentStyles::add_primary_button(
-                        ui,
-                        format!("Continue: {} →", next.label()),
-                    )
-                    .clicked()
+                if let Some(caption) = next_caption
+                    && ComponentStyles::add_primary_button(ui, caption).clicked()
                 {
                     self.creator_workspace.navigate(true);
                 }
@@ -201,18 +254,49 @@ impl TokensScreen {
         dialogs::show(context, &mut self.creator_workspace);
         action
     }
+
+    fn render_workspace_header(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Create a token").font(Typography::page_title()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.hyperlink_to("Video tutorial ↗", TUTORIAL_URL);
+            });
+        });
+        ui.label(
+            RichText::new("Start with its purpose. Decide what can change later.")
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        ui.add_space(Spacing::MD);
+        let dark_mode = ui.visuals().dark_mode;
+        egui::Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
+            .corner_radius(Shape::RADIUS_LG)
+            .inner_margin(egui::Margin::symmetric(18, 15))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!("Network: {}", self.app_context.network));
+                    if let Some(identity) = &self.selected_identity {
+                        ui.label(format!("Owner: {}", identity.display_string()));
+                    } else {
+                        ui.label(
+                            "Drafting is available. Choose an identity in Review when you are ready.",
+                        );
+                    }
+                    help(ui, &mut self.creator_workspace.help, "readiness");
+                });
+            });
+        ui.add_space(Spacing::LG);
+    }
 }
 
 fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().panel_fill)
-        .inner_margin(16)
-        .corner_radius(8)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui);
-        });
-    ui.add_space(12.0);
+    StyledCard::new().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        content(ui);
+    });
+    ui.add_space(Spacing::SECTION_SPACING - ui.spacing().item_spacing.y);
 }
 
 const HELP_OPENER: &str = "creator_help_opener";
@@ -220,7 +304,20 @@ const HELP_OPENER: &str = "creator_help_opener";
 fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
     let name = format!("Help: {}", dialogs::topic_title(key));
     let response = ui
-        .add(egui::Button::new("?").min_size(egui::vec2(32.0, 32.0)))
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            ui.spacing_mut().interact_size = egui::vec2(28.0, 28.0);
+            ui.add_sized(
+                egui::vec2(28.0, 28.0),
+                egui::Button::new(
+                    RichText::new("?")
+                        .size(15.0)
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                )
+                .corner_radius(Shape::RADIUS_FULL),
+            )
+        })
+        .inner
         .on_hover_text(&name);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
@@ -249,25 +346,53 @@ fn help(ui: &mut Ui, topic: &mut Option<String>, key: &str) {
 }
 
 fn heading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
-    ui.horizontal_wrapped(|ui| {
-        ui.heading(text);
-        help(ui, topic, key);
-    });
-    ui.add_space(6.0);
+    label_with_help(
+        ui,
+        RichText::new(text).font(Typography::heading_medium()),
+        key,
+        topic,
+    );
+}
+
+fn subheading(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) {
+    label_with_help(
+        ui,
+        RichText::new(text).font(Typography::subheading()),
+        key,
+        topic,
+    );
 }
 
 fn label(ui: &mut Ui, text: &str, key: &str, topic: &mut Option<String>) -> egui::Response {
-    ui.horizontal_wrapped(|ui| {
-        let response = ui.strong(text);
-        help(ui, topic, key);
-        response
+    label_with_help(
+        ui,
+        RichText::new(text).family(Typography::strong_family()),
+        key,
+        topic,
+    )
+}
+
+fn label_with_help(
+    ui: &mut Ui,
+    text: RichText,
+    key: &str,
+    topic: &mut Option<String>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 28.0;
+        ui.horizontal_wrapped(|ui| {
+            let response = ui.label(text);
+            help(ui, topic, key);
+            response
+        })
+        .inner
     })
     .inner
 }
 
 fn text(ui: &mut Ui, caption: &str, key: &str, value: &mut String, topic: &mut Option<String>) {
     let caption = label(ui, caption, key, topic);
-    ui.add(egui::TextEdit::singleline(value).desired_width(f32::INFINITY))
+    ui.add(styled_text_edit_singleline(value).desired_width(f32::INFINITY))
         .labelled_by(caption.id);
     ui.add_space(8.0);
 }
@@ -288,11 +413,18 @@ fn amount(
     topic: &mut Option<String>,
 ) {
     let caption_response = label(ui, caption, key, topic);
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut value.text).desired_width(180.0))
+    let inline_units = ui.available_width() >= 320.0;
+    let input_width = if inline_units {
+        ui.available_width() - 120.0 - ui.spacing().item_spacing.x
+    } else {
+        ui.available_width()
+    };
+    let render = |ui: &mut Ui| {
+        ui.add(styled_text_edit_singleline(&mut value.text).desired_width(input_width))
             .labelled_by(caption_response.id);
         let mut raw = value.base_units;
         egui::ComboBox::from_id_salt((caption, "units"))
+            .width(120.0)
             .selected_text(if raw { "base units" } else { "tokens" })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut raw, false, "tokens");
@@ -309,7 +441,12 @@ fn amount(
         if let Err(error) = value.change_units(raw, decimals) {
             ui.colored_label(ui.visuals().error_fg_color, error.to_string());
         }
-    });
+    };
+    if inline_units {
+        ui.horizontal(render);
+    } else {
+        ui.vertical(render);
+    }
     if !value.text.trim().is_empty() {
         match value.parse(decimals) {
             Ok(raw) => {
@@ -358,10 +495,23 @@ fn recipient_label(recipient: &Recipient) -> String {
     }
 }
 
+fn summary_field(ui: &mut Ui, caption: &str, value: String) {
+    ui.add_space(Spacing::SM);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = Spacing::XXS;
+        ui.label(
+            RichText::new(caption)
+                .font(Typography::caption())
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        ui.label(RichText::new(value).font(Typography::body_small()));
+    });
+}
+
 fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
     state.draft.reconcile_policy();
     card(ui, |ui| {
-        heading(ui, "Your token", "review", &mut state.help);
+        subheading(ui, "Your token", "review", &mut state.help);
         ui.label(
             RichText::new(state.draft.names.first().map_or("Untitled token", |name| {
                 if name.singular.is_empty() {
@@ -370,32 +520,38 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                     &name.singular
                 }
             }))
-            .strong(),
+            .font(Typography::heading_small()),
         );
-        ui.label(policy_label(state.draft.policy));
-        ui.separator();
-        for (label, amount) in [
+        ui.label(
+            RichText::new(policy_label(state.draft.policy))
+                .font(Typography::caption())
+                .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+        );
+        for (caption, amount) in [
             ("Initial supply", &state.draft.initial),
             ("Maximum supply", &state.draft.maximum),
         ] {
-            if label == "Maximum supply" && state.draft.no_maximum {
-                ui.label("Maximum supply: no configured limit");
+            let value = if caption == "Maximum supply" && state.draft.no_maximum {
+                "no configured limit".into()
             } else {
-                ui.label(format!(
-                    "{label}: {}",
-                    amount
-                        .parse(state.draft.decimals)
-                        .map(|raw| format!("{} tokens", format_amount(raw, state.draft.decimals)))
-                        .unwrap_or_else(|_| "not valid yet".into())
-                ));
-            }
+                amount
+                    .parse(state.draft.decimals)
+                    .map(|raw| format!("{} tokens", format_amount(raw, state.draft.decimals)))
+                    .unwrap_or_else(|_| "not valid yet".into())
+            };
+            summary_field(ui, caption, value);
         }
-        ui.small(supply::cap_consequence(&state.draft));
-        ui.small(format!("{} decimal places", state.draft.decimals));
-        ui.label(format!(
-            "Initial recipient: {}",
-            recipient_label(&state.draft.mint_recipient)
-        ));
+        hint(ui, supply::cap_consequence(&state.draft));
+        summary_field(
+            ui,
+            "Precision",
+            format!("{} decimal places", state.draft.decimals),
+        );
+        summary_field(
+            ui,
+            "Initial recipient",
+            recipient_label(&state.draft.mint_recipient),
+        );
         ui.separator();
         ui.label(if state.draft.transferable {
             "Transfers: allowed · permanent choice"
@@ -406,12 +562,12 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ui.small("Transfers start paused.");
         }
         ui.separator();
-        ui.strong("Distribution");
+        ui.label(RichText::new("Distribution").font(Typography::subheading()));
         ui.label(format!(
             "Recurring: {}",
             on_off(state.draft.recurring.enabled)
         ));
-        ui.small(distribution::recurring_authority(&state.draft));
+        hint(ui, distribution::recurring_authority(&state.draft));
         ui.label(format!(
             "Scheduled: {status} · {count} saved allocations",
             status = on_off(state.draft.scheduled_enabled),
@@ -432,7 +588,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 .count()
         ));
         ui.separator();
-        ui.strong("Powers and consequences");
+        ui.label(RichText::new("Powers and consequences").font(Typography::subheading()));
         for kind in RuleKind::ALL {
             let rule = state.draft.permissions.get(kind);
             if rule.performer != ActorDraft::NoOne
@@ -446,7 +602,10 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                     || rule.allow_remove_administrator
                     || rule.allow_replace_administrator
                 {
-                    ui.small("Later changes are allowed. Review the rule's three allowances.");
+                    hint(
+                        ui,
+                        "Later changes are allowed. Review the rule's three allowances.",
+                    );
                 }
             }
         }
@@ -460,8 +619,14 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ui.label("All 13 action rules are permanently disabled.");
         }
         ui.separator();
-        ui.small("Creation fees come from the issuer's Platform balance. Review all permanent choices before signing.");
-        ui.small("Draft only. Nothing is created or charged before the final confirmation.");
+        hint(
+            ui,
+            "Creation fees come from the issuer's Platform balance. Review all permanent choices before signing.",
+        );
+        hint(
+            ui,
+            "Draft only. Nothing is created or charged before the final confirmation.",
+        );
     });
 }
 

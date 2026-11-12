@@ -31,6 +31,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::components::avatar::Avatar;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::state::AvatarCache;
@@ -39,7 +40,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing}
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{CornerRadius, Frame, Label, Margin, RichText, Stroke, TextEdit, Ui};
+use eframe::egui::{CornerRadius, Frame, Label, Margin, RichText, Stroke, Ui};
 use std::sync::Arc;
 
 pub use crate::ui::state::contacts_view::{ContactRequestEntry, ContactsState};
@@ -762,7 +763,7 @@ fn note_editor(
     ui.add_space(6.0);
     ui.add_enabled(
         !saving,
-        TextEdit::multiline(note)
+        styled_text_edit_multiline(note)
             .hint_text(NOTE_PLACEHOLDER)
             .desired_rows(4)
             .desired_width(f32::INFINITY),
@@ -775,7 +776,9 @@ fn note_editor(
         .as_deref()
         .and_then(|note| validate_contact_note(note).err());
     if let Some(error) = invalid {
-        ui.label(RichText::new(error.to_string()).color(DashColors::ERROR));
+        ui.label(
+            RichText::new(error.to_string()).color(DashColors::error_color(ui.visuals().dark_mode)),
+        );
     }
 
     ui.add_space(8.0);
@@ -879,7 +882,7 @@ fn active_section(
         // The search box only earns its place once there is something to search.
         if has_contacts {
             ui.add(
-                eframe::egui::TextEdit::singleline(state.search_mut())
+                styled_text_edit_singleline(state.search_mut())
                     .hint_text(SEARCH_PLACEHOLDER)
                     .desired_width(f32::INFINITY),
             );

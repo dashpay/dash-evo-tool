@@ -7,33 +7,23 @@ use dash_sdk::dpp::version::PlatformVersion;
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &PlatformVersion) {
     card(ui, |ui| {
         heading(ui, "Supply & permissions", "policy", &mut state.help);
-        ui.label("Enter amounts in tokens or base units. Changing precision preserves the displayed token amount.");
-        amount(
+        muted(
             ui,
-            "Initial supply",
-            "initial",
-            &mut state.draft.initial,
-            state.draft.decimals,
-            &mut state.help,
+            "Enter amounts in tokens or base units. Changing precision preserves the displayed token amount.",
         );
-        checkbox(
+        if ui.available_width() >= 440.0 {
+            ui.columns(2, |columns| {
+                initial_supply(&mut columns[0], state);
+                maximum_supply(&mut columns[1], state);
+            });
+        } else {
+            initial_supply(ui, state);
+            maximum_supply(ui, state);
+        }
+        hint(
             ui,
-            "No maximum supply",
-            "noMaximum",
-            &mut state.draft.no_maximum,
-            &mut state.help,
+            "Burning tokens can free capacity for future mints; this is not a lifetime minting limit.",
         );
-        ui.add_enabled_ui(!state.draft.no_maximum, |ui| {
-            amount(
-                ui,
-                "Maximum outstanding supply",
-                "maximum",
-                &mut state.draft.maximum,
-                state.draft.decimals,
-                &mut state.help,
-            )
-        });
-        ui.small("Burning tokens can free capacity for future mints; this is not a lifetime minting limit.");
         ui.horizontal(|ui| {
             let caption = label(ui, "Decimal places", "decimals", &mut state.help);
             let mut precision = state.draft.decimals;
@@ -46,10 +36,16 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
                 state.error = Some(error);
             }
         });
-        ui.small("Choose 0 to 16 decimal places. For example, 2 allows 1.25 tokens. Amounts that cannot be represented remain visible for correction.");
-        ui.label(cap_consequence(&state.draft));
-        heading(ui, "Mint recipients", "mintRecipient", &mut state.help);
-        ui.label("The default new-token recipient also receives the initial supply. Choosing a different recipient on a future mint is a separate permission.");
+        hint(
+            ui,
+            "Choose 0 to 16 decimal places. For example, 2 allows 1.25 tokens. Amounts that cannot be represented remain visible for correction.",
+        );
+        cap_notice(ui, &state.draft);
+        subheading(ui, "Mint recipients", "mintRecipient", &mut state.help);
+        muted(
+            ui,
+            "The default new-token recipient also receives the initial supply. Choosing a different recipient on a future mint is a separate permission.",
+        );
         label(
             ui,
             "Default recipient for newly created tokens",
@@ -63,10 +59,12 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             true,
             &mut state.help,
         );
-        ui.small(format!(
-            "Initial allocation: {}",
-            recipient_label(&state.draft.mint_recipient)
-        ));
+        inline_notice(ui, MessageType::Info, |ui| {
+            ui.label(format!(
+                "Initial allocation: {}",
+                recipient_label(&state.draft.mint_recipient)
+            ));
+        });
         checkbox(
             ui,
             "Allow choosing a recipient on each mint",
@@ -81,7 +79,10 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             &mut state.draft.transferable,
             &mut state.help,
         );
-        ui.small("Transferability is permanent after creation. Other configured token actions remain separate.");
+        hint(
+            ui,
+            "Transferability is permanent after creation. Other configured token actions remain separate.",
+        );
         if !state.draft.transferable {
             ui.label("Ordinary transfers cannot be enabled later. Other token actions retain their own rules.");
             if version.protocol_version < 14 {
@@ -98,7 +99,8 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             &mut state.draft.start_paused,
             &mut state.help,
         );
-        ui.small(
+        hint(
+            ui,
             "Distributions and other configured actions can continue while transfers are paused.",
         );
         if state.draft.start_paused
@@ -117,18 +119,27 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             &mut state.draft.allow_receive_frozen,
             &mut state.help,
         );
-        ui.small("A frozen identity still cannot spend. This setting only controls receiving.");
+        hint(
+            ui,
+            "A frozen identity still cannot spend. This setting only controls receiving.",
+        );
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Who can act, and who can change the rules?",
             "permissions",
             &mut state.help,
         );
-        ui.label("All 13 action rules are in this draft. Open a rule to inspect its administrator and three change allowances.");
-        ui.label("The performer may use the action. The administrator may change its rule within the three allowed changes.");
-        ui.horizontal(|ui| {
+        muted(
+            ui,
+            "All 13 action rules are in this draft. Open a rule to inspect its administrator and three change allowances.",
+        );
+        muted(
+            ui,
+            "The performer may use the action. The administrator may change its rule within the three allowed changes.",
+        );
+        ui.horizontal_wrapped(|ui| {
             for (filter, label) in [
                 (RuleFilter::All, "All 13 rules"),
                 (RuleFilter::Enabled, "Enabled powers"),
@@ -169,19 +180,39 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
                 yes(rule.allow_replace_administrator)
             ));
             if rule.permanently_disabled() {
-                ui.small("Permanently disabled by this configuration.");
+                hint(ui, "Permanently disabled by this configuration.");
             }
         }
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Marketplace at creation",
             "rule.marketplace",
             &mut state.help,
         );
-        ui.label("No marketplace sale or direct-purchase price is configured. The two sale-related rules above still determine who could change these settings later.");
+        muted(
+            ui,
+            "No marketplace sale or direct-purchase price is configured. The two sale-related rules above still determine who could change these settings later.",
+        );
     });
+}
+
+pub(super) fn cap_notice(ui: &mut Ui, draft: &crate::model::token_creator::TokenDraft) {
+    let permanent = !draft.no_maximum
+        && draft.maximum.parse(draft.decimals).is_ok()
+        && draft.permissions.get(RuleKind::Cap).permanently_disabled();
+    inline_notice(
+        ui,
+        if permanent {
+            MessageType::Info
+        } else {
+            MessageType::Warning
+        },
+        |ui| {
+            ui.label(cap_consequence(draft));
+        },
+    );
 }
 
 pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -> &'static str {
@@ -194,6 +225,37 @@ pub(super) fn cap_consequence(draft: &crate::model::token_creator::TokenDraft) -
     } else {
         "A permanent hard cap has not been established. Inspect the maximum-supply authorities and allowances."
     }
+}
+
+fn initial_supply(ui: &mut Ui, state: &mut CreatorWorkspace) {
+    amount(
+        ui,
+        "Initial supply",
+        "initial",
+        &mut state.draft.initial,
+        state.draft.decimals,
+        &mut state.help,
+    );
+}
+
+fn maximum_supply(ui: &mut Ui, state: &mut CreatorWorkspace) {
+    ui.add_enabled_ui(!state.draft.no_maximum, |ui| {
+        amount(
+            ui,
+            "Maximum outstanding supply",
+            "maximum",
+            &mut state.draft.maximum,
+            state.draft.decimals,
+            &mut state.help,
+        );
+    });
+    checkbox(
+        ui,
+        "No maximum supply",
+        "noMaximum",
+        &mut state.draft.no_maximum,
+        &mut state.help,
+    );
 }
 
 pub(super) fn yes(value: bool) -> &'static str {
@@ -211,6 +273,7 @@ pub(super) fn actor(
 ) {
     let caption_response = label(ui, caption, key, topic);
     egui::ComboBox::from_id_salt(caption)
+        .width(ui.available_width())
         .selected_text(value.label())
         .show_ui(ui, |ui| {
             ui.selectable_value(value, ActorDraft::NoOne, "No one");
@@ -241,7 +304,8 @@ pub(super) fn actor(
         if !identity.is_empty() {
             match parse_identity(identity) {
                 Ok(_) => {
-                    ui.small(
+                    hint(
+                        ui,
                         "Valid ID format. Ownership and network existence are not asserted here.",
                     );
                 }
@@ -266,7 +330,9 @@ pub(super) fn recipient(
     none: bool,
     topic: &mut Option<String>,
 ) {
-    egui::ComboBox::from_label("Recipient")
+    let caption = ui.label(RichText::new("Recipient").family(Typography::strong_family()));
+    egui::ComboBox::from_id_salt("Recipient")
+        .width(ui.available_width())
         .selected_text(recipient_label(value))
         .show_ui(ui, |ui| {
             ui.selectable_value(value, Recipient::Owner, "Contract owner");
@@ -283,13 +349,18 @@ pub(super) fn recipient(
             if none {
                 ui.selectable_value(value, Recipient::None, "No fixed destination");
             }
-        });
+        })
+        .response
+        .labelled_by(caption.id);
     if let Recipient::Identity(identity) = value {
         text(ui, "Recipient identity ID", "mintIdentity", identity, topic);
         if !identity.is_empty() {
             match parse_identity(identity) {
                 Ok(_) => {
-                    ui.small("Valid ID format; network existence has not been checked.");
+                    hint(
+                        ui,
+                        "Valid ID format; network existence has not been checked.",
+                    );
                 }
                 Err(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error.to_string());

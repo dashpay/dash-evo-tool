@@ -25,6 +25,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
@@ -480,7 +481,7 @@ impl RegisterDpnsNameScreen {
         let edit = ui
             .horizontal(|ui| {
                 ui.label("@");
-                let response = ui.text_edit_singleline(&mut self.name_input);
+                let response = ui.add(styled_text_edit_singleline(&mut self.name_input));
                 ui.label(".dash");
                 response
             })

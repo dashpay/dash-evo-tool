@@ -13,6 +13,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -300,12 +301,8 @@ impl DocumentActionScreen {
     /// The document ID input of Purchase and Replace, where the fetched
     /// document belongs to the ID shown.
     fn fetched_document_id_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.style().visuals.dark_mode;
         if ui
-            .add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ))
+            .add(styled_text_edit_singleline(&mut self.document_id_input))
             .changed()
         {
             self.document_id_changed();
@@ -509,11 +506,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ));
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.add_space(10.0);
@@ -597,7 +590,7 @@ impl DocumentActionScreen {
                             ui.label("Document JSON:");
                             if let Ok(json) = serde_json::to_string_pretty(doc) {
                                 ui.add(
-                                    egui::TextEdit::multiline(&mut json.clone())
+                                    styled_text_edit_multiline(&mut json.clone())
                                         .font(egui::TextStyle::Monospace)
                                         .desired_rows(10)
                                         .desired_width(380.0)
@@ -774,20 +767,12 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ));
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.horizontal(|ui| {
             ui.label("Price (credits):");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.price_input,
-                dark_mode,
-            ));
+            ui.add(styled_text_edit_singleline(&mut self.price_input));
         });
 
         ui.add_space(10.0);
@@ -803,20 +788,12 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.document_id_input,
-                dark_mode,
-            ));
+            ui.add(styled_text_edit_singleline(&mut self.document_id_input));
         });
 
         ui.horizontal(|ui| {
             ui.label("Recipient Identity:");
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.add(styled_text_edit_singleline(
-                &mut self.recipient_id_input,
-                dark_mode,
-            ));
+            ui.add(styled_text_edit_singleline(&mut self.recipient_id_input));
         });
 
         ui.add_space(10.0);
@@ -859,7 +836,7 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::I8 => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::singleline(val)
+                                styled_text_edit_singleline(val)
                                     .hint_text("integer")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
@@ -868,7 +845,7 @@ impl DocumentActionScreen {
                         DocumentPropertyType::F64 => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::singleline(val)
+                                styled_text_edit_singleline(val)
                                     .hint_text("floating-point")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
@@ -877,7 +854,7 @@ impl DocumentActionScreen {
                         DocumentPropertyType::String(size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add({
-                                let text_edit = egui::TextEdit::singleline(val)
+                                let text_edit = styled_text_edit_singleline(val)
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode));
                                 if let Some(max_length) = size.max_length {
@@ -890,7 +867,7 @@ impl DocumentActionScreen {
                         DocumentPropertyType::ByteArray(_size) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::singleline(val)
+                                styled_text_edit_singleline(val)
                                     .hint_text("hex or base64")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
@@ -900,7 +877,7 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::IdentifierWithReference(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::singleline(val)
+                                styled_text_edit_singleline(val)
                                     .hint_text("base58 identifier")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
@@ -918,7 +895,7 @@ impl DocumentActionScreen {
                         DocumentPropertyType::Date => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::singleline(val)
+                                styled_text_edit_singleline(val)
                                     .hint_text("unix-ms")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
@@ -932,7 +909,7 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::VariableTypeArray(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
-                                egui::TextEdit::multiline(val)
+                                styled_text_edit_multiline(val)
                                     .hint_text("JSON value")
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),

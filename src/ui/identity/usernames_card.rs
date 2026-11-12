@@ -296,7 +296,12 @@ impl UsernamesCard {
                             };
                             name_label(ui, &format!("@{name}"), badge_room);
                             if badge {
-                                pill::accent_pill(ui, "Main", DashColors::DASH_BLUE, None);
+                                pill::accent_pill(
+                                    ui,
+                                    "Main",
+                                    DashColors::info_color(dark_mode),
+                                    None,
+                                );
                             }
                         },
                         |ui| {

@@ -13,6 +13,7 @@ use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -517,7 +518,7 @@ impl UpdateTokenConfigScreen {
                 ui.label("Update the JSON formatted text below to change the token conventions.");
                 ui.add_space(5.0);
 
-                let text_response = ui.text_edit_multiline(&mut self.update_text);
+                let text_response = ui.add(styled_text_edit_multiline(&mut self.update_text));
 
                 if text_response.changed() {
                     match serde_json::from_str::<TokenConfigurationConvention>(&self.update_text) {
@@ -603,7 +604,7 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::MainControlGroup(opt_grp) => {
                 let mut grp_txt = opt_grp.map(|g| g).unwrap_or_default();
                 let mut grp_txt_str = grp_txt.to_string();
-                if ui.text_edit_singleline(&mut grp_txt_str).changed() {
+                if ui.add(styled_text_edit_singleline(&mut grp_txt_str)).changed() {
                     grp_txt = grp_txt_str.parse::<u16>().unwrap_or_default();
                 }
                 *opt_grp = Some(grp_txt);
@@ -675,7 +676,7 @@ impl UpdateTokenConfigScreen {
                 ui.add_space(10.0);
                 let mut txt = self.public_note.clone().unwrap_or_default();
                 if ui
-                    .text_edit_singleline(&mut txt)
+                    .add(styled_text_edit_singleline(&mut txt))
                     .info_tooltip("A note about the transaction that can be seen by the public.")
                     .changed()
                 {
@@ -840,7 +841,7 @@ impl UpdateTokenConfigScreen {
                         let dark_mode = ui.style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
-                            egui::TextEdit::singleline(id_str)
+                            styled_text_edit_singleline(id_str)
                                 .hint_text("Enter base58 identity")
                                 .text_color(DashColors::text_primary(dark_mode))
                                 .background_color(DashColors::input_background(dark_mode)),
@@ -1112,7 +1113,7 @@ fn change_item_can_be_submitted(
 fn labelled_text_field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
     ui.horizontal(|ui| {
         let label = ui.label(label);
-        ui.text_edit_singleline(text)
+        ui.add(styled_text_edit_singleline(text))
             .labelled_by(label.id)
             .changed()
     })

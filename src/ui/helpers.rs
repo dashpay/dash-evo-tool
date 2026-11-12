@@ -1,3 +1,4 @@
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::theme::ResponseExt;
 use std::sync::Arc;
 
@@ -800,7 +801,7 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
         .striped(false)
         .show(ui, |ui| {
             ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            ui.add(styled_text_edit_singleline(search_term));
             ui.end_row();
 
             ui.label("Contract:");
@@ -882,7 +883,7 @@ pub fn add_contract_chooser_pre_filtered<'a, T>(
         .striped(false)
         .show(ui, |ui| {
             ui.label("Filter contracts:");
-            ui.text_edit_singleline(search_term);
+            ui.add(styled_text_edit_singleline(search_term));
             ui.end_row();
 
             ui.label("Contract:");

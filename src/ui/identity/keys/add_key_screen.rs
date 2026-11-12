@@ -10,6 +10,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -483,13 +484,13 @@ impl AddKeyScreen {
                 }
                 ChooserStatus::RefreshingIdentity => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
                         ui.label("Updating this identity from the network…");
                     });
                 }
                 ChooserStatus::Loading => {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                        ui.add(egui::Spinner::new().color(DashColors::info_color(ui.visuals().dark_mode)));
                         ui.label("Loading wallet key slots…");
                     });
                 }
@@ -1121,7 +1122,7 @@ impl ScreenLike for AddKeyScreen {
                     if self.enable_contract_bounds {
                         ui.label("Contract ID:");
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut self.contract_id_input);
+                            ui.add(styled_text_edit_singleline(&mut self.contract_id_input));
                             ui.label(RichText::new("(required)").size(10.0).color(Color32::GRAY));
                         });
                         ui.end_row();
@@ -1129,7 +1130,7 @@ impl ScreenLike for AddKeyScreen {
                         // Document Type Input
                         ui.label("Document Type Name:");
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut self.document_type_input);
+                            ui.add(styled_text_edit_singleline(&mut self.document_type_input));
                             ui.label(RichText::new("(optional)").size(10.0).color(Color32::GRAY));
                         });
                         ui.end_row();

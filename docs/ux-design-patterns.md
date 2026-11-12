@@ -30,13 +30,18 @@ Exact sizes in `src/ui/theme.rs`.
 | XS      | `caption()`         |
 | SM      | `body_small()`      |
 | BASE    | `body()`, `button()`|
-| LG      | `body_large()`      |
+| LG      | `body_large()`, `subheading()` |
 | XL      | `heading_small()`   |
 | XXL     | `heading_medium()`  |
 | XXXL    | `heading_large()`   |
 | Display | `heading_xlarge()`  |
 
-Font family: Noto Sans (proportional). Monospace: `monospace()` at BASE size.
+Font family: bundled Noto Sans Regular, with Noto Sans Semibold for section headings,
+buttons and field labels. `Typography::page_title()` is the page-level heading;
+egui `Heading` is the section level. `apply_theme()` projects the shared scale into
+egui's text styles, including readable `Small` text. User zoom remains independent.
+`RichText::strong()` changes color only; use the semibold family for font weight.
+Monospace: `monospace()` at BASE size.
 
 ### Border (`Shape`)
 
@@ -45,10 +50,10 @@ Exact values in `src/ui/theme.rs`.
 | Token       | Usage                     |
 |-------------|---------------------------|
 | RADIUS_NONE | No rounding               |
-| RADIUS_SM   | Banners, dialog buttons   |
-| RADIUS_MD   | Buttons, cards, inputs    |
-| RADIUS_LG   | Island panels             |
-| RADIUS_XL   | Glass cards, hero sections|
+| RADIUS_SM   | Inputs, compact surfaces |
+| RADIUS_MD   | Buttons and navigation |
+| RADIUS_LG   | Cards and island panels |
+| RADIUS_XL   | Dialog surfaces |
 | RADIUS_FULL | Pill / circular           |
 
 Width tokens: `BORDER_WIDTH` (standard), `BORDER_WIDTH_THICK` (emphasis/focus).
@@ -60,6 +65,8 @@ All color constants and hex values are defined in `src/ui/theme.rs` (`DashColors
 - All colors via `DashColors` -- never hardcode `Color32` values
 - Theme-aware getters: `text_primary(dark_mode)`, `background(dark_mode)`, `surface(dark_mode)`, `border(dark_mode)`, etc.
 - Dark mode: lighter surfaces for elevation, not shadows
+
+Use theme-aware `info_color()`, `error_color()`, `warning_color()` and `success_color()` for foreground text. Solid action fills such as `DASH_BLUE` and `ERROR` are paired with white button text.
 
 **Semantic color constants**: `DASH_BLUE`, `ERROR`, `WARNING`, `SUCCESS`, `INFO`, `DANGER_RED`, `VALIDATION_WARNING`, `DISABLED`
 
@@ -75,9 +82,11 @@ All color constants and hex values are defined in `src/ui/theme.rs` (`DashColors
 
 ## 3. Buttons
 
-Use `StyledButton` from `src/ui/components/styled.rs`. Never use bare `ui.button()`.
+Use `ComponentStyles::add_primary_button`, `add_secondary_button` and
+`add_danger_button` for action hierarchy. `StyledButton` delegates to the primary
+helper. Ordinary egui buttons inherit the shared neutral style and target size.
 
-**Variants**: Primary, Secondary, Danger, Ghost. **Sizes**: Small, Medium, Large. See `StyledButton` for exact fill/stroke/padding/font values.
+See `ComponentStyles` and `Spacing` for fill/stroke/padding/font and target-size tokens.
 
 - Corner radius: `RADIUS_MD`
 - Disabled fill: `DISABLED`
@@ -106,7 +115,13 @@ Reference: `AmountInput` in `src/ui/components/amount_input.rs`.
 - Errors inline below field in `VALIDATION_WARNING` color
 - Invalid input sets domain value to `None`
 - Input border: unfocused (`input_stroke()`), focused (`input_stroke_focused()`), validation error (`input_stroke_error()`)
-- Styled text edits: `styled_text_edit_singleline()` / `styled_text_edit_multiline()`
+- All text edits use `styled_text_edit_singleline()` / `styled_text_edit_multiline()`
+  from `components/styled.rs`. These return egui builders, preserving password,
+  read-only, focus, hint, row and width options. The global egui style does not set
+  text-edit padding or height; direct constructors bypass the form tokens.
+- Cards use `StyledCard`, with responsive padding and a surface fill. Navigation
+  and the workspace use the app background; dialogs use the surface fill.
+- Tables with controls use `Spacing::TABLE_ROW_HEIGHT` so controls fit the row.
 - **Input border helpers**: `ComponentStyles::input_stroke()`, `input_stroke_focused()`, `input_stroke_error()` are the canonical helpers -- never construct input strokes manually
 - Follow Component pattern: lazy init, private fields, builder API, `ComponentResponse` trait (see `docs/COMPONENT_DESIGN_PATTERN.md`)
 
@@ -114,7 +129,7 @@ Reference: `AmountInput` in `src/ui/components/amount_input.rs`.
 
 Reference: `src/ui/components/wallet_unlock.rs`.
 
-- Mask input: `TextEdit::singleline(&mut text).password(!show_password)`
+- Mask input: `styled_text_edit_singleline(&mut text).password(!show_password)`
 - Hold-to-reveal: use `egui::Button` with eye icon; toggle via `ui.input(|i| i.pointer.any_pressed())` -- show cleartext only while pressed
 - Password strength: display colored bar using `STRENGTH_WEAK`/`FAIR`/`GOOD`/`STRONG` colors
 - Show validation errors only after user interaction, never on initial focus for untouched fields

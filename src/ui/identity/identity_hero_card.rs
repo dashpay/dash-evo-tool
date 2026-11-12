@@ -79,6 +79,14 @@ impl HeroIdentityKind {
         }
     }
 
+    /// Foreground for a badge or a type glyph on the current surface.
+    pub fn badge_text_color(self, dark_mode: bool) -> Color32 {
+        match self {
+            Self::User => DashColors::info_color(dark_mode),
+            _ => self.badge_accent(),
+        }
+    }
+
     /// Monogram glyph for the no-social-profile variant. §E calls for a
     /// single-person silhouette for users, a node / server glyph for
     /// masternodes, and a diamond for evonodes.
@@ -397,7 +405,7 @@ impl IdentityHeroCard {
                                 pill::accent_pill(
                                     ui,
                                     self.kind.badge_label(),
-                                    self.kind.badge_accent(),
+                                    self.kind.badge_text_color(dark_mode),
                                     Some(self.kind.badge_tooltip()),
                                 );
                                 if let Some(label) = &self.network_label {
@@ -439,7 +447,12 @@ impl IdentityHeroCard {
         // identity-type glyph on a faint tint. Shared with the breadcrumb
         // identity pill via `avatar::paint_identity_monogram`.
         let initial = self.has_social_profile().then(|| self.initials_letter());
-        super::avatar::paint_identity_monogram(ui, 96.0, self.kind, initial, DashColors::DASH_BLUE);
+        let accent = if initial.is_some() {
+            DashColors::DASH_BLUE
+        } else {
+            DashColors::info_color(ui.visuals().dark_mode)
+        };
+        super::avatar::paint_identity_monogram(ui, 96.0, self.kind, initial, accent);
     }
 
     /// Attempt to decode `bytes` (PNG / JPEG) and paint a circle-cropped avatar
@@ -524,7 +537,7 @@ impl IdentityHeroCard {
                     egui::Label::new(
                         RichText::new("Pick a username")
                             .underline()
-                            .color(DashColors::DASH_BLUE),
+                            .color(DashColors::info_color(ui.visuals().dark_mode)),
                     )
                     .sense(Sense::click()),
                 )

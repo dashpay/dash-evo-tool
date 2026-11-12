@@ -6,7 +6,7 @@
 
 use egui::{Context, Response, Ui, WidgetText};
 
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, Shape};
 
 /// The "hide this button" sentinel for dialog builders taking `Option<impl Into<WidgetText>>`.
 pub const NOTHING: Option<&str> = None;
@@ -92,7 +92,7 @@ pub fn modal_chrome<R>(
         .frame(egui::Frame {
             inner_margin: egui::Margin::same(config.inner_margin),
             outer_margin: egui::Margin::same(0),
-            corner_radius: egui::CornerRadius::same(8),
+            corner_radius: egui::CornerRadius::same(Shape::RADIUS_XL),
             shadow: egui::epaint::Shadow {
                 offset: [0, 8],
                 blur: 16,
@@ -100,7 +100,10 @@ pub fn modal_chrome<R>(
                 color: DashColors::popup_shadow(),
             },
             fill: ctx.global_style().visuals.window_fill,
-            stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
+            stroke: egui::Stroke::new(
+                1.0,
+                DashColors::border(ctx.global_style().visuals.dark_mode),
+            ),
         });
     if config.show_close_button {
         window = window.open(&mut is_open);

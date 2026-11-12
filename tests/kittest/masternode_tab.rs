@@ -958,6 +958,15 @@ fn detail_vote_with_this_node_opens_votes_for_that_node() {
         harness.run_steps(3);
         harness.get_by_label("Open mn-vote-02").click();
         harness.run_steps(3);
+
+        harness.get_by_label("Vote with this node").scroll_to_me();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .ctx
+                .content_rect()
+                .contains_rect(harness.get_by_label("Vote with this node").rect())
+        );
         harness.get_by_label("Vote with this node").click();
         harness.run_steps(3);
         assert_eq!(
@@ -1116,6 +1125,15 @@ fn remove_flow_deletes_only_target_node() {
         // (unique before the dialog opens).
         harness.get_by_label("Open mn-remove-me").click();
         harness.run_steps(3);
+
+        harness.get_by_label("Remove masternode").scroll_to_me();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .ctx
+                .content_rect()
+                .contains_rect(harness.get_by_label("Remove masternode").rect())
+        );
         harness.get_by_label("Remove masternode").click();
         harness.run_steps(3);
 

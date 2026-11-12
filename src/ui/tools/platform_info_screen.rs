@@ -127,7 +127,10 @@ impl PlatformInfoScreen {
                 ui.add_space(50.0);
 
                 // Show spinner with Dash blue color
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
+                ui.add(
+                    egui::widgets::Spinner::default()
+                        .color(DashColors::info_color(ui.visuals().dark_mode)),
+                );
 
                 ui.add_space(10.0);
                 ui.heading("Loading...");

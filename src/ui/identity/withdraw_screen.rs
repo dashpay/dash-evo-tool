@@ -11,6 +11,7 @@ use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -193,7 +194,7 @@ impl WithdrawalScreen {
                 "Enter Core address (y.../8...)"
             };
             let response =
-                ui.add(egui::TextEdit::singleline(&mut self.withdrawal_address).hint_text(hint));
+                ui.add(styled_text_edit_singleline(&mut self.withdrawal_address).hint_text(hint));
 
             // Validate address when it changes
             if response.changed() {
@@ -222,7 +223,7 @@ impl WithdrawalScreen {
 
             // Show error next to input
             if let Some(error) = &self.withdrawal_address_error {
-                ui.colored_label(DashColors::ERROR, error);
+                ui.colored_label(DashColors::error_color(ui.visuals().dark_mode), error);
             }
         });
     }

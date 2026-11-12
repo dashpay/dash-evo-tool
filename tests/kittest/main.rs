@@ -5,6 +5,7 @@ mod confirmation_dialog;
 mod contract_screen;
 mod create_asset_lock_screen;
 mod dashpay_screen;
+mod design_system;
 mod global_nav_switcher;
 mod identity_home;
 mod identity_hub;

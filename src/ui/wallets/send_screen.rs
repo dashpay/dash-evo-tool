@@ -27,6 +27,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -4278,7 +4279,7 @@ impl WalletSendScreen {
                         ui.horizontal(|ui| {
                             ui.label("Amount:");
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.core_inputs[idx].amount)
+                                styled_text_edit_singleline(&mut self.core_inputs[idx].amount)
                                     .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );
@@ -4406,7 +4407,7 @@ impl WalletSendScreen {
                         ui.horizontal(|ui| {
                             ui.label("Amount:");
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.platform_inputs[idx].amount)
+                                styled_text_edit_singleline(&mut self.platform_inputs[idx].amount)
                                     .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );
@@ -4483,15 +4484,19 @@ impl WalletSendScreen {
                         ui.horizontal(|ui| {
                             ui.label("To:");
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.advanced_outputs[idx].address)
-                                    .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
-                                    .desired_width(350.0),
+                                styled_text_edit_singleline(
+                                    &mut self.advanced_outputs[idx].address,
+                                )
+                                .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
+                                .desired_width(350.0),
                             );
 
                             // Show detected type
                             if let Some(kind) = addr_kind {
                                 let (type_text, type_color) = match kind {
-                                    AddressKind::Core => ("Core", DashColors::DASH_BLUE),
+                                    AddressKind::Core => {
+                                        ("Core", DashColors::info_color(ui.visuals().dark_mode))
+                                    }
                                     AddressKind::Platform => {
                                         ("Platform", DashColors::PLATFORM_PURPLE)
                                     }
@@ -4511,7 +4516,7 @@ impl WalletSendScreen {
 
                             ui.label("Amount:");
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.advanced_outputs[idx].amount)
+                                styled_text_edit_singleline(&mut self.advanced_outputs[idx].amount)
                                     .hint_text(RichText::new("0.0").color(Color32::GRAY))
                                     .desired_width(100.0),
                             );

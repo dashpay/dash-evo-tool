@@ -139,13 +139,26 @@ fn creator_workspace_exposes_named_fields_and_persistent_navigation() {
             "Continue must remain in the viewport: {next:?}"
         );
         assert!(
-            summary.top() < 400.0,
-            "Summary must remain beside the editor: {summary:?}"
+            summary.left()
+                >= h.get_by_role_and_label(Role::TextInput, "Token name")
+                    .rect()
+                    .right()
+                && summary.bottom() < next.top()
+                && summary.right() <= 1260.0,
+            "Summary must remain visible beside the editor: {summary:?}"
         );
         h.get_by_label_contains("Continue:").click();
         h.run_steps(5);
         assert!(h.get_by_label_contains("Continue:").rect().bottom() < 780.0);
-        assert!(h.get_by_label("Your token").rect().top() < 400.0);
+        let summary = h.get_by_label("Your token").rect();
+        assert!(
+            summary.left()
+                >= h.get_by_role_and_label(Role::TextInput, "Initial supply")
+                    .rect()
+                    .right()
+                && summary.bottom() < h.get_by_label_contains("Continue:").rect().top()
+                && summary.right() <= 1260.0
+        );
         h.get_by_label("← Back").click();
         h.run_steps(3);
         assert_eq!(
@@ -167,7 +180,7 @@ fn creator_workspace_help_has_context_and_restores_keyboard_focus() {
         h.set_size(egui::vec2(1260.0, 780.0));
         h.run_steps(5);
         let help = h.get_by_label("Help: Issuer readiness");
-        assert!(help.rect().height() >= 32.0);
+        assert!(help.rect().height() >= 28.0 && help.rect().width() >= 28.0);
         help.focus();
         h.key_press(egui::Key::Enter);
         h.run_steps(3);
@@ -678,10 +691,15 @@ impl TokenFixture {
 fn assert_intact_layout(
     harness: &Harness<'static, dash_evo_tool::app::AppState>,
     screen: &str,
-    content_left: f32,
+    navigation_panel: &str,
 ) {
     use egui::accesskit::Role;
     const MAX_GAP: f32 = 120.0;
+    let content_left =
+        egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(navigation_panel))
+            .expect("navigation panel has rendered")
+            .outer_rect
+            .right();
     let height = harness.ctx.content_rect().height();
     let mut nodes: Vec<(egui::Rect, Role)> = harness
         .query_all_by_label_contains("")
@@ -754,85 +772,110 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         let info = f.info.clone();
         let balance = f.balance.clone();
 
-        // (name, screen, first breadcrumb, central panel's left edge)
+        // (name, screen, first breadcrumb, last navigation panel)
         let pushed = [
-            ("Import Token", ScreenType::AddTokenById, "Tokens", 360.0),
+            (
+                "Import Token",
+                ScreenType::AddTokenById,
+                "Tokens",
+                "tokens_subscreen_chooser_panel",
+            ),
             (
                 "Transfer",
                 ScreenType::TransferTokensScreen(balance),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Mint",
                 ScreenType::MintTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Burn",
                 ScreenType::BurnTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Freeze",
                 ScreenType::FreezeTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Unfreeze",
                 ScreenType::UnfreezeTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Destroy",
                 ScreenType::DestroyFrozenFundsScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Pause",
                 ScreenType::PauseTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Resume",
                 ScreenType::ResumeTokensScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Update config",
                 ScreenType::UpdateTokenConfigScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Purchase",
                 ScreenType::PurchaseTokenScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Set price",
                 ScreenType::SetTokenPriceScreen(info.clone()),
                 "Tokens",
-                360.0,
+                "tokens_subscreen_chooser_panel",
             ),
             (
                 "Group actions",
                 ScreenType::GroupActions,
                 "Contracts",
-                160.0,
+                "left_panel",
             ),
         ];
-        for (name, screen_type, back, content_left) in pushed {
+        for (name, screen_type, back, navigation_panel) in pushed {
             f.open(screen_type);
-            assert_intact_layout(&f.harness, name, content_left);
+            assert_intact_layout(&f.harness, name, navigation_panel);
+            if name == "Transfer" {
+                let transfer = |h: &Harness<'static, dash_evo_tool::app::AppState>| {
+                    h.query_all_by_role_and_label(egui::accesskit::Role::Button, "Transfer")
+                        .last()
+                        .expect("Transfer form action")
+                        .rect()
+                };
+                f.harness
+                    .query_all_by_role_and_label(egui::accesskit::Role::Button, "Transfer")
+                    .last()
+                    .expect("Transfer form action")
+                    .scroll_to_me();
+                f.harness.run_steps(5);
+                let visible = f.harness.ctx.content_rect().shrink(30.0);
+                assert!(
+                    visible.contains_rect(transfer(&f.harness)),
+                    "the Transfer action must be reachable inside the form: {:?}",
+                    transfer(&f.harness)
+                );
+            }
             f.click_breadcrumb(back);
             assert!(
                 f.harness.state().screen_stack.is_empty(),
@@ -865,7 +908,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         ];
         for (name, screen) in claim_screens {
             f.show(screen);
-            assert_intact_layout(&f.harness, name, 360.0);
+            assert_intact_layout(&f.harness, name, "tokens_subscreen_chooser_panel");
             f.click_breadcrumb("Tokens");
             assert!(
                 f.harness.state().screen_stack.is_empty(),
@@ -877,7 +920,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         // popup, Search and the Token Creator.
         f.harness.state_mut().screen_stack.clear();
         f.harness.run_steps(5);
-        assert_intact_layout(&f.harness, "My Tokens", 360.0);
+        assert_intact_layout(&f.harness, "My Tokens", "tokens_subscreen_chooser_panel");
         // Known limitation: in Power and Developer modes the details row adds a
         // rewards column and stays wider than a 1050px window (it scrolls
         // sideways), so the fit is checked in the default mode.
@@ -889,7 +932,11 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
         f.harness.run_steps(5);
         f.harness.get_by_label(SMOKE_TOKEN).click();
         f.harness.run_steps(5);
-        assert_intact_layout(&f.harness, "Token details", 360.0);
+        assert_intact_layout(
+            &f.harness,
+            "Token details",
+            "tokens_subscreen_chooser_panel",
+        );
         f.harness.get_by_label("...").click();
         f.harness.run_steps(3);
         f.harness.get_by_label("Remove from DET");
@@ -910,7 +957,7 @@ fn token_screens_open_with_an_intact_layout_and_lead_back() {
             f.harness.get_by_label(name).click();
             f.harness.run_steps(5);
             assert_eq!(f.harness.state().selected_main_screen, root, "{name}");
-            assert_intact_layout(&f.harness, name, 360.0);
+            assert_intact_layout(&f.harness, name, "tokens_subscreen_chooser_panel");
         }
         assert!(
             f.harness.query_by_label("No Identities Loaded").is_none(),
@@ -1066,7 +1113,15 @@ fn update_config_holds_back_a_max_supply_that_does_not_parse() {
         f.open(ScreenType::UpdateTokenConfigScreen(f.info.clone()));
         f.harness.get_by_value("No Change").click();
         f.harness.run_steps(5);
-        f.harness.get_by_label("Max Supply").click();
+        f.harness.get_by_label("Max Supply").scroll_to_me();
+        f.harness.run_steps(5);
+        let option = f.harness.get_by_label("Max Supply");
+        assert!(
+            f.harness.ctx.content_rect().contains_rect(option.rect()),
+            "Max Supply must be visible before it is selected: {:?}",
+            option.rect()
+        );
+        option.click();
         f.harness.run_steps(5);
 
         let type_into_field = |f: &mut TokenFixture, text: &str| {

@@ -1,10 +1,17 @@
 use super::*;
+use crate::ui::components::styled::styled_text_edit_multiline;
 
 pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
         heading(ui, "History", "history", &mut state.help);
-        ui.label("Choose which token events are retained. These choices are independent from the powers that perform the actions. They configure the contract's event histories, not local privacy settings.");
-        ui.small("This does not hide the contract or make transactions private.");
+        muted(
+            ui,
+            "Choose which token events are retained. These choices are independent from the powers that perform the actions. They configure the contract's event histories, not local privacy settings.",
+        );
+        hint(
+            ui,
+            "This does not hide the contract or make transactions private.",
+        );
         let count = state
             .draft
             .history
@@ -40,14 +47,19 @@ pub(super) fn history(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 &mut state.help,
             );
         }
-        ui.small(format!("{count} of 6 histories are selected. History settings are part of the reviewed contract."));
+        inline_notice(ui, MessageType::Info, |ui| {
+            ui.label(format!("{count} of 6 histories are selected. History settings are part of the reviewed contract."));
+        });
     });
 }
 
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
         heading(ui, "Search & documents", "documents", &mut state.help);
-        ui.label("Help people recognize the token, and optionally define related document types.");
+        muted(
+            ui,
+            "Help people recognize the token, and optionally define related document types.",
+        );
         text(
             ui,
             "Description (optional)",
@@ -55,8 +67,14 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
             &mut state.draft.description,
             &mut state.help,
         );
-        ui.small("Explain the token's purpose in plain language. Use 3 to 100 UTF-8 bytes when provided.");
-        ui.label("Names marked searchable in Basics are included automatically. Add other keywords separated by commas.");
+        hint(
+            ui,
+            "Explain the token's purpose in plain language. Use 3 to 100 UTF-8 bytes when provided.",
+        );
+        muted(
+            ui,
+            "Names marked searchable in Basics are included automatically. Add other keywords separated by commas.",
+        );
         text(
             ui,
             "Search keywords",
@@ -72,19 +90,25 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 ui.colored_label(ui.visuals().error_fg_color, error.to_string());
             }
         }
-        ui.small("Keywords affect registration cost. The actual contract estimate is calculated during preparation.");
+        hint(
+            ui,
+            "Keywords affect registration cost. The actual contract estimate is calculated during preparation.",
+        );
     });
     card(ui, |ui| {
-        heading(
+        subheading(
             ui,
             "Document types (optional)",
             "documents",
             &mut state.help,
         );
-        ui.label("Paste a JSON object mapping document type names to schemas. This is not a full-contract import. Clearing the field removes every document type from this draft.");
+        muted(
+            ui,
+            "Paste a JSON object mapping document type names to schemas. This is not a full-contract import. Clearing the field removes every document type from this draft.",
+        );
         let caption = ui.label("Document types · JSON");
         ui.add(
-            egui::TextEdit::multiline(&mut state.draft.documents)
+            styled_text_edit_multiline(&mut state.draft.documents)
                 .code_editor()
                 .desired_rows(15)
                 .desired_width(f32::INFINITY),
@@ -104,6 +128,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
         if ui.button("Clear document types").clicked() {
             state.draft.documents.clear();
         }
-        ui.small("Only local fragment references are accepted. External HTTP and file references are never loaded.");
+        hint(
+            ui,
+            "Only local fragment references are accepted. External HTTP and file references are never loaded.",
+        );
     });
 }

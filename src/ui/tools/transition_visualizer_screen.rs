@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::styled_text_edit_multiline;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -16,7 +17,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformDeserializableUntrusted;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, ScrollArea, TextEdit, Ui, Window};
+use eframe::egui::{self, Color32, ScrollArea, Ui, Window};
 use egui::RichText;
 use serde_json::Value;
 use std::sync::Arc;
@@ -194,7 +195,7 @@ impl TransitionVisualizerScreen {
         ui.add_space(5.0);
         let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
-            TextEdit::multiline(&mut self.input_data)
+            styled_text_edit_multiline(&mut self.input_data)
                 .desired_rows(6)
                 .desired_width(ui.available_width())
                 .text_color(DashColors::text_primary(dark_mode))
@@ -252,7 +253,7 @@ impl TransitionVisualizerScreen {
                 ui.add_space(5.0);
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
-                    TextEdit::multiline(&mut rendered.clone())
+                    styled_text_edit_multiline(&mut rendered.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
                         .text_color(DashColors::text_primary(dark_mode))

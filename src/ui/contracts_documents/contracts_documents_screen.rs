@@ -12,6 +12,7 @@ use crate::ui::components::contract_chooser_panel::{
 };
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::components::styled::{styled_text_edit_multiline, styled_text_edit_singleline};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::state::PendingRequest;
@@ -240,7 +241,7 @@ impl DocumentQueryScreen {
 
             let dark_mode = ui.style().visuals.dark_mode;
             ui.add(
-                egui::TextEdit::singleline(&mut self.document_query)
+                styled_text_edit_singleline(&mut self.document_query)
                     .desired_width(text_width)
                     .text_color(DashColors::text_primary(dark_mode))
                     .background_color(DashColors::input_background(dark_mode)),
@@ -301,7 +302,7 @@ impl DocumentQueryScreen {
         if !self.matching_documents.is_empty() {
             ui.horizontal(|ui| {
                 ui.label("Filter documents:");
-                ui.text_edit_singleline(&mut self.document_search_term);
+                ui.add(styled_text_edit_singleline(&mut self.document_search_term));
 
                 if ui.button("Select Properties").clicked() {
                     self.show_fields_dropdown = !self.show_fields_dropdown;
@@ -537,7 +538,7 @@ impl DocumentQueryScreen {
         // 3) Display in multiline text
         let dark_mode = ui.style().visuals.dark_mode;
         ui.add(
-            egui::TextEdit::multiline(&mut combined_string)
+            styled_text_edit_multiline(&mut combined_string)
                 .desired_rows(10)
                 // Remove desired_width to respect parent container margins
                 .text_color(DashColors::text_primary(dark_mode))

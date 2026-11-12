@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE_FIELDS;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -53,7 +54,7 @@ fn render_collapsing_header(
         _ => 12.0,
     };
     let label_color = if is_selected {
-        DashColors::DASH_BLUE
+        DashColors::info_color(dark_mode)
     } else {
         DashColors::text_primary(dark_mode)
     };
@@ -66,7 +67,7 @@ fn render_collapsing_header(
             egui::Button::new(
                 RichText::new(button_text)
                     .size(20.0)
-                    .color(DashColors::DASH_BLUE),
+                    .color(DashColors::info_color(ui.visuals().dark_mode)),
             )
             .fill(Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE),
@@ -150,7 +151,7 @@ pub fn add_contract_chooser_panel(
                         // Search box
                         ui.horizontal(|ui| {
                             ui.label("Filter contracts:");
-                            ui.text_edit_singleline(current_search_term);
+                            ui.add(styled_text_edit_singleline(current_search_term));
                         });
 
                         // List out each matching contract

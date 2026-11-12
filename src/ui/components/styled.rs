@@ -39,6 +39,51 @@ impl StyledButton {
     }
 }
 
+/// Secondary explanatory copy, distinct from values and action labels.
+pub(crate) fn muted_label(ui: &mut Ui, text: impl Into<String>) -> Response {
+    ui.label(
+        RichText::new(text)
+            .font(Typography::body())
+            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+    )
+}
+
+/// A compact explanatory hint using the shared secondary foreground.
+pub(crate) fn hint_label(ui: &mut Ui, text: impl Into<String>) -> Response {
+    ui.label(
+        RichText::new(text)
+            .font(Typography::hint())
+            .color(DashColors::text_secondary(ui.visuals().dark_mode)),
+    )
+}
+
+/// An inline contextual notice; information uses primary text on the soft surface.
+pub(crate) fn inline_notice<R>(
+    ui: &mut Ui,
+    kind: crate::ui::MessageType,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let dark = ui.visuals().dark_mode;
+    Frame::new()
+        .fill(DashColors::message_background_color(kind, dark))
+        .corner_radius(Shape::RADIUS_MD)
+        .inner_margin(Margin::symmetric(14, 12))
+        .outer_margin(Margin::symmetric(0, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.style_mut()
+                .text_styles
+                .insert(egui::TextStyle::Body, Typography::body_small());
+            ui.visuals_mut().override_text_color = Some(if kind == crate::ui::MessageType::Info {
+                DashColors::text_primary(dark)
+            } else {
+                DashColors::message_color(kind, dark)
+            });
+            content(ui)
+        })
+        .inner
+}
+
 /// Styled card component
 pub(crate) struct StyledCard {
     padding: f32,

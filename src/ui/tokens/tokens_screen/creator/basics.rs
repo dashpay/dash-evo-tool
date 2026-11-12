@@ -6,7 +6,10 @@ use crate::ui::state::token_creator::Proposal;
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     card(ui, |ui| {
         heading(ui, "What are you creating?", "basics", &mut state.help);
-        ui.label("Give people a recognizable name, then choose how the supply should work.");
+        muted(
+            ui,
+            "Give people a recognizable name, then choose how the supply should work.",
+        );
         if let Some(name) = state.draft.names.first_mut() {
             text(
                 ui,
@@ -15,7 +18,7 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 &mut name.singular,
                 &mut state.help,
             );
-            ui.small("Required. For example, StudioCredit.");
+            hint(ui, "Required. For example, StudioCredit.");
             text(
                 ui,
                 "Plural name",
@@ -23,11 +26,14 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 &mut name.plural,
                 &mut state.help,
             );
-            ui.small("Required. For example, StudioCredits.");
+            hint(ui, "Required. For example, StudioCredits.");
         }
-        ui.small("Use at least 3 characters without spaces, within 25 UTF-8 bytes. Accented letters and other multibyte characters leave room for fewer characters.");
+        hint(
+            ui,
+            "Use at least 3 characters without spaces, within 25 UTF-8 bytes. Accented letters and other multibyte characters leave room for fewer characters.",
+        );
         egui::CollapsingHeader::new("Names in other languages").show(ui, |ui| {
-            ui.label("Keep one set of names per language.");
+            hint(ui, "Keep one set of names per language.");
             let mut remove = None;
             for (index, name) in state.draft.names.iter_mut().enumerate() {
                 ui.push_id(index, |ui| {
@@ -95,7 +101,10 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
     });
     card(ui, |ui| {
         heading(ui, "Choose a supply policy", "policy", &mut state.help);
-        ui.label("A starting point is a choice about power. Nothing is selected for you.");
+        muted(
+            ui,
+            "A starting point is a choice about power. Nothing is selected for you.",
+        );
         ui.horizontal_wrapped(|ui| {
             for (limited, caption, title) in [
                 (false, "Compare fixed example", "Fixed supply"),
@@ -117,7 +126,13 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
                 state.section = Section::Supply;
             }
         });
-        ui.label(policy_label(state.draft.policy));
+        if state.draft.policy != Policy::Unselected {
+            inline_notice(ui, MessageType::Success, |ui| {
+                ui.label(RichText::new(policy_label(state.draft.policy)).font(Typography::body()));
+            });
+        } else {
+            muted(ui, policy_label(state.draft.policy));
+        }
         if state.undo.is_some() && ui.button("Undo last example or template").clicked() {
             state.undo_proposal();
         }
@@ -134,12 +149,15 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ),
         ] {
             subheading(ui, title, key, &mut state.help);
-            ui.label(body);
+            hint(ui, body);
             ui.add_space(12.0);
         }
-        ui.small("These are explicit custom examples, separate from the protocol templates below.");
+        hint(
+            ui,
+            "These are explicit custom examples, separate from the protocol templates below.",
+        );
         egui::CollapsingHeader::new("Existing protocol templates").show(ui, |ui| {
-            ui.label("These retain the original protocol permissions. They differ from the two examples above. Compare every performer, administrator and allowance.");
+            muted(ui, "These retain the original protocol permissions. They differ from the two examples above. Compare every performer, administrator and allowance.");
             use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::*;
             for features in [MostRestrictive,WithOnlyEmergencyAction,WithMintingAndBurningActions,WithExtremeActions,WithAllAdvancedActions] {
                 if ui.button(format!("Compare {}",preset_label(features))).clicked() { state.proposal = Some(Proposal { title: preset_label(features), draft: state.draft.preset_proposal(features) }); }

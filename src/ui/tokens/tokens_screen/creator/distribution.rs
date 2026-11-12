@@ -13,8 +13,14 @@ pub(super) fn show(
 ) {
     card(ui, |ui| {
         heading(ui, "Distribution", "distribution", &mut state.help);
-        ui.label("Three independent ways to distribute tokens. Turning one off keeps its settings in your draft.");
-        ui.label("Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.");
+        muted(
+            ui,
+            "Three independent ways to distribute tokens. Turning one off keeps its settings in your draft.",
+        );
+        muted(
+            ui,
+            "Distribution rules make tokens available to claim. They do not promise an automatic transfer into a wallet. Initial supply is separate.",
+        );
     });
     card(ui, |ui| {
         subheading(ui, "Recurring distribution", "recurring", &mut state.help);
@@ -25,8 +31,27 @@ pub(super) fn show(
             &mut state.draft.recurring.enabled,
             &mut state.help,
         );
-        ui.label("Allocate tokens at repeated time, epoch or block intervals. Recipients must claim eligible allocations.");
-        ui.label(recurring_authority(&state.draft));
+        hint(
+            ui,
+            "Allocate tokens at repeated time, epoch or block intervals. Recipients must claim eligible allocations.",
+        );
+        inline_notice(
+            ui,
+            if state.draft.permissions.get(RuleKind::Recurring).performer == ActorDraft::NoOne {
+                MessageType::Info
+            } else {
+                MessageType::Warning
+            },
+            |ui| {
+                ui.label(recurring_authority(&state.draft));
+                if ui
+                    .link("Edit permission to change recurring distribution")
+                    .clicked()
+                {
+                    state.rule_editor = Some(RuleKind::Recurring);
+                }
+            },
+        );
         if state.draft.recurring.enabled {
             ui.push_id("recurring", |ui| {
                 let recurring = &mut state.draft.recurring;
@@ -38,7 +63,7 @@ pub(super) fn show(
                 if recurring.interval_kind == IntervalKind::Time {
                     let caption = label(ui,"Time unit","timeUnit",&mut state.help);
                     egui::ComboBox::from_id_salt("Time unit").width(ui.available_width()).selected_text(recurring.time_unit.label()).show_ui(ui, |ui| { for unit in TimeUnit::ALL { ui.selectable_value(&mut recurring.time_unit,unit,unit.label()); } }).response.labelled_by(caption.id);
-                    ui.small("Time intervals must align to full minutes. The minimum depends on the selected network.");
+                    hint(ui, "Time intervals must align to full minutes. The minimum depends on the selected network.");
                 }
                 label(ui,"Recurring recipient","recipient",&mut state.help);
                 supply::recipient(ui,&mut recurring.recipient,true,false,&mut state.help);
@@ -48,14 +73,14 @@ pub(super) fn show(
                 help(ui,&mut state.help,recurring.function.help_key());
                 let function = &mut recurring.functions[recurring.function as usize];
                 if ui.button("Restore worked example parameters").clicked() { *function = FunctionDraft::example(recurring.function); }
-                ui.small("Worked examples use 2 decimal places. At other precision, the displayed amounts stay the same and the raw coefficients have different effects.");
+                hint(ui, "Worked examples use 2 decimal places. At other precision, the displayed amounts stay the same and the raw coefficients have different effects.");
                 for parameter in recurring.function.parameters() {
                     if parameter.is_amount() {
                         amount(ui, parameter.label(), parameter.help_key(), function.amounts.entry(*parameter).or_default(), state.draft.decimals, &mut state.help);
                     } else {
                         text(ui,parameter.label(),parameter.help_key(),function.values.entry(*parameter).or_default(),&mut state.help);
                     }
-                    if parameter.optional() { ui.small("Blank means absent; zero is an explicit value."); }
+                    if parameter.optional() { hint(ui, "Blank means absent; zero is an explicit value."); }
                 }
                 if recurring.function == FunctionKind::Stepwise {
                     label(ui,"Phases","param.steps",&mut state.help);
@@ -71,7 +96,7 @@ pub(super) fn show(
                     if ui.button("Add phase").clicked() { function.steps.push((String::new(),TokenAmountInput::default())); }
                 }
                 text(ui,"Assumed registration reference for preview","period-index",&mut state.preview_reference,&mut state.help);
-                ui.small("Blank uses zero. The first row is illustrative; cumulative allocation starts at period 1 and excludes initial supply.");
+                hint(ui, "Blank uses zero. The first row is illustrative; cumulative allocation starts at period 1 and excludes initial supply.");
                 subheading(ui,"Current-parameter preview","static-preview",&mut state.help);
                 let reference = if state.preview_reference.trim().is_empty() { Some(0) } else { state.preview_reference.parse::<u64>().ok() };
                 if let Some(reference) = reference {
@@ -92,23 +117,20 @@ pub(super) fn show(
                 if let Err(error) = recurring.parse(state.draft.decimals,network,version) { ui.colored_label(ui.visuals().error_fg_color,error.to_string()); }
             });
         } else {
-            ui.small(format!(
-                "Saved settings: {function}, every {interval} {unit}, to {recipient}.",
-                function = state.draft.recurring.function.label(),
-                interval = state.draft.recurring.interval,
-                unit = match state.draft.recurring.interval_kind {
-                    IntervalKind::Time => state.draft.recurring.time_unit.label(),
-                    IntervalKind::Blocks => "blocks",
-                    IntervalKind::Epochs => "epochs",
-                },
-                recipient = recipient_label(&state.draft.recurring.recipient),
-            ));
-        }
-        if ui
-            .link("Edit permission to change recurring distribution")
-            .clicked()
-        {
-            state.rule_editor = Some(RuleKind::Recurring);
+            hint(
+                ui,
+                format!(
+                    "Saved settings: {function}, every {interval} {unit}, to {recipient}.",
+                    function = state.draft.recurring.function.label(),
+                    interval = state.draft.recurring.interval,
+                    unit = match state.draft.recurring.interval_kind {
+                        IntervalKind::Time => state.draft.recurring.time_unit.label(),
+                        IntervalKind::Blocks => "blocks",
+                        IntervalKind::Epochs => "epochs",
+                    },
+                    recipient = recipient_label(&state.draft.recurring.recipient),
+                ),
+            );
         }
     });
     card(ui, |ui| {
@@ -120,7 +142,10 @@ pub(super) fn show(
             &mut state.draft.scheduled_enabled,
             &mut state.help,
         );
-        ui.label("Set specific dates, recipients and amounts. Recipients must claim eligible allocations. Editing or reopening this screen does not move the date.");
+        hint(
+            ui,
+            "Set specific dates, recipients and amounts. Recipients must claim eligible allocations. Editing or reopening this screen does not move the date.",
+        );
         if state.draft.scheduled_enabled {
             let mut remove = None;
             for row in &mut state.draft.scheduled {
@@ -177,10 +202,13 @@ pub(super) fn show(
                 });
             }
         } else {
-            ui.small(format!(
-                "Off. {count} scheduled allocations are retained in this draft.",
-                count = state.draft.scheduled.len()
-            ));
+            hint(
+                ui,
+                format!(
+                    "Off. {count} scheduled allocations are retained in this draft.",
+                    count = state.draft.scheduled.len()
+                ),
+            );
         }
     });
     card(ui, |ui| {
@@ -192,7 +220,10 @@ pub(super) fn show(
             &mut state.draft.once_enabled,
             &mut state.help,
         );
-        ui.label("Each eligible identity can claim once. One person can control multiple identities. Available supply can limit claims; tokens do not transfer automatically.");
+        hint(
+            ui,
+            "Each eligible identity can claim once. One person can control multiple identities. Available supply can limit claims; tokens do not transfer automatically.",
+        );
         if state.draft.once_enabled {
             if version.protocol_version < 14 {
                 ui.colored_label(

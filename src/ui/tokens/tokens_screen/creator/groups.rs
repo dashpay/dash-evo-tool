@@ -5,13 +5,14 @@ use dash_sdk::dpp::version::PlatformVersion;
 pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &PlatformVersion) {
     card(ui, |ui| {
         heading(ui, "Groups", "groups", &mut state.help);
-        ui.label("Share authority using weighted approvals. A group acts when its approving members meet the required power.");
-        ui.small("Labels are local. Review shows the positions stored in the contract.");
-        if state.draft.groups.is_empty() {
-            ui.label(
-                "No groups yet. Use owner or identity rules, or add a group to share authority.",
-            );
-        }
+        muted(
+            ui,
+            "Share authority using weighted approvals. A group acts when its approving members meet the required power.",
+        );
+        hint(
+            ui,
+            "Labels are local. Review shows the positions stored in the contract.",
+        );
         let mut remove = None;
         for index in 0..state.draft.groups.len() {
             let id = state.draft.groups[index].position;
@@ -22,8 +23,8 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
                 ui.strong(format!("Draft group {id} · contract position {index}"));
                 text(ui,"Group name (local only)","groupName",&mut group.label,&mut state.help);
                 text(ui,"Required power","threshold",&mut group.threshold,&mut state.help);
-                ui.small("Required power must be positive and no greater than total member power.");
-                ui.small("At least two members are required. Each power and the requirement must be from 1 to 65,535.");
+                hint(ui, "Required power must be positive and no greater than total member power.");
+                hint(ui, "At least two members are required. Each power and the requirement must be from 1 to 65,535.");
                 let mut member_remove = None;
                 for (member_index,member) in group.members.iter_mut().enumerate() {
                     ui.push_id(member_index, |ui| {
@@ -50,10 +51,15 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
         {
             state.draft.groups.push(GroupDraft::new(id));
         }
+        if state.draft.groups.is_empty() {
+            inline_notice(ui, MessageType::Info, |ui| {
+                ui.label("No groups yet. Use owner or identity rules, or add a group to share authority.");
+            });
+        }
     });
     card(ui, |ui| {
         subheading(ui, "Main control group", "mainGroup", &mut state.help);
-        ui.label("Rules that use Main group follow this selection.");
+        muted(ui, "Rules that use Main group follow this selection.");
         let caption = ui.label(RichText::new("Main group").family(Typography::strong_family()));
         egui::ComboBox::from_id_salt("Main group")
             .width(ui.available_width())
@@ -84,6 +90,9 @@ pub(super) fn show(ui: &mut Ui, state: &mut CreatorWorkspace, version: &Platform
             state.draft.main_group,
             &mut state.help,
         );
-        ui.label("Changing the main group also changes the members addressed by every Main group authority.");
+        muted(
+            ui,
+            "Changing the main group also changes the members addressed by every Main group authority.",
+        );
     });
 }

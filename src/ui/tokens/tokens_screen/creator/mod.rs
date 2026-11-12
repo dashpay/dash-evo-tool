@@ -14,8 +14,11 @@ use crate::app::AppAction;
 use crate::model::token_creator::amount::{TokenAmountInput, format_amount};
 use crate::model::token_creator::rules::{ActorDraft, RuleKind};
 use crate::model::token_creator::{Policy, Recipient, Section};
-use crate::ui::components::styled::StyledCard;
+use crate::ui::MessageType;
 use crate::ui::components::styled::styled_text_edit_singleline;
+use crate::ui::components::styled::{
+    StyledCard, hint_label as hint, inline_notice, muted_label as muted,
+};
 use crate::ui::state::token_creator::CreatorWorkspace;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape, Spacing, Typography};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -225,7 +228,7 @@ impl TokensScreen {
         });
         ui.separator();
         if stacked_footer {
-            ui.small(&footer_caption);
+            hint(ui, &footer_caption);
         }
         ui.horizontal(|ui| {
             if ui
@@ -238,7 +241,7 @@ impl TokensScreen {
                 self.creator_workspace.navigate(false);
             }
             if !stacked_footer {
-                ui.small(&footer_caption);
+                hint(ui, &footer_caption);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(caption) = next_caption
@@ -538,7 +541,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             };
             summary_field(ui, caption, value);
         }
-        ui.small(supply::cap_consequence(&state.draft));
+        hint(ui, supply::cap_consequence(&state.draft));
         summary_field(
             ui,
             "Precision",
@@ -564,7 +567,7 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             "Recurring: {}",
             on_off(state.draft.recurring.enabled)
         ));
-        ui.small(distribution::recurring_authority(&state.draft));
+        hint(ui, distribution::recurring_authority(&state.draft));
         ui.label(format!(
             "Scheduled: {status} · {count} saved allocations",
             status = on_off(state.draft.scheduled_enabled),
@@ -599,7 +602,10 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
                     || rule.allow_remove_administrator
                     || rule.allow_replace_administrator
                 {
-                    ui.small("Later changes are allowed. Review the rule's three allowances.");
+                    hint(
+                        ui,
+                        "Later changes are allowed. Review the rule's three allowances.",
+                    );
                 }
             }
         }
@@ -613,8 +619,14 @@ fn summary(ui: &mut Ui, state: &mut CreatorWorkspace) {
             ui.label("All 13 action rules are permanently disabled.");
         }
         ui.separator();
-        ui.small("Creation fees come from the issuer's Platform balance. Review all permanent choices before signing.");
-        ui.small("Draft only. Nothing is created or charged before the final confirmation.");
+        hint(
+            ui,
+            "Creation fees come from the issuer's Platform balance. Review all permanent choices before signing.",
+        );
+        hint(
+            ui,
+            "Draft only. Nothing is created or charged before the final confirmation.",
+        );
     });
 }
 

@@ -135,8 +135,11 @@ impl TokensScreen {
                 "review",
                 &mut self.creator_workspace.help,
             );
-            ui.label("Check the choices your holders will live with.");
-            ui.label("Check the settings and owner without spending credits. You will confirm creation separately. Editing the draft requires another check.");
+            muted(ui, "Check the choices your holders will live with.");
+            muted(
+                ui,
+                "Check the settings and owner without spending credits. You will confirm creation separately. Editing the draft requires another check.",
+            );
             subheading(
                 ui,
                 "Issuer, fees & readiness",
@@ -210,7 +213,10 @@ impl TokensScreen {
         if self.creator_workspace.prepared.is_none() {
             card(ui, |ui| {
                 ui.heading("Draft overview");
-                ui.label("Inspect these settings while drafting. Choose an owner and check the settings when you are ready for the final review.");
+                muted(
+                    ui,
+                    "Inspect these settings while drafting. Choose an owner and check the settings when you are ready for the final review.",
+                );
                 human_review(ui, &self.creator_workspace.draft);
             });
         }
@@ -403,29 +409,29 @@ fn human_review(ui: &mut Ui, draft: &TokenDraft) {
                     for (name,value) in [("Initial supply",&draft.initial),("Maximum outstanding supply",&draft.maximum)] {
                         if name=="Maximum outstanding supply"&&draft.no_maximum {ui.label("Maximum outstanding supply: no configured limit");}else if let Ok(raw)=value.parse(draft.decimals){ui.label(format!("{name}: {} tokens ({raw} base units)",format_amount(raw,draft.decimals)));}
                     }
-                    ui.label(supply::cap_consequence(draft));
+                    supply::cap_notice(ui, draft);
                     ui.label(format!("Precision: {} decimal places", draft.decimals));
-                    ui.small("Burning tokens can free capacity for future mints; this is not a lifetime minting limit.");
+                    hint(ui, "Burning tokens can free capacity for future mints; this is not a lifetime minting limit.");
                     ui.label(format!("Initial and default mint recipient: {}",recipient_label(&draft.mint_recipient)));
                     ui.label(format!("Choose a recipient per mint: {} · ordinary transfers: {} · starts paused: {} · receive while frozen: {}",supply::yes(draft.permissions.allow_mint_recipient_choice),supply::yes(draft.transferable),supply::yes(draft.start_paused),supply::yes(draft.allow_receive_frozen)));
-                    ui.small("Transferability is permanent after creation. A pause and other token actions have separate rules.");
-                    ui.label("No marketplace sale or direct-purchase price is configured at creation. Review who could change these settings later.");
+                    hint(ui, "Transferability is permanent after creation. A pause and other token actions have separate rules.");
+                    inline_notice(ui, MessageType::Info, |ui| { ui.label("No marketplace sale or direct-purchase price is configured at creation. Review who could change these settings later."); });
                     ui.label(RichText::new("Powers and consequences").font(Typography::subheading()));
                     for kind in RuleKind::ALL {let rule=draft.permissions.get(kind);ui.separator();ui.strong(kind.label());ui.label(format!("Performer: {} · administrator: {}",rule.performer.label(),rule.administrator.label()));ui.label(format!("Allow disabling action: {} · allow removing administrator: {} · allow replacing administrator: {}",supply::yes(rule.allow_disable_action),supply::yes(rule.allow_remove_administrator),supply::yes(rule.allow_replace_administrator)));}
                 },
                 Section::Distribution=>{
                     ui.label(format!("Recurring: {}",on_off(draft.recurring.enabled)));
                     ui.label(distribution::recurring_authority(draft));
-                    ui.small("Recipients must claim eligible allocations. Available supply can limit claims; no claim balance is promised.");
+                    hint(ui, "Recipients must claim eligible allocations. Available supply can limit claims; no claim balance is promised.");
                     if draft.recurring.enabled {ui.label(format!("Interval: {} {:?} · time unit: {} · recipient: {}",draft.recurring.interval,draft.recurring.interval_kind,draft.recurring.time_unit.label(),recipient_label(&draft.recurring.recipient)));let function=&draft.recurring.functions[draft.recurring.function as usize];ui.strong(function.kind.label());for (parameter,value) in &function.values {ui.label(format!("{}: {value}",parameter.label()));}for (parameter,value) in &function.amounts {ui.label(format!("{}: {} {}",parameter.label(),value.text,if value.base_units {"base units"}else{"tokens"}));}for (index,value) in &function.steps {ui.label(format!("Period {index}: {} {}",value.text,if value.base_units {"base units"}else{"tokens"}));}}
-                    if !draft.recurring.enabled {ui.small("Saved recurring settings are kept in the draft but are not included as an active allocation.");}
+                    if !draft.recurring.enabled {hint(ui, "Saved recurring settings are kept in the draft but are not included as an active allocation.");}
                     ui.label(format!("Scheduled distributions: {status} · {count} saved allocations", status = on_off(draft.scheduled_enabled), count = draft.scheduled.len()));
                     if draft.scheduled_enabled {for row in &draft.scheduled {if let (Some(time),Ok(raw))=(row.timestamp,row.amount.parse(draft.decimals)){ui.label(format!("{} · {} · {} tokens ({raw} base units)",crate::model::datetime::local_date_time_from_unix_millis(time),recipient_label(&row.recipient),format_amount(raw,draft.decimals)));}}}
-                    ui.label(format!("Once per identity: {}",on_off(draft.once_enabled)));ui.small("One person can control multiple identities.");if draft.once_enabled {ui.label(format!("Amount: {} {}",draft.once_amount.text,if draft.once_amount.base_units {"base units"}else{"tokens"}));}
+                    ui.label(format!("Once per identity: {}",on_off(draft.once_enabled)));hint(ui, "One person can control multiple identities.");if draft.once_enabled {ui.label(format!("Amount: {} {}",draft.once_amount.text,if draft.once_amount.base_units {"base units"}else{"tokens"}));}
                 },
                 Section::Groups=>{for (position,group) in draft.groups.iter().enumerate(){ui.strong(format!("{} · local group {} → contract position {position}",group.label,group.position));ui.label(format!("Required power: {}",group.threshold));for member in &group.members {ui.label(format!("{} · voting power {}",member.identity,member.weight));}}ui.label(format!("Main group: {} · replacement authority: {}",draft.main_group.map_or_else(|| "None".into(), |id| format!("Draft group {id}")),draft.permissions.main_group_change.label()));},
                 Section::History=>{for (label,on) in ["Transfers","Freezes and unfreezes","Mints","Burns","Direct-pricing changes","Direct purchases"].into_iter().zip(draft.history){ui.label(format!("{label}: {}",if on {"kept"}else{"omitted"}));}},
-                Section::Documents=>{ui.label(format!("Description: {}",draft.description));ui.label(format!("Additional keywords: {}",draft.keywords));ui.label("Searchable names are also included as keywords. The complete document schema is in the contract JSON.");if let Ok(Some(documents))=draft.parse_documents(){for name in documents.keys(){ui.label(format!("Document type: {name}"));}}else{ui.label("No document types");}},
+                Section::Documents=>{ui.label(format!("Description: {}",draft.description));ui.label(format!("Additional keywords: {}",draft.keywords));hint(ui, "Searchable names are also included as keywords. The complete document schema is in the contract JSON.");if let Ok(Some(documents))=draft.parse_documents(){for name in documents.keys(){ui.label(format!("Document type: {name}"));}}else{ui.label("No document types");}},
                 Section::Review=>{},
             }
         });

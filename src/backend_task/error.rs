@@ -1539,6 +1539,18 @@ pub enum TaskError {
         source: std::io::Error,
     },
 
+    #[error("This destination cannot be replaced safely. Choose a different filename outside the application's data folder and try again.")]
+    TokenJsonDestinationRefused {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("The contract file could not be saved. Try saving it again.")]
+    TokenJsonSaveWorkerFailed {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     /// A serialized token configuration blob could not be decoded.
     #[error("Saved token data is unreadable. Refresh the token list to fetch it again.")]
     TokenConfigEncoding {

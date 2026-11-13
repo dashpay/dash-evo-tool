@@ -22,19 +22,12 @@ pub(crate) struct ContractJsonExport {
 }
 
 impl ContractJsonExport {
-    /// Captures reviewed bytes and suggests a destination in the user's documents folder.
+    /// Captures reviewed bytes without reading the filesystem during rendering.
     pub fn new(json: String) -> Self {
-        let path = directories::UserDirs::new()
-            .map(|dirs| {
-                dirs.document_dir()
-                    .unwrap_or(dirs.home_dir())
-                    .join("token-contract.json")
-            })
-            .unwrap_or_else(|| PathBuf::from("token-contract.json"));
         Self {
             json,
-            path: path.to_string_lossy().into_owned(),
-            native_path: Some(path),
+            path: String::new(),
+            native_path: None,
             picker: None,
             saving: None,
             replacement: None,
@@ -159,6 +152,16 @@ mod tests {
     }
 
     #[test]
+    fn token_json_export_requires_a_destination_before_dispatching_a_write() {
+        let mut export = ContractJsonExport::new("snapshot".into());
+        assert!(export.path.is_empty());
+        assert!(matches!(
+            export.save(Network::Testnet, false),
+            AppAction::None
+        ));
+    }
+
+    #[test]
     fn token_json_export_cancel_reopen_and_late_picker_result_never_write() {
         let mut export = ContractJsonExport::new("reviewed bytes".into());
         let (_, old_request) = request(export.browse(Network::Testnet));
@@ -194,6 +197,7 @@ mod tests {
     #[test]
     fn token_json_export_path_changes_require_fresh_replacement_confirmation() {
         let mut export = ContractJsonExport::new("snapshot".into());
+        export.path = "contract.json".into();
         let (_, pending) = request(export.save(Network::Testnet, false));
         let first = export.file_path();
         export.result(
@@ -220,6 +224,7 @@ mod tests {
     #[test]
     fn token_json_export_picker_and_write_errors_preserve_snapshot_and_path() {
         let mut export = ContractJsonExport::new("snapshot".into());
+        export.path = "contract.json".into();
         let path = export.file_path();
         let (_, pending) = request(export.browse(Network::Testnet));
         export.error(&pending, &TaskError::TokenJsonChooserBusy);

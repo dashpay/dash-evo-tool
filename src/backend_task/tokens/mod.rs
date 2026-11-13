@@ -288,7 +288,7 @@ impl AppContext {
                 path,
                 json,
                 replace,
-            } => json_export::save(path, json, replace).await,
+            } => json_export::save(self.data_dir().to_owned(), path, json, replace).await,
             TokenTask::RegisterTokenContract {
                 identity,
                 signing_key,
